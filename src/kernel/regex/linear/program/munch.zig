@@ -59,7 +59,7 @@ const compile_mod = @import("../../compile/compile.zig");
 const powerset = @import("../dfa/powerset.zig");
 const subset = @import("../dfa/subset.zig");
 const lower = @import("lower.zig");
-const Dfa = @import("../dfa/dfa.zig").Dfa;
+const split = @import("split.zig");
 
 /// Patterns one automaton can name — the width of its attribution mask.
 const per_automaton: usize = subset.max_patterns;
@@ -76,10 +76,30 @@ pub const Match = struct {
 };
 
 pub const Munch = struct {
+    /// The automaton a `Voice` names. Reachable through the field's type
+    /// either way; spelled here so that a caller of `adopt` can say it, and
+    /// under `Munch` rather than at the root so that it stays the automaton
+    /// this seam takes rather than a second public face on the engine.
+    pub const Dfa = @import("../dfa/dfa.zig").Dfa;
+
+    /// What `compile` was told. Nameable so that a caller storing the automata
+    /// it produced can record the options beside them: the same patterns under
+    /// different options are different machines, and only the caller holding
+    /// both can say whether what it saved still answers the question it asks.
+    pub const Options = lower.Options;
+
     gpa: std.mem.Allocator,
     voices: []Voice,
     /// Ordinals this slate could not take, ascending. Empty is the normal case.
     declined: []const u32,
+    /// Why each of `declined` was refused, in the same order. A refusal that
+    /// will not say which of the three it is leaves the caller unable to tell a
+    /// pattern this engine cannot express from one it merely would not build,
+    /// and those have different owners and different fixes.
+    ///
+    /// Empty when the `Munch` came from `adopt`, which restores automatons
+    /// rather than compiling and so has no refusals of its own to explain.
+    because: []const Because,
     /// Rewritten by each `longest`; sized once, to the widest answer possible.
     winners: []u32,
     /// Caller ordinal -> where its bit lives. The inverse of `Voice.ordinals`,
@@ -87,10 +107,27 @@ pub const Munch = struct {
     /// caller ever learning that voices exist.
     seats: []const Seat,
 
+    /// The three ways a pattern can fail to become an automaton. Exhaustive by
+    /// construction: `voice` is the only place a refusal is minted.
+    pub const Because = enum {
+        /// The parser would not accept the pattern's syntax.
+        syntax,
+        /// The subset construction reached the `max_states` safety bound. Not a
+        /// statement about regular languages; a statement about this build.
+        states,
+        /// A word-boundary assertion reached through the pattern body, which the
+        /// caller never asked for by flag. The automaton was built and dropped.
+        word_context,
+    };
+
     /// One anchored automaton and the caller ordinals its mask bits stand for.
     /// The indirection is what lets a refusal be a hole rather than a renumber:
     /// bit `i` means `ordinals[i]`, whatever bisection ended up grouping.
-    const Voice = struct {
+    ///
+    /// Public for `adopt`, and only for it. `compile` is still the way a slate
+    /// becomes a `Munch`; this is the shape a caller has to speak if it wants
+    /// to hand back one it stored earlier.
+    pub const Voice = struct {
         dfa: *Dfa,
         ordinals: []const u32,
     };
@@ -158,6 +195,7 @@ pub const Munch = struct {
 
         var voices: std.ArrayList(Voice) = .empty;
         var declined: std.ArrayList(u32) = .empty;
+        var because: std.ArrayList(Because) = .empty;
         const all = try gpa.alloc(u32, patterns.len);
         defer gpa.free(all);
         for (all, 0..) |*o, i| o.* = @intCast(i);
@@ -166,12 +204,14 @@ pub const Munch = struct {
             for (voices.items) |*v| release(gpa, v);
             voices.deinit(gpa);
             declined.deinit(gpa);
+            because.deinit(gpa);
         }
-        try admit(gpa, patterns, all, opts, &voices, &declined);
+        try admit(gpa, patterns, all, opts, &voices, &declined, &because);
 
         if (voices.items.len == 0) {
             voices.deinit(gpa);
             declined.deinit(gpa);
+            because.deinit(gpa);
             return null;
         }
 
@@ -190,6 +230,53 @@ pub const Munch = struct {
             .gpa = gpa,
             .voices = try voices.toOwnedSlice(gpa),
             .declined = try declined.toOwnedSlice(gpa),
+            .because = try because.toOwnedSlice(gpa),
+            .winners = try gpa.alloc(u32, taken),
+            .seats = seats,
+        };
+    }
+
+    /// Assemble a `Munch` over automata the caller already has, rather than
+    /// determinizing a slate to get them.
+    ///
+    /// Determinization is the expensive half of `compile` and its result is a
+    /// pure function of the slate, so a caller holding a slate that does not
+    /// change - one shipped inside an artifact - can pay it once, elsewhere,
+    /// and arrive here with the answer. `voices` and every `ordinals` inside it
+    /// pass to the `Munch` and are freed by its `deinit`; whether the DFA
+    /// tables under them are freed too is each `Dfa`'s own `borrowed` flag.
+    ///
+    /// `npatterns` is the caller's ordinal space, which is wider than the
+    /// seated ordinals exactly when something declined. Nothing here re-derives
+    /// what a compile would have concluded: an ordinal absent from every voice
+    /// and from `declined` simply has no seat, and asking about it is the
+    /// documented no-op that asking about a declined one already is.
+    pub fn adopt(
+        gpa: std.mem.Allocator,
+        npatterns: usize,
+        voices: []Voice,
+        declined: []const u32,
+    ) std.mem.Allocator.Error!Munch {
+        var taken: usize = 0;
+        for (voices) |v| taken += v.ordinals.len;
+
+        const seats = try gpa.alloc(Seat, npatterns);
+        errdefer gpa.free(seats);
+        @memset(seats, .{ .voice = 0, .bit = 0, .live = false });
+        for (voices, 0..) |v, vi| {
+            for (v.ordinals, 0..) |o, bit| {
+                if (o >= npatterns or bit >= per_automaton) continue;
+                seats[o] = .{ .voice = @intCast(vi), .bit = @intCast(bit), .live = true };
+            }
+        }
+
+        return .{
+            .gpa = gpa,
+            .voices = voices,
+            .declined = declined,
+            // `adopt` restores automatons someone else already built, so it has
+            // no refusals of its own to explain.
+            .because = &.{},
             .winners = try gpa.alloc(u32, taken),
             .seats = seats,
         };
@@ -199,6 +286,7 @@ pub const Munch = struct {
         for (m.voices) |*v| release(m.gpa, v);
         m.gpa.free(m.voices);
         m.gpa.free(m.declined);
+        if (m.because.len > 0) m.gpa.free(m.because);
         m.gpa.free(m.winners);
         m.gpa.free(m.seats);
         m.* = undefined;
@@ -270,7 +358,7 @@ const End = struct { at: usize, pats: u64 };
 /// **with a permitted pattern**. The walk itself is unchanged by `permitted` —
 /// same bytes, same states, same dead-state exit — because a forbidden pattern
 /// may still be on the path to a permitted longer one.
-fn reach(d: *const Dfa, haystack: []const u8, at: usize, permitted: u64) ?End {
+fn reach(d: *const Munch.Dfa, haystack: []const u8, at: usize, permitted: u64) ?End {
     if (at >= haystack.len) {
         const pats = d.empty_pats & permitted;
         return if (d.empty_match and pats != 0) .{ .at = at, .pats = pats } else null;
@@ -293,7 +381,7 @@ fn reach(d: *const Dfa, haystack: []const u8, at: usize, permitted: u64) ?End {
     return best;
 }
 
-inline fn accepted(d: *const Dfa, s: u32, permitted: u64, at: usize) ?End {
+inline fn accepted(d: *const Munch.Dfa, s: u32, permitted: u64, at: usize) ?End {
     if (!d.isMatch(s)) return null;
     const pats = d.patternsAt(s) & permitted;
     return if (pats == 0) null else .{ .at = at, .pats = pats };
@@ -314,19 +402,28 @@ fn admit(
     opts: lower.Options,
     voices: *std.ArrayList(Munch.Voice),
     declined: *std.ArrayList(u32),
+    because: *std.ArrayList(Munch.Because),
 ) syn.ParseError!void {
     if (ordinals.len == 0) return;
     if (ordinals.len <= per_automaton) {
-        if (try voice(gpa, patterns, ordinals, opts)) |dfa| {
-            errdefer dfa.deinit();
-            try voices.append(gpa, .{ .dfa = dfa, .ordinals = try gpa.dupe(u32, ordinals) });
-            return;
+        switch (try voice(gpa, patterns, ordinals, opts)) {
+            .built => |dfa| {
+                errdefer dfa.deinit();
+                try voices.append(gpa, .{ .dfa = dfa, .ordinals = try gpa.dupe(u32, ordinals) });
+                return;
+            },
+            .refused => |why| if (ordinals.len == 1) {
+                // A group's refusal says nothing about any one pattern in it,
+                // so only a lone ordinal's reason is recorded; the rest bisect
+                // until each names its own.
+                try declined.append(gpa, ordinals[0]);
+                return because.append(gpa, why);
+            },
         }
-        if (ordinals.len == 1) return declined.append(gpa, ordinals[0]);
     }
     const mid = ordinals.len / 2;
-    try admit(gpa, patterns, ordinals[0..mid], opts, voices, declined);
-    try admit(gpa, patterns, ordinals[mid..], opts, voices, declined);
+    try admit(gpa, patterns, ordinals[0..mid], opts, voices, declined, because);
+    try admit(gpa, patterns, ordinals[mid..], opts, voices, declined, because);
 }
 
 /// One anchored union over `ordinals`. Terminals first, so state index `i` is
@@ -337,7 +434,7 @@ fn voice(
     patterns: []const []const u8,
     ordinals: []const u32,
     opts: lower.Options,
-) syn.ParseError!?*Dfa {
+) syn.ParseError!union(enum) { built: *Munch.Dfa, refused: Munch.Because } {
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
@@ -348,11 +445,13 @@ fn voice(
     for (ordinals) |_| _ = try c.push(.match);
     const entries = try arena.alloc(u32, ordinals.len);
     for (ordinals, entries, 0..) |o, *entry, i| {
-        const ast = lower.parse(arena, patterns[o], opts) catch return null;
+        const ast = lower.parse(arena, patterns[o], opts) catch return .{ .refused = .syntax };
         entry.* = try c.compileNode(ast, @intCast(i));
     }
 
-    const start = try splitTree(&c, entries);
+    // Balance bounds this recursion and the determinizer's closure stack at
+    // `log2 N`; it buys no work, for the reasons `split.tree` records at length.
+    const start = try split.tree(&c, entries);
     // Unbudgeted, and this is the one place in the package where that is the
     // conservative choice rather than the reckless one. `max_visits` is a COST
     // policy calibrated for a pattern the user typed a second ago and will run
@@ -369,24 +468,12 @@ fn voice(
     // to hold declines exactly as before and `admit` bisects it.
     const outcome = try powerset.build(gpa, c.states.items, start, true, opts.unicode, .unbudgeted);
     return switch (outcome) {
-        .declined => null,
+        .declined => .{ .refused = .states },
         .built => |dfa| if (dfa.word_ctx) blk: {
             // An assertion the caller did not ask for by flag, reached through
             // a pattern body. Same reasoning as `opts.word`, discovered later.
             dfa.deinit();
-            break :blk null;
-        } else dfa,
+            break :blk .{ .refused = .word_context };
+        } else .{ .built = dfa },
     };
-}
-
-/// A balanced ε-split tree over `entries`, returning its root. Balance bounds
-/// this recursion and the determinizer's closure stack at `log2 N`; it buys no
-/// work, for the reasons `chorus.splitTree` records at length.
-fn splitTree(c: *compile_mod.Compiler, entries: []const u32) syn.ParseError!u32 {
-    if (entries.len == 1) return entries[0];
-    const mid = entries.len / 2;
-    return c.push(.{ .split = .{
-        .a = try splitTree(c, entries[0..mid]),
-        .b = try splitTree(c, entries[mid..]),
-    } });
 }

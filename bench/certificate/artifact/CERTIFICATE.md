@@ -164,7 +164,7 @@ _Layer D records classes at **cand% = 100%** because the needle is thinner than 
 
 _Corpus: shallow clones of the Linux kernel, LLVM, the Go tree and the Rust tree — **352,316 files / 5.5 GiB on disk**, against the certificate corpus's 20.6k files / 204.6 MiB. Fairness per `bench/races/_compete.sh`: `GIST_UNCAP=1` so gist's agent-context output budget cannot clip a repo-wide result and flatter its own timing, and every engine answers in files-with-matches mode, the one output shape all three share. Medians, bootstrap CIs and the Mann-Whitney verdict come from `stats.py`; nothing statistical is reimplemented._
 
-| engine | build wall | peak RSS | index | index / its own text | 
+| engine | build wall | peak RSS | index | index / its own text |
 |---|--:|--:|--:|--:|
 | gist | 26.0 s | 4.56 GiB | 358 MiB | 10.4% |
 | csearch | 56.3 s | 2.86 GiB | 401 MiB | 10.5% |

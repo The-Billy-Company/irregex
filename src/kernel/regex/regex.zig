@@ -7,8 +7,8 @@
 //! demand — into the vendored PCRE2 JIT. The seven stages behind this file
 //! (`syntax → analysis → compile → linear`, with `unicode`, `pcre2`, `oracle`
 //! alongside) are INTERNALS. Callers get this file and nothing else; the seal
-//! in `contract/irregex.ward` makes that a build-time law rather than a
-//! convention, and the `ward` gate over `contract/irregex.ward` judges it.
+//! in `contract/irregex.zone` makes that a build-time law rather than a
+//! convention, and `zoning verify` in CI judges it.
 //!
 //! Why a seal and not just a README: the engine's correctness rests on every
 //! consumer sharing ONE notion of what a pattern means. The crest sieve learned
@@ -150,6 +150,15 @@ pub const compose = @import("linear/shuffle/shuffle.zig");
 // it would be the second-grammar mistake this file exists to prevent. Its
 // `Parabix.compileOffer` is that entrance: the one parser, invoked from outside.
 pub const parabix = @import("linear/parabix/parabix.zig");
+
+// ── The consumer face: a compiled pattern and everything you ask of it ───────
+// `glean/` is the one tier here shaped by the caller rather than the automaton:
+// `Pattern` owns its scratch, walks matches through a `Cursor`, reads captures
+// as `Groups` instead of a slot vector, and replaces/splits over the same walk.
+// Everything it does lowers to a call on the `Matcher` below it, so it adds a
+// face and not an engine.
+pub const glean = @import("glean/glean.zig");
+pub const Pattern = glean.Pattern;
 
 // ── Capture extraction: a separate Pike VM, so the primary engine stays free ─
 pub const captures = @import("compile/captures.zig");

@@ -42,50 +42,16 @@ const prefilter = @import("../../analysis/prefilter.zig");
 
 const State = syn.State;
 
-/// A byte span `[start, end)` of one match. `end == start` is a zero-width
-/// match (the `-o` caller advances past it to avoid looping).
-pub const Span = struct { start: usize, end: usize };
+/// A byte span `[start, end)` of one match — the package vocabulary
+/// (`../../../../mark.zig`), bound here because this engine is where a span is
+/// measured and callers reach for `Regex.Span` by that name.
+pub const Span = @import("../../../../mark.zig").Span;
 
 /// **What to search, and what to read while searching** — the span engines'
-/// input, and the reason the two are separable.
-///
-/// `hay` is the haystack: every zero-width assertion (`^ $ \b \B \< \> \A \z`)
-/// resolves against it end to end. `[from, to]` is the region a match may
-/// occupy — it must start at or after `from` and end at or before `to`. Within
-/// that region the answer is the ordinary leftmost-first one.
-///
-/// The distinction is the whole point. Slicing a haystack to bound a search
-/// *also* moves its edges, so `$`, `\b`, and any look-around at the cut answer a
-/// question about the slice instead of about the text — which makes a bounded
-/// confirm around a literal, an overlapping walk, or a half-match impossible to
-/// build out of slices without changing what the pattern means. A window keeps
-/// the context and moves only the search. (Same separation rust-`regex` draws
-/// with `Input { haystack, span }`; `to == hay.len` is the unbounded default,
-/// so nobody who doesn't ask for a bound pays for one.)
-pub const Window = struct {
-    hay: []const u8,
-    from: usize = 0,
-    to: usize,
-
-    /// The whole haystack from `from` — what `matchSpan` means.
-    pub fn whole(hay: []const u8, from: usize) Window {
-        return .{ .hay = hay, .from = from, .to = hay.len };
-    }
-
-    /// Is the end bound inert (no match this haystack holds could be excluded by
-    /// it)? Engines that cannot honor a real bound decline on this.
-    pub fn unbounded(w: Window) bool {
-        return w.to >= w.hay.len;
-    }
-
-    /// The prefix a bound turns the haystack into for the *assertion-free*
-    /// engines — a pure literal or class-run reads nothing but the bytes it
-    /// consumes, so for those the region and a slice of it are the same
-    /// question, and slicing is how the bound gets enforced for free.
-    pub fn region(w: Window) []const u8 {
-        return w.hay[0..@min(w.to, w.hay.len)];
-    }
-};
+/// input, and the reason the two are separable. The package vocabulary
+/// (`../../../../mark.zig`), bound here because this engine is where a bound is
+/// honored and callers reach for `Regex.Window` by that name.
+pub const Window = @import("../../../../mark.zig").Window;
 
 /// What a measurement produced. `decline` is not a failure and not an answer —
 /// it means this pattern outgrew the caliper's budget on this thread and the

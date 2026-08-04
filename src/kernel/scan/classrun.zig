@@ -52,9 +52,11 @@ pub const max_ranges: usize = 4;
 /// sufficed, so only the full engine can decide (never returned when `exact`).
 pub const Verdict = enum { hit, miss, unproven };
 
-/// A byte span `[start, end)` of one match — `nextSpan`'s currency, shape-
-/// compatible with the Pike VM's `Regex.Span`.
-pub const Span = struct { start: usize, end: usize };
+/// A byte span `[start, end)` of one match — `nextSpan`'s currency. The same
+/// type the Pike VM's `Regex.Span` is, not merely the same shape: this kernel
+/// answers span questions the engines above hand straight on, and a per-crossing
+/// copy between two identical declarations is a conversion nobody asked for.
+pub const Span = @import("../../mark.zig").Span;
 
 /// Unbounded `max` sentinel (mirrors `analysis.no_max`).
 pub const no_max: u32 = std.math.maxInt(u32);
@@ -689,6 +691,15 @@ inline fn pshufb(table: V16, idx: V16) V16 {
         : [o] "=w" (-> V16),
         : [t] "w" (table),
           [i] "w" (idx),
+    );
+    // VEX where the target has it, for the AVX/SSE transition reason
+    // `lanes.shuffle` documents: a legacy-encoded shuffle sitting inside code
+    // LLVM built with VEX stalls on the encoding boundary rather than on any
+    // work, and neither the instruction count nor the disassembly shows it.
+    if (comptime builtin.cpu.has(.x86, .avx)) return asm ("vpshufb %[i], %[t], %[o]"
+        : [o] "=x" (-> V16),
+        : [t] "x" (table),
+          [i] "x" (idx),
     );
     if (comptime builtin.cpu.has(.x86, .ssse3)) return asm ("pshufb %[i], %[o]"
         : [o] "=x" (-> V16),

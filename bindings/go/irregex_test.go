@@ -2,6 +2,7 @@ package irgx_test
 
 import (
 	"errors"
+	"math/rand"
 	"reflect"
 	"regexp"
 	"strings"
@@ -70,36 +71,158 @@ func TestMustCompilePanics(t *testing.T) {
 	irgx.MustCompile("a(")
 }
 
-// The engine's iteration rules, which are not the standard library's. An empty
-// match is suppressed at the end of the buffer and where the previous match
-// ended, so a nullable pattern reports fewer spans here than regexp does. The
-// table is the reference implementation's; the stdlib column is computed live,
-// so this test also fails if the standard library ever changes its mind.
-func TestNullablePatternsDifferFromStdlib(t *testing.T) {
-	for _, tc := range []struct {
-		pattern string
-		text    string
-		want    [][]int
+// A nullable pattern is where a regexp package's conventions show, and where
+// this one used to disagree with the standard library: it reported the engine's
+// own sequence, which suppresses an empty match abutting the previous one and
+// keeps the ones inside a multi-byte rune. Both are defensible - they are what
+// ripgrep prints - and neither is what a Go caller swapping this in for regexp
+// is entitled to. The binding now thins the engine's answer to Go's rule, and
+// this is the assertion of that.
+//
+// The stdlib column is computed live rather than written down, so the test
+// tracks the standard library instead of a snapshot of it.
+//
+// The one thing deliberately kept out of the comparison is the word class on
+// non-ASCII text: Go's \b, \B and \w are ASCII-only, this engine's are Unicode
+// by default, and TestWordClassIsUnicodeWhereStdlibIsASCII below is where that
+// difference is asserted rather than papered over. Everything else - including
+// what a `.` consumes - already agrees rune for rune.
+func TestNullablePatternsMatchStdlib(t *testing.T) {
+	const ascii, anyText = true, false
+	for _, group := range []struct {
+		asciiOnly bool // is a word class in play, and so the text has to stay ASCII?
+		patterns  []string
 	}{
-		{`a*`, "abc", [][]int{{0, 1}, {2, 2}}},
-		{`a*`, "bbb", [][]int{{0, 0}, {1, 1}, {2, 2}}},
-		{`a*`, "aaa", [][]int{{0, 3}}},
-		{`a*`, "", nil},
-		{`\b`, "ab cd", [][]int{{0, 0}, {2, 2}, {3, 3}}},
-		{`x?`, "axbxc", [][]int{{0, 0}, {1, 2}, {3, 4}}},
-		{``, "abc", [][]int{{0, 0}, {1, 1}, {2, 2}}},
+		{anyText, []string{`a*`, `x?`, ``, `b*`, `(?:)`, `a|`, `[0-9]*`, `.*`, `(a)*`, `l*`, `é*`, `.?`}},
+		{ascii, []string{`\b`, `\B`, `\w*`, `\b*`}},
 	} {
-		re := irgx.MustCompile(tc.pattern)
-		if got := re.FindAllStringIndex(tc.text, -1); !reflect.DeepEqual(got, tc.want) {
-			t.Errorf("%q over %q = %v, want %v", tc.pattern, tc.text, got, tc.want)
+		texts := []string{"", "abc", "aaa", "bbb", "ab cd", "axbxc", "a\nb", "  ", "abcb"}
+		if !group.asciiOnly {
+			texts = append(texts, "héllo", "é", "aéa")
 		}
-		// Not an assertion about the standard library, a demonstration: the
-		// difference is real and this is where it is visible.
-		std := regexp.MustCompile(tc.pattern).FindAllStringIndex(tc.text, -1)
-		if reflect.DeepEqual(std, tc.want) {
+		for _, pat := range group.patterns {
+			std, err := regexp.Compile(pat)
+			if err != nil {
+				t.Fatalf("stdlib rejected %q, which makes it useless as an oracle here: %v", pat, err)
+			}
+			re := irgx.MustCompile(pat)
+			for _, text := range texts {
+				want := std.FindAllStringIndex(text, -1)
+				if got := re.FindAllStringIndex(text, -1); !reflect.DeepEqual(got, want) {
+					t.Errorf("%q over %q = %v, stdlib regexp = %v", pat, text, got, want)
+				}
+			}
+		}
+	}
+}
+
+// The one place this package answers a different question from regexp, stated
+// as a difference rather than discovered as one.
+//
+// Go's \b, \B and \w are defined on ASCII: regexp reads "héllo" as three words
+// because é is not a word character to it, and finds no word at all in "é".
+// This engine is Unicode by default, as rust-regex and PCRE2 with UTF are, so é
+// is a letter and "héllo" is one word. Compiling with ASCII: true asks for Go's
+// alphabet back, and gets it.
+//
+// This is the improvement the ASCII-only groups in the test above are held out
+// of, so neither claim can quietly turn into the other.
+func TestWordClassIsUnicodeWhereStdlibIsASCII(t *testing.T) {
+	const text = "héllo"
+	std := regexp.MustCompile(`\b`).FindAllStringIndex(text, -1)
+	if want := [][]int{{0, 0}, {1, 1}, {3, 3}, {6, 6}}; !reflect.DeepEqual(std, want) {
+		t.Fatalf("stdlib \\b over %q = %v, want %v - the premise of this test moved", text, std, want)
+	}
+	// Unicode: one word, so two boundaries.
+	if got, want := irgx.MustCompile(`\b`).FindAllStringIndex(text, -1), ([][]int{{0, 0}, {6, 6}}); !reflect.DeepEqual(got, want) {
+		t.Errorf("unicode \\b over %q = %v, want %v", text, got, want)
+	}
+	// And asking for Go's alphabet gives Go's answer back, exactly.
+	if got := (irgx.CompileOpts{ASCII: true}).MustCompile(`\b`).FindAllStringIndex(text, -1); !reflect.DeepEqual(got, std) {
+		t.Errorf("ascii \\b over %q = %v, stdlib regexp = %v", text, got, std)
+	}
+}
+
+// The other deliberate difference, for the same reason: stated here so the
+// shared comparison above can leave malformed text out without losing it.
+//
+// Go's regexp decodes a byte that begins no valid rune as U+FFFD and lets `.`
+// consume it, so `.` finds two "characters" in the two junk bytes below. A
+// Unicode `.` here means one well-formed scalar value, as it does in rust-regex
+// and in ripgrep, so it matches neither byte and only the empty positions
+// around them remain. Neither package loses data - the bytes are still there to
+// slice - they disagree about whether invalid input should be silently repaired
+// into characters that were never written.
+func TestInvalidUTF8IsNotSilentlyRepaired(t *testing.T) {
+	const junk = "\xff\xfe"
+	if got, want := regexp.MustCompile(`.`).FindAllStringIndex(junk, -1), ([][]int{{0, 1}, {1, 2}}); !reflect.DeepEqual(got, want) {
+		t.Fatalf("stdlib . over junk = %v, want %v - the premise of this test moved", got, want)
+	}
+	// No scalar value, so only the zero-width positions between the bytes.
+	if got, want := irgx.MustCompile(`.*`).FindAllStringIndex(junk, -1), ([][]int{{0, 0}, {1, 1}, {2, 2}}); !reflect.DeepEqual(got, want) {
+		t.Errorf(".* over junk = %v, want %v", got, want)
+	}
+	// The bytes are still reachable - by asking for bytes. Under Unicode, \xff
+	// names the scalar U+00FF, which is encoded 0xC3 0xBF and is genuinely not
+	// present here; dropping to the byte alphabet is how you say the byte.
+	if got := irgx.MustCompile(`\xff`).FindAllStringIndex(junk, -1); got != nil {
+		t.Errorf("unicode \\xff over junk = %v, want no match: U+00FF is not encoded here", got)
+	}
+	if got, want := (irgx.CompileOpts{ASCII: true}).MustCompile(`\xff`).FindAllStringIndex(junk, -1), ([][]int{{0, 1}}); !reflect.DeepEqual(got, want) {
+		t.Errorf("byte \\xff over junk = %v, want %v", got, want)
+	}
+}
+
+// The same claim, over patterns nobody would think to write down. The two rules
+// the binding applies - ignore an empty match abutting the previous one, resume
+// one rune on after an empty one - interact, and the interaction is what a
+// hand-written table misses: an empty match skipped by the rune step still
+// counts as "previous" for the abutting rule, and a limit has to be applied
+// after the thinning or a walk asked for n can come back with n-1.
+func TestStdlibAgreementOverAGeneratedSlate(t *testing.T) {
+	// Tokens rather than characters, so the alphabet is exactly what it says.
+	// Drawing single runes from a set containing a backslash spells escapes
+	// nobody chose - it produced \b, whose ASCII-vs-Unicode difference is the
+	// deliberate one asserted above, and would have kept rediscovering it here
+	// instead of checking iteration.
+	tokens := []string{"a", "b", "é", "\n", ".", "*", "?", "+", "|", "(", ")", "[ab]", "[^a]", `\s`, `\S`, `\.`, "{1,2}", "0-9"}
+	texts := []string{"", "abc", "héllo", "aéb", "a\nb\n", "bbb", "the quick brown"}
+	rng := rand.New(rand.NewSource(0xB1A57))
+	var buf strings.Builder
+	compiled := 0
+	for i := 0; i < 4000; i++ {
+		buf.Reset()
+		for n := rng.Intn(6) + 1; n > 0; n-- {
+			buf.WriteString(tokens[rng.Intn(len(tokens))])
+		}
+		pat := buf.String()
+		std, err := regexp.Compile(pat)
+		if err != nil {
 			continue
 		}
-		t.Logf("%q over %q: engine %v, stdlib regexp %v", tc.pattern, tc.text, tc.want, std)
+		re, err := irgx.Compile(pat)
+		if err != nil {
+			continue // a grammar difference, not an iteration difference
+		}
+		compiled++
+		for _, text := range texts {
+			want := std.FindAllStringIndex(text, -1)
+			if got := re.FindAllStringIndex(text, -1); !reflect.DeepEqual(got, want) {
+				t.Fatalf("%q over %q = %v, stdlib regexp = %v", pat, text, got, want)
+			}
+			// A limit is a view over the settled sequence, so the first n of the
+			// full answer and a walk asked for n have to be the same n.
+			for _, n := range []int{1, 2, 3} {
+				want := std.FindAllStringIndex(text, n)
+				if got := re.FindAllStringIndex(text, n); !reflect.DeepEqual(got, want) {
+					t.Fatalf("%q over %q limit %d = %v, stdlib regexp = %v", pat, text, n, got, want)
+				}
+			}
+		}
+	}
+	// The generator is not so hostile that the loop above asserted nothing.
+	if compiled < 200 {
+		t.Fatalf("only %d patterns compiled on both sides; the slate is not exercising anything", compiled)
 	}
 }
 
@@ -592,11 +715,15 @@ func TestEmptyPatternAndEmptyText(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compile(%q): %v", "", err)
 	}
-	if got := re.FindAllStringIndex("ab", -1); !reflect.DeepEqual(got, [][]int{{0, 0}, {1, 1}}) {
-		t.Errorf("empty pattern over %q = %v", "ab", got)
-	}
-	if got := re.FindAllStringIndex("", -1); got != nil {
-		t.Errorf("empty pattern over empty text = %v, want nil", got)
+	// Expectations come from regexp rather than a literal, because the empty
+	// pattern is precisely where a written-down answer rots: these rows used to
+	// say [[0 0] [1 1]] and nil, the engine's grep walk, which dropped the empty
+	// match at end-of-text and reported none at all in empty text.
+	for _, text := range []string{"ab", "", "é"} {
+		want := regexp.MustCompile("").FindAllStringIndex(text, -1)
+		if got := re.FindAllStringIndex(text, -1); !reflect.DeepEqual(got, want) {
+			t.Errorf("empty pattern over %q = %v, stdlib regexp = %v", text, got, want)
+		}
 	}
 	if irgx.MustCompile(`a`).MatchString("") {
 		t.Error("a matched the empty text")
@@ -612,8 +739,12 @@ func TestEmptyPatternAndEmptyText(t *testing.T) {
 	if _, err := irgx.Compile(zero); err != nil {
 		t.Errorf("Compile(zero string): %v", err)
 	}
-	if re.MatchString(zero) {
-		t.Error("empty pattern matched the zero string")
+	// The empty pattern matches the empty string - it is the one thing it most
+	// obviously does. This row asserted the opposite until the pattern plane
+	// stopped answering booleans out of the line model, where a text with no
+	// lines had nothing to match against.
+	if !re.MatchString(zero) {
+		t.Error("empty pattern did not match the zero string")
 	}
 }
 
@@ -639,5 +770,91 @@ func TestStringAndVersions(t *testing.T) {
 	}
 	if got := irgx.ABIVersion(); got != 2 {
 		t.Errorf("ABIVersion = %d, want 2; the binding was written against ABI 2", got)
+	}
+}
+
+// The two flags stdlib regexp spells inline. Go writes `(?m)^b`; the linear
+// grammar declines an inline flag group rather than silently ignoring it, so
+// CompileOpts is how you ask here. The oracle is stdlib's inline spelling, so
+// this asserts the two spellings mean the same thing rather than restating what
+// the flag does.
+func TestMultiLineAndDotAllMeanWhatTheInlineFlagsMean(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		pat    string
+		opts   irgx.CompileOpts
+		inline string
+	}{
+		{"caret", "^..", irgx.CompileOpts{MultiLine: true}, "(?m)^.."},
+		{"dollar", "..$", irgx.CompileOpts{MultiLine: true}, "(?m)..$"},
+		{"dot", ".", irgx.CompileOpts{DotAll: true}, "(?s)."},
+		{"both", "^.", irgx.CompileOpts{MultiLine: true, DotAll: true}, "(?ms)^."},
+		{"neither caret", "^..", irgx.CompileOpts{}, "^.."},
+		{"neither dot", ".", irgx.CompileOpts{}, "."},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			for _, text := range []string{"ab\ncd", "a\nb", "\n", "ab", "", "a\n"} {
+				ours := c.opts.MustCompile(c.pat).FindAllStringIndex(text, -1)
+				want := regexp.MustCompile(c.inline).FindAllStringIndex(text, -1)
+				if !reflect.DeepEqual(ours, want) {
+					t.Errorf("%q over %q: got %v, stdlib %q gives %v",
+						c.pat, text, ours, c.inline, want)
+				}
+			}
+		})
+	}
+}
+
+// A pattern may carry its own flags, in the leading form stdlib regexp uses, and
+// the two spellings are one answer. This is the plane where it matters most: a
+// pattern out of a config file arrives without a CompileOpts a caller could have
+// filled in, because filling it in would mean reading the pattern first.
+func TestALeadingInlineFlagSaysWhatTheFieldSays(t *testing.T) {
+	for _, c := range []struct {
+		inline string
+		body   string
+		opts   irgx.CompileOpts
+	}{
+		{"(?i)AB", "AB", irgx.CompileOpts{IgnoreCase: true}},
+		{"(?m)^c", "^c", irgx.CompileOpts{MultiLine: true}},
+		{"(?s)b.c", "b.c", irgx.CompileOpts{DotAll: true}},
+		{"(?ms)^c.", "^c.", irgx.CompileOpts{MultiLine: true, DotAll: true}},
+	} {
+		for _, text := range []string{"ab\ncd", "AB ab", "a\nb", "", "a\n"} {
+			inline := irgx.MustCompile(c.inline).FindAllStringIndex(text, -1)
+			field := c.opts.MustCompile(c.body).FindAllStringIndex(text, -1)
+			want := regexp.MustCompile(c.inline).FindAllStringIndex(text, -1)
+			if !reflect.DeepEqual(inline, field) || !reflect.DeepEqual(inline, want) {
+				t.Errorf("%q over %q: inline %v, field %v, stdlib %v",
+					c.inline, text, inline, field, want)
+			}
+		}
+	}
+
+	// The pattern is the more specific statement, so it beats the field.
+	sensitive := (irgx.CompileOpts{IgnoreCase: true}).MustCompile("(?-i)ab")
+	if got := sensitive.FindAllString("ab AB", -1); !reflect.DeepEqual(got, []string{"ab"}) {
+		t.Errorf(`(?-i)ab under IgnoreCase: got %v, want ["ab"]`, got)
+	}
+	// And under Fixed the bytes are data, not a directive.
+	data := (irgx.CompileOpts{Fixed: true}).MustCompile("(?i)ab")
+	if got := data.FindAllString("(?i)ab AB", -1); !reflect.DeepEqual(got, []string{"(?i)ab"}) {
+		t.Errorf(`(?i)ab under Fixed: got %v, want ["(?i)ab"]`, got)
+	}
+}
+
+// Only the leading run is a whole-pattern flag, which is where stdlib regexp
+// draws the line too, and (?x)/(?U)/(?R) are letters this grammar does not have.
+// Refusing beats honoring the letters it recognizes and dropping the rest.
+func TestANonLeadingOrForeignInlineFlagIsDeclinedRatherThanIgnored(t *testing.T) {
+	for _, pat := range []string{"a(?i)b", "(?x) a b", "(?U)a+", "(?ix)a b"} {
+		if _, err := irgx.Compile(pat); err == nil {
+			t.Errorf("%q compiled on the linear arm; an ignored flag is the "+
+				"failure mode CompileOpts exists to avoid", pat)
+		}
+		// The PCRE arm does honor them.
+		if _, err := (irgx.CompileOpts{PCRE: true}).Compile(pat); err != nil {
+			t.Errorf("%q on the PCRE arm: %v", pat, err)
+		}
 	}
 }

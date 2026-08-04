@@ -134,13 +134,14 @@ fn replacement_is_byte_correct() {
 #[test]
 fn replacement_handles_empty_matches() {
     let re = Regex::new("").unwrap();
-    // The engine reports (0,0), (1,1), (2,2) for "abc" and suppresses the one at
-    // the end of the buffer, so the final `-` the `regex` crate would add is not
-    // there.
-    assert_eq!(re.replace_all("abc", "-"), "-a-b-c");
+    // Four positions in "abc", the end of the text included, so four separators
+    // - the same string `regex`'s `replace_all` produces.
+    assert_eq!(re.replace_all("abc", "-"), "-a-b-c-");
 
+    // `a*` eats the leading `a`, so the empty match at 1 abuts it and is not
+    // reported; the ones at 2 and 3 are.
     let star = Regex::new("a*").unwrap();
-    assert_eq!(star.replace_all("abc", "[]"), "[]b[]c");
+    assert_eq!(star.replace_all("abc", "[]"), "[]b[]c[]");
 }
 
 #[test]
@@ -207,11 +208,12 @@ fn many_matches_are_not_truncated() {
         text.len() - 2
     );
 
-    // The empty pattern reports a match at every byte except the end of the
-    // buffer, which is the densest sequence a text can produce and the case the
-    // window sizing has to survive.
+    // The empty pattern reports a match at every byte and one more at the end,
+    // which is the densest sequence a text can produce and the case the window
+    // sizing has to survive - it is also one MORE than the window's first guess,
+    // so this exercises the retry rather than the happy path.
     let empty = Regex::new("").unwrap();
-    assert_eq!(empty.find_iter(&text).count(), text.len());
+    assert_eq!(empty.find_iter(&text).count(), text.len() + 1);
 
     // And with groups, where each match also costs a `captures` call.
     let grouped = Regex::new("(a)").unwrap();

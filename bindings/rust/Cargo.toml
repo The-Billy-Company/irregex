@@ -63,6 +63,12 @@ serde_json = "1"
 toml = "1"
 # Behavioral tests plant a throwaway corpus.
 tempfile = "3"
+# The oracle for `tests/sequence.rs`. Which matches a nullable pattern yields is
+# a convention, not a fact, so the only honest way to claim this crate follows
+# Rust's is to ask Rust's - at test time, against the real thing, rather than
+# freezing a table of values it might one day stop producing. Dev-only: nothing
+# a consumer builds pulls it in.
+regex = "1"
 
 [lints.rust]
 missing_docs = "deny"

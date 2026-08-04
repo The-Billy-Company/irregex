@@ -40,13 +40,13 @@ const builtin = @import("builtin");
 const gist = @import("irregex");
 
 const corpus_mod = gist.corpus;
-const simd = gist.simd;
+const simd = gist.scan.simd;
 const query = gist.engine.query;
 const Span = gist.assay.Span; // the package monotonic stopwatch (never the wall clock)
-const Index = gist.trigram.Index;
+const Index = gist.index.trigram.Index;
 const Regex = gist.regex.Regex;
 const Dir = std.Io.Dir;
-const out_dir = gist.home.default_out_dir;
+const home = gist.index.home;
 
 const probes_mod = @import("probes");
 const Kind = probes_mod.Kind;
@@ -58,8 +58,12 @@ const Probe = probes_mod.Probe;
 const probes = probes_mod.probes ++ @import("stress.zig").probes;
 const shared_classes = probes_mod.probes.len;
 
-const plan_path = out_dir ++ "/indexq_csearch.plan";
-const csv_path = out_dir ++ "/indexq.tsv";
+// Resolved through GIST_DIR rather than baked in at comptime: `csearch_plan.py`
+// writes the plan into whichever artifact home the mint declared, and this lane
+// has to read the plan THAT run produced — not a `./.gist` copy left behind by
+// an earlier one, which is a stale comparison wearing a fresh certificate.
+const plan_path = home.ArtifactPath("indexq_csearch.plan");
+const csv_path = home.ArtifactPath("indexq.tsv");
 
 /// The three formulas under comparison. Only the formula differs — corpus,
 /// index, evaluator and verifier are shared.
@@ -129,8 +133,8 @@ fn unhex(arena: std.mem.Allocator, s: []const u8) ![]u8 {
 /// "csearch has no filter for this class".
 fn readPlans(arena: std.mem.Allocator, io: std.Io) !std.StringHashMap(Plan) {
     var out = std.StringHashMap(Plan).init(arena);
-    const text = Dir.cwd().readFileAlloc(io, plan_path, arena, .limited(1 << 26)) catch |e| {
-        std.debug.print("indexq: cannot read {s}: {s}\n  run: python3 bench/rungs/sieve/csearch_plan.py --probes bench/apparatus/harness/probes.zig --index .local/gist-compete/csearch.idx --out {s}\n", .{ plan_path, @errorName(e), plan_path });
+    const text = Dir.cwd().readFileAlloc(io, plan_path.get(), arena, .limited(1 << 26)) catch |e| {
+        std.debug.print("indexq: cannot read {s}: {s}\n  run: python3 bench/rungs/sieve/csearch_plan.py --probes bench/apparatus/harness/probes.zig --index .local/gist-compete/csearch.idx --out {s}\n", .{ plan_path.get(), @errorName(e), plan_path.get() });
         return e;
     };
     var acc = std.StringHashMap(std.ArrayList(Index.Clause)).init(arena);
@@ -369,8 +373,8 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, limits: query.CoverLimits) !void 
     }
 
     try writeTsv(gpa, io, &corpus, &idx, build_ms, rows.items);
-    std.debug.print("\nwrote {s}\n", .{csv_path});
-    std.debug.print("run: python3 gist/bench/certificate/report/indexq.py --certificate {s}/CERTIFICATE.md --tsv {s}\n", .{ out_dir, csv_path });
+    std.debug.print("\nwrote {s}\n", .{csv_path.get()});
+    std.debug.print("run: python3 gist/bench/certificate/report/indexq.py --certificate {s}/CERTIFICATE.md --tsv {s}\n", .{ home.outDir(), csv_path.get() });
 
     if (violations > 0) {
         std.debug.print("\nFAILED: {d} cross-arm hit disagreement(s) — one of the three formulas is UNSOUND (it pruned a document the matcher says matches). Investigate; do NOT weaken the assertion.\n", .{violations});
@@ -380,7 +384,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, limits: query.CoverLimits) !void 
 }
 
 fn writeTsv(gpa: std.mem.Allocator, io: std.Io, corpus: *const corpus_mod.Corpus, idx: *const Index, build_ms: f64, rows: []const Row) !void {
-    try Dir.cwd().createDirPath(io, out_dir);
+    try Dir.cwd().createDirPath(io, home.outDir());
     var tsv: std.ArrayList(u8) = .empty;
     defer tsv.deinit(gpa);
     var line: [320]u8 = undefined;
@@ -406,5 +410,5 @@ fn writeTsv(gpa: std.mem.Allocator, io: std.Io, corpus: *const corpus_mod.Corpus
             r.csearch_own_docs,
         }));
     }
-    try Dir.cwd().writeFile(io, .{ .sub_path = csv_path, .data = tsv.items });
+    try Dir.cwd().writeFile(io, .{ .sub_path = csv_path.get(), .data = tsv.items });
 }

@@ -72,3 +72,30 @@ func (e *SyntaxError) Unwrap() error {
 	}
 	return e.err
 }
+
+// SetError is a pattern a [Set] refused, and where in the list it was. With one
+// pattern "unsupported" is the whole diagnosis; with two hundred it is not
+// something a caller can act on, so the index travels with the reason.
+//
+// It wraps the error a lone [Compile] of that pattern would have returned, so
+// the two ways of asking still work through it:
+//
+//	if errors.Is(err, irgx.ErrNeedsPCRE) { … }  // that one pattern needs PCRE2
+//
+//	var bad *irgx.SetError
+//	if errors.As(err, &bad) { log.Printf("pattern %d: %v", bad.Index, bad.Err) }
+type SetError struct {
+	// Index is the position of the refused pattern in the compile list.
+	Index int
+	// Expr is that pattern, exactly as it was passed.
+	Expr string
+	// Err is the refusal itself: a [*SyntaxError], or an error matching
+	// [ErrNeedsPCRE].
+	Err error
+}
+
+func (e *SetError) Error() string {
+	return "irregex: set pattern " + strconv.Itoa(e.Index) + ": " + e.Err.Error()
+}
+
+func (e *SetError) Unwrap() error { return e.Err }

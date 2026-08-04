@@ -70,6 +70,29 @@ static int32_t go_group_name(irgx_regex *re, uint32_t index,
   capture(st, f);
   return st;
 }
+
+static int32_t go_slate_compile(const irgx_slate_pattern *pats, size_t count,
+                                size_t *refused, irgx_slate **out,
+                                irgx_fault *f) {
+  int32_t st = irgx_slate_compile(pats, count, refused, out);
+  capture(st, f);
+  return st;
+}
+
+static int32_t go_slate_is_match(irgx_slate *s, const uint8_t *text, size_t len,
+                                 irgx_fault *f) {
+  int32_t st = irgx_slate_is_match(s, text, len);
+  capture(st, f);
+  return st;
+}
+
+static int32_t go_slate_which(irgx_slate *s, const uint8_t *text, size_t len,
+                              uint32_t *out, size_t cap, size_t *written,
+                              irgx_fault *f) {
+  int32_t st = irgx_slate_which(s, text, len, out, cap, written);
+  capture(st, f);
+  return st;
+}
 */
 import "C"
 
@@ -77,6 +100,7 @@ import (
 	"fmt"
 	"runtime"
 	"strconv"
+	"unicode/utf8"
 	"unsafe"
 )
 
@@ -91,6 +115,8 @@ const (
 	flagSmartCase  = C.IRGX_SMART_CASE
 	flagNoUnicode  = C.IRGX_NO_UNICODE
 	flagPCRE       = C.IRGX_PCRE
+	flagMultiLine  = C.IRGX_MULTILINE
+	flagDotAll     = C.IRGX_DOTALL
 )
 
 // Which string irgx_fault.at is an offset into. Taken from the header for
@@ -269,6 +295,12 @@ func borrow(b []byte) string {
 func (re *Regexp) isMatch(text string) bool {
 	h := re.acquire()
 	defer re.release(h)
+	return re.matchOn(h, text)
+}
+
+// matchOn is isMatch on a handle the caller already holds, which is how Compile
+// can settle nullability before the handle ever reaches the pool.
+func (re *Regexp) matchOn(h *handle, text string) bool {
 	var fault C.irgx_fault
 	st := C.go_is_match(h.ptr, bytePtr(text), C.size_t(len(text)), &fault)
 	runtime.KeepAlive(text)
@@ -288,20 +320,38 @@ const firstWindow = 4096
 // limit is positive and unbounded when it is negative.
 //
 // Every verb in this package routes through here rather than advancing a cursor
-// over irgx_captures, because the engine owns what a match sequence IS - when
-// an empty match adjacent to the previous one counts, what happens at the end of
-// the text, how word filtering interacts with resuming - and none of that is
-// re-derivable from a find(from) loop.
+// over irgx_captures, because the engine owns where the matches ARE, and a
+// find(from) loop written up here would re-derive that badly.
+//
+// What the engine does NOT own is which of them this package reports. The ABI
+// hands back the complete byte-granular sequence - every empty match at every
+// byte offset - and each language's regexp package then thins it to its own
+// convention. Go's, from regexp.allMatches, is two rules: an empty match
+// abutting the previous match is ignored, and after an empty match the scan
+// resumes one RUNE on rather than one byte. Both are applied by goSequence.
 //
 // The window is a view over the answer, never a bound on the search: find_all
 // reports how many matches the TEXT HAS rather than how many fit, so one short
 // pass measures the retry it needs and there is at most one of them. The first
 // window is a guess at how many spans will be wanted; the second is the count
 // the engine gave, so it cannot come up short again.
+//
+// A nullable pattern is the only one whose sequence goSequence can change, so
+// only it pays for the whole answer up front. Everything else - which is nearly
+// everything - keeps the limited fetch, because the limit cannot then interact
+// with a filter that will never drop a span.
 func (re *Regexp) findSpans(h *handle, text string, limit int) [][2]int {
 	if limit == 0 {
 		return nil
 	}
+	if re.nullable {
+		return truncate(goSequence(re.rawSpans(h, text, -1), text), limit)
+	}
+	return re.rawSpans(h, text, limit)
+}
+
+// rawSpans is the engine's own sequence, unthinned.
+func (re *Regexp) rawSpans(h *handle, text string, limit int) [][2]int {
 	buf := make([]C.irgx_span, window(firstWindow, len(text)+1, limit))
 	want := window(re.fillSpans(h, text, buf), len(text)+1, limit)
 	if want > len(buf) {
@@ -332,6 +382,67 @@ func (re *Regexp) fillSpans(h *handle, text string, buf []C.irgx_span) int {
 		panic(newError(st, &fault, "search with "+strconv.Quote(re.expr)))
 	}
 	return int(written)
+}
+
+// goSequence thins the engine's byte-granular answer to the one stdlib regexp
+// would have produced, so that swapping this package in does not change which
+// matches a nullable pattern reports.
+//
+// Both rules come from regexp.allMatches and only ever REMOVE spans:
+//
+//   - an empty match starting exactly where the previous match ended is
+//     ignored, and "previous" counts a match that was itself ignored - which is
+//     why prevEnd is updated on both paths;
+//   - after an empty match the scan resumes one rune on, so an empty match
+//     inside a multi-byte rune is never reached. `l*` over "héllo" reports no
+//     empty match at byte 2, the continuation byte of the é.
+//
+// Removal-only is what makes this safe to apply after the fact: the positions
+// stdlib would visit are a subset of the ones the engine already searched, and
+// at any shared position both find the same leftmost match.
+func goSequence(spans [][2]int, text string) [][2]int {
+	out := spans[:0:0]
+	prevEnd, resume := -1, 0
+	for _, sp := range spans {
+		if sp[0] < resume {
+			continue // inside a rune the stdlib scan stepped over
+		}
+		empty := sp[0] == sp[1]
+		if empty {
+			resume = sp[0] + runeWidth(text, sp[0])
+		} else {
+			resume = sp[1]
+		}
+		if !empty || sp[0] != prevEnd {
+			out = append(out, sp)
+		}
+		prevEnd = sp[1]
+	}
+	return out
+}
+
+// runeWidth is how far stdlib's scan advances past an empty match at i: the
+// width of the rune starting there, and at least one byte so that invalid UTF-8
+// cannot stall the walk.
+func runeWidth(text string, i int) int {
+	if i >= len(text) {
+		return 1
+	}
+	_, w := utf8.DecodeRuneInString(text[i:])
+	if w < 1 {
+		return 1
+	}
+	return w
+}
+
+// truncate applies the caller's limit after the sequence is settled. It has to
+// be after: thinning first and cutting second is the only order that can still
+// return n matches when the thinning dropped one.
+func truncate(spans [][2]int, limit int) [][2]int {
+	if limit > 0 && len(spans) > limit {
+		return spans[:limit]
+	}
+	return spans
 }
 
 // window is how many spans it is worth holding: never more than the text can
@@ -444,4 +555,110 @@ func (re *Regexp) resolve(h *handle) error {
 		}
 	}
 	return nil
+}
+
+// slate is one irgx_slate: N compiled patterns and the scratch their scans run
+// in. Single-threaded for the same reason a [handle] is, and pooled the same way
+// one layer up, in [Set].
+type slate struct{ ptr *C.irgx_slate }
+
+// compileSlate compiles every expression as one slate under one flag word.
+//
+// A refusal names the pattern that caused it: the ABI writes the offending index
+// into refused, and the thread's fault slot carries the reason, so the error a
+// caller sees is the same [SyntaxError] or [ErrNeedsPCRE] a single Compile would
+// have produced, tagged with where in the list it came from.
+func compileSlate(exprs []string, flags uint32) (*slate, error) {
+	var pin runtime.Pinner
+	defer pin.Unpin()
+	pats := make([]C.irgx_slate_pattern, len(exprs))
+	for i, expr := range exprs {
+		body := bytePtr(expr)
+		// Each pattern's bytes are a Go pointer stored in Go memory that C is
+		// about to read, which the cgo pointer rules forbid unless the target is
+		// pinned. Pinning rather than copying into C memory: the ABI copies the
+		// bytes itself during the compile, so they need to survive exactly this
+		// call.
+		if len(expr) != 0 {
+			pin.Pin(body)
+		}
+		pats[i] = C.irgx_slate_pattern{
+			pattern: body,
+			len:     C.size_t(len(expr)),
+			flags:   C.uint32_t(flags),
+		}
+	}
+	var (
+		ptr     *C.irgx_slate
+		refused C.size_t
+		fault   C.irgx_fault
+	)
+	// A slate of no patterns is a legitimate slate that matches nothing, but
+	// &pats[0] is not addressable then.
+	var list *C.irgx_slate_pattern
+	if len(pats) != 0 {
+		list = &pats[0]
+	}
+	st := C.go_slate_compile(list, C.size_t(len(pats)), &refused, &ptr, &fault)
+	runtime.KeepAlive(exprs)
+	if st != C.IRGX_OK {
+		at := int(refused)
+		if at >= len(exprs) {
+			// No index was written: the refusal is about the call rather than
+			// about any one pattern, an argument guard for instance.
+			return nil, newError(st, &fault, "compile a set of "+strconv.Itoa(len(exprs))+" patterns")
+		}
+		return nil, &SetError{Index: at, Expr: exprs[at], Err: compileError(st, &fault, exprs[at])}
+	}
+	s := &slate{ptr: ptr}
+	runtime.SetFinalizer(s, (*slate).release)
+	return s, nil
+}
+
+func (s *slate) release() {
+	if s.ptr != nil {
+		C.irgx_slate_free(s.ptr)
+		s.ptr = nil
+	}
+}
+
+// anyMatch is the cheap question: does any pattern in the slate match text.
+func (s *slate) anyMatch(text string) bool {
+	var fault C.irgx_fault
+	st := C.go_slate_is_match(s.ptr, bytePtr(text), C.size_t(len(text)), &fault)
+	runtime.KeepAlive(text)
+	if st < 0 {
+		panic(newError(st, &fault, "match a set"))
+	}
+	return st == C.IRGX_MATCH
+}
+
+// which is the attribution: the index of every pattern matching text, ascending.
+//
+// The buffer is sized at the slate's length, which is the exact ceiling on the
+// answer, so unlike a span walk this can never come up short and never needs a
+// second pass.
+func (s *slate) which(text string, count int) []int {
+	if count == 0 {
+		return nil
+	}
+	ids := make([]C.uint32_t, count)
+	var (
+		written C.size_t
+		fault   C.irgx_fault
+	)
+	st := C.go_slate_which(s.ptr, bytePtr(text), C.size_t(len(text)),
+		&ids[0], C.size_t(count), &written, &fault)
+	runtime.KeepAlive(text)
+	if st < 0 {
+		panic(newError(st, &fault, "match a set"))
+	}
+	if written == 0 {
+		return nil
+	}
+	out := make([]int, written)
+	for i := range out {
+		out[i] = int(ids[i])
+	}
+	return out
 }

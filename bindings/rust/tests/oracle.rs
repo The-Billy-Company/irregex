@@ -5,7 +5,13 @@
 //! the oracle: `scripts/python_oracle.py` drives it over a corpus of pattern /
 //! flag / text triples and records the spans and group spans it reports in
 //! `testdata/python_oracle.json`, and this file asserts that the Rust binding
-//! reports exactly the same thing.
+//! found the same matches.
+//!
+//! Found, not showed. The two bindings deliberately part company on which empty
+//! matches they report - Python follows `re`, this crate follows `regex` - so
+//! the assertion is that what this crate shows is the recorded sequence minus
+//! some empty matches, never a different or reordered one. `tests/sequence.rs`
+//! pins which ones, against the `regex` crate itself.
 //!
 //! The corpus is recorded in bytes. The Python binding reports codepoint indices
 //! for a `str` pattern and byte offsets for a `bytes` one, and the generator asks
@@ -87,6 +93,45 @@ fn corpus_matches_the_linked_engine() {
     );
 }
 
+/// The recorded spans this crate is expected to show, and the reason any were
+/// dropped - checked, not assumed.
+///
+/// The two bindings drive the same engine over the same bytes, so they find the
+/// same matches. They do not SHOW the same ones: Python's `re` reports every
+/// empty match and Rust's `regex` skips an empty match abutting the previous one
+/// or sitting inside a character, and each binding follows its own ecosystem.
+///
+/// So the assertion here is the part that must hold regardless of convention -
+/// what this crate shows is a subsequence of what the engine found, and every
+/// span it dropped was empty. That is a real constraint (a non-nullable pattern
+/// still gets exact equality, and no convention may ever drop a non-empty match
+/// or reorder anything) and it deliberately does not re-derive WHICH empty spans
+/// go. Re-deriving them here would just be the implementation restated as its
+/// own oracle. `tests/sequence.rs` pins that exactly, against the `regex` crate
+/// itself.
+fn accounted(found: &[[i64; 2]], recorded: &[[i64; 2]], label: &str) {
+    let mut showing = found.iter();
+    for span in recorded {
+        // Kept spans must appear in order; a skipped one must be empty.
+        if showing.clone().next() == Some(span) {
+            showing.next();
+        } else {
+            assert_eq!(
+                span[0], span[1],
+                "{label}: dropped {span:?}, which is not an empty match\n\
+                 shown    {found:?}\n\
+                 recorded {recorded:?}"
+            );
+        }
+    }
+    assert!(
+        showing.next().is_none(),
+        "{label}: shows a span the engine did not report\n\
+         shown    {found:?}\n\
+         recorded {recorded:?}"
+    );
+}
+
 #[test]
 fn spans_agree_with_the_python_binding() {
     let corpus = corpus();
@@ -99,8 +144,22 @@ fn spans_agree_with_the_python_binding() {
             .unwrap_or_else(|why| panic!("{}: {why}", case.label()))
             .map(|m| [m.start() as i64, m.end() as i64])
             .collect();
-        assert_eq!(found, case.spans, "{}", case.label());
+        accounted(&found, &case.spans, &case.label());
     }
+}
+
+/// The corpus has to actually contain the disagreement, or the test above is
+/// only ever checking exact equality and the subsequence rule is untested.
+#[test]
+fn the_corpus_contains_a_case_where_the_two_conventions_differ() {
+    let differs = corpus().cases.iter().any(|case| {
+        let shown = case.compile().try_find_iter(&case.text).unwrap().count();
+        shown != case.spans.len()
+    });
+    assert!(
+        differs,
+        "no case exercises the empty-match convention gap; add a nullable pattern"
+    );
 }
 
 #[test]
@@ -128,7 +187,25 @@ fn group_spans_agree_with_the_python_binding() {
                     .collect()
             })
             .collect();
-        assert_eq!(found, case.groups, "{}", case.label());
+        // A capture row belongs to a whole match, so the rows this crate shows
+        // are the rows of the spans it shows - same subsequence, same reason.
+        // Comparing on row 0 (the whole match) keeps this honest: it checks the
+        // group detail rides the right match rather than merely lining up by
+        // count.
+        let whole = |row: &Vec<[i64; 2]>| row[0];
+        accounted(
+            &found.iter().map(whole).collect::<Vec<_>>(),
+            &case.groups.iter().map(whole).collect::<Vec<_>>(),
+            &case.label(),
+        );
+        for row in &found {
+            let same = case
+                .groups
+                .iter()
+                .find(|recorded| recorded[0] == row[0])
+                .unwrap_or_else(|| panic!("{}: no recorded row at {:?}", case.label(), row[0]));
+            assert_eq!(row, same, "{}: group detail differs", case.label());
+        }
     }
 }
 

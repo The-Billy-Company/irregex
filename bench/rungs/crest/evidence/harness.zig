@@ -2,7 +2,7 @@
 
 const std = @import("std");
 const gist = @import("irregex");
-const crest = gist.crest;
+const crest = gist.math.crest;
 const corpus_mod = gist.corpus;
 const Regex = gist.regex.Regex;
 const Span = gist.assay.Span; // package instrumentation floor: monotonic Span

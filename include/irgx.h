@@ -128,6 +128,27 @@ int32_t irgx_last_fault(irgx_fault *out);
 #define IRGX_SMART_CASE (1u << 5)  /* -S: fold iff pattern has no caps  */
 #define IRGX_NO_UNICODE (1u << 6)  /* ASCII classes/fold/boundaries     */
 #define IRGX_PCRE (1u << 8)        /* -P: PCRE2 grammar (lookaround...) */
+#define IRGX_MULTILINE (1u << 9)   /* (?m): ^ and $ also match a line   */
+#define IRGX_DOTALL (1u << 10)     /* (?s): . matches a newline too     */
+
+/* IRGX_MULTILINE is the (?m) question and nothing more, off by default as it
+ * is in re, rust-regex, PCRE2 and Go's regexp; \A and \z are the text's ends
+ * either way. It is NOT the engine's internal "multiline", which means "the
+ * haystack is a buffer, not one line" - that is forced on for every pattern
+ * compiled here, because you hand over a whole string and can promise nothing
+ * about lines. Under the per-line model the compiler may assume no haystack
+ * holds a newline, and \s over "a\nb" found nothing at all. */
+
+/* A pattern may also ask for four of these itself, in the leading (?ims-u) form
+ * every host language's own library accepts: i -> IRGX_IGNORE_CASE, s ->
+ * IRGX_DOTALL, m -> IRGX_MULTILINE, and (?-u) -> IRGX_NO_UNICODE. Only a
+ * LEADING run is folded, and what it says wins over the same bit in `flags`,
+ * being the more specific statement. A non-leading (?i) is not a whole-pattern
+ * option -- re itself has refused one since 3.11 -- and (?x) / (?U) / (?R) are
+ * flags this grammar does not have: both stay in the pattern, so the compile
+ * refuses with IRGX_STALE and the retry is IRGX_PCRE, which implements them.
+ * The scoped (?i:...) form is the parser's own and needs none of this.
+ * IRGX_FIXED means the bytes are data, so nothing is folded under it. */
 
 /* A borrowed UTF-8 span. NOT NUL-terminated; `len` is authoritative. Shared
  * vocabulary: it is how the row protocol below carries every string, and how
@@ -208,16 +229,25 @@ int32_t irgx_is_match(irgx_regex *re, const uint8_t *text, size_t len);
  * window: a count query (cap 0) writes nothing and still returns MATCH.
  *
  * The whole text is one unit, so the iteration rules — empty matches,
- * adjacency, -w filtering — are the engine's own, identical to the spans the
- * same pattern produces in `gist --json`. That is why there is no
+ * adjacency, -w filtering — are the engine's own. That is why there is no
  * find(from)-style cursor: a hand-rolled loop is exactly where those rules get
  * re-invented and the nullable patterns come out wrong.
  *
- * "The whole text" is the unit gist calls a line, and gist's lines carry their
- * terminator. So a nullable pattern reports one more empty span over "abc\n"
- * than over "abc" — the trailing empty match is suppressed at the end of the
- * buffer, and the newline moves where that end is. Anyone diffing these spans
- * against gist's must hand this verb the terminator too.
+ * This plane reports the WIDEST sequence: every empty match at every byte
+ * offset, the one abutting a previous match and the one at the end of the text
+ * included. `x*` over "abc" is four spans — (0,0) (1,1) (2,2) (3,3) — which is
+ * what Python's re.finditer shows for the same input.
+ *
+ * That is deliberate, and it is NOT what a grep prints. A grep-class tool drops
+ * the trailing empty match, so `gist --json` reports four submatches for the
+ * line "abc\n" where this verb reports five for the same four bytes. The widest
+ * sequence is the right thing to publish here because thinning is subtractive:
+ * a binding can reproduce its own ecosystem's convention by removing spans (Go
+ * and Rust both skip an empty match abutting the previous one and resume at the
+ * next character; the bundled bindings do exactly that), and no binding can
+ * recover a span the ABI never reported. Diff against a grep and expect the
+ * trailing empty span; diff against a general-purpose regex library and expect
+ * agreement.
  *
  * `cap` is a window over the answer, not a limit on the search: at most cap
  * spans are written, and *written reports how many the TEXT HAS -- so a short
@@ -229,6 +259,45 @@ int32_t irgx_is_match(irgx_regex *re, const uint8_t *text, size_t len);
  * with a NULL out to ask only how many there are. */
 int32_t irgx_find_all(irgx_regex *re, const uint8_t *text, size_t len,
                          irgx_span *out, size_t cap, size_t *written);
+
+/* ── the window plane ────────────────────────────────────────────────────────
+ *
+ * A search bounded to [from, to] while every zero-width assertion still reads
+ * text[0..len] end to end. That second half is the whole point: slicing the text
+ * to the same region is a DIFFERENT question, because a slice moves the haystack
+ * edges, so $ \z \b and every lookahead at the cut answer about the slice rather
+ * than about the text. Python's search(s, pos, endpos) and Rust's find_at are
+ * both this question, and neither can be built out of the unbounded verbs above
+ * without changing what the pattern means.
+ *
+ * from <= to <= len is required; anything else is IRGX_INVALID rather than
+ * clamped, because a miscomputed bound is a bug worth hearing about. to == len
+ * is the inert case and behaves exactly like the unbounded verb.
+ *
+ * A LIVE bound (to < len) is not something every engine can honor. The linear
+ * engine can: the bound is a ceiling on its walk, and its assertions never
+ * stopped reading the true text. PCRE2 cannot, structurally — its subject has
+ * one length, so stopping a match at `to` means claiming the subject ends there,
+ * which moves the anchors. So a pattern on the PCRE arm faults (fault name
+ * BoundUnsupported) rather than quietly answering the sliced question. Ask
+ * irgx_pattern_windows once after compiling; it is a property of the pattern,
+ * not of the call.
+ *
+ * Group spans take a start bound (irgx_captures's `from`) and no ceiling: the
+ * capture VM has no `to` yet. Stated rather than left to be discovered. */
+
+/* Whether this pattern's engine can honor a live `to` bound: 1 yes, 0 no. */
+int32_t irgx_pattern_windows(irgx_regex *re);
+
+/* irgx_is_match over the window [from, to]. */
+int32_t irgx_is_match_in(irgx_regex *re, const uint8_t *text, size_t len,
+                         size_t from, size_t to);
+
+/* irgx_find_all over the window [from, to]. The `cap` and `written` contract is
+ * irgx_find_all's, counting what the WINDOW holds. */
+int32_t irgx_find_all_in(irgx_regex *re, const uint8_t *text, size_t len,
+                         size_t from, size_t to, irgx_span *out, size_t cap,
+                         size_t *written);
 
 /* Write the group spans of the leftmost match at or after `from` into
  * out[0..cap]. out[0] is the whole match, out[k] is group k, and a group that
@@ -269,6 +338,99 @@ int32_t irgx_group_index(irgx_regex *re, const uint8_t *name, size_t len,
  * is knowable and walking off the end is a bug rather than an absence. */
 int32_t irgx_group_name(irgx_regex *re, uint32_t index,
                            irgx_text *out);
+
+/* ── the slate plane ─────────────────────────────────────────────────────────
+ *
+ * Everything above is about ONE pattern. A slate is about N of them over one
+ * text, in a single pass, and it keeps WHICH pattern found what. That last
+ * clause is the whole reason it exists: N calls to irgx_is_match give the same
+ * answer at N times the byte cost, and one fused "a|b|c" gives it in one pass
+ * while throwing the attribution away.
+ *
+ * Two questions and no cursor:
+ *
+ *   irgx_slate_is_match - does ANY of them match? The cheapest one, and where a
+ *                         batch workload spends its time: a SIMD literal roll
+ *                         rejects a hopeless text with no engine run at all, and
+ *                         can answer YES outright when a pattern's literals
+ *                         decide it.
+ *   irgx_slate_which    - WHICH of them match, as ascending indices into the
+ *                         compile list.
+ *
+ * There is no per-pattern span verb, and that is an edge rather than an omission
+ * to apologize for. A slate is a CLASSIFIER: once you know pattern 7 is in this
+ * text, irgx_find_all on pattern 7 is the walk you would have run anyway,
+ * against a text now known to be worth walking.
+ *
+ * The unit is the whole text, exactly as it is for the single-pattern plane, so
+ * irgx_slate_which names pattern i if and only if irgx_is_match on pattern i
+ * alone would have said yes -- for every pattern and every text, including the
+ * anchored and the nullable ones. Two verbs of one library must not tell you
+ * different things about the same string.
+ *
+ * A handle is SINGLE-THREADED for the same reason a regex handle is: it owns the
+ * per-scan scratch. Compile one per thread; the compile is pure. */
+
+/* A compiled slate. Opaque. */
+typedef struct irgx_slate irgx_slate;
+
+/* One pattern of a slate: the bytes, and the same flag word irgx_compile takes.
+ * Layout is append-only, so a later field is a compatible extension.
+ *
+ * IRGX_MULTILINE and IRGX_DOTALL are the two flags a slate cannot carry, and
+ * they are REFUSED (IRGX_INVALID) rather than ignored: passing them means you
+ * believe something about the answer you are about to get. A pattern whose own
+ * head says (?m) or (?s) is refused the same way, with `refused` naming it.
+ * Every other pattern flag means here exactly what it means there,
+ * IRGX_SMART_CASE included -- resolved at compile against the same
+ * has-uppercase predicate, and a leading (?i) / (?-u) likewise stays that one
+ * pattern's own. */
+typedef struct {
+  const uint8_t *pattern;
+  size_t len;
+  uint32_t flags;
+} irgx_slate_pattern;
+
+/* Compile patterns[0..count] as one slate and write the handle to *out.
+ * IRGX_OK on success; IRGX_STALE / IRGX_INVALID with the same meanings
+ * irgx_compile gives them, decided the same way (by asking PCRE2).
+ *
+ * *refused receives the INDEX of the pattern that caused a refusal, and may be
+ * NULL if you do not care. It is the diagnosis a slate needs and a single
+ * pattern does not: with two hundred patterns, "one of them is unsupported" is
+ * not an actionable answer. Admission is all-or-nothing -- one refusal costs the
+ * whole slate -- so a host that wants the other hundred and ninety-nine drops
+ * the named index and recompiles.
+ *
+ * The pattern bytes are COPIED; they need not outlive this call. count 0 is an
+ * empty slate, which is the natural answer to a config file that listed no
+ * patterns and not an error: nothing matches, and both verbs say so. patterns
+ * may be NULL when count is 0, because "the address of no array" has no other
+ * spelling in some hosts. */
+int32_t irgx_slate_compile(const irgx_slate_pattern *patterns, size_t count,
+                           size_t *refused, irgx_slate **out);
+
+/* Release a handle from irgx_slate_compile. Leaves the fault slot alone. */
+void irgx_slate_free(irgx_slate *slate);
+
+/* How many patterns the slate holds. Also the exact cap at which
+ * irgx_slate_which can never come up short. */
+size_t irgx_slate_len(const irgx_slate *slate);
+
+/* Whether ANY pattern in the slate matches text[0..len]: IRGX_MATCH yes,
+ * IRGX_OK no, negative on error. (text NULL with len 0 is the empty text, a
+ * legitimate question; NULL with len != 0 is IRGX_INVALID.) */
+int32_t irgx_slate_is_match(irgx_slate *slate, const uint8_t *text, size_t len);
+
+/* Write the indices of every pattern matching text[0..len] into out[0..cap],
+ * ascending, and their count into *written. IRGX_MATCH when at least one
+ * matched, IRGX_OK when none did, negative on error.
+ *
+ * *written is how many matched whether or not cap held them -- irgx_find_all's
+ * contract, so a short buffer sizes its own retry. Unlike there, you can always
+ * avoid the retry: the count can never exceed irgx_slate_len. */
+int32_t irgx_slate_which(irgx_slate *slate, const uint8_t *text, size_t len,
+                         uint32_t *out, size_t cap, size_t *written);
 
 /* ── the row protocol ────────────────────────────────────────────── */
 

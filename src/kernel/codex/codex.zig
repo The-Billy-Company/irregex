@@ -244,42 +244,46 @@ pub const Codex = struct {
 
     /// A suffix-array row interval — the state of an incremental backward
     /// search. `width() == 0` means the pattern so far does not occur.
-    pub const Span = struct {
+    ///
+    /// Not a `Span`: that word is the package's byte range over a haystack
+    /// (`../../mark.zig`), and these are row numbers in the BWT. Two things
+    /// under one name is how a caller ends up slicing text with them.
+    pub const Rows = struct {
         lo: usize,
         hi: usize,
 
-        pub fn width(self: Span) usize {
+        pub fn width(self: Rows) usize {
             return self.hi - self.lo;
         }
     };
 
     /// The interval of the empty pattern: every row.
-    pub fn whole(self: *const Codex) Span {
+    pub fn whole(self: *const Codex) Rows {
         return .{ .lo = 0, .hi = self.n };
     }
 
     /// One FM-index backward-search step (Ferragina–Manzini FOCS 2000):
     /// interval of `byte ++ P` from the interval of `P`. Two occ ranks —
     /// O(code length), independent of corpus size. Empty stays empty.
-    pub fn extend(self: *const Codex, span: Span, byte: u8) Span {
-        if (span.lo >= span.hi) return .{ .lo = 0, .hi = 0 };
+    pub fn extend(self: *const Codex, rows: Rows, byte: u8) Rows {
+        if (rows.lo >= rows.hi) return .{ .lo = 0, .hi = 0 };
         const sym: u16 = @as(u16, byte) + 1;
         // LF / C[c] + occ(c, ·): map the BWT rows of `P` to those of `cP`.
-        const lo = self.c_table[sym] + self.tree.occ(sym, span.lo);
-        const hi = self.c_table[sym] + self.tree.occ(sym, span.hi);
+        const lo = self.c_table[sym] + self.tree.occ(sym, rows.lo);
+        const hi = self.c_table[sym] + self.tree.occ(sym, rows.hi);
         return if (lo >= hi) .{ .lo = 0, .hi = 0 } else .{ .lo = lo, .hi = hi };
     }
 
     /// Full FM backward search: SA row range [lo, hi) of `pattern` (right→left).
-    fn range(self: *const Codex, pattern: []const u8) Span {
-        var span = self.whole();
+    fn range(self: *const Codex, pattern: []const u8) Rows {
+        var rows = self.whole();
         var j = pattern.len;
         while (j > 0) {
             j -= 1;
-            span = self.extend(span, pattern[j]);
-            if (span.lo >= span.hi) break;
+            rows = self.extend(rows, pattern[j]);
+            if (rows.lo >= rows.hi) break;
         }
-        return span;
+        return rows;
     }
 
     /// Occurrences of `pattern` (overlapping counted). Empty pattern ⇒ 0 by

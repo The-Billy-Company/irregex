@@ -10,7 +10,10 @@ const simd = @import("simd.zig");
 const teddy_mod = @import("teddy.zig");
 const aho_mod = @import("aho.zig");
 
-pub const Authority = enum { exact, candidate };
+/// How much a result settles — the package vocabulary (`../../mark.zig`), bound
+/// here because this dispatcher is where the distinction is first drawn and
+/// callers reach for `scan.Authority` by that name.
+pub const Authority = @import("../../mark.zig").Authority;
 
 pub const Presence = union(Authority) {
     exact: bool,

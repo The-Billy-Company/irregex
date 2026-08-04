@@ -42,7 +42,7 @@
 //! dragnet/`stubs` path, and every non-settled survivor is still confirmed by
 //! the engine a single-pattern search runs. `patterns_test.zig` proves the
 //! set's answer stays bit-identical to N independent searches with the
-//! accelerator armed and stripped, and the sweep in `bench/rungs/multipattern/`
+//! accelerator armed and stripped, and the sweep in `relate/bench/rungs/multipattern/`
 //! re-proves it at corpus scale at every N.
 //!
 //! Kernel profile: immutable after `build`, no I/O, no per-scan allocation.

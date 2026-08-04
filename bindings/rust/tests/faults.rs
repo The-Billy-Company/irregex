@@ -36,7 +36,11 @@ fn a_bad_pattern_is_an_error_not_a_panic() {
 /// actually hit, so its message should point at the fix.
 #[test]
 fn constructs_outside_the_linear_grammar_are_refused() {
-    for pattern in ["foo(?=bar)", "(?<=x)y", "(?!x)", "(?i)x"] {
+    // A *leading* `(?i)` is not on this list: it is folded into the compile, the
+    // way `regex` folds it. `x(?i)y` is, because a non-leading global flag is not
+    // a whole-pattern option, and `(?x)` is, because the letter is not in this
+    // grammar at all.
+    for pattern in ["foo(?=bar)", "(?<=x)y", "(?!x)", "x(?i)y", "(?x) a b"] {
         let why = Regex::new(pattern).expect_err(pattern);
         assert!(
             matches!(why, Error::NeedsPcre { .. }),

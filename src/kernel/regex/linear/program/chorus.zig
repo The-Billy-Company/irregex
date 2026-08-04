@@ -42,6 +42,7 @@ const powerset = @import("../dfa/powerset.zig");
 const subset = @import("../dfa/subset.zig");
 const word = @import("../../syntax/word.zig");
 const lower = @import("lower.zig");
+const split = @import("split.zig");
 const Dfa = @import("../dfa/dfa.zig").Dfa;
 
 /// Most patterns one chorus can name — the width of the mask each DFA state
@@ -87,7 +88,7 @@ pub const Chorus = struct {
             entry.* = try c.compileNode(ast, @intCast(i));
         }
 
-        const start = try splitTree(&c, entries);
+        const start = try split.tree(&c, entries);
         const states = c.states.items;
 
         // Unanchored regardless of what the patterns assert. Re-seeding the start
@@ -232,28 +233,3 @@ pub const Ends = struct {
         return null;
     }
 };
-
-/// A balanced ε-split tree over `entries`, returning its root.
-///
-/// Balanced buys DEPTH, not work. A union over N branches is N-1 split states in
-/// any shape, and `subset.close` pushes both children of every split it pops, so
-/// one closure visits all N-1 whichever way they are stacked — a right-leaning
-/// chain (rust-`regex`'s `c_alt_iter`) costs the determinizer exactly the same.
-/// What balance bounds is this function's own recursion and the closure's stack
-/// depth, at `log2 N` rather than `N`.
-///
-/// It used to be worth more than that, and the reason it no longer is belongs
-/// here: this tree sits directly behind the NFA start, so an unanchored
-/// determinization that re-seeds the start on every transition re-walked the
-/// whole union once per (state x class). `subset.Subset.seeds` hoists that walk
-/// out of the loop — the tree is now closed eight times in total, once per
-/// distinguishable gap — which is where the 1.3-2.3x in `bench/rungs/patternid`
-/// came from and why the shape of this tree is no longer measurable at all.
-fn splitTree(c: *compile_mod.Compiler, entries: []const u32) syn.ParseError!u32 {
-    if (entries.len == 1) return entries[0];
-    const mid = entries.len / 2;
-    return c.push(.{ .split = .{
-        .a = try splitTree(c, entries[0..mid]),
-        .b = try splitTree(c, entries[mid..]),
-    } });
-}

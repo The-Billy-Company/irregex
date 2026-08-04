@@ -20,8 +20,9 @@ Three things differ from :mod:`re`, and each is deliberate:
   accept a backtracking engine.
 * Flags are **keyword arguments**, not an or-ed bitmask, and include options
   ``re`` has no spelling for: ``fixed``, ``word``, ``smart_case``.
-* Iteration follows the **engine's** rules for zero-width matches, which are
-  not ``re``'s. See the package README.
+* There is a type :mod:`re` has none of: :func:`compile_set` asks *which* of N
+  patterns are in a text, in one pass, keeping the attribution an alternation
+  would have thrown away.
 """
 
 from __future__ import annotations
@@ -34,6 +35,7 @@ from typing import Any
 from ._abi import ENGINE_VERSION, LIBRARY, PCRE2_VERSION, UnsupportedPattern, error
 from ._match import Match
 from ._pattern import Pattern, flag_bits
+from ._set import PatternSet, compile_set
 
 __all__ = [
     "ENGINE_VERSION",
@@ -41,9 +43,11 @@ __all__ = [
     "PCRE2_VERSION",
     "Match",
     "Pattern",
+    "PatternSet",
     "UnsupportedPattern",
     "__version__",
     "compile",
+    "compile_set",
     "error",
     "escape",
     "findall",
@@ -84,6 +88,8 @@ def compile(  # noqa: A001 - shadows the builtin exactly as `re.compile` does
     word: bool = False,
     smart_case: bool = False,
     unicode: bool = True,
+    multiline: bool = False,
+    dotall: bool = False,
     pcre: bool = False,
 ) -> Pattern:
     """Compile ``pattern`` into a :class:`Pattern`.
@@ -92,12 +98,23 @@ def compile(  # noqa: A001 - shadows the builtin exactly as `re.compile` does
     indices; one compiled from ``bytes`` searches ``bytes`` and reports byte
     offsets. Mixing the two raises :exc:`TypeError`.
 
+    A pattern may ask for these flags itself, in :mod:`re`'s own leading
+    ``(?ims)`` form (plus ``(?-u)`` for ASCII semantics). Where both speak, the
+    pattern wins, being the more specific statement: ``compile("(?-i)cat",
+    ignore_case=True)`` is case-sensitive. As in :mod:`re` since 3.11, only a
+    *leading* run is a whole-pattern flag; ``(?x)`` and the other letters this
+    grammar does not have need ``pcre=True``.
+
     :param fixed: treat the pattern as a literal string, not a regex.
     :param ignore_case: fold case when matching.
     :param word: only report matches that stand alone as words.
     :param smart_case: fold case only if the pattern contains no uppercase.
     :param unicode: Unicode classes, folding and boundaries. On by default;
         ``unicode=False`` selects ASCII/byte semantics.
+    :param multiline: ``re.M`` - ``^`` and ``$`` also match at a line break.
+        Off by default, so they mean the ends of the text you passed;
+        ``\\A`` and ``\\z`` mean those regardless.
+    :param dotall: ``re.S`` - ``.`` matches a newline too.
     :param pcre: use the PCRE2 grammar, which has lookaround and
         backreferences and is not linear time.
     :raises UnsupportedPattern: if the pattern is well-formed but outside the
@@ -113,6 +130,8 @@ def compile(  # noqa: A001 - shadows the builtin exactly as `re.compile` does
             word=word,
             smart_case=smart_case,
             unicode=unicode,
+            multiline=multiline,
+            dotall=dotall,
             pcre=pcre,
         ),
     )

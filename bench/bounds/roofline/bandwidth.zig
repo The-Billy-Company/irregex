@@ -100,8 +100,12 @@ const gist = @import("irregex");
 const pmu = @import("pmu"); // bench/apparatus/harness/pmu.zig, wired as a module in build.zig
 
 const corpus_mod = gist.corpus;
-const simd = gist.simd;
-const out_dir = gist.home.default_out_dir;
+const simd = gist.scan.simd;
+// `ArtifactPath`, not the comptime `default_out_dir`: `report.py --out-dir`
+// reads this JSON out of the bundle the mint is assembling (GIST_DIR), so a
+// baked-in `./.gist` would splice Layer C from an older roofline than the one
+// this run just measured.
+const json_path = gist.index.home.ArtifactPath("roofline.json");
 const Span = gist.assay.Span; // package instrumentation floor: monotonic Span
 
 // 8×u64 = 64-byte logical vector (lowered to NEON 128-bit loads on aarch64);
@@ -240,7 +244,7 @@ fn gateOnly(buf: []const u8, needle: []const u8) usize {
     var survivors: usize = 0;
     var i: usize = 0;
     while (i + last_off + scan_vlen <= buf.len) : (i += scan_vlen) {
-        @prefetch(&buf[@min(i + 8 * scan_vlen, buf.len - 1)], .{ .rw = .read, .locality = 2 });
+        simd.streamAhead(buf, i);
         const eq1 = @as(ScanVec, buf[i + a.probe ..][0..scan_vlen].*) == p1;
         if (single and !simd.anyLane(eq1)) continue;
         const eq = eq1 & (@as(ScanVec, buf[i + a.confirm ..][0..scan_vlen].*) == p2);
@@ -314,9 +318,15 @@ fn measureGhz(io: std.Io, meter: *pmu.Meter, buf: []u64) Clock {
     sink +%= acc;
     const cycles: f64 = @floatFromInt(c1.cycles -% c0.cycles);
     if (cycles <= 0) return .{ .ghz = assumed_ghz, .source = "assumed (PMU returned no cycles)", .meter = meter.note, .measured = false };
+    // One arm per tier `pmu.Kind` can report, exhaustive on purpose: a new
+    // backend must decide how it wants to be named in a certificate rather than
+    // inherit a neighbour's name. (`.none` is unreachable behind the `has_pmu`
+    // guard above, but it is a real enum value and naming it is free.)
     return .{ .ghz = cycles / ns, .meter = meter.note, .measured = true, .source = switch (meter.kind()) {
         .kperf => "measured (kperf, cycles ÷ ns under memory load)",
         .thsc => "measured (thread_selfcounts, cycles ÷ ns under memory load)",
+        .perf => "measured (perf_event_open, cycles ÷ ns under memory load)",
+        .qtct => "measured (QueryThreadCycleTime, cycles ÷ ns under memory load)",
         .none => "measured (PMU, cycles ÷ ns under memory load)",
     } };
 }
@@ -565,7 +575,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io) !void {
     }
 
     try writeJson(gpa, io, tiers[0..], clk, dram, l2, roof.gbps_max, stages[0..], scans[0..], corpus_mib);
-    std.debug.print("\nwrote {s}/roofline.json — run bench/bounds/roofline/report.py to splice Layer C\n", .{out_dir});
+    std.debug.print("\nwrote {s} — run bench/bounds/roofline/report.py to splice Layer C\n", .{json_path.get()});
     if (!clk.measured) std.debug.print("note: no clock measured here, so the artifact publishes no cycles/byte. The GB/s ceilings are frequency-free and unaffected. Meter: {s}\n", .{clk.meter});
 }
 
@@ -581,7 +591,7 @@ fn writeJson(
     scans: []const ScanResult,
     corpus_mib: f64,
 ) !void {
-    try std.Io.Dir.cwd().createDirPath(io, out_dir);
+    try std.Io.Dir.cwd().createDirPath(io, gist.index.home.outDir());
     var j: std.ArrayList(u8) = .empty;
     defer j.deinit(gpa);
     var line: [512]u8 = undefined;
@@ -643,7 +653,7 @@ fn writeJson(
         }));
     }
     try j.appendSlice(gpa, "  ]\n}\n");
-    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = out_dir ++ "/roofline.json", .data = j.items });
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = json_path.get(), .data = j.items });
 }
 
 test "streamSum reduces every word (checksum matches scalar)" {

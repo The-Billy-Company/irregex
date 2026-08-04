@@ -91,13 +91,68 @@ impl From<Match<'_>> for Range<usize> {
     }
 }
 
-/// Every match in one text, in the engine's own order.
+/// Thin the engine's byte-granular sequence to the one the `regex` crate would
+/// have reported, so swapping this crate in does not change which matches a
+/// nullable pattern yields.
+///
+/// The engine hands back every empty match at every byte offset - the sequence
+/// Python's `re` reports, and the one a C host receives. `regex` shows fewer,
+/// by two rules taken from its `Searcher`:
+///
+/// * an empty match starting exactly where the previous match ended is skipped,
+///   and "previous" counts one that was itself skipped, so `prev_end` advances
+///   on both paths;
+/// * after an empty match the scan resumes at the next CHARACTER boundary, so
+///   an empty match inside a multi-byte character is never reached. `l*` over
+///   `"héllo"` reports nothing at byte 2, the continuation byte of the `é`.
+///   (`regex::bytes::Regex` steps one byte instead and does report it; this
+///   crate's surface is `&str`, so it follows `regex::Regex`.)
+///
+/// Both rules only ever REMOVE spans, which is what makes applying them
+/// afterwards sound: the positions `regex` would visit are a subset of the ones
+/// the engine already searched, and at a shared position both find the same
+/// leftmost match.
+pub(crate) fn crate_sequence(spans: Vec<(usize, usize)>, text: &str) -> Vec<(usize, usize)> {
+    // Nothing to remove unless some match is empty, which is the overwhelmingly
+    // common case - and the check is cheaper than the copy it avoids.
+    if !spans.iter().any(|&(s, e)| s == e) {
+        return spans;
+    }
+    let mut out = Vec::with_capacity(spans.len());
+    let (mut prev_end, mut resume) = (usize::MAX, 0);
+    for (start, end) in spans {
+        if start < resume {
+            continue; // inside a character the crate's scan stepped over
+        }
+        resume = if start == end {
+            start + char_width(text, start)
+        } else {
+            end
+        };
+        if start != end || start != prev_end {
+            out.push((start, end));
+        }
+        prev_end = end;
+    }
+    out
+}
+
+/// How far the crate's scan advances past an empty match at `at`: the width of
+/// the character starting there, and never less than one byte, so that a
+/// malformed or out-of-range offset cannot stall the walk.
+fn char_width(text: &str, at: usize) -> usize {
+    text[at..].chars().next().map_or(1, char::len_utf8)
+}
+
+/// Every match in one text, in the sequence the `regex` crate reports.
 ///
 /// Eager rather than lazy, because the engine reports the whole sequence in one
-/// call and that is deliberate: empty matches, adjacency, and `word(true)`
-/// filtering are its rules, and re-deriving them from a resumable cursor is
-/// exactly how a binding gets nullable patterns wrong. The upside is that this
-/// iterator knows its length, runs backwards, and borrows only the text.
+/// call and that is deliberate: where the matches are, and `word(true)`
+/// filtering, are its rules, and re-deriving them from a resumable cursor is
+/// exactly how a binding gets nullable patterns wrong. Which of them this crate
+/// shows is the separate question `crate_sequence` above answers. The upside is
+/// that this iterator knows its length, runs backwards, and borrows only the
+/// text.
 #[derive(Clone, Debug)]
 pub struct Matches<'t> {
     text: &'t str,
@@ -337,3 +392,82 @@ impl<'t> Iterator for Split<'t> {
 }
 
 impl FusedIterator for Split<'_> {}
+
+#[cfg(test)]
+mod thinning {
+    //! The thinning rule on its own, without the engine.
+    //!
+    //! Input is the widest sequence - every empty match at every byte - which is
+    //! what the C ABI reports and what Python's `re` shows. Expected output comes
+    //! from the `regex` crate at test time. So this pins the transformation
+    //! itself: given what the engine says, does this crate show what Rust shows?
+    //! It is the same claim `tests/sequence.rs` makes end to end, minus the FFI,
+    //! which means it still fails loudly if the rule regresses while the vendored
+    //! archive is stale or a target has no engine at all.
+    use super::crate_sequence;
+
+    /// Every empty match, at every byte offset, merged with the real matches -
+    /// the sequence the engine hands the bindings.
+    fn widest(pattern: &str, text: &str) -> Vec<(usize, usize)> {
+        let re = regex::Regex::new(pattern).unwrap();
+        (0..=text.len())
+            .filter_map(|at| {
+                let found = re.find_at(text, at)?;
+                (found.start() == at).then_some((found.start(), found.end()))
+            })
+            .collect()
+    }
+
+    fn thinned(pattern: &str, text: &str) -> Vec<(usize, usize)> {
+        crate_sequence(widest(pattern, text), text)
+    }
+
+    fn crate_says(pattern: &str, text: &str) -> Vec<(usize, usize)> {
+        regex::Regex::new(pattern)
+            .unwrap()
+            .find_iter(text)
+            .map(|found| (found.start(), found.end()))
+            .collect()
+    }
+
+    #[test]
+    fn thinning_the_widest_sequence_reproduces_the_regex_crate() {
+        for pattern in [
+            "a*", "b*", "x*", "", "a?", "l*", "a*b*", "(?:ab)*", "a{0,2}",
+        ] {
+            for text in [
+                "", "a", "abc", "abcb", "aaa", "bbb", "aXaXa", "bab", "héllo",
+            ] {
+                assert_eq!(
+                    thinned(pattern, text),
+                    crate_says(pattern, text),
+                    "pattern {pattern:?} over text {text:?}"
+                );
+            }
+        }
+    }
+
+    /// Thinning only ever removes, never invents or reorders. That is what makes
+    /// it sound to apply after the search instead of during it.
+    #[test]
+    fn thinning_is_a_subsequence_of_what_it_was_given() {
+        for pattern in ["a*", "", "l*", "a?"] {
+            for text in ["", "abc", "héllo", "bab"] {
+                let (before, after) = (widest(pattern, text), thinned(pattern, text));
+                let mut left = before.iter();
+                assert!(
+                    after.iter().all(|span| left.any(|had| had == span)),
+                    "{pattern:?} over {text:?}: {after:?} is not a subsequence of {before:?}"
+                );
+            }
+        }
+    }
+
+    /// A sequence with no empty match is returned untouched - the common case,
+    /// and the one the early return is for.
+    #[test]
+    fn a_sequence_without_empty_matches_is_unchanged() {
+        let spans = vec![(0, 1), (1, 2), (4, 9)];
+        assert_eq!(crate_sequence(spans.clone(), "abcdefghij"), spans);
+    }
+}

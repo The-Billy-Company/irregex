@@ -28,7 +28,7 @@ from typing import Any
 from . import _abi
 from ._abi import Span, check, error, lib
 from ._match import Match, TextView, wrong_subject
-from ._pool import Pool
+from ._pool import Compiled, Pool
 from ._replace import compile_template
 
 # How many spans to ask for on the first `find_all`. The header's advice is to
@@ -37,6 +37,27 @@ from ._replace import compile_template
 # probably has four matches. So start here, and let the count the engine reports
 # size the one retry a short window can ever need.
 _FIRST_WINDOW = 4096
+
+
+def _on_characters(spans: list[tuple[int, int]], data: bytes) -> list[tuple[int, int]]:
+    """``spans`` restricted to the ones a ``str`` subject can actually report.
+
+    A UTF-8 continuation byte (``0b10xxxxxx``) is a position inside a character,
+    not a position between two, so a span starting there has no index in the
+    caller's domain — it would surface as a duplicate of the character it splits.
+    Only an empty match can start there for a well-formed pattern, but the test
+    is on the offset rather than on the width, because that is the actual rule
+    and a width test would be a guess about which patterns exist.
+
+    A fast path for the ASCII case, which is most texts: no continuation byte can
+    be present, so there is nothing to remove and no copy to pay for.
+    """
+    if data.isascii():
+        return spans
+    size = len(data)
+    # `start >= size` is the end-of-text position, which is a boundary and has no
+    # byte to inspect.
+    return [at for at in spans if at[0] >= size or data[at[0]] & 0xC0 != 0x80]
 
 
 def flag_bits(
@@ -97,11 +118,8 @@ class Pattern:
         self._is_bytes = not isinstance(pattern, str)
         self._source = pattern
         self._flags = flags
-        self._pool = Pool(
-            pattern.encode("utf-8") if isinstance(pattern, str) else bytes(pattern),
-            flags,
-            pattern,
-        )
+        encoded = pattern.encode("utf-8") if isinstance(pattern, str) else bytes(pattern)
+        self._pool = Pool(lambda: Compiled(encoded, flags, pattern))
 
         # Compiling here rather than on first use means a bad pattern raises
         # from `compile()`, where the caller can see which pattern it was.
@@ -181,15 +199,76 @@ class Pattern:
             raise wrong_subject(self, text)
         return TextView(text)
 
+    def _region(self, view: TextView, pos: int, endpos: int | None) -> tuple[bytes, int] | None:
+        """``re``'s ``pos``/``endpos`` as the bytes to search and the byte to start at.
+
+        ``None`` when no match is possible at all — ``pos`` past the end, or
+        ``endpos`` below ``pos``, both of which ``re`` answers with no match
+        rather than an error.
+
+        The two bounds are **not symmetric in** ``re``, and this mirrors that
+        rather than tidying it up. ``pos`` does not move the left edge, so ``^``
+        still means offset 0 and ``\\b`` still reads the byte before the region::
+
+            re.compile("^b").search("abc", 1)    # None
+            re.compile(r"\\bbc").search("abc", 1)  # None
+
+        ``endpos`` *does* move the right edge — the docs say it is "as if the
+        string is endpos characters long", and it behaves that way::
+
+            re.compile("b$").search("abc", 0, 2)   # matches (1, 2)
+
+        So ``pos`` is a window bound and ``endpos`` is a truncation, which is why
+        this returns a possibly-shortened ``bytes`` for the second and an offset
+        for the first. That also means the search it feeds has an inert end bound
+        (``to == len``), so ``endpos`` costs nothing on the PCRE arm — unlike the C
+        ABI's true ``to``, which that arm cannot express. The engine underneath is
+        strictly more expressive than ``endpos`` here; ``re``'s spelling is what
+        this method promises.
+        """
+        # Resolved in the CALLER's domain first, because that is the domain `re`
+        # clamps in. Converting first and comparing after would let `pos` past the
+        # end survive as a clamped offset, and a nullable pattern would then
+        # report an empty match where `re` reports none.
+        size = len(view.original)
+        # Both bounds clamp INTO the text. `pos` past the end is not "no match":
+        # `re.compile("x*").search("abc", 99)` matches empty at 3, because the
+        # bound was clamped before the search ever ran.
+        first = min(max(pos, 0), size)
+        last = size if endpos is None else min(max(endpos, 0), size)
+        # `re` answers an inverted or past-the-end region with no match, never an
+        # error, so this is a result rather than a raise.
+        if first > last:
+            return None
+        data = view.data
+        return (data if last == size else data[: view.offset(last)]), view.offset(first)
+
     # ── the engine calls ──────────────────────────────────────────────────
 
-    def _find_all(self, data: bytes) -> list[tuple[int, int]]:
-        """Every match span in ``data``, in the engine's own order.
+    def _find_all(
+        self, data: bytes, start: int = 0, *, characters: bool = False
+    ) -> list[tuple[int, int]]:
+        """Every match span in ``data`` at or after ``start``, in the engine's own order.
 
         ``find_all`` reports how many matches the TEXT holds rather than how
         many fit, so a window that came up short says by how much and the retry
         is sized at the answer. There is no growth schedule: a second pass over
         unchanged text cannot find a different number.
+
+        ``start`` is a window bound, not a slice: assertions still read ``data``
+        from byte 0, which is what makes ``pos`` mean what ``re`` says it means.
+        The end bound is always inert here (``endpos`` shortened ``data``
+        instead), so this asks nothing the PCRE arm cannot answer.
+
+        ``characters`` thins the sequence to the positions a ``str`` subject
+        actually has. The engine reports the widest sequence — every empty match
+        at every BYTE — and for a ``str`` that includes offsets inside a
+        multi-byte character, which ``re`` has no position for and which collapse
+        onto their character's index on the way out. ``x*`` over ``"é"`` reports
+        empty at bytes 0, 1 and 2; byte 1 splits the character, so ``re`` shows
+        two matches where the raw sequence would show three, the middle one a
+        duplicate of the first. Subtractive, like every other binding's thinning
+        rule, and off for ``bytes`` subjects, whose domain IS the engine's.
         """
         handle = self._pool.handle()
         size = len(data)
@@ -198,7 +277,9 @@ class Pattern:
             out = (Span * window)()
             written = ctypes.c_size_t()
             check(
-                lib.irgx_find_all(handle, data, size, out, window, ctypes.byref(written)),
+                lib.irgx_find_all_in(
+                    handle, data, size, start, size, out, window, ctypes.byref(written)
+                ),
                 f"could not search with {self._source!r}",
                 self._source,
             )
@@ -208,7 +289,8 @@ class Pattern:
             return [(out[i].start, out[i].end) for i in range(min(total, window))], total
 
         spans, total = sweep(min(size + 1, _FIRST_WINDOW))
-        return spans if total <= len(spans) else sweep(total)[0]
+        found = spans if total <= len(spans) else sweep(total)[0]
+        return _on_characters(found, data) if characters else found
 
     def _captures_at(self, view: TextView, start: int, end: int) -> list[tuple[int, int] | None]:
         """Group spans for the match ``find_all`` reported at ``start``.
@@ -264,33 +346,56 @@ class Pattern:
 
     # ── the search surface ────────────────────────────────────────────────
 
-    def is_match(self, text: str | bytes) -> bool:
+    def is_match(self, text: str | bytes, pos: int = 0, endpos: int | None = None) -> bool:
         """Whether ``text`` holds a match at all.
 
         The engine's cheapest question: it may stop at the first hit and never
         materializes a span. ``re`` has no equivalent, so this is spelled after
-        the C verb rather than after a stdlib name.
+        the C verb rather than after a stdlib name — but it takes the same
+        ``pos``/``endpos`` the stdlib search verbs do, so switching between them
+        never changes which region was asked about.
         """
         view = self._view(text)
+        region = self._region(view, pos, endpos)
+        if region is None:
+            return False
+        data, start = region
         status = check(
-            lib.irgx_is_match(self._pool.handle(), view.data, len(view.data)),
+            lib.irgx_is_match_in(self._pool.handle(), data, len(data), start, len(data)),
             f"could not search with {self._source!r}",
             self._source,
         )
         return status == _abi.MATCH
 
-    def search(self, text: str | bytes) -> Match | None:
-        """The first match in ``text``, or ``None``."""
+    def search(self, text: str | bytes, pos: int = 0, endpos: int | None = None) -> Match | None:
+        """The first match in ``text``, or ``None``.
+
+        ``pos`` and ``endpos`` bound the search exactly as ``re`` bounds it: the
+        region is ``text[pos:endpos]``, ``pos`` does not move ``^`` or ``\\b``,
+        and ``endpos`` does (see :meth:`_region`). Both count in the units of
+        ``text`` — characters for ``str``, bytes for ``bytes``.
+        """
         view = self._view(text)
+        region = self._region(view, pos, endpos)
+        if region is None:
+            return None
+        data, start = region
         out = (Span * 1)()
         written = ctypes.c_size_t()
         # A one-span window, so a MATCH is out[0] and nothing else. The status
-        # is what decides it: `written` counts the matches the TEXT holds, so
+        # is what decides it: `written` counts the matches the REGION holds, so
         # reading it as "how many spans came back" would be right only until a
         # text held two.
         status = check(
-            lib.irgx_find_all(
-                self._pool.handle(), view.data, len(view.data), out, 1, ctypes.byref(written)
+            lib.irgx_find_all_in(
+                self._pool.handle(),
+                data,
+                len(data),
+                start,
+                len(data),
+                out,
+                1,
+                ctypes.byref(written),
             ),
             f"could not search with {self._source!r}",
             self._source,
@@ -299,18 +404,25 @@ class Pattern:
             return None
         return Match(self, view, out[0].start, out[0].end)
 
-    def finditer(self, text: str | bytes) -> Iterator[Match]:
+    def finditer(
+        self, text: str | bytes, pos: int = 0, endpos: int | None = None
+    ) -> Iterator[Match]:
         """Every match in ``text``, in order.
 
         The spans come from one ``find_all`` call, so the sequence is the
         engine's own. Group detail is filled per match on first request, so
-        iterating purely to count costs no capture passes.
+        iterating purely to count costs no capture passes. ``pos``/``endpos`` bound
+        the region as in :meth:`search`.
         """
         view = self._view(text)
-        for start, end in self._find_all(view.data):
-            yield Match(self, view, start, end)
+        region = self._region(view, pos, endpos)
+        if region is None:
+            return
+        data, start = region
+        for at, end in self._find_all(data, start, characters=view.is_str):
+            yield Match(self, view, at, end)
 
-    def findall(self, text: str | bytes) -> list[Any]:
+    def findall(self, text: str | bytes, pos: int = 0, endpos: int | None = None) -> list[Any]:
         """Match texts, or group texts when the pattern declares groups.
 
         The shape follows ``re.findall``: no groups gives whole matches, one
@@ -320,11 +432,12 @@ class Pattern:
         are different facts and ``.groups()`` already tells them apart.
         """
         count = self._groups or 0
+        found = self.finditer(text, pos, endpos)
         if count == 0:
-            return [m.group(0) for m in self.finditer(text)]
+            return [m.group(0) for m in found]
         if count == 1:
-            return [m.group(1) for m in self.finditer(text)]
-        return [m.groups() for m in self.finditer(text)]
+            return [m.group(1) for m in found]
+        return [m.groups() for m in found]
 
     def split(self, text: str | bytes, maxsplit: int = 0) -> list[Any]:
         """``text`` split around each match; declared groups are kept in the result."""

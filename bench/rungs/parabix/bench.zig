@@ -2,7 +2,7 @@
 //! the shipped engine, and is it actually faster.
 //!
 //! Links gist's REAL engine (`@import("irregex")`) and arms the REAL rung
-//! through the engine's own seal (`gist.regex_parabix`), so both arms of every
+//! through the engine's own seal (`gist.regex.parabix`), so both arms of every
 //! race are production code. Four things it establishes, each fail-closed:
 //!
 //!   1. **Agreement, over the real host corpus.** Every pattern is run over
@@ -41,7 +41,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const gist = @import("irregex");
-const parabix = gist.regex_parabix;
+const parabix = gist.regex.parabix;
 
 const Parabix = parabix.Parabix;
 const Regex = gist.regex.Regex;
@@ -112,23 +112,15 @@ const specs = [_]Spec{
 /// cycle per link by construction. The advertised boost is a marketing number
 /// and a shared box never reaches it; this is what the machine was actually
 /// doing while the rows above it were timed.
+///
+/// The chain itself lives in `assay.Cadence`, which is also where the ladder's
+/// coefficients are minted and audited. It was copied here, and a copy is how a
+/// row's clock and the coefficient it is compared against come to be divided by
+/// different readings. `0` where the target has none, which the caller prints
+/// as an absent column rather than as a rate.
 fn calibrate(io: std.Io, links: u64) f64 {
-    if (comptime builtin.cpu.arch != .aarch64 and builtin.cpu.arch != .aarch64_be) return 0;
-    var x: u64 = 1;
-    const sp = Span.open(io);
-    var i: u64 = 0;
-    while (i < links) : (i += 1) {
-        inline for (0..16) |_| {
-            x = asm ("add %[o], %[i], #1"
-                : [o] "=r" (-> u64),
-                : [i] "r" (x),
-            );
-        }
-    }
-    const ns = sp.read(io).ns();
-    std.mem.doNotOptimizeAway(x);
-    if (ns <= 0) return 0;
-    return @as(f64, @floatFromInt(links * 16)) / @as(f64, @floatFromInt(ns));
+    const c = gist.assay.Cadence.measure(io, links) orelse return 0;
+    return c.ghz();
 }
 
 /// A line-structured buffer over `alphabet`, tokens of 1..=`run` bytes, ~8
@@ -255,13 +247,13 @@ pub fn main(init: std.process.Init) !void {
     const ghz = calibrate(io, 3_000_000);
     std.debug.print("Parabix — bit-parallel within-document scan rung · abi v{d}\n", .{gist.abi()});
     // Armable is BOTH conjuncts — the kernel compiles here and the ladder has a
-    // minted price for it. `parabix.native` alone would report a freshly-ported
-    // target as armable while the auction still refuses to let it bid.
+    // minted price for it. `parabix.vectorized` alone would report a
+    // freshly-ported target as armable while the auction still refuses its bid.
     std.debug.print("machine: {s} · zig {s} · kernel here: {} · rung armable (kernel + calibration): {}\n", .{
-        @tagName(builtin.target.cpu.arch),
+        builtin.cpu.model.name,
         builtin.zig_version_string,
-        parabix.native,
-        gist.regex_rungs.parabix_armable,
+        parabix.vectorized,
+        gist.regex.rungs.parabix_armable,
     });
     std.debug.print("throughput haystack: {d} MiB adversarial near-miss per row · rounds {d} (min-of-N, interleaved)\n", .{ megs, rounds });
     std.debug.print("agreement corpus: {d} docs · {d:.1} MiB\n", .{ corpus.docs.len, @as(f64, @floatFromInt(corpus.bytes)) / (1 << 20) });

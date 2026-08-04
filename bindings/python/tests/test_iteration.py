@@ -160,14 +160,17 @@ def test_a_short_window_is_resized_once_and_answers_completely(monkeypatch):
     # number of matches costs two searches at most. The doubling schedule this
     # replaced paid a whole rescan per rung: five passes over the text below.
     calls = 0
-    real = _abi.lib.irgx_find_all
+    # The walk goes through the WINDOWED verb, because `pos`/`endpos` need its
+    # `from` and the whole-text case is that verb with an inert bound. Counting
+    # `irgx_find_all` here would count zero and pass for the wrong reason.
+    real = _abi.lib.irgx_find_all_in
 
     def counted(*args):
         nonlocal calls
         calls += 1
         return real(*args)
 
-    monkeypatch.setattr(_abi.lib, "irgx_find_all", counted)
+    monkeypatch.setattr(_abi.lib, "irgx_find_all_in", counted)
     monkeypatch.setattr("irgx._pattern._FIRST_WINDOW", 4)
 
     text = "a" * 5_000

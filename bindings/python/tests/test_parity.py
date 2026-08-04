@@ -63,6 +63,102 @@ def test_substitution_agrees_with_re(pattern, text):
     assert irgx.sub(pattern, "<>", text) == re.sub(pattern, "<>", text)
 
 
+# `pos`/`endpos` × the texts and patterns where a bound can go wrong: an anchor
+# or `\b` at either cut, an empty match at the cut, a multi-byte character
+# straddling it, and bounds outside the text entirely.
+REGIONS = [
+    (0, None),
+    (1, None),
+    (2, None),
+    (0, 2),
+    (1, 3),
+    (2, 2),
+    (99, None),
+    (-3, None),
+    (0, 99),
+    (3, 1),
+]
+BOUNDED = [
+    ("^b", "abc"),
+    (r"\bbc", "abc"),
+    ("b$", "abc"),
+    (r"b\b", "abc"),
+    ("a", "aBaBa"),
+    ("x*", "abc"),
+    ("", "abc"),
+    ("l*", "héllo"),
+    ("é*", "ééé"),
+    (".", "héllo"),
+    ("l", "héllo"),
+    (r"\w*", "aéb"),
+]
+
+
+@pytest.mark.parametrize(("pattern", "text"), BOUNDED)
+@pytest.mark.parametrize(("pos", "endpos"), REGIONS)
+def test_pos_and_endpos_bound_the_search_exactly_as_re_bounds_it(pattern, text, pos, endpos):
+    # The two bounds are NOT symmetric in `re` and this asserts that asymmetry
+    # rather than tidying it: `pos` leaves `^` and `\b` reading the real text,
+    # while `endpos` truncates it, so `b$` with endpos=2 over "abc" matches. The
+    # comparison is live, so if either side moves this fails.
+    args = (text, pos) if endpos is None else (text, pos, endpos)
+    assert [m.span() for m in irgx.compile(pattern).finditer(*args)] == [
+        m.span() for m in re.compile(pattern).finditer(*args)
+    ]
+    ours, theirs = irgx.compile(pattern).search(*args), re.compile(pattern).search(*args)
+    assert (ours.span() if ours else None) == (theirs.span() if theirs else None)
+    # `is_match` has no `re` twin, so its oracle is `re.search`'s presence — the
+    # point being that the cheap predicate and the span walk cannot disagree
+    # about which region was asked about.
+    assert irgx.compile(pattern).is_match(*args) is (theirs is not None)
+
+
+def test_a_bound_outside_the_text_clamps_rather_than_refusing():
+    # Every one of these is a result in `re`, not an error, and the clamp happens
+    # BEFORE the search — which is why a nullable pattern still matches at the
+    # end for a `pos` past it, rather than reporting nothing.
+    assert [m.span() for m in irgx.compile("x*").finditer("abc", 99)] == [(3, 3)]
+    assert [m.span() for m in re.compile("x*").finditer("abc", 99)] == [(3, 3)]
+    assert irgx.compile("a").search("abc", -5).span() == (0, 1)
+    assert irgx.compile("a").search("abc", 0, 99).span() == (0, 1)
+    # An inverted region has no positions in it, so there is nothing to match.
+    assert irgx.compile("a").search("abc", 2, 1) is None
+    assert list(irgx.compile("x*").finditer("abc", 2, 1)) == []
+
+
+def test_the_bounds_live_on_the_compiled_pattern_only():
+    # Exactly as in `re`: the module-level helpers take flags in that position, so
+    # accepting a bound there would silently read one as the other. The one-shot
+    # spelling is `compile(...).search(text, pos)`.
+    for name in ("search", "finditer", "findall"):
+        assert "pos" not in getattr(irgx, name).__code__.co_varnames
+        assert "pos" in getattr(irgx.Pattern, name).__code__.co_varnames
+
+
+def test_the_bounds_count_in_the_subjects_own_units():
+    # `pos`/`endpos` are characters for `str` and bytes for `bytes`, exactly as
+    # `re` reads them. "héllo" is 5 characters and 6 bytes, so a bound of 2 means
+    # two different cuts depending on the subject — and getting this wrong would
+    # silently search the wrong region rather than fail.
+    assert irgx.compile("l").search("héllo", 2).span() == (2, 3)
+    assert re.compile("l").search("héllo", 2).span() == (2, 3)
+    assert irgx.compile(b"l").search("héllo".encode(), 2).span() == (3, 4)
+    assert re.compile(b"l").search("héllo".encode(), 2).span() == (3, 4)
+
+
+def test_an_empty_match_inside_a_character_is_not_a_position_a_str_has():
+    # The engine reports the widest sequence — every empty match at every BYTE —
+    # and byte 1 of "é" splits the character. `re` has no position there, so the
+    # binding drops it; keeping it would surface as a DUPLICATE of the match at
+    # the character's start, since both map to the same index.
+    assert [m.span() for m in irgx.finditer("x*", "é")] == [(0, 0), (1, 1)]
+    assert [m.span() for m in re.finditer("x*", "é")] == [(0, 0), (1, 1)]
+    # A `bytes` subject keeps them, because its domain IS the engine's: three
+    # positions in two bytes.
+    assert [m.span() for m in irgx.finditer(b"x*", "é".encode())] == [(0, 0), (1, 1), (2, 2)]
+    assert [m.span() for m in re.finditer(b"x*", "é".encode())] == [(0, 0), (1, 1), (2, 2)]
+
+
 def test_alternation_prefers_the_left_branch_exactly_as_re_does():
     # This is the classic place a DFA engine diverges: POSIX leftmost-longest
     # would report "ab" for `a|ab`. It does not, which is what makes the
@@ -87,16 +183,16 @@ def test_ignore_case_agrees_with_re_on_ascii():
 # ── the divergences, asserted as our behavior ────────────────────────────
 
 
-def test_we_do_not_report_an_empty_match_at_the_end_of_the_text():
-    # `re` reports an empty match after the last character; this engine does
-    # not. The rule belongs to the engine, whose unit of work is a line of a
-    # file and which reports what it found IN the text rather than after it.
-    # `find_all` is the authority, so the binding reports what it reports.
-    assert [m.span() for m in irgx.finditer("", "abc")] == [(0, 0), (1, 1), (2, 2)]
-    assert [m.span() for m in re.finditer("", "abc")] == [(0, 0), (1, 1), (2, 2), (3, 3)]
-
-    assert [m.span() for m in irgx.finditer("a*", "abc")] == [(0, 1), (2, 2)]
-    assert [m.span() for m in re.finditer("a*", "abc")] == [(0, 1), (1, 1), (2, 2), (3, 3)]
+def test_we_report_the_empty_match_at_the_end_of_the_text_exactly_as_re_does():
+    # This was a divergence, and is not one any more. The ABI ran the CLI's
+    # line-oriented walk, which suppresses an empty match after the last
+    # character because it would be noise on a printed page; a library has no
+    # page, and every one a caller knows reports it.
+    for pattern in ("", "a*", r"\b", "x?"):
+        for text in ("abc", "", "a", "aaa"):
+            assert [m.span() for m in irgx.finditer(pattern, text)] == [
+                m.span() for m in re.finditer(pattern, text)
+            ], (pattern, text)
 
 
 def test_a_non_participating_group_is_none_in_findall_not_empty_string():
@@ -115,19 +211,100 @@ def test_flags_are_keywords_and_the_re_bitmask_is_not_accepted():
         irgx.compile("a", re.IGNORECASE)
 
 
-def test_a_newline_is_a_line_terminator_and_not_ordinary_whitespace():
-    # The engine is line-oriented: a single character class will not match the
-    # terminator, the same way a line-oriented searcher never presents one to
-    # the pattern. `re` has no such notion and matches it like any other space.
-    # A longer match may still span a newline, so this is about what a
-    # one-character class admits, not about the buffer being cut up.
-    assert irgx.findall(r"\s", "a\nb") == []
-    assert re.findall(r"\s", "a\nb") == ["\n"]
-    assert irgx.findall(r"\s", "a\tb") == ["\t"]  # every other space is ordinary
+def test_a_newline_is_ordinary_whitespace_because_the_haystack_is_a_buffer():
+    # Also no longer a divergence, and this one was not a reporting rule but a
+    # promise compiled in as fact. In the per-line model the compiler is
+    # licensed to assume no haystack contains a newline - it drops `\n` from a
+    # class run on exactly that ground - so `\s` over "a\nb" found NOTHING.
+    # `gist` keeps that promise by feeding one line at a time. A binding handed
+    # a whole string cannot, so it compiles for a buffer and `\s` is `\s`.
+    assert irgx.findall(r"\s", "a\nb") == re.findall(r"\s", "a\nb") == ["\n"]
+    assert irgx.findall(r"\s", "a\tb") == ["\t"]
     assert irgx.findall(r"a\sb", "a\nb") == ["a\nb"]
-    # `.` excludes the newline in both, which is the one place they already
-    # agreed.
+    assert irgx.findall(r"[\n\t]", "a\nb\tc") == ["\n", "\t"]
+    # `.` still excludes the newline, in both - that is a separate rule and it
+    # did not move.
     assert irgx.findall(r"a.b", "a\nb") == re.findall(r"a.b", "a\nb") == []
+
+
+def test_caret_and_dollar_anchor_the_text_unless_multiline_like_re():
+    # The buffer model is not the `(?m)` question, and conflating them would
+    # have turned multiline on for every caller. `^` means the start of the
+    # string you passed, exactly as in `re`, until you ask otherwise.
+    text = "a\nb\n"
+    assert irgx.findall("^b", text) == re.findall("^b", text) == []
+    assert irgx.findall("^b", text, multiline=True) == re.findall("^b", text, re.M) == ["b"]
+    assert irgx.findall("^a", text) == re.findall("^a", text) == ["a"]
+    # `\A`/`\Z` are the text's ends either way. (`re` spells the strict
+    # end-of-text `\Z`; this engine spells it `\z`, as Perl and PCRE2 do.)
+    assert irgx.findall(r"\Aa", text) == re.findall(r"\Aa", text) == ["a"]
+    assert irgx.findall(r"a\z", text) == re.findall(r"a\Z", text) == []
+
+
+def test_dotall_makes_dot_match_a_newline_like_re_s():
+    text = "a\nb"
+    assert irgx.findall(".", text) == re.findall(".", text) == ["a", "b"]
+    assert irgx.findall(".", text, dotall=True) == re.findall(".", text, re.S) == ["a", "\n", "b"]
+    assert irgx.findall("a.b", text, dotall=True) == re.findall("a.b", text, re.S) == ["a\nb"]
+
+
+def test_the_two_flags_compose_the_way_re_composes_them():
+    text = "ab\ncd"
+    for pattern in ("^.", ".$", "^..", "..$"):
+        for multiline, dotall, mode in (
+            (False, False, 0),
+            (True, False, re.M),
+            (False, True, re.S),
+            (True, True, re.M | re.S),
+        ):
+            assert irgx.findall(pattern, text, multiline=multiline, dotall=dotall) == re.findall(
+                pattern, text, mode
+            ), f"{pattern!r} multiline={multiline} dotall={dotall}"
+
+
+def test_a_leading_inline_flag_says_what_the_keyword_says():
+    # `re` lets a pattern carry its own flags, and a pattern out of a config file
+    # is exactly where that matters: the host has no flag word to pass because it
+    # would have to read the pattern to know which one it needed. So the leading
+    # form is folded into the compile rather than refused, and the two spellings
+    # are one answer.
+    text = "ab\ncd"
+    for inline, keyword, mode in (
+        ("(?i)AB", {"ignore_case": True}, re.I),
+        ("(?m)^c", {"multiline": True}, re.M),
+        ("(?s)b.c", {"dotall": True}, re.S),
+        ("(?ms)^c.", {"multiline": True, "dotall": True}, re.M | re.S),
+    ):
+        body = inline[inline.index(")") + 1 :]
+        assert (
+            irgx.findall(inline, text)
+            == irgx.findall(body, text, **keyword)
+            == re.findall(inline, text)
+            == re.findall(body, text, mode)
+        ), inline
+
+    # The pattern is the more specific statement, so it wins over the keyword.
+    assert irgx.findall("(?-i)ab", "ab AB", ignore_case=True) == ["ab"]
+    # And under `fixed` the bytes are data, as they are for `re.escape` output.
+    assert irgx.findall("(?i)ab", "(?i)ab AB", fixed=True) == ["(?i)ab"]
+
+
+def test_a_nonleading_or_foreign_inline_flag_is_declined_rather_than_ignored():
+    # Only the leading form is a whole-pattern option — which is also the only
+    # form `re` itself allows since 3.11 — and `(?x)`/`(?U)`/`(?R)` are flags this
+    # grammar does not have. Refusing beats honoring the letters it recognizes
+    # and dropping the rest, which is how a pattern quietly matches the wrong
+    # thing: `(?ix)a b` asking for both must not come back case-insensitive and
+    # still sensitive to the space.
+    for pattern in ("a(?i)b", "(?x) a b", "(?U)a+", "(?R)a$", "(?ix)a b"):
+        with pytest.raises(irgx.UnsupportedPattern):
+            irgx.compile(pattern)
+    # The PCRE arm does honor them.
+    assert irgx.compile("(?x) a b", pcre=True).findall("ab") == ["ab"]
+
+    # The *scoped* form is the parser's own and needs no folding, so it is not on
+    # that list: it compiles, and it stays scoped.
+    assert irgx.findall("(?i:a)b", "AB ab Ab") == re.findall("(?i:a)b", "AB ab Ab")
 
 
 def test_there_is_no_fullmatch_or_match_because_the_engine_has_no_anchored_verb():

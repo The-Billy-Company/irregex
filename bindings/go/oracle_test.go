@@ -55,6 +55,31 @@ func (c oracleCase) opts() irgx.CompileOpts {
 
 func hasKey(m map[string]bool, k string) bool { _, ok := m[k]; return ok }
 
+// nullable reports whether the reference found a zero-width match, which is
+// exactly when the two bindings are entitled to report different sequences.
+//
+// The oracle records the ABI's own answer, and the Python binding passes it
+// through: Python's re reports every empty match, so its convention and the
+// engine's coincide. Go's does not - regexp ignores an empty match abutting the
+// previous one and resumes a whole rune past an empty one - so this binding
+// thins the sequence to Go's rule, and a nullable row here would be comparing
+// two different questions.
+//
+// Those rows are not left unchecked. TestNullablePatternsMatchStdlib and
+// TestStdlibAgreementOverAGeneratedSlate hold them against Go's own regexp,
+// which is a stricter oracle for this binding than another language's binding
+// could be. What stays here is everything the two conventions agree on: the
+// literal, class, anchor, flag, Unicode, PCRE and capture behavior, checked
+// against an implementation this code did not produce.
+func (c oracleCase) nullable() bool {
+	for _, s := range c.Spans {
+		if s[0] == s[1] {
+			return true
+		}
+	}
+	return false
+}
+
 func loadOracle(t *testing.T) oracleFile {
 	t.Helper()
 	raw, err := os.ReadFile("testdata/python_oracle.json")
@@ -78,6 +103,9 @@ func TestPythonOracleSpans(t *testing.T) {
 			file.EngineVersion, irgx.Version())
 	}
 	for _, c := range file.Cases {
+		if c.nullable() {
+			continue // Go's empty-match convention; see oracleCase.nullable
+		}
 		t.Run(c.Name+"/"+strconv.Quote(c.Text), func(t *testing.T) {
 			re, err := c.opts().Compile(c.Pattern)
 			if err != nil {
@@ -107,7 +135,7 @@ func TestPythonOracleSpans(t *testing.T) {
 
 func TestPythonOracleGroups(t *testing.T) {
 	for _, c := range loadOracle(t).Cases {
-		if len(c.Groups) == 0 {
+		if len(c.Groups) == 0 || c.nullable() {
 			continue
 		}
 		t.Run(c.Name+"/"+strconv.Quote(c.Text), func(t *testing.T) {
@@ -126,6 +154,11 @@ func TestPythonOracleGroups(t *testing.T) {
 
 // MatchString has its own engine verb, so it gets its own check: it must agree
 // with the span table about whether there is a match at all.
+//
+// Nullable rows stay in, unlike the two tests above. Go's convention can only
+// ever drop an empty match that abuts the previous one, and the FIRST match
+// abuts nothing - so thinning never empties a non-empty sequence, and "is there
+// a match" is a question both conventions have to answer the same way.
 func TestPythonOracleMatch(t *testing.T) {
 	for _, c := range loadOracle(t).Cases {
 		re, err := c.opts().Compile(c.Pattern)

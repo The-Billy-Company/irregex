@@ -10,11 +10,22 @@ is entered the way it is described here rather than as a partial list of its
 files.
 
 - **`patterns.zig`** owns `PatternSet`: it compiles N patterns once through
-  `kernel/query/query.zig`, with exact per-pattern attribution (`docMask` /
-  `lineHits`). A fused `(?:p0)|(?:p1)|…` gate cheaply rejects a document
-  that matches nothing, built only when every pattern shares one case /
-  Unicode setting and compiles linear; otherwise the set runs confirm-only,
-  still exact. The gate can only skip work, never change an answer.
+  `kernel/query/query.zig`, with exact per-pattern attribution, in **two
+  units**. The line face (`docMask` / `lineHits`) is a grep's question — `^`
+  and `$` are a line's ends and a newline is a barrier — and backs the corpus
+  walks. The buffer face (`bufMask` / `bufAnyMatch`) takes the whole text as
+  one unit, which is a regex library's question and what the C ABI's slate
+  plane publishes; it confirms through the same `holds` a single pattern goes
+  through, so a slate names pattern `i` iff that pattern alone would have
+  matched. A fused `(?:p0)|(?:p1)|…` gate cheaply rejects a **line** that
+  matches nothing, built only when every pattern shares one case / Unicode
+  setting and compiles linear; otherwise the set runs confirm-only, still
+  exact. The gate can only skip work, never change an answer — and it is
+  per-line, so the buffer face does not use it (`a\sb` matches the buffer
+  `"a\nb"` and no line in it) and does not pay for it either: `compileFor(…,
+  .buffer)` skips it, which is what keeps a two-hundred-pattern slate compiling
+  in milliseconds, since the gate is the one part of a slate whose price grows
+  with the whole slate.
 - **`muster.zig`** is the dragnet: a bucketed SIMD sieve (Hyperscan's
   FDR/Teddy split, Wang et al. NSDI 2019) that pools every pattern's
   required literals, scans the bytes once through the shipped Teddy

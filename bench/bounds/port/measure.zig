@@ -52,7 +52,11 @@ const dfa_probe = @import("probes/dfa_step.zig");
 const mirror_probe = @import("probes/dfa_mirror.zig");
 
 const Regex = gist.regex.Regex;
-const out_dir = gist.home.default_out_dir;
+// `ArtifactPath`, not the comptime `default_out_dir`: the mint points GIST_DIR
+// at the bundle being assembled, and `mca.sh` looks for this JSON beside the
+// certificate it is splicing into. A baked-in `./.gist` would leave B′ reading
+// a stale measurement from a previous run's leftovers.
+const json_path = gist.index.home.ArtifactPath("portbound.json");
 const Span = gist.assay.Span; // package instrumentation floor: monotonic Span
 
 // Best-of-N: interference from coworking agents on this shared box only ever
@@ -138,14 +142,14 @@ const SimdCtx = struct { hay: []const u8, use_production: bool };
 fn simdBody(ctx: SimdCtx) void {
     for (0..simd_sweeps) |_| {
         const hit = if (ctx.use_production)
-            gist.simd.contains(ctx.hay, simd_needle)
+            gist.scan.simd.contains(ctx.hay, simd_needle)
         else
             simd_probe.portcert_simd_contains(ctx.hay.ptr, ctx.hay.len, simd_needle.ptr, simd_needle.len);
         sink +%= @intFromBool(hit);
     }
 }
 
-const DfaCtx = struct { doc: []const u8, d: *const gist.regex_dfa.Dfa };
+const DfaCtx = struct { doc: []const u8, d: *const gist.regex.dfa.Dfa };
 
 fn dfaBody(ctx: DfaCtx) void {
     const d = ctx.d;
@@ -169,7 +173,7 @@ fn dfaBody(ctx: DfaCtx) void {
 /// Same document, same automaton, byte-indexed tables — so the delta against
 /// `dfaBody` is exactly the class load the mirror folds away, measured rather
 /// than argued.
-const MirrorCtx = struct { doc: []const u8, w: *const gist.regex_dfa.Dfa.Wide, empty_match: bool };
+const MirrorCtx = struct { doc: []const u8, w: *const gist.regex.dfa.Dfa.Wide, empty_match: bool };
 
 fn mirrorBody(ctx: MirrorCtx) void {
     const w = ctx.w;
@@ -278,7 +282,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io) !void {
     }
 
     try writeJson(gpa, io, brand, qos, meter.note, probe_s, prod_s, dfa_s, mirror_s);
-    std.debug.print("\nwrote {s}/portbound.json — re-run bench/bounds/port/mca.sh to splice Layer B′ into CERTIFICATE.md\n", .{out_dir});
+    std.debug.print("\nwrote {s} — re-run bench/bounds/port/mca.sh to splice Layer B′ into CERTIFICATE.md\n", .{json_path.get()});
     // Report the meter that refused, not a guessed cause. Two tiers are tried
     // and only kperf is privilege-gated, so "PMU needs root" pointed an operator
     // at `sudo` for an unprivileged refusal root cannot fix.
@@ -286,7 +290,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io) !void {
 }
 
 fn writeJson(gpa: std.mem.Allocator, io: std.Io, brand: []const u8, qos: []const u8, meter_note: []const u8, probe_s: Sample, prod_s: Sample, dfa_s: Sample, mirror_s: Sample) !void {
-    try std.Io.Dir.cwd().createDirPath(io, out_dir);
+    try std.Io.Dir.cwd().createDirPath(io, gist.index.home.outDir());
     var j: std.ArrayList(u8) = .empty;
     defer j.deinit(gpa);
     var line: [512]u8 = undefined;
@@ -314,7 +318,7 @@ fn writeJson(gpa: std.mem.Allocator, io: std.Io, brand: []const u8, qos: []const
         }));
     }
     try j.appendSlice(gpa, "  ]\n}\n");
-    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = out_dir ++ "/portbound.json", .data = j.items });
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = json_path.get(), .data = j.items });
 }
 
 // ── premise guards (ride `zig build test`) ────────────────────────────────────

@@ -226,10 +226,11 @@ persist = { members = [
 pattern = { members = [
   "BadPattern",
   "Unsupported",
+  "BoundUnsupported",
   "TooManyPatterns",
   "PowersetCapHit",
   "NeedleTooShort",
-], detail = "the query itself has no answer under the selected engine. `Unsupported` deliberately also appears in [decline_reasons] as `unsupported_syntax`: one fact, two channels — a declinature while PCRE2 can still answer it, a fault once `--engine linear` has refused PCRE2. `fault.Decline.refused` is the single conversion point. `BadPattern` is the opposite case and never a declinature: the grammar itself rejects the pattern, so no slower engine could answer it either" }
+], detail = "the query itself has no answer under the selected engine. `Unsupported` deliberately also appears in [decline_reasons] as `unsupported_syntax`: one fact, two channels — a declinature while PCRE2 can still answer it, a fault once `--engine linear` has refused PCRE2. `fault.Decline.refused` is the single conversion point. `BadPattern` is the opposite case and never a declinature: the grammar itself rejects the pattern, so no slower engine could answer it either. `BoundUnsupported` points the other way and is why it is a fault rather than a declinature: a bounded window is native to the linear engine and structurally impossible for PCRE2, whose subject has one length, so there is no slower tier to route to and the remedy is a different engine rather than a bigger one" }
 resource = { members = [
   "OutOfMemory",
   "TimedOut",

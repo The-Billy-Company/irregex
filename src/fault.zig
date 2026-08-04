@@ -69,7 +69,18 @@ pub const Persist = error{ Corrupt, Truncated, NonCanonical, VersionMismatch, Ge
 /// `BadPattern` is deliberately NOT that — a pattern the grammar rejects
 /// (`(unterminated`) has no answer under ANY engine, so escalating to PCRE2
 /// would only reproduce the same rejection.
-pub const Pattern = error{ BadPattern, Unsupported, TooManyPatterns, PowersetCapHit, NeedleTooShort };
+///
+/// `BoundUnsupported` is the one that points the other way, and it is a member
+/// rather than a declinature for exactly that reason: a bounded window asks the
+/// engine to search `[from, to]` while still reading the haystack end to end,
+/// which the linear engine does natively and PCRE2 structurally cannot — its
+/// subject has one length, so the only way to stop a match at `to` is to claim
+/// the subject ends there, which also moves `$`, `\z`, `\b`, and every
+/// lookahead. So there is no slower tier to route to (`Decline`'s invariant is
+/// that every member names one), and the remedy is a different engine, not a
+/// bigger one. Distinct from `Unsupported` because a host that conflated them
+/// would retry under PCRE2 — the one arm guaranteed to refuse again.
+pub const Pattern = error{ BadPattern, Unsupported, BoundUnsupported, TooManyPatterns, PowersetCapHit, NeedleTooShort };
 
 /// The machine or the budget ran out. `OutOfMemory` is the one the `zig-oom`
 /// ratchet already keeps to a single canonical exit in the command plane;
@@ -324,9 +335,9 @@ fn errnoNote(comptime phrase: []const u8, comptime e: std.posix.E) []const u8 {
 test "the five domains merge without collapsing a member" {
     // The load-bearing row: Zig unifies error names globally, so two domains
     // that reached for the same spelling would merge SILENTLY and become
-    // indistinguishable at every handler. 5 + 6 + 5 + 3 + 3 = 22 is the proof
+    // indistinguishable at every handler. 5 + 6 + 6 + 3 + 3 = 23 is the proof
     // that no two did.
-    try std.testing.expectEqual(@as(usize, 22), @typeInfo(Fault).error_set.?.len);
+    try std.testing.expectEqual(@as(usize, 23), @typeInfo(Fault).error_set.?.len);
 }
 
 test "pathNote answers each corpus member with ripgrep's own phrasing" {

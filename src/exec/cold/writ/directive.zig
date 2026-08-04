@@ -18,44 +18,45 @@ const std = @import("std");
 const args = @import("../argv/args.zig");
 const corpus_mod = @import("../../../corpus/tree/corpus.zig");
 const query_mod = @import("../../../kernel/query/query.zig");
+const syntax = @import("../../../kernel/regex/regex.zig").syntax;
 
 const Dir = std.Io.Dir;
 const Opts = args.Opts;
 const die = @import("../../../surface/cli/outcome.zig").die;
 const oom = @import("../../../surface/cli/outcome.zig").oom;
 
-/// A leading `(?flags)` directive (rust-regex/rg syntax) on a pattern, honored
-/// where the per-line byte engine genuinely can — the contract is "honored
-/// where gist can, loud where it can't", never a silent wrong answer:
-///   • `i` / `-i` → ASCII caseless on/off for the WHOLE pattern (gist compiles
-///     one global engine, so the directive resolves to the run-wide option;
-///     mixed demands across `-e`/`-f` patterns fail loud — rgsuite boundary #5);
-///   • `m` `s` (and negations) → inert in the per-line model: `^`/`$` already
-///     anchor every line and no line carries a `\n` for `.` to cross;
+/// A leading `(?flags)` directive (rust-regex/rg syntax), read through the
+/// engine's own grammar (`regex.syntax.preamble`) and answered the way a CLI
+/// has to answer it — the contract is "honored where gist can, loud where it
+/// can't", never a silent wrong answer:
+///   • `i` / `-i` → caseless on/off for the WHOLE pattern (gist compiles one
+///     global engine, so the directive resolves to the run-wide option; mixed
+///     demands across `-e`/`-f` patterns fail loud — rgsuite boundary #5);
+///   • `m` `s` (and negations) → line anchors and dotall, inert in the per-line
+///     model: `^`/`$` already anchor every line and no line carries a `\n` for
+///     `.` to cross;
 ///   • `u` / `-u` → Unicode mode on/off for the WHOLE pattern (`u` = gist's
-///     default; `-u` selects byte/ASCII), the run-wide analogue of `-i` reconciled
-///     the same way (mixed per-pattern demands fail loud);
+///     default; `-u` selects byte/ASCII), the run-wide analogue of `-i`
+///     reconciled the same way (mixed per-pattern demands fail loud);
 ///   • `x` `U` `R` → semantics the engine can't reproduce → die with the
 ///     reason and the rg fallback.
 /// Anything else after `(?` (lookaround, a scoped `(?i:…)` group, `(?P<…>`) is
 /// not a flag directive — returns null and the regex parser decides.
-const LeadingFlags = struct { rest: []const u8, caseless: ?bool = null, unicode: ?bool = null, line_anchors: ?bool = null, dotall: ?bool = null };
+///
+/// The reading itself is NOT here, and that is the point: `libirgx` has to read
+/// the same four letters for a host that never touches argv, and two graphs of
+/// what `(?ms-i)` means would agree until one of them grew a letter.
+const LeadingFlags = syntax.Directive;
 pub fn stripLeadingFlags(pat: []const u8) ?LeadingFlags {
-    if (!std.mem.startsWith(u8, pat, "(?")) return null;
-    const close = std.mem.indexOfScalar(u8, pat, ')') orelse return null;
-    if (close == 2) return null; // `(?)` — empty directive, the parser rejects it
-    var f: LeadingFlags = .{ .rest = pat[close + 1 ..] };
-    var neg = false;
-    for (pat[2..close]) |c| switch (c) {
-        '-' => neg = true,
-        'i' => f.caseless = !neg,
-        'u' => f.unicode = !neg,
-        'm' => f.line_anchors = !neg, // `^`/`$` per line (on) vs buffer ends (`(?-m)`)
-        's' => f.dotall = !neg, // `.` matches `\n` (`(?s)`), meaningful under `-U`
-        'x', 'U', 'R' => die("(?{c}) unsupported by gist's engine — use ripgrep for this\n", .{c}),
-        else => return null,
+    return switch (syntax.preamble(pat)) {
+        .none => null,
+        .asks => |d| d,
+        // The only part of the reading that is this face's own: a CLI has no
+        // second engine to escalate to, so a flag the grammar lacks is a loud
+        // exit naming the tool that has it. (The C ABI answers the same
+        // `beyond` by routing its host to PCRE2 instead.)
+        .beyond => |c| die("(?{c}) unsupported by gist's engine — use ripgrep for this\n", .{c}),
     };
-    return f;
 }
 
 /// One leading-directive flag reconciled across every pattern source. gist

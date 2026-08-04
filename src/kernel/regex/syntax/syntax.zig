@@ -57,3 +57,10 @@ pub const wordBoundedAst = scalars.wordBoundedAst;
 
 // ── the parser (`parser.zig`; class/escape bodies in `bracket.zig`/`escape.zig`) ──
 pub const Parser = @import("parser.zig").Parser;
+
+// ── the leading `(?flags)` directive, read as options (`directive.zig`) ──
+// Not a production of the parser above: a head directive is a statement about
+// how to COMPILE the pattern, so it is read before parsing rather than parsed.
+pub const Directive = @import("directive.zig").Directive;
+pub const Preamble = @import("directive.zig").Preamble;
+pub const preamble = @import("directive.zig").preamble;

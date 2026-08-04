@@ -43,13 +43,17 @@ const builtin = @import("builtin");
 const gist = @import("irregex");
 
 const corpus_mod = gist.corpus;
-const simd = gist.simd;
-const Index = gist.trigram.Index;
+const simd = gist.scan.simd;
+const Index = gist.index.trigram.Index;
 const Regex = gist.regex.Regex;
-const Dfa = gist.regex_dfa.Dfa;
+const Dfa = gist.regex.dfa.Dfa;
 const Dir = std.Io.Dir;
 const load = corpus_mod.load;
-const out_dir = gist.home.default_out_dir;
+// `outDir()`, not the comptime `default_out_dir`: a mint runs this lane with
+// GIST_DIR pointed at the bundle it is assembling, and a lane that wrote a
+// baked-in `./.gist` would drop a fresh CSV somewhere the reporter never looks
+// while the splice quietly re-read whatever was in the bundle from last time.
+const csv_path = gist.index.home.ArtifactPath("lowerbound.csv");
 
 const probes_mod = @import("probes");
 const Kind = probes_mod.Kind;
@@ -330,8 +334,8 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io) !void {
     }
 
     try writeCsv(gpa, io, &corpus, rows.items);
-    std.debug.print("\nwrote {s}/lowerbound.csv\n", .{out_dir});
-    std.debug.print("run: python3 bench/bounds/lowerbound/report.py --certificate {s}/CERTIFICATE.md --csv {s}/lowerbound.csv\n", .{ out_dir, out_dir });
+    std.debug.print("\nwrote {s}\n", .{csv_path.get()});
+    std.debug.print("run: python3 bench/bounds/lowerbound/report.py --certificate {s}/CERTIFICATE.md --csv {s}\n", .{ gist.index.home.outDir(), csv_path.get() });
 
     if (violations > 0) {
         std.debug.print("\nFAILED: {d} floor invariant violation(s) — gist read more than the Ω(candidate-bytes) one-pass floor, or the single-pass reference disagreed with production. Investigate; do NOT weaken the assertion.\n", .{violations});
@@ -341,7 +345,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io) !void {
 }
 
 fn writeCsv(gpa: std.mem.Allocator, io: std.Io, corpus: *const corpus_mod.Corpus, rows: []const Row) !void {
-    try Dir.cwd().createDirPath(io, out_dir);
+    try Dir.cwd().createDirPath(io, gist.index.home.outDir());
     var csv: std.ArrayList(u8) = .empty;
     defer csv.deinit(gpa);
     var line: [256]u8 = undefined;
@@ -352,5 +356,5 @@ fn writeCsv(gpa: std.mem.Allocator, io: std.Io, corpus: *const corpus_mod.Corpus
             r.cand_byte_frac, r.examined,       r.passes,    r.hits,          r.note,       @intFromBool(r.at_floor),
         }));
     }
-    try Dir.cwd().writeFile(io, .{ .sub_path = out_dir ++ "/lowerbound.csv", .data = csv.items });
+    try Dir.cwd().writeFile(io, .{ .sub_path = csv_path.get(), .data = csv.items });
 }

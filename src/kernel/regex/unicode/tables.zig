@@ -111,8 +111,43 @@ pub fn property(name_in: []const u8) ?[]const Range {
     }
     if (looseEql(name, "any")) return all;
     for (gen.properties) |p| if (looseEql(p.name, name)) return p.ranges;
+    for (gc_aliases) |a| if (looseEql(a[0], name)) {
+        for (gen.properties) |p| if (looseEql(p.name, a[1])) return p.ranges;
+    };
     return null;
 }
+
+/// UAX #44 long names for the general categories, which the generated table
+/// carries only by their two-letter abbreviation. A pattern is as likely to
+/// spell `\p{Control}` as `\p{Cc}` - tree-sitter's lua grammar spells the
+/// former - and PCRE, ICU and rust-regex all take either.
+///
+/// Hand-written rather than generated because these are the property file's
+/// own aliases and do not move with a Unicode revision; the ranges they resolve
+/// to are still the generated ones.
+const gc_aliases = [_][2][]const u8{
+    .{ "Other", "C" },                  .{ "Control", "Cc" },
+    .{ "cntrl", "Cc" },                 .{ "Format", "Cf" },
+    .{ "Unassigned", "Cn" },            .{ "Private_Use", "Co" },
+    .{ "Surrogate", "Cs" },             .{ "Letter", "L" },
+    .{ "Cased_Letter", "LC" },          .{ "Lowercase_Letter", "Ll" },
+    .{ "Modifier_Letter", "Lm" },       .{ "Other_Letter", "Lo" },
+    .{ "Titlecase_Letter", "Lt" },      .{ "Uppercase_Letter", "Lu" },
+    .{ "Mark", "M" },                   .{ "Combining_Mark", "M" },
+    .{ "Spacing_Mark", "Mc" },          .{ "Enclosing_Mark", "Me" },
+    .{ "Nonspacing_Mark", "Mn" },       .{ "Number", "N" },
+    .{ "Decimal_Number", "Nd" },        .{ "digit", "Nd" },
+    .{ "Letter_Number", "Nl" },         .{ "Other_Number", "No" },
+    .{ "Punctuation", "P" },            .{ "punct", "P" },
+    .{ "Connector_Punctuation", "Pc" }, .{ "Dash_Punctuation", "Pd" },
+    .{ "Close_Punctuation", "Pe" },     .{ "Final_Punctuation", "Pf" },
+    .{ "Initial_Punctuation", "Pi" },   .{ "Other_Punctuation", "Po" },
+    .{ "Open_Punctuation", "Ps" },      .{ "Symbol", "S" },
+    .{ "Currency_Symbol", "Sc" },       .{ "Modifier_Symbol", "Sk" },
+    .{ "Math_Symbol", "Sm" },           .{ "Other_Symbol", "So" },
+    .{ "Separator", "Z" },              .{ "Line_Separator", "Zl" },
+    .{ "Paragraph_Separator", "Zp" },   .{ "Space_Separator", "Zs" },
+};
 
 // ─────────────────────────────── tests ───────────────────────────────
 
@@ -233,4 +268,23 @@ test "unicode tables: sorted, coalesced, and fold orbits symmetric (drift tripwi
             try testing.expect(std.mem.indexOfScalar(u21, foldOrbit(m), e.cp) != null);
         }
     }
+}
+
+test "a general category answers to its long name as well as its abbreviation" {
+    // Same ranges, not merely both non-null - an alias that resolved to the
+    // wrong category would pass the weaker check.
+    for ([_][2][]const u8{
+        .{ "Control", "Cc" },
+        .{ "Uppercase_Letter", "Lu" },
+        .{ "Other_Symbol", "So" },
+        .{ "Space_Separator", "Zs" },
+    }) |pair| {
+        const long = property(pair[0]) orelse return error.NoSuchProperty;
+        try testing.expectEqualSlices(Range, property(pair[1]).?, long);
+    }
+    // Loose matching is the property file's own, so spelling and case are free.
+    try testing.expect(property("other punctuation") != null);
+    try testing.expect(property("gc=Private_Use") != null);
+    // A name nobody defines still fails closed.
+    try testing.expect(property("Contro") == null);
 }

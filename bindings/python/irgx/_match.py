@@ -70,6 +70,23 @@ class TextView:
         bisect.insort(marks, (offset, found))
         return found
 
+    def offset(self, index: int) -> int:
+        """The engine-domain byte offset for a caller-domain index.
+
+        The inverse of :meth:`index`, and what ``pos``/``endpos`` need: ``re``
+        states those in the caller's domain, so for ``str`` they count characters
+        while the engine counts bytes.
+
+        Deliberately not sharing :meth:`index`'s checkpoint cache. That cache
+        earns its keep because a walk asks it once per match, whereas a bound is
+        resolved once per search — so the straightforward encode is both cheaper
+        in total and impossible to get subtly wrong, which matters more for the
+        value that decides what gets searched at all.
+        """
+        if self._marks is None:
+            return index
+        return len(self.original[:index].encode("utf-8"))
+
     def slice(self, start: int, end: int) -> Any:
         return self.original[start:end]
 

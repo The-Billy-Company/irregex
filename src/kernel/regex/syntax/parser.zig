@@ -255,6 +255,55 @@ pub const Parser = struct {
         return ParseError.BadPattern;
     }
 
+    /// `(?flags:…)`, entered with the cursor on the first flag letter. The flags
+    /// hold for the body and for nothing after it, which is why they are put
+    /// back rather than left on the parser.
+    ///
+    /// `i`, `s` and `u` are the three whose meaning here is the same as the
+    /// caller's own option; `m` and `x` are not (this engine's `multiline` is
+    /// whole-buffer matching rather than JavaScript's line-anchored `^`), so
+    /// they refuse instead of quietly meaning something else. A bare `(?flags)`
+    /// refuses for the same reason: its scope runs to the end of the enclosing
+    /// group, and a flag that stops at the wrong paren is a wrong answer rather
+    /// than a missing one.
+    fn flagged(p: *Parser) ParseError!*Node {
+        const was: struct { bool, bool, bool } = .{ p.caseless, p.dotall, p.unicode };
+        var off = false;
+        while (true) switch (p.peek() orelse return ParseError.BadPattern) {
+            '-' => if (off) return ParseError.BadPattern else {
+                _ = p.take();
+                off = true;
+            },
+            // A caller-level `-i` folds the finished tree, and nothing can undo
+            // that for one region, so only turning folding ON is expressible.
+            'i' => if (off) return ParseError.BadPattern else {
+                _ = p.take();
+                p.caseless = true;
+            },
+            's' => {
+                _ = p.take();
+                p.dotall = !off;
+            },
+            'u' => {
+                _ = p.take();
+                p.unicode = !off;
+            },
+            ':' => {
+                _ = p.take();
+                break;
+            },
+            else => return ParseError.BadPattern,
+        };
+        const inner = try p.parseAlt();
+        if (!p.eat(')')) return ParseError.BadPattern;
+        // The caller's fold pass runs over the whole tree; a flag that holds for
+        // this body alone has to fold its own, or it parses and then matches
+        // case-sensitively, which is worse than refusing.
+        if (p.caseless and !was[0]) try scalars.foldCaseAst(p.arena, inner, p.unicode);
+        p.caseless, p.dotall, p.unicode = was;
+        return inner;
+    }
+
     fn parseAtom(p: *Parser) ParseError!*Node {
         const c = p.peek() orelse return ParseError.BadPattern;
         switch (c) {
@@ -283,7 +332,8 @@ pub const Parser = struct {
                             if (p.peek() == '=' or p.peek() == '!') return ParseError.BadPattern;
                             name = try p.nameUntilGt();
                         },
-                        else => return ParseError.BadPattern, // (?=,(?!,inline flags
+                        'i', 's', 'u', '-' => return p.flagged(),
+                        else => return ParseError.BadPattern, // (?=, (?!, (?m, (?x
                     }
                 }
                 // Assign the group index BEFORE parsing the body so nested groups

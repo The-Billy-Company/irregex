@@ -488,3 +488,205 @@ test "prefilter delegates per pattern" {
     var one2: [1][]const u8 = undefined;
     try std.testing.expectEqual(@as(usize, 0), set.prefilter(1, &one2).len);
 }
+
+// ── the buffer face ────────────────────────────────────────────────────────
+//
+// Same contract as everything above, against a different oracle. `docMask` is
+// held to N single-pattern `docMatches` runs; `bufMask` is held to N
+// single-pattern `glean.Pattern.isMatch` runs — the library verb the C ABI
+// publishes, and the one a host also holding a slate would compare against.
+//
+// The oracle is deliberately the OTHER type. `holds` is what the buffer confirm
+// calls, so oracling against `holds` would only prove the loop indexes its own
+// array correctly. `glean.Pattern` compiles the pattern independently and
+// answers through its own guarded boolean/walk seam, so agreement is a real
+// claim: the two faces of this library cannot tell a host different things about
+// whether a pattern matches a string.
+
+const rx = @import("../regex/regex.zig");
+
+/// Does `spec` alone match `text` as ONE unit? The library oracle.
+fn oracleHolds(spec: Spec, text: []const u8) !bool {
+    var one = try rx.Pattern.compileOpts(gpa, spec.pattern, .{
+        .caseless = spec.ignore_case,
+        .unicode = spec.unicode,
+        .word = spec.word,
+        .pcre = spec.pcre,
+    });
+    defer one.deinit();
+    return one.isMatch(text);
+}
+
+fn expectBufParity(specs: []const Spec, text: []const u8) !void {
+    for ([_]bool{ true, false }) |armed| {
+        var set = try PatternSet.compile(gpa, specs);
+        defer set.deinit(gpa);
+        if (!armed) if (set.muster) |*m| {
+            m.deinit(gpa);
+            set.muster = null;
+        };
+        var sc = try set.scratch(gpa);
+        defer sc.deinit(gpa);
+        const mask = try gpa.alloc(u64, patterns.maskWords(specs.len));
+        defer gpa.free(mask);
+        const any = try set.bufMask(text, &sc, gpa, mask);
+
+        var oracle_any = false;
+        for (specs, 0..) |spec, i| {
+            const want = try oracleHolds(spec, text);
+            oracle_any = oracle_any or want;
+            std.testing.expectEqual(want, patterns.maskHas(mask, i)) catch |e| {
+                std.debug.print("armed={} pattern={s} text={s}\n", .{ armed, spec.pattern, text });
+                return e;
+            };
+        }
+        try std.testing.expectEqual(oracle_any, any);
+        try std.testing.expectEqual(oracle_any, try set.bufAnyMatch(text, &sc, gpa));
+    }
+}
+
+/// The texts every buffer-face case runs against — each one a place the line
+/// model and the buffer model are known to part ways, plus plain content.
+const buffer_texts = [_][]const u8{
+    "",        "\n",       "abc",       "abc\n",
+    "a\nb",    "ab\ncd",   "a\nbc\nd",  "\n\n",
+    "cat dog", "cat\ndog", "  spaced ", "x",
+};
+
+test "the buffer face answers the library question, not the line question" {
+    // The four shapes that separate the models, in one slate: a class that can
+    // consume the terminator, both line anchors, and a nullable pattern (whose
+    // only match in an empty text is zero-width at 0).
+    const specs = [_]Spec{
+        .{ .pattern = "a\\sb" },
+        .{ .pattern = "^b" },
+        .{ .pattern = "c$" },
+        .{ .pattern = "x*" },
+    };
+    for (buffer_texts) |text| try expectBufParity(&specs, text);
+}
+
+test "a buffer-face slate is exact across body kinds, flags and engines" {
+    // Every compile route the set can take, mixed so no gate is built and the
+    // muster has to carry heterogeneous covers: literal, caseless literal,
+    // word, regex, alternation (an `equivalence` — settled by the roll), a
+    // pattern with no derivable literal (permanently in play), and PCRE.
+    const specs = [_]Spec{
+        .{ .pattern = "cat", .fixed = true },
+        .{ .pattern = "DOG", .fixed = true, .ignore_case = true },
+        .{ .pattern = "cat", .word = true },
+        .{ .pattern = "c.t" },
+        .{ .pattern = "cat|dog" },
+        .{ .pattern = ".*" },
+        .{ .pattern = "c(?=at)", .pcre = true },
+    };
+    for (buffer_texts) |text| try expectBufParity(&specs, text);
+}
+
+test "the line face and the buffer face disagree, on purpose" {
+    // The reason this face exists, pinned as a fact rather than left implied: a
+    // set built on `docMask` would answer a library host's question wrongly in
+    // both directions — no for a match that crosses a terminator, yes for a
+    // line anchor that is not the buffer's edge.
+    const specs = [_]Spec{ .{ .pattern = "a\\sb" }, .{ .pattern = "^b" } };
+    var set = try PatternSet.compile(gpa, &specs);
+    defer set.deinit(gpa);
+    var sc = try set.scratch(gpa);
+    defer sc.deinit(gpa);
+    const mask = try gpa.alloc(u64, patterns.maskWords(specs.len));
+    defer gpa.free(mask);
+
+    // "a\nb": `a\sb` spans the terminator (buffer yes, line no); `^b` is at a
+    // line head but not at the buffer's start (line yes, buffer no).
+    try std.testing.expect(set.docMask("a\nb", &sc, mask));
+    try std.testing.expect(!patterns.maskHas(mask, 0));
+    try std.testing.expect(patterns.maskHas(mask, 1));
+
+    try std.testing.expect(try set.bufMask("a\nb", &sc, gpa, mask));
+    try std.testing.expect(patterns.maskHas(mask, 0));
+    try std.testing.expect(!patterns.maskHas(mask, 1));
+}
+
+test "a buffer-face differential over random haystacks" {
+    // The fuzz that found the line/buffer split in the first place. Random
+    // bytes over an alphabet dense in terminators and in the letters the
+    // patterns use, so anchors and terminator-crossing matches both come up
+    // often rather than by luck.
+    const specs = [_]Spec{
+        .{ .pattern = "ab" },
+        .{ .pattern = "a\\sb" },
+        .{ .pattern = "^ab" },
+        .{ .pattern = "ab$" },
+        .{ .pattern = "a.b" },
+        .{ .pattern = "b*" },
+        .{ .pattern = "ab|ba", .fixed = false },
+        .{ .pattern = "A", .fixed = true, .ignore_case = true },
+    };
+    var prng = std.Random.DefaultPrng.init(0x5c1a7e);
+    const rand = prng.random();
+    const alphabet = "ab\n c";
+    var buf: [48]u8 = undefined;
+    for (0..300) |_| {
+        const n = rand.uintLessThan(usize, buf.len + 1);
+        for (buf[0..n]) |*b| b.* = alphabet[rand.uintLessThan(usize, alphabet.len)];
+        try expectBufParity(&specs, buf[0..n]);
+    }
+}
+
+test "the buffer face allocates its span scratch once, and only when asked" {
+    const specs = [_]Spec{ .{ .pattern = "a" }, .{ .pattern = "b*" } };
+    var set = try PatternSet.compile(gpa, &specs);
+    defer set.deinit(gpa);
+    var sc = try set.scratch(gpa);
+    defer sc.deinit(gpa);
+    const mask = try gpa.alloc(u64, patterns.maskWords(specs.len));
+    defer gpa.free(mask);
+
+    // The line face never pays for it — the whole reason it is lazy.
+    _ = set.docMask("abc", &sc, mask);
+    try std.testing.expectEqual(@as(usize, 0), sc.spans.len);
+
+    _ = try set.bufMask("abc", &sc, gpa, mask);
+    try std.testing.expectEqual(specs.len, sc.spans.len);
+    const first = sc.spans.ptr;
+    _ = try set.bufMask("abc", &sc, gpa, mask);
+    _ = try set.bufAnyMatch("abc", &sc, gpa);
+    try std.testing.expectEqual(first, sc.spans.ptr); // reused, not rebuilt
+}
+
+test "a slate compiled for the buffer does not build the line's gate" {
+    // The gate is an alternation over every pattern, so a slate pays for it once
+    // at compile time in proportion to the WHOLE slate. The buffer face cannot
+    // use it at any price (it over-approximates per line and is unsound per
+    // buffer), so a buffer caller must not be charged for one — and the answers
+    // have to come out the same either way, since a gate can only skip work.
+    const specs = [_]Spec{ .{ .pattern = "a\\sb" }, .{ .pattern = "^b" }, .{ .pattern = "x*" } };
+
+    var lined = try PatternSet.compileFor(gpa, &specs, .line);
+    defer lined.deinit(gpa);
+    try std.testing.expect(lined.gate != null);
+
+    var buffered = try PatternSet.compileFor(gpa, &specs, .buffer);
+    defer buffered.deinit(gpa);
+    try std.testing.expect(buffered.gate == null);
+    try std.testing.expect(buffered.muster != null); // this one it DOES use
+
+    // `compile` is the line face's constructor, unchanged for every caller that
+    // walks a corpus.
+    var plain = try PatternSet.compile(gpa, &specs);
+    defer plain.deinit(gpa);
+    try std.testing.expect(plain.gate != null);
+
+    for (buffer_texts) |body| {
+        var want: [1]u64 = .{0};
+        var got: [1]u64 = .{0};
+        var sc_a = try lined.scratch(gpa);
+        defer sc_a.deinit(gpa);
+        var sc_b = try buffered.scratch(gpa);
+        defer sc_b.deinit(gpa);
+        _ = try lined.bufMask(body, &sc_a, gpa, &want);
+        _ = try buffered.bufMask(body, &sc_b, gpa, &got);
+        try std.testing.expectEqual(want[0], got[0]);
+        try expectBufParity(&specs, body);
+    }
+}
