@@ -67,7 +67,66 @@ const ZIG_TRIPLES: &[(&str, &str, &str)] = &[
         "aarch64-linux-musl",
         "baseline",
     ),
+    (
+        "x86_64-pc-windows-gnu",
+        "x86_64-windows.win10_rs4-gnu",
+        "x86_64_v2",
+    ),
+    (
+        "x86_64-pc-windows-gnullvm",
+        "x86_64-windows.win10_rs4-gnu",
+        "x86_64_v2",
+    ),
+    // Rust has no `aarch64-pc-windows-gnu`: mingw-w64's gcc was never ported to
+    // arm64, so `-gnullvm` (llvm-mingw) is the only GNU-ABI arm64 Windows
+    // target there is. Zig emits the same ABI either way.
+    (
+        "aarch64-pc-windows-gnullvm",
+        "aarch64-windows.win10_rs4-gnu",
+        "baseline",
+    ),
+    // The MSVC arms are here and deliberately not vendored. Zig cannot
+    // cross-compile to them - the MSVC CRT headers are not redistributable, so
+    // it has nothing to compile the PCRE2 floor against unless Visual Studio is
+    // on the machine - which means an archive for them cannot come off the same
+    // host as every other one. Naming the triples still buys the source rung:
+    // on a Windows box with Zig and VS installed, `cargo build` for the default
+    // Windows toolchain builds the engine and links it.
+    (
+        "x86_64-pc-windows-msvc",
+        "x86_64-windows.win10_rs4-msvc",
+        "x86_64_v2",
+    ),
+    (
+        "aarch64-pc-windows-msvc",
+        "aarch64-windows.win10_rs4-msvc",
+        "baseline",
+    ),
 ];
+
+/// Rust target triples that name an ABI another triple already vendors.
+///
+/// `x86_64-pc-windows-gnu` and `x86_64-pc-windows-gnullvm` are one ABI under
+/// two names - the same mingw-w64 runtime and the same COFF, reached through
+/// gcc in the first case and clang in the second. A C archive that never
+/// unwinds cannot tell them apart, so vendoring a second copy of three
+/// megabytes would buy a directory name and nothing else.
+const VENDOR_ALIASES: &[(&str, &str)] = &[("x86_64-pc-windows-gnullvm", "x86_64-pc-windows-gnu")];
+
+/// System libraries a target needs beyond what `std` already links.
+///
+/// Only Windows has an entry. The engine reaches the kernel through ntdll -
+/// 60 `Nt*`/`Ldr*`/`Rtl*` symbols, which come from Zig's std rather than from
+/// this crate - and while `std` happens to link ntdll today, that is its
+/// implementation detail and not a promise to a C archive riding alongside it.
+/// Declared here so the link closes because this build script said so.
+fn system_libs(target: &str) -> &'static [&'static str] {
+    if target.contains("-windows") {
+        &["ntdll"]
+    } else {
+        &[]
+    }
+}
 
 fn main() {
     println!("cargo:rerun-if-env-changed=IRGX_LIB_DIR");
@@ -79,20 +138,25 @@ fn main() {
         let dir = PathBuf::from(dir);
         let Some(kind) = library_in(&dir) else {
             fail(&format!(
-                "IRGX_LIB_DIR points at {}, which holds no irregex library. Expected \
-                 one of libirgx.a, libirgx.dylib or libirgx.so there. It is an \
-                 error rather than a fallback because linking a different engine than the \
-                 one you named would report results from a library you did not choose.",
+                "IRGX_LIB_DIR points at {}, which holds no irregex library. Expected one of \
+                 libirgx.a, libirgx.dylib, libirgx.so, or - on Windows - irgx.lib beside \
+                 the DLL. It is an error rather than a fallback because linking a \
+                 different engine than the one you named would report results from a \
+                 library you did not choose.",
                 dir.display()
             ));
         };
-        return link(&dir, kind);
+        return link(&dir, kind, &target);
     }
 
-    let vendored = crate_dir.join("vendor").join(&target).join("libirgx.a");
+    let vendored_as = VENDOR_ALIASES
+        .iter()
+        .find_map(|(alias, served_by)| (*alias == target).then_some(*served_by))
+        .unwrap_or(&target);
+    let vendored = crate_dir.join("vendor").join(vendored_as).join("libirgx.a");
     println!("cargo:rerun-if-changed={}", vendored.display());
     if vendored.is_file() {
-        return link(vendored.parent().unwrap(), Kind::Static);
+        return link(vendored.parent().unwrap(), Kind::Static, &target);
     }
 
     let Some(checkout) = engine_checkout(&crate_dir) else {
@@ -103,12 +167,12 @@ fn main() {
         let built = checkout.join("zig-out").join("lib");
         if let Some(kind) = library_in(&built) {
             println!("cargo:rerun-if-changed={}", built.display());
-            return link(&built, kind);
+            return link(&built, kind, &target);
         }
     }
 
     match zig_build(&checkout, &target) {
-        Ok((dir, kind)) => link(&dir, kind),
+        Ok((dir, kind)) => link(&dir, kind, &target),
         Err(why) => fail(&format!("{}\n\n{why}", unserved(&target, &crate_dir))),
     }
 }
@@ -119,7 +183,10 @@ enum Kind {
     Shared,
 }
 
-fn link(dir: &Path, kind: Kind) {
+fn link(dir: &Path, kind: Kind, target: &str) {
+    for lib in system_libs(target) {
+        println!("cargo:rustc-link-lib=dylib={lib}");
+    }
     match kind {
         // The archive is staged into `$OUT_DIR` and searched for there rather
         // than linked out of `dir`, because a directory holding `libirgx.a`
@@ -131,11 +198,23 @@ fn link(dir: &Path, kind: Kind) {
         // preference. A search path rather than the archive's own path as a
         // link arg, because link args do not reach a crate that depends on
         // this one and `rustc-link-search` does.
+        //
+        // The staging copy is also where one naming difference is absorbed.
+        // `build.zig` installs the archive as `libirgx.a` on every target, but
+        // rustc asks the platform's linker for `irgx`, and MSVC's spells that
+        // `irgx.lib`. Renaming on the way into `$OUT_DIR` keeps the vendored
+        // set one shape and puts the platform's spelling only where the
+        // platform's linker reads it.
         Kind::Static => {
             let staged = PathBuf::from(env("OUT_DIR")).join("link");
             let source = dir.join("libirgx.a");
+            let linkable = if target.ends_with("-msvc") {
+                "irgx.lib"
+            } else {
+                "libirgx.a"
+            };
             std::fs::create_dir_all(&staged)
-                .and_then(|()| std::fs::copy(&source, staged.join("libirgx.a")))
+                .and_then(|()| std::fs::copy(&source, staged.join(linkable)))
                 .unwrap_or_else(|why| {
                     fail(&format!(
                         "could not stage {} into {}: {why}",
@@ -151,7 +230,12 @@ fn link(dir: &Path, kind: Kind) {
             println!("cargo:rustc-link-lib=dylib=irgx");
             // So the linked binary resolves the library at run time. Only the
             // shared rungs need it; a static link has nothing to find later.
-            println!("cargo:rustc-link-arg=-Wl,-rpath,{}", dir.display());
+            // Windows is excluded because it has no rpath at all - a DLL is
+            // resolved from the loader's search path - so the flag would be an
+            // unknown argument to its linker rather than a no-op.
+            if !target.contains("-windows") {
+                println!("cargo:rustc-link-arg=-Wl,-rpath,{}", dir.display());
+            }
         },
     }
 }
@@ -164,8 +248,11 @@ fn library_in(dir: &Path) -> Option<Kind> {
     shared_in(dir)
 }
 
+/// On Windows the linkable half of a shared build is the import library beside
+/// the DLL rather than the DLL itself, so both spellings count as "there is a
+/// shared engine here".
 fn shared_in(dir: &Path) -> Option<Kind> {
-    let found = ["libirgx.dylib", "libirgx.so"]
+    let found = ["libirgx.dylib", "libirgx.so", "irgx.lib", "libirgx.dll.a"]
         .iter()
         .any(|name| dir.join(name).is_file());
     found.then_some(Kind::Shared)
@@ -239,10 +326,22 @@ fn unserved(target: &str, crate_dir: &Path) -> String {
         }
     }
     served.sort();
+    // The MSVC arms land here by design rather than by omission, and saying so
+    // is the difference between "this crate forgot Windows" and "this archive
+    // cannot be built anywhere but a Windows machine with Visual Studio".
+    let msvc = if target.ends_with("-msvc") {
+        " No archive is vendored for any MSVC target and none can be: Zig cross-compiles \
+         to every other target from one host, but the MSVC C runtime headers are not \
+         redistributable, so an MSVC archive can only be produced on a machine that has \
+         Visual Studio. Install Zig beside it and this build script will build the engine \
+         from source, or use the -pc-windows-gnu target, which is vendored."
+    } else {
+        ""
+    };
     format!(
         "irregex has no prebuilt engine for {target}. This crate vendors an archive for \
          {}, and nothing else. There is no pure-Rust fallback: the engine is Zig, so \
-         either it links or the crate does not build.",
+         either it links or the crate does not build.{msvc}",
         if served.is_empty() {
             "no target (the vendor directory is empty)".to_owned()
         } else {

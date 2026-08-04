@@ -62,7 +62,12 @@ _DLL = "bin/irgx.dll"
 # Zig links against exactly that version rather than the host's, which is what
 # makes a manylinux wheel from a macOS laptop a real thing rather than a claim.
 # macOS 11 is where arm64 begins, so it is the floor there and pip rejects any
-# tag below it for that architecture.
+# tag below it for that architecture. Windows names its floor for the same
+# reason the others do, and picks Windows 10 RS4 because that is what
+# `build.zig`'s own `check-windows` drift gate compiles against - a wheel and
+# the gate that guards it should describe one platform. The tag cannot say so
+# (`win_amd64` carries no version), which makes writing it here the only place
+# the promise exists.
 #
 # On the CPU floors. A wheel tag says which OS and architecture it runs on and
 # has no way to say which *instructions*, so that half of the promise is kept
@@ -114,7 +119,20 @@ MATRIX = (
         ("linux", "aarch64"),
     ),
     Target(
-        "windows-x86_64", "x86_64-windows-gnu", "win_amd64", _DLL, "x86_64_v2", ("win32", "AMD64")
+        "windows-x86_64",
+        "x86_64-windows.win10_rs4-gnu",
+        "win_amd64",
+        _DLL,
+        "x86_64_v2",
+        ("win32", "AMD64"),
+    ),
+    Target(
+        "windows-arm64",
+        "aarch64-windows.win10_rs4-gnu",
+        "win_arm64",
+        _DLL,
+        "baseline",
+        ("win32", "ARM64"),
     ),
 )
 

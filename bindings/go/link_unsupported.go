@@ -1,4 +1,4 @@
-//go:build cgo && !irgx_syslib && !(darwin && (amd64 || arm64)) && !(linux && (amd64 || arm64))
+//go:build cgo && !irgx_syslib && !(darwin && (arm64 || amd64)) && !(linux && (amd64 || arm64)) && !(windows && (amd64 || arm64))
 
 package irgx
 
