@@ -36,6 +36,21 @@ pub const Regex = program.Regex;
 pub const chorus = @import("linear/program/chorus.zig");
 pub const Chorus = chorus.Chorus;
 
+// ── The same slate, anchored, longest-first: the lexer primitive ─────────────
+// A chorus asks which patterns appear somewhere in a haystack. A munch asks
+// which one reaches furthest starting at an exact offset — maximal munch, the
+// rule every tokenizer runs on. It is here rather than in a consumer because
+// every part of it is a property of automata and not of any one grammar: the
+// grouping that carries a slate past one 64-bit attribution mask, the bisected
+// admission that charges an unusable pattern to itself instead of to the slate,
+// the per-call `Allow` a state-directed lexer narrows the slate with (which has
+// to ride the walk, since a long forbidden match hides every short permitted
+// one), and the refusal to answer a word-boundary question from an offset whose
+// left context is absent. What is NOT here is the tie-break, because that one
+// really does belong to a grammar — so a match names every pattern that tied.
+pub const munch = @import("linear/program/munch.zig");
+pub const Munch = munch.Munch;
+
 // ── The parsed shape + its lowering — what an INDEX PLANNER reasons over ──────
 // A prefilter planner (`kernel/query/cover.zig`) chooses which trigrams an
 // index may require by reading the pattern's parsed structure, and it must do so

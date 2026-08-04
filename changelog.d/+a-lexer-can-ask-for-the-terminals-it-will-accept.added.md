@@ -1,0 +1,5 @@
+A munch answered one question: starting here, which pattern reaches furthest. Real lexers ask a narrower one, because only some terminals are legal where the parser currently stands - lex's start conditions, tree-sitter's valid-symbol set, Lezer's contextual tokenizer.
+
+`longestAmong` takes an `Allow` and answers among the permitted patterns only. It is not a filter over `longest`: a long illegal match hides every short legal one behind it, so by the time you have an answer to filter, the answer you wanted is already gone. tree-sitter-json is the smallest possible demonstration - `string_content` is `[^\\"\n]+`, which asked unconditionally takes `: [1, true, null], ` in one bite and swallows six structural tokens. So the restriction rides the walk instead, where it costs one AND per accepting state and nothing per byte.
+
+`Allow` is addressed in the caller's own pattern ordinals and refilled per token, so a lexer asking a different question at every token allocates once. A pattern the slate refused has no seat, and admitting it is a no-op rather than a bit landing on somebody else's pattern.

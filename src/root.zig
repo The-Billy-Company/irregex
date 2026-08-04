@@ -111,6 +111,12 @@ pub const parallel = @import("kernel/math/parallel.zig");
 const regex_engine = @import("kernel/regex/regex.zig");
 pub const regex = regex_engine.program;
 pub const regex_chorus = regex_engine.chorus;
+/// The anchored, longest-first face of the same slate: maximal munch, the rule
+/// every lexer runs on. A chorus asks which patterns occur SOMEWHERE; a munch
+/// asks which one reaches furthest starting exactly HERE. Named at the root
+/// because a tokenizer built on this engine is a consumer of the package and
+/// not of one of its internals.
+pub const regex_munch = regex_engine.munch;
 pub const regex_dfa = regex_engine.dfa;
 /// The determinizer that discovers that `Dfa` — re-exported for the automata
 /// lane's cost harness (`bench/rungs/automata/`), whose claims are each about
@@ -457,6 +463,7 @@ test {
     _ = @import("kernel/regex/analysis/swell_test.zig"); // crest sieve, query half: forced-crest ĝ vs hand-computed + Sieve Theorem vs the matcher
     _ = @import("kernel/regex/linear/program/core_test.zig"); // T2 engine: parser + Pike VM + prefilters
     _ = @import("kernel/regex/linear/program/chorus_test.zig"); // T2 engine: attributing union — tiers + differential vs N engines
+    _ = @import("kernel/regex/linear/program/munch_test.zig"); // T2 engine: anchored longest-match slate — bisected admission + differential vs N engines
     _ = @import("kernel/regex/matcher.zig"); // engine-neutral match seam: linear-arm forwarding
     _ = @import("kernel/regex/pcre2/backend.zig"); // PCRE2 `-P` backend: engine + literal co-located tests
     _ = @import("kernel/regex/pcre2/backend_test.zig"); // PCRE2 adversarial: lookaround/backref/limit/JIT parity
