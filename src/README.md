@@ -1,6 +1,6 @@
 # irregex/src
 
-This is the prose half of [`../contract/irregex.ward`](../contract/irregex.ward).
+This is the prose half of [`../contract/irregex.zone`](../contract/irregex.zone).
 The Zig tree holds three product faces (`gist` · `relate` · `irregex`) over one
 shared stack organized into **five layers**, read bottom-up. `root.zig`
 re-exports every tier through the flat C ABI in `../include/irgx.h`;

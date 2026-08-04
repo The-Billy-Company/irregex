@@ -3,7 +3,7 @@
 // The prose version of this file is src/README.md and the per-tier READMEs.
 // This is the machine-checkable half: Zig has no visibility rules between
 // files inside a package, so every boundary those READMEs describe is
-// convention until it is written here. Judged by `ward verify` (the ward
+// convention until it is written here. Judged by `zoning verify` (the zoning
 // gate riding in each consumer's CI).
 //
 // Post-split scope (the ecosystem cut of 2026-07-29, amended 2026-07-30):
@@ -12,7 +12,7 @@
 // compression-kinship tiers (and the cento quoter over this package's
 // FM-index) live in `relate`; the daemon transport, CLI faces, and C ABI
 // live in `gist`; the composed face lives in `blast`. Each carries its own
-// contract/*.ward.
+// contract/*.zone.
 
 package irregex {
     // root.zig is the module's public face: it re-exports every tier (and the
@@ -33,7 +33,7 @@ package irregex {
 // persisted stands on, and `corpus/index/trigrams/` is below the freshness
 // fold that reads its persisted pair. A tier is the unit of "may not point
 // up" — so wherever direction is meant, there is a tier.
-tiers {
+zones {
     // Platform floor — std only, and below even the instrumentation because it
     // is what the instrumentation writes *through*. One file holding every
     // primitive whose spelling differs across an OS (handle-relative open, the
@@ -48,6 +48,14 @@ tiers {
 
     // The error taxonomy. Above assay only because it reports through it.
     fault       fault.zig
+
+    // The answer vocabulary — a byte span, a pattern id, the two together.
+    // std only, and at the bottom because it is what every tier above reports
+    // a position IN: the span engine, the class-run kernel, the hosted API and
+    // the C ABI all speak it, so anywhere higher would force one of them to
+    // invert. It sits above `fault` only to keep the two vocabularies in one
+    // reading order, not because it needs anything from it.
+    mark        mark.zig mark_test.zig
 
     // The wire floor: framing primitives (`frame.zig`), the one artifact
     // digest (`signet.zig`), and the artifact home (`home.zig`). It lives
@@ -182,7 +190,7 @@ keep **/*_fuzz.zig to root.zig
 
 // Seals: directories that are deep modules — enter by the entry file.
 //
-// Only directories that hold this today are listed. `ward status` prints the
+// Only directories that hold this today are listed. `zoning status` prints the
 // two other lists: what is sealable for free right now, and the entry-file
 // bypass count for everything still open. Both are burndown queues, not
 // failures. (`corpus/index/frame/` is deliberately NOT sealed: it is the wire
@@ -227,7 +235,7 @@ forbid cycles across directories
 // matching is a hard failure, so paying the debt forces deleting the entry —
 // they shrink instead of accreting as folklore.
 
-allow cycle {
+variance cycle {
     kernel/regex/linear/ladder/verdict.zig
     kernel/regex/linear/pike/scratch.zig
     kernel/regex/linear/pike/search.zig
@@ -242,7 +250,7 @@ allow cycle {
         \\shared program representation into a leaf both sides import, leaving
         \\`core.zig` a pure re-exporter.
 
-allow cycle {
+variance cycle {
     exec/cold/engine/serial.zig
     exec/cold/engine/swarm/swarm.zig
 } because
@@ -252,7 +260,7 @@ allow cycle {
         \\byte-identical. Retire by extracting that per-file path into a leaf both
         \\import.
 
-allow cycle {
+variance cycle {
     exec/session/answer/gather.zig
     exec/session/facet/fold.zig
     exec/session/facet/present.zig

@@ -189,13 +189,13 @@ and it will be the first thing review asks about.
 ## Architecture is machine-checked
 
 Zig has no visibility rules between files in a package, so every boundary the
-READMEs describe would be convention. [`contract/irregex.ward`](contract/irregex.ward)
-is the machine-checkable half: tiers, what may import what, and the exceptions
-that have to state a reason. It is judged by the `ward` gate riding in each
-consumer's CI.
+READMEs describe would be convention. [`contract/irregex.zone`](contract/irregex.zone)
+is the machine-checkable half: zones, what may import what, and the variances
+that have to state a reason. [`zoning verify`](https://github.com/The-Billy-Company/zoning)
+judges it against the real `@import` graph.
 
 If your change needs a new import edge, edit the contract in the same commit and
-say why in the exception. Do not route around it.
+say why in the variance. Do not route around it.
 
 ## New algorithms want a dossier
 

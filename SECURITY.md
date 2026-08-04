@@ -118,8 +118,8 @@ kind of report we want:
 - ratchets under [`quality/ratchets/`](quality/ratchets/README.md) that hold
   behavior a test cannot: one canonical out-of-memory exit, a fault taxonomy
   every error path is drawn from, and a gate against bypassing the assay;
-- an architecture contract ([`contract/irregex.ward`](contract/irregex.ward))
-  that machine-checks the import topology, so a tier cannot quietly reach past
+- an architecture contract ([`contract/irregex.zone`](contract/irregex.zone))
+  that machine-checks the import topology, so a zone cannot quietly reach past
   the boundary it was given.
 
 ## Provenance and supply chain

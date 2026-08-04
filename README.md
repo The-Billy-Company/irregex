@@ -603,7 +603,7 @@ resource caps instead, because there is no slower exact tier below it.
 ## What's in the Toolkit
 
 Four tiers, low to high. Nothing above may be imported by anything below, and
-[`contract/irregex.ward`](contract/irregex.ward) enforces that against the real
+[`contract/irregex.zone`](contract/irregex.zone) enforces that against the real
 `@import` graph rather than against anybody's memory of it.
 
  - **kernels** ([`src/kernel/`](src/kernel/README.md)) – algorithms and math. No
@@ -816,7 +816,7 @@ disagrees with it.
 There is exactly one grammar, and that is a property rather than a promise. Every
 one of those stages is an internal, callers enter through
 [`regex.zig`](src/kernel/regex/regex.zig), and
-[`contract/irregex.ward`](contract/irregex.ward) seals the package so an import
+[`contract/irregex.zone`](contract/irregex.zone) seals the package so an import
 cannot reach past it.
 
 The seal is soundness, not tidiness. The crest sieve once carried a second,
@@ -1152,8 +1152,8 @@ happened rather than a claim that it did.
  against the VM at scale before it is allowed to arm: 350,200 cases for the
  composition rung, 419,250 for symbolic, and 16,320 for the one-pass capture
  engine.
- - **Structure as law.** [`contract/irregex.ward`](contract/irregex.ward)
- declares the tier order, the seals, a five-hop reach ceiling, and a cycle ban
+ - **Structure as law.** [`contract/irregex.zone`](contract/irregex.zone)
+ declares the zone order, the seals, a five-hop reach ceiling, and a cycle ban
  over the real `@import` graph.
  - **Five baseline-guarded scanners** in
  [`quality/ratchets/`](quality/ratchets/README.md): inline asm must be

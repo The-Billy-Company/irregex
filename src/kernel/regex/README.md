@@ -15,9 +15,10 @@ aho-corasick + teddy; sibling `query/` ≈ the meta engine).
 folder enters through [`regex.zig`](regex.zig), which re-exports the compiled
 handle, the engine-neutral `Matcher` seam, captures, and the leaf data
 namespaces the surface shares. The seal in
-[`contract/irregex.ward`](../../../contract/irregex.ward) makes
-that a build-time law — the `ward` gate over `contract/irregex.ward` fails any import that reaches past
-it (the judge currently lives in the private consuming monorepo). The reason is soundness, not tidiness: the crest sieve once carried a
+[`contract/irregex.zone`](../../../contract/irregex.zone) makes
+that a build-time law — [`zoning verify`](https://github.com/The-Billy-Company/zoning)
+fails any import that reaches past it. The reason
+is soundness, not tidiness: the crest sieve once carried a
 second, smaller parser, the two grammars disagreed on the zero-width `\<` /
 `\>` boundaries, and it silently pruned two thirds of the matching corpus. A
 single entry point is how "there is exactly one grammar" becomes a property

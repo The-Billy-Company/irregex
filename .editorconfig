@@ -31,9 +31,9 @@ indent_size              = 4
 indent_style = space
 indent_size  = 4
 
-# The ward contract language (contract/*.ward) - a house DSL with no formatter,
-# so this file IS its layout contract. C-style comments, 4-space blocks.
-[*.ward]
+# The zoning contract language (contract/*.zone) - a small DSL with no
+# formatter, so this file IS its layout contract. C-style comments, 4-space blocks.
+[*.zone]
 indent_style = space
 indent_size  = 4
 
