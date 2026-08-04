@@ -8,12 +8,18 @@
 # candidates (`gist/bench/certificate/report/indexq.py` refuses to splice a win
 # outside the declared cost envelope). This script measures the cost half.
 #
-# Fairness is not re-litigated here: `gist/bench/dominance/races/field.sh`
-# already owns the contract that csearch indexes gist's EXACT corpus — the
-# persisted `paths.list`, the doc→path table gist's own indexer emitted — so
-# the two indexes cover byte-identical files. This script SOURCES that file
-# (it is a library, never executed) and reuses its paths and its `cindex`
-# invocation verbatim rather than keeping a second, driftable copy.
+# Fairness is not re-litigated here: the vendored floor at
+# `bench/apparatus/field.sh` already owns the contract that csearch indexes
+# gist's EXACT corpus — the persisted `paths.list`, the doc→path table gist's own
+# indexer emitted — so the two indexes cover byte-identical files. This script
+# SOURCES that file (it is a library, never executed) and reuses its paths and
+# its `cindex` invocation verbatim rather than keeping a second, driftable copy.
+#
+# It lives with Layer L rather than with the binary it times, which is the
+# ownership law read correctly: the *claim* is about this engine's index quality,
+# and that a `gist` build is what prices the gist side is a fact about the
+# apparatus. The floor resolves `PRODUCT` for exactly this reason, so the arm
+# reaches the shipped indexer without this package depending on it.
 #
 # Emits a two-row TSV (`indexcost.tsv`) that the reporter reads. Peak RSS comes
 # from the kernel via `/usr/bin/time` (`-l` on BSD/macOS, `-v` on GNU), in KiB
@@ -21,17 +27,12 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# The field belongs to the gist product checkout after the package split.
-# Resolve that sibling first; ShellCheck cannot follow the resulting path, so
-# the variables it exports are intentionally opaque to static analysis.
-# shellcheck source=../../apparatus/roots.sh
-source "${HERE}/../../apparatus/roots.sh"
-gist_resolve_roots "${HERE}"
 # Declarations describe the field library's interface to static analysis; the
-# source immediately below supplies every value and the `have` helper.
+# source immediately below supplies every value and the `have` helper. (The floor
+# resolves the roots itself, so there is no separate `roots.sh` source here.)
 OUT="" COMPETE_DIR="" PATHS_LIST="" GIST_BIN="" CORPUS="" CSEARCH_IDX=""
-# shellcheck disable=SC1090,SC1091
-source "${PRODUCT}/bench/dominance/races/field.sh"
+# shellcheck source=../../apparatus/field.sh
+source "${HERE}/../../apparatus/field.sh"
 
 OUT_TSV="${OUT}/indexcost.tsv"
 mkdir -p "${COMPETE_DIR}" "${OUT}"

@@ -20,15 +20,14 @@ atoms of a clause, AND over the trigrams of an atom (`Index.queryPlan`) — whic
 covers csearch's tree exactly: its OR-of-ANDs alternations become one clause of
 multi-trigram atoms, its AND-of-ORs boundary products become several clauses.
 
-stdlib only. Probe rows are parsed out of `bench/apparatus/harness/probes.zig`, the same
-registry Layers A and D import, so the slate cannot drift from theirs.
+stdlib only. Probe rows come from `slate.py`, which reads the same Zig registries
+Layers A and D import, so this slate cannot drift from theirs.
 """
 
 from __future__ import annotations
 
 import argparse
 import os
-import re
 import subprocess
 import sys
 from pathlib import Path
@@ -39,41 +38,11 @@ from pathlib import Path
 # is why the report prints how many clauses were dropped (zero on this slate).
 MAX_ATOMS = 4096
 
-PROBE_ROW = re.compile(
-    r'\.class\s*=\s*"([^"]+)"\s*,\s*\.kind\s*=\s*\.(\w+)\s*,\s*\.pattern\s*=\s*"((?:[^"\\]|\\.)*)"'
-)
-
-
-def zig_unescape(s: str) -> str:
-    """Decode a Zig string-literal body (only `\\\\`, `\\"`, `\\n`, `\\t` occur here)."""
-    out, i = [], 0
-    simple = {"n": "\n", "t": "\t", "r": "\r", '"': '"', "\\": "\\", "'": "'"}
-    while i < len(s):
-        c = s[i]
-        if c == "\\" and i + 1 < len(s):
-            nxt = s[i + 1]
-            if nxt in simple:
-                out.append(simple[nxt])
-                i += 2
-                continue
-            if nxt == "x":
-                out.append(chr(int(s[i + 2 : i + 4], 16)))
-                i += 4
-                continue
-        out.append(c)
-        i += 1
-    return "".join(out)
-
-
-def read_probes(path: Path) -> list[tuple[str, str, str]]:
-    """(class, kind, pattern) rows from the shared Zig probe registry.
-
-    Commented rows are skipped: `probes.zig` carries staged classes in `//`
-    comments, and Layer L must speak about exactly the live slate Layers A and D
-    do — no more.
-    """
-    live = "\n".join(ln for ln in path.read_text().splitlines() if not ln.lstrip().startswith("//"))
-    return [(cls, kind, zig_unescape(pat)) for cls, kind, pat in PROBE_ROW.findall(live)]
+# The slate is `slate.py`'s to define — it owns both the registry rows and the
+# judgement of whether a corpus exercises them, and two parsers for one Zig
+# literal is exactly the drift this whole layer exists to rule out.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from slate import read_probes  # noqa: E402
 
 
 # ── csearch Query.String() → tree ────────────────────────────────────────────

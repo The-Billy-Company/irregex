@@ -32,6 +32,7 @@ It splices a `## Layer C — roofline (hardware ceiling)` section into
 
 import argparse
 import json
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -50,11 +51,11 @@ SUMMARY = (
     "decomposes it with matched controls when present. It reports near-roof placement "
     "only at or above 80%; otherwise it reports optimization headroom."
 )
-# Anchor the shared cert dir at the repo root (computed from this file's location:
-# bench/bounds/roofline/report.py → repo root
-# from any CWD — the zig steps and port/mca.sh already resolve the repo root, and
-# `.gist` always lives there. A `--out-dir` override still wins.
-OUT_DIR = Path(__file__).resolve().parents[3] / ".gist"
+# GIST_DIR first, then the package's own `.gist` — the same order `outDir()` in
+# `home.zig` resolves, so the splicer reads the JSON the lane just wrote even
+# when a mint relocated the artifact home. Anchored off this file rather than the
+# CWD so it works from anywhere. A `--out-dir` override still wins.
+OUT_DIR = Path(os.environ.get("GIST_DIR") or Path(__file__).resolve().parents[3] / ".gist")
 
 # Apple M-series shared P-cluster L2 — a candidate set larger than this spills to
 # DRAM, so an apparent rate above the DRAM ceiling on a >L2 working set is a
@@ -375,6 +376,19 @@ def render(roof: dict, pts: list[ClassPoint], compute: ComputeBound | None) -> s
     lines.append("")
 
     # ── Layer A per-class end-to-end operating point (as-instructed ingest) ──
+    # Optional on purpose: `certify.csv` is Layer A's artifact, and Layer A is
+    # minted by `gist` — a package certifies what it builds. This engine package
+    # can measure its own roofline without a product binary in the tree, so the
+    # absence of a downstream layer narrows the section rather than voiding it.
+    if not pts:
+        lines.append(
+            "> No `certify.csv` in this bundle, so the per-class end-to-end operating point is "
+            "not shown. That table is Layer A's artifact and Layer A is minted by `gist`; the "
+            "ceilings and the verdict above are measured here and do not depend on it."
+        )
+        lines.append("")
+        return "\n".join(lines)
+
     lines.append(
         "<details><summary>Layer A per-class end-to-end operating point "
         "(from certify.csv)</summary>\n"
@@ -473,15 +487,17 @@ def main() -> int:
     if not rj.exists():
         print(f"roofline_report: {rj} missing — run `zig build roofline` first.")
         return 1
-    if not cc.exists():
-        print(f"roofline_report: {cc} missing — run `zig build certify` first (wall-clock ok).")
-        return 1
-
     roof = json.loads(rj.read_text())
-    pts = load_certify(cc)
-    if not pts:
-        print(f"roofline_report: {cc} has no rows — did certify run?")
-        return 1
+    # Layer A's CSV is a downstream package's artifact (`gist` mints it), so a
+    # bundle without one still gets a full Layer C — minus the one supplementary
+    # table that reads it. An EMPTY csv is a different thing: something ran and
+    # produced no rows, which is a broken measurement rather than an absent one.
+    pts: list[ClassPoint] = []
+    if cc.exists():
+        pts = load_certify(cc)
+        if not pts:
+            print(f"roofline_report: {cc} has no rows — did certify run?")
+            return 1
     compute = load_compute_ceiling(pc, Clock.read(roof))
 
     section = render(roof, pts, compute)

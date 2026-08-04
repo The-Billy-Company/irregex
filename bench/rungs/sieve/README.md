@@ -1,17 +1,25 @@
 # bench/rungs/sieve — measuring what a filter declines to read
 
 This folder measures **what a filter declines to read**, from both ends of the
-pipeline and on both tiers. `bench.zig` proves the quotient sieve's per-position
-rejection inside the matcher; `indexq.zig` measures the trigram index's
-per-document selectivity against csearch's; the two `*_parity.sh` gates hold each
-wired tier byte-identical to what it replaced. Everything here is fail-closed
-against the production matcher — nothing reports a speed number it has not first
-proved correct.
+pipeline. `bench.zig` proves the quotient sieve's per-position rejection inside
+the matcher; `indexq.zig` measures the trigram index's per-document selectivity
+against csearch's. Everything here is fail-closed against the production
+matcher — nothing reports a speed number it has not first proved correct.
+
+Both lanes link this package's engine directly and build their own index, so
+they run standalone with nothing but a Zig toolchain (and, for csearch's arm,
+`cindex` on `PATH`). That is the line this folder sits on: the claims here are
+about the **filter**, which is engine machinery this package builds and owns.
 
 - **`zig build sieve`** → the quotient sieve (below).
 - **`zig build indexq`** → [Layer L, index quality vs csearch](#layer-l--index-quality-head-to-head-against-csearch).
-- **`bash cover_parity.sh`** → the cold tier's cover plan changed no answer.
-- **`bash warm_parity.sh`** → [the resident session's copy of that stack](#the-warm-tier-gate--a-daemon-may-not-prune-differently-than-cold).
+
+The two prefilter **parity gates** that used to live here — `cover_parity.sh` and
+`warm_parity.sh` — drive a `gist` binary this package does not build, so they
+went with the product to
+`gist/bench/conformance/gates/parity/`. Same for `indexcost.sh`, which sources
+the competitor field registry and now sits beside it in
+`gist/bench/dominance/races/`.
 
 # The quotient sieve's production proof harness
 
@@ -139,8 +147,13 @@ python3 bench/rungs/sieve/csearch_plan.py \
   --out .gist/indexq_csearch.plan
 
 zig build indexq -Doptimize=ReleaseFast   # selectivity + precision → indexq.tsv
-bash bench/rungs/sieve/indexcost.sh       # size / build / peak RSS → indexcost.tsv
 ```
+
+The **cost** half of the claim — index size, build time, peak RSS — is measured
+by `bench/rungs/sieve/indexcost.sh`, beside this file. Pricing an index build
+means running the indexer a user actually runs, so it reaches the shipped `gist`
+binary through the vendored floor's `PRODUCT` root rather than through a
+dependency on that package.
 
 `zig build indexq` runs with the repo root as its cwd (`build.zig` sets it), so
 its `indexq.tsv` is written to `.gist/` regardless of where you
@@ -150,12 +163,11 @@ invoked it from.
 the planner's cost ceilings are a **measured frontier** rather than asserted
 constants; the shipped defaults are the knees of that sweep.
 
-`indexcost.sh` **sources** the competitor field library (never executed
-directly) so the fairness contract — csearch indexes gist's exact corpus, the
-persisted `paths.list` — is not re-litigated or duplicated here. That library
-went to the sibling `gist` package with the rest of the dominance lane, so this
-script does not currently resolve it; see the note under "Splicing the
-certificate".
+`indexcost.sh` **sources** the vendored measurement floor
+(`bench/apparatus/field.sh`, never executed directly) so the fairness contract —
+csearch indexes gist's exact corpus, the persisted `paths.list` — is not
+re-litigated or duplicated here. That floor is byte-identical in every package,
+so the source resolves locally instead of reaching across a repository boundary.
 
 ## Splicing the certificate
 
@@ -180,102 +192,3 @@ if gist admits **more** on any single class, if any arm's verified hit count
 differs, or if gist's index exceeds 1.10× csearch's size or 1.50× its build
 time — selectivity bought with a pathologically bigger or slower index is not a
 better index.
-
----
-
-# The warm tier gate — a daemon may not prune differently than cold
-
-`bash warm_parity.sh` guards the day the resident session was given the cold
-tier's pruning stack. Before it, warm asked the trigram index exactly one
-question — the flat OR of the sound prefilter literals — while cold had been
-asking two stronger ones for a while: the conjunctive cover plan and the crest
-sieve over per-document ρ(d). A literal-free class repetition like `[0-9a-f]{8}`
-forces no trigram, so the daemon read **100% of the corpus** for it while the CLI
-beside it read 6%.
-
-Closing that gap means strictly more elision, and a prefilter that elides one
-file it should have read is the worst defect a search tool can ship: silent,
-total, and indistinguishable from "no match". So the gate asserts the only
-property that matters — the answer did not move — on four arms per case:
-
-| arm          | what it is                                                 |
-| ------------ | ---------------------------------------------------------- |
-| `warm`       | the resident daemon with the stack on                      |
-| `pre-wiring` | **a second daemon** with `GIST_NO_COVER=1 GIST_NO_CREST=1` |
-| `live`       | `gist --no-index` — no index at all, the semantic oracle   |
-| `rg`         | ripgrep, so gist's two tiers cannot agree on a shared bug  |
-
-All four must produce the same line multiset. `warm` vs `pre-wiring` isolates the
-two new prunings on ONE binary, so no build difference can confound the result;
-`live` is the transitive proof that warm ≡ cold without either path having to
-trust a shared index; `rg` is the third-party check.
-
-**The baseline is a second daemon, and that is load-bearing.** Both stand-down
-knobs are read where the pruning is derived — inside the resident session — so
-exporting them on a client that gets served warm changes nothing at all, and a
-baseline arm spelled that way would silently be a copy of the arm under test.
-Two sockets, two sessions, one binary.
-
-## Three ways this gate refuses to pass vacuously
-
-1. **A stack that never fired.** Parity is trivially satisfied by a pruning that
-   does nothing, so the gate reads the tier and the admitted document count back
-   out of the daemon's own `.index` trace — armed on the daemon, relayed to the
-   client over the `diag` frame — and fails if either half narrowed nothing. The
-   cover's contribution and the sieve's are attributed **separately**, because a
-   pattern like `[0-9a-f]{8}-[0-9a-f]{4}` gets both and crediting its whole prune
-   to the sieve would overstate the half being introduced.
-2. **A daemon that died mid-run.** A dead daemon and a healthy decline are the
-   same `[cold]` string at the client, and cold answers correctly — so every
-   later case would keep passing while testing nothing. A death is a hard stop
-   naming the case that caused it.
-3. **A corpus that moved underneath it.** The corpus is real host source copied
-   into a throwaway tree and indexed there. ~10 agents edit this branch
-   concurrently and a repo-wide arm takes long enough that two _identical_ runs
-   already disagree; freezing the bytes is what lets a difference between arms
-   mean something.
-
-The case list is the axis list, not coverage theater — each case exercises a
-different stand-down: `-i` stands the cover down but keeps the sieve, `-F` and
-`-P` stand both down (a fixed string is not regex source; PCRE2 denotes the
-pattern under a foreign grammar), `-v` walks every document so the candidate set
-must be a positive superset, and the unprovable patterns (`.*`) must be pruned by
-nothing at all.
-
-## What it measured
-
-27 cases byte-identical across all four arms on a frozen 5,883-file corpus. The
-cover plan narrowed the index answer on 5 patterns (39-93% of the pre-wiring
-candidate set), and the crest sieve narrowed it further on 7 (44-94%) — including
-the four the trigram index concedes entirely, where `tier=none` and the sieve is
-the _only_ thing pruning. `[0-9a-f]{8}` went from every document to 6% of them.
-
-End-to-end that is **1.4-1.9× geomean** over the ten patterns either half can
-prune. It is a range because it is a range: two runs on this laptop reproduced
-the candidate columns _exactly_ — same tier, same percentages, every row — and
-landed at 1.43× and 1.87×. Both arms are the same client spawn and socket
-handshake around a 3-18 ms answer, so a fixed cost sitting in both terms
-compresses the ratio toward 1, and how much it compresses depends on what else
-the machine is doing. Read the candidate columns as the measure of the two
-prunings and the milliseconds as what a caller feels; the gate deliberately
-asserts the former and only reports the latter.
-
-## Running both parity gates
-
-`the prefilter parity gates under`bench/rungs/sieve/`` is the wired entry point: it builds the ReleaseFast
-binary both scripts require and runs them in dependency order — the cold tier's
-cover plan first, then the resident session's copy of it. It stays out of
-`zig build test`, which is CI-hermetic and needs only Zig, because these two
-freeze a multi-thousand-file corpus, index it, and bring up resident daemons.
-`rg` is optional (a missing ripgrep drops that arm and keeps the other three);
-`rsync` is not, since it is how the corpus gets frozen, so the target skips
-rather than measure a tree ten agents are editing.
-
-```bash
-the prefilter parity gates under `bench/rungs/sieve/`                # both gates, binary built for you
-
-cd <irregex-repo-root>                 # or one at a time, mid-edit
-zig build -Doptimize=ReleaseFast
-bash bench/rungs/sieve/cover_parity.sh
-bash bench/rungs/sieve/warm_parity.sh   # KEEP=1 leaves the corpus + daemon logs
-```

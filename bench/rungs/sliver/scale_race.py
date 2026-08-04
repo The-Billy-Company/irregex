@@ -13,7 +13,7 @@ kernel, LLVM, the Go tree and the Rust tree), on the same bytes, and reports:
     "GitHub scale" is usually actually decided.
 
 Statistics are NOT reimplemented here: medians, bootstrap CIs and the
-Mann-Whitney dominance verdict all come from `bench/apparatus/stats.py`.
+Mann-Whitney dominance verdict all come from `bench/apparatus/statcore.py`.
 
 Fairness follows `gist/bench/dominance/races/field.sh`:
   · GIST_UNCAP=1, so gist's agent-context output budget cannot clip a
@@ -47,7 +47,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 KERNEL = HERE.parent.parent.parent
 sys.path.insert(0, str(KERNEL / "bench" / "apparatus"))
-from stats import dominance, median_ci  # noqa: E402
+from statcore import dominance, median_ci  # noqa: E402
 
 GIST = KERNEL / "zig-out" / "bin" / "gist"
 

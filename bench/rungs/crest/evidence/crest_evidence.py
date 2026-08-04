@@ -24,7 +24,6 @@ import verify
 
 HERE = Path(__file__).resolve().parent
 KERNEL = HERE.parents[3]  # evidence → crest → rungs → bench → repo root
-REPO = KERNEL
 CONTRACT = KERNEL / "contract/crest_evidence.toml"
 UTC = timezone.utc
 
@@ -74,7 +73,7 @@ def _sha256(path: Path) -> str:
 
 def _git(*args: str, text: bool = True) -> str | bytes:
     return subprocess.check_output(
-        ["git", "-C", str(REPO), *args],
+        ["git", "-C", str(KERNEL), *args],
         text=text,
         stderr=subprocess.PIPE,
     ).strip()
@@ -94,7 +93,7 @@ def _clean_commit() -> str:
 def _contract_at(commit: str) -> _TomlTable:
     path = "contract/crest_evidence.toml"
     raw = subprocess.check_output(
-        ["git", "-C", str(REPO), "show", f"{commit}:{path}"],
+        ["git", "-C", str(KERNEL), "show", f"{commit}:{path}"],
         text=True,
         stderr=subprocess.PIPE,
     )
@@ -129,7 +128,7 @@ def _run(
     receipt = {
         "label": label,
         "argv": argv,
-        "cwd": str(cwd.relative_to(REPO)),
+        "cwd": str(cwd.relative_to(KERNEL)),
         "started_at_utc": started,
         "finished_at_utc": _utc_now(),
         "duration_seconds": round(time.monotonic() - wall, 6),
@@ -150,7 +149,7 @@ def _archive(
     argv = [
         "git",
         "-C",
-        str(REPO),
+        str(KERNEL),
         "archive",
         "--format=tar",
         "--prefix=crest-source/",
@@ -187,7 +186,7 @@ def _probe(*argv: str) -> str | None:
 def _darwin_volume_info() -> _PlistObject:
     if platform.system() != "Darwin":
         return {}
-    mount = _probe("stat", "-f", "%T", str(REPO))
+    mount = _probe("stat", "-f", "%T", str(KERNEL))
     if not mount:
         return {}
     try:
@@ -228,22 +227,22 @@ def _filesystem() -> tuple[str | None, str | None]:
         info = _darwin_volume_info()
         value = info.get("FilesystemType") or info.get("FilesystemName")
     else:
-        value = _probe("stat", "-f", "-c", "%T", str(REPO))
+        value = _probe("stat", "-f", "-c", "%T", str(KERNEL))
     return value, None if value else "filesystem type probe unavailable"
 
 
 def _storage() -> tuple[_JsonObject | None, str | None]:
     try:
-        usage = shutil.disk_usage(REPO)
+        usage = shutil.disk_usage(KERNEL)
     except OSError:
         return None, "disk-usage probe failed"
     result: _JsonObject = {
-        "path": str(REPO),
+        "path": str(KERNEL),
         "total_bytes": usage.total,
         "used_bytes": usage.used,
         "free_bytes": usage.free,
     }
-    df = _probe("df", "-P", str(REPO))
+    df = _probe("df", "-P", str(KERNEL))
     if df and len(df.splitlines()) >= 2:
         result["device"] = df.splitlines()[-1].split()[0]
     info = _darwin_volume_info()
@@ -317,7 +316,7 @@ def _copy_benchmark_artifacts(stage: Path, contract: _TomlTable) -> None:
         ("aggregate_csv", "crest.csv"),
         ("corpus_manifest", "corpus-manifest.tsv"),
     ):
-        source = REPO / paths[source_key]
+        source = KERNEL / paths[source_key]
         if not source.is_file():
             raise ValueError(f"benchmark did not produce required artifact: {source}")
         shutil.copyfile(source, stage / destination)
@@ -335,7 +334,7 @@ def _reseal(stage: Path, contract: _TomlTable, manifest: _JsonObject) -> None:
 def package(output: Path | None = None) -> Path:
     commit = _clean_commit()
     contract = _contract_at(commit)
-    raw_dir = REPO / contract["paths"]["raw_dir"]
+    raw_dir = KERNEL / contract["paths"]["raw_dir"]
     raw_dir.mkdir(parents=True, exist_ok=True)
     destination = output or raw_dir / f"package-{commit}"
     destination = destination.resolve()
@@ -385,7 +384,7 @@ def package(output: Path | None = None) -> Path:
         test_sha = _sha256(stage / "test-artifact.json")
         monograph.write(
             stage,
-            repo=REPO,
+            repo=KERNEL,
             commit=commit,
             archive_sha256=archive_sha,
             benchmark_sha256=benchmark_sha,
@@ -413,7 +412,7 @@ def package(output: Path | None = None) -> Path:
         _reseal(stage, contract, manifest)
         if _clean_commit() != commit:
             raise ValueError("source revision changed while packaging")
-        problems = verify.verify_package(stage, CONTRACT, REPO)
+        problems = verify.verify_package(stage, CONTRACT, KERNEL)
         if problems:
             raise ValueError("package verification failed:\n- " + "\n- ".join(problems))
         stage.replace(destination)
@@ -431,7 +430,7 @@ def regenerate_monograph(package_dir: Path) -> None:
     run = json.loads((package_dir / "crest-run.json").read_text())
     monograph.write(
         package_dir,
-        repo=REPO,
+        repo=KERNEL,
         commit=commit,
         archive_sha256=manifest["source_archive_sha256"],
         benchmark_sha256=manifest["benchmark_artifact_sha256"],
@@ -459,14 +458,14 @@ def main() -> int:
             print(path)
         elif args.command == "monograph":
             regenerate_monograph(args.package.resolve())
-            problems = verify.verify_package(args.package.resolve(), CONTRACT, REPO)
+            problems = verify.verify_package(args.package.resolve(), CONTRACT, KERNEL)
             if problems:
                 raise ValueError(
                     "monograph package verification failed:\n- " + "\n- ".join(problems)
                 )
             print(args.package.resolve() / monograph.MONOGRAPH)
         else:
-            problems = verify.verify_package(args.package.resolve(), CONTRACT, REPO)
+            problems = verify.verify_package(args.package.resolve(), CONTRACT, KERNEL)
             if problems:
                 print("CREST evidence verification FAILED")
                 for problem in problems:

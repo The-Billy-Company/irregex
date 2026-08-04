@@ -34,6 +34,7 @@ stdlib only. Mirrors `gist/bench/certificate/report/stats.py`'s splice technique
 
 import argparse
 import csv
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -218,11 +219,14 @@ def splice(cert: Path, section: str) -> None:
 
 
 def main() -> int:
-    # The shared cert dir lives at the repo root; anchor defaults there (computed
-    # from this file: bench/bounds/lowerbound/report.py → repo root
-    # so the report works from any CWD, like the zig steps and port/mca.sh.
     """CLI entry point."""
-    out_dir = Path(__file__).resolve().parents[3] / ".gist"
+    # GIST_DIR first, then the package's own `.gist` — the same order `outDir()`
+    # in `home.zig` resolves, so the splicer reads the file the lane just wrote
+    # even when a mint relocated the artifact home. Anchored off this file rather
+    # than the CWD so it works from anywhere, like the zig steps and port/mca.sh.
+    out_dir = Path(
+        os.environ.get("GIST_DIR") or Path(__file__).resolve().parents[3] / ".gist"
+    )
     ap = argparse.ArgumentParser(description="gist Layer D lower-bound certificate splicer")
     ap.add_argument(
         "--csv",

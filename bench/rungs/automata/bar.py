@@ -74,8 +74,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 # bench/rungs/automata → the package root, then out to the repo root.
 PKG = HERE.parents[2]  # automata → rungs → bench → repo
-REPO = PKG
-DEFAULT_CLONE = REPO / "upstream" / "regex"
+DEFAULT_CLONE = PKG / "upstream" / "regex"
 
 # `regex-cli` prints a `key: value` preamble before the automaton itself. These
 # are the four facts a shape comparison needs; anything else in that block is
