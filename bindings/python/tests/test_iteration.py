@@ -1,10 +1,16 @@
 """What a match SEQUENCE is - the one thing this binding must not decide itself.
 
 Zero-width and nullable patterns are where a regex binding goes wrong, because
-there are two defensible answers and only one of them is the engine's. These
-tests pin the engine's, spell out the two rules that produce it, and prove that
-the obvious wrong implementation - a Python loop over ``irgx_captures`` -
-would give a different answer and therefore fail here.
+there are two defensible answers. The engine can produce either: ``gist``'s walk
+suppresses an empty match that abuts the previous one and one at unterminated
+end-of-text, which is right for printed line-oriented rows and is what ripgrep
+does. The ABI this binding sits on runs the other one, the library walk, and so
+``finditer`` here reports what ``re.finditer`` reports.
+
+These tests hold it there by asking ``re`` live rather than writing the sequence
+down. They used to assert the opposite - each of the first three is named after
+a difference that no longer exists - because the ABI was assembled out of the
+CLI's parts and inherited its page rules along with them.
 """
 
 from __future__ import annotations
@@ -15,41 +21,41 @@ import re
 import irgx
 import pytest
 from irgx import _abi
+from irgx._pool import Compiled
 
 
 def spans(pattern, text, **flags):
     return [m.span() for m in irgx.finditer(pattern, text, **flags)]
 
 
-# ── the two rules ─────────────────────────────────────────────────────────
+# ── the sequence is `re`'s ────────────────────────────────────────────────
 
 
-def test_an_empty_match_at_the_end_of_the_text_is_not_reported():
-    # `re` reports (3, 3); the engine does not. This is the first of the two
-    # rules that make the sequences differ, and it is deliberate: a zero-width
-    # hit past the last byte describes nothing in the text.
-    assert spans("a*", "abc") == [(0, 1), (2, 2)]
-    assert [m.span() for m in re.finditer("a*", "abc")] == [(0, 1), (1, 1), (2, 2), (3, 3)]
-
-    assert spans(r"\b", "hi yo") == [(0, 0), (2, 2), (3, 3)]
-    assert spans("x*", "") == []
+def re_spans(pattern, text):
+    return [m.span() for m in re.finditer(pattern, text)]
 
 
-def test_an_empty_match_touching_the_previous_match_is_not_reported():
-    # After `a` at (0, 1) the next position is 1, where `a*` matches empty. The
-    # engine drops that one because it is the tail of the match just reported;
-    # (2, 2) survives because nothing was reported ending at 2.
-    assert spans("a*", "abcab") == [(0, 1), (2, 2), (3, 4)]
-    assert spans("(a)*", "baac") == [(0, 0), (1, 3)]
-    assert spans("a?", "bab") == [(0, 0), (1, 2)]
-    # With nothing to be adjacent to, consecutive empties all survive.
-    assert spans("a*", "bbb") == [(0, 0), (1, 1), (2, 2)]
+def test_an_empty_match_at_the_end_of_the_text_is_reported():
+    # (3, 3) is a real position - it is where you would insert at the end - and
+    # `re`, `rust-regex`, Go's `regexp` and JS `matchAll` all report it. Only a
+    # line-oriented printer has cause to suppress it, and this is not one.
+    assert spans("a*", "abc") == [(0, 1), (1, 1), (2, 2), (3, 3)] == re_spans("a*", "abc")
+    assert spans(r"\b", "hi yo") == re_spans(r"\b", "hi yo")
+    assert spans("x*", "") == [(0, 0)] == re_spans("x*", "")
 
 
-def test_the_empty_pattern_matches_between_every_character_but_not_past_the_end():
-    assert spans("", "abc") == [(0, 0), (1, 1), (2, 2)]
-    assert spans("", "") == []
-    assert irgx.findall("", "abc") == ["", "", ""]
+def test_an_empty_match_touching_the_previous_match_is_reported():
+    # After `a` at (0, 1) the next position is 1, where `a*` matches empty.
+    # Reported, though it abuts the match just before it.
+    for pattern, text in [("a*", "abcab"), ("(a)*", "baac"), ("a?", "bab"), ("a*", "bbb")]:
+        assert spans(pattern, text) == re_spans(pattern, text), (pattern, text)
+    assert spans("a*", "abcab") == [(0, 1), (1, 1), (2, 2), (3, 4), (4, 4), (5, 5)]
+
+
+def test_the_empty_pattern_matches_between_every_character_and_past_the_end():
+    assert spans("", "abc") == [(0, 0), (1, 1), (2, 2), (3, 3)] == re_spans("", "abc")
+    assert spans("", "") == [(0, 0)] == re_spans("", "")
+    assert irgx.findall("", "abc") == ["", "", "", ""]
 
 
 def test_lookahead_under_pcre_is_zero_width_and_follows_the_same_rules():
@@ -71,7 +77,7 @@ def _naive_walk(pattern: str, text: str) -> list[tuple[int, int]]:
     This is the shape a binding falls into when it wants a `find(from)` cursor
     the C ABI deliberately does not offer.
     """
-    compiled = _abi.Compiled(pattern.encode(), 0)
+    compiled = Compiled(pattern.encode(), 0)
     data = text.encode()
     out = (_abi.Span * 1)()
     written = ctypes.c_size_t()
@@ -89,15 +95,22 @@ def _naive_walk(pattern: str, text: str) -> list[tuple[int, int]]:
     return found
 
 
-def test_a_hand_rolled_cursor_over_captures_gives_a_different_answer():
-    # If finditer were ever reimplemented over `captures`, these would stop
-    # disagreeing and this test would fail - which is the point of it.
-    assert _naive_walk("a*", "abc") == [(0, 1), (1, 1), (2, 2), (3, 3)]
-    assert spans("a*", "abc") == [(0, 1), (2, 2)]
-    assert _naive_walk("a*", "abc") != spans("a*", "abc")
-
-    assert _naive_walk(r"\b", "hi yo") == [(0, 0), (2, 2), (3, 3), (5, 5)]
-    assert _naive_walk(r"\b", "hi yo") != spans(r"\b", "hi yo")
+def test_a_hand_rolled_cursor_over_captures_now_agrees_with_find_all():
+    # This test used to assert a DISAGREEMENT: the hand-rolled loop produced
+    # `re`'s sequence while find_all produced the CLI's, so the two could be
+    # told apart. Now that the ABI runs the library walk, both are `re`'s and
+    # the loop is merely the slow way to get there - one FFI call per match
+    # against one for the whole text, and a capture buffer allocated each time.
+    #
+    # Kept, and inverted, because the disagreement is what a future change to
+    # either side would bring back. An engine that resumed differently, or a
+    # binding that reimplemented finditer over `captures` and got the zero-width
+    # step wrong, both show up right here.
+    for pattern, text in [("a*", "abc"), (r"\b", "hi yo"), ("", "ab"), ("a?", "bab")]:
+        assert _naive_walk(pattern, text) == spans(pattern, text) == re_spans(pattern, text), (
+            pattern,
+            text,
+        )
 
 
 def test_word_filtering_is_applied_by_the_engine_not_after_the_fact():
@@ -121,7 +134,7 @@ def test_find_all_reports_the_count_the_text_has_not_the_count_that_fit():
     # The contract a short window is sized from. A saturating count made "did I
     # get everything?" undecidable - `written == cap` was equally a full window
     # and an exact fit - which is what cost this binding a grow-and-rescan loop.
-    compiled = _abi.Compiled(b"a", 0)
+    compiled = Compiled(b"a", 0)
     text = b"a" * 20
     out = (_abi.Span * 2)()
     written = ctypes.c_size_t()
@@ -135,7 +148,7 @@ def test_find_all_reports_the_count_the_text_has_not_the_count_that_fit():
 def test_asking_only_how_many_matches_there_are_costs_no_span_buffer():
     # cap 0 with a NULL out is the cheap counting question the true count makes
     # possible; before it, a count meant materializing every span.
-    compiled = _abi.Compiled(rb"\w+", 0)
+    compiled = Compiled(rb"\w+", 0)
     text = b"one two three four"
     written = ctypes.c_size_t()
     _abi.lib.irgx_find_all(compiled.ptr, text, len(text), None, 0, ctypes.byref(written))

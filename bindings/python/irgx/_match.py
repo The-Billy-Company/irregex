@@ -181,7 +181,7 @@ class Match:
 
     def expand(self, template: str | bytes) -> Any:
         """``template`` with ``\\1`` / ``\\g<name>`` references filled from this match."""
-        from ._template import compile_template
+        from ._replace import compile_template
 
         return compile_template(template, self._re).render(self)
 

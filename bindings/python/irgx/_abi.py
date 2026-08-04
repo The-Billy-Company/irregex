@@ -2,8 +2,14 @@
 
 This module owns three things and nothing else: finding the shared library,
 declaring every C signature, and turning a negative status into a Python
-exception. Everything above it (:mod:`irgx._pattern`, :mod:`irgx._match`)
-speaks Python types and never sees a status code.
+exception. Everything above it (:mod:`irgx._pool`, :mod:`irgx._pattern`,
+:mod:`irgx._match`) speaks Python types and never sees a status code.
+
+The Rust binding splits this in two - ``sys.rs`` for the seam, ``error.rs`` for
+the refusal vocabulary - because it *links* the engine, so its seam has no
+failure path to report. Here the library is *loaded*, and a wrong ``IRGX_LIB``
+is a refusal raised by the seam itself, so the two are one module rather than a
+cycle between two.
 
 ctypes rather than cffi or a C extension is a distribution decision. ctypes is
 in the standard library, so the wheel needs no compiler, no Python headers, and
@@ -46,6 +52,8 @@ WORD = 1 << 2
 SMART_CASE = 1 << 5
 NO_UNICODE = 1 << 6
 PCRE = 1 << 8
+MULTILINE = 1 << 9
+DOTALL = 1 << 10
 
 
 class error(Exception):  # noqa: N801 - named to match `re.error` so `except` clauses port
@@ -306,10 +314,11 @@ def check(status: int, doing: str, pattern: str | bytes | None = None) -> int:
     ``IRGX_STALE`` is a declinature rather than a failure, and what a caller
     should do about one depends entirely on which verb declined and what its
     fallback is. So it is not translated here. Compile is the only verb in this
-    plane that declines, and :class:`Compiled` takes its fallback - the PCRE2
-    grammar - before ever reaching this function. A stale arriving here is a
-    verb that grew a fallback this binding does not know how to take, which is
-    worth saying out loud rather than reporting as either a failure or a result.
+    plane that declines, and :class:`irgx._pool.Compiled` takes its fallback -
+    the PCRE2 grammar - before ever reaching this function. A stale arriving
+    here is a verb that grew a fallback this binding does not know how to take,
+    which is worth saying out loud rather than reporting as either a failure or
+    a result.
     """
     if status >= 0:
         return status
@@ -324,48 +333,3 @@ def check(status: int, doing: str, pattern: str | bytes | None = None) -> int:
     if status == OOM:
         raise MemoryError(f"{doing}: {reason}")
     raise error(f"{doing}: {reason}", pattern, detail.pos if detail else None)
-
-
-class Compiled:
-    """One ``irgx_regex *``, freed when this object dies.
-
-    A handle is single-threaded by contract: it owns the scratch its finds run
-    in, so two threads sharing one corrupt a match rather than race a counter.
-    Ownership of that rule lives one layer up, in
-    :class:`irgx._pattern.Pattern`, which keeps one of these per thread.
-    """
-
-    # `__weakref__` so a caller can observe a handle's lifetime without keeping
-    # it alive; the per-thread handles are exactly the thing worth watching.
-    __slots__ = ("__weakref__", "_free", "ptr")
-
-    def __init__(self, pattern: bytes, flags: int, source: str | bytes | None = None) -> None:
-        out = _VOID()
-        status = lib.irgx_compile(pattern, len(pattern), flags, ctypes.byref(out))
-        if status < 0:
-            shown = pattern.decode("utf-8", "backslashreplace")
-            doing = f"could not compile pattern {shown!r}"
-            # The exception carries the pattern as the caller spelled it, since
-            # that is what `re.error.pattern` holds and what a retry needs; the
-            # encoded bytes stand in when nobody said what the source was.
-            spelled = pattern if source is None else source
-            if status == STALE:
-                # A declinature, not a failure, and readable from the return
-                # value alone: the linear tier stepped aside for a pattern PCRE2
-                # takes as it stands. `out` is untouched, so there is no handle
-                # to keep and none to free, and no fault to read either.
-                raise UnsupportedPattern(
-                    f"{doing}: {_status_text(status)} - compiling it with "
-                    f"pcre=True accepts this pattern",
-                    spelled,
-                )
-            check(status, doing, spelled)
-        self.ptr = out
-        # Bound to the instance so teardown does not reach for a module global
-        # that interpreter shutdown may already have torn down.
-        self._free = lib.irgx_free
-
-    def __del__(self) -> None:
-        ptr, self.ptr = getattr(self, "ptr", None), None
-        if ptr:
-            self._free(ptr)

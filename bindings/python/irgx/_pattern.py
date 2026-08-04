@@ -14,22 +14,22 @@ when the pattern declares groups, asks ``captures`` to fill in the detail.
 The handle owns the scratch its finds run in, so the header says to compile one
 per thread. A Python caller will put ``PAT = irgx.compile(...)`` at module
 scope and hand it to a thread pool without a second thought, so the Pattern
-keeps the pattern text and the flags - which are immutable - and gives each
-thread its own handle out of a :class:`threading.local`. The compile is pure, so
-this costs one compile per thread and nothing after that.
+keeps only what is immutable - the pattern source and the flags - and asks
+:class:`irgx._pool.Pool` for a handle whenever it needs one. That module owns
+the rule and explains why it is a thread-local rather than a lease.
 """
 
 from __future__ import annotations
 
 import ctypes
-import threading
 from collections.abc import Callable, Iterator
 from typing import Any
 
 from . import _abi
-from ._abi import Compiled, Span, check, error, lib
+from ._abi import Span, check, error, lib
 from ._match import Match, TextView, wrong_subject
-from ._template import compile_template
+from ._pool import Pool
+from ._replace import compile_template
 
 # How many spans to ask for on the first `find_all`. The header's advice is to
 # size the window at `len + 1`, which is the most matches a text can hold; doing
@@ -46,6 +46,8 @@ def flag_bits(
     word: bool = False,
     smart_case: bool = False,
     unicode: bool = True,
+    multiline: bool = False,
+    dotall: bool = False,
     pcre: bool = False,
 ) -> int:
     """The ``IRGX_*`` bit word for a set of keyword flags.
@@ -53,6 +55,9 @@ def flag_bits(
     ``unicode`` is inverted on purpose: Unicode semantics are the engine's
     default, so the bit that exists is ``IRGX_NO_UNICODE`` and passing
     ``unicode=True`` sets nothing.
+
+    ``multiline`` and ``dotall`` are ``re.M`` and ``re.S``, spelled as keywords
+    and defaulting off exactly as they do there.
     """
     return (
         (_abi.FIXED if fixed else 0)
@@ -60,6 +65,8 @@ def flag_bits(
         | (_abi.WORD if word else 0)
         | (_abi.SMART_CASE if smart_case else 0)
         | (0 if unicode else _abi.NO_UNICODE)
+        | (_abi.MULTILINE if multiline else 0)
+        | (_abi.DOTALL if dotall else 0)
         | (_abi.PCRE if pcre else 0)
     )
 
@@ -73,12 +80,11 @@ class Pattern:
 
     __slots__ = (
         "__weakref__",
-        "_bytes",
         "_flags",
         "_groupindex",
         "_groups",
         "_is_bytes",
-        "_local",
+        "_pool",
         "_source",
     )
 
@@ -90,13 +96,16 @@ class Pattern:
             raise TypeError(f"a pattern must be str or bytes, not {type(pattern).__name__}")
         self._is_bytes = not isinstance(pattern, str)
         self._source = pattern
-        self._bytes = pattern.encode("utf-8") if isinstance(pattern, str) else bytes(pattern)
         self._flags = flags
-        self._local = threading.local()
+        self._pool = Pool(
+            pattern.encode("utf-8") if isinstance(pattern, str) else bytes(pattern),
+            flags,
+            pattern,
+        )
 
         # Compiling here rather than on first use means a bad pattern raises
         # from `compile()`, where the caller can see which pattern it was.
-        handle = self._handle()
+        handle = self._pool.handle()
 
         count = ctypes.c_uint32()
         status = lib.irgx_group_count(handle, ctypes.byref(count))
@@ -165,18 +174,6 @@ class Pattern:
     def __repr__(self) -> str:
         return f"irgx.compile({self._source!r})"
 
-    # ── the C handle, one per thread ──────────────────────────────────────
-
-    def _handle(self) -> Any:
-        compiled = getattr(self._local, "compiled", None)
-        if compiled is None:
-            compiled = Compiled(self._bytes, self._flags, self._source)
-            # The thread-local dies with the Pattern, and each thread's entry
-            # dies with the thread, so a pool of short-lived workers frees its
-            # handles as it goes rather than accumulating them.
-            self._local.compiled = compiled
-        return compiled.ptr
-
     def _view(self, text: str | bytes) -> TextView:
         if not isinstance(text, str | bytes | bytearray | memoryview):
             raise TypeError(f"expected str or bytes to search, not {type(text).__name__}")
@@ -194,7 +191,7 @@ class Pattern:
         is sized at the answer. There is no growth schedule: a second pass over
         unchanged text cannot find a different number.
         """
-        handle = self._handle()
+        handle = self._pool.handle()
         size = len(data)
 
         def sweep(window: int) -> tuple[list[tuple[int, int]], int]:
@@ -229,7 +226,7 @@ class Pattern:
             return [(start, end)]
 
         data = view.data
-        handle = self._handle()
+        handle = self._pool.handle()
         window = self._groups + 1
         while True:
             out = (Span * window)()
@@ -276,7 +273,7 @@ class Pattern:
         """
         view = self._view(text)
         status = check(
-            lib.irgx_is_match(self._handle(), view.data, len(view.data)),
+            lib.irgx_is_match(self._pool.handle(), view.data, len(view.data)),
             f"could not search with {self._source!r}",
             self._source,
         )
@@ -293,7 +290,7 @@ class Pattern:
         # text held two.
         status = check(
             lib.irgx_find_all(
-                self._handle(), view.data, len(view.data), out, 1, ctypes.byref(written)
+                self._pool.handle(), view.data, len(view.data), out, 1, ctypes.byref(written)
             ),
             f"could not search with {self._source!r}",
             self._source,

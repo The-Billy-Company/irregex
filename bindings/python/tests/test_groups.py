@@ -13,6 +13,7 @@ import ctypes
 import irgx
 import pytest
 from irgx import _abi
+from irgx._pool import Compiled
 
 
 def test_numbered_groups():
@@ -130,7 +131,7 @@ def test_the_three_answers_asking_a_group_for_its_name_can_give():
     # three answers are load-bearing: a name, no name, and a refusal past the
     # end. The last one is INVALID rather than an absence because the count is
     # knowable, which is what makes walking off the end a bug and not a result.
-    compiled = _abi.Compiled(rb"(?P<named>a)(b)", 0)
+    compiled = Compiled(rb"(?P<named>a)(b)", 0)
     name = _abi.Text()
 
     assert _abi.lib.irgx_group_name(compiled.ptr, 1, ctypes.byref(name)) == _abi.MATCH
@@ -165,7 +166,7 @@ def test_captures_reports_the_true_group_count_even_from_a_short_window():
     # path is exercised here directly against the C ABI: `written` must report
     # what the PATTERN has, not what was written, or a caller could never size
     # a retry. The whole-match span must still land in the truncated prefix.
-    compiled = _abi.Compiled(rb"(a)(b)(c)", 0)
+    compiled = Compiled(rb"(a)(b)(c)", 0)
     out = (_abi.Span * 2)()
     written = ctypes.c_size_t()
     status = _abi.lib.irgx_captures(compiled.ptr, b"abc", 3, 0, out, 2, ctypes.byref(written))

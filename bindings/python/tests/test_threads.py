@@ -82,7 +82,7 @@ def test_each_thread_gets_its_own_handle():
         pattern.is_match("abc")
         started.wait()
         with lock:
-            seen.append(pattern._local.compiled.ptr.value)
+            seen.append(pattern._pool._local.compiled.ptr.value)
         done.wait()
 
     threads = [threading.Thread(target=note) for _ in range(8)]
@@ -103,7 +103,7 @@ def test_a_short_lived_threads_handle_is_released_when_it_dies():
 
     def work() -> None:
         pattern.is_match("abc")
-        holder.append(weakref.ref(pattern._local.compiled))
+        holder.append(weakref.ref(pattern._pool._local.compiled))
 
     thread = threading.Thread(target=work)
     thread.start()
