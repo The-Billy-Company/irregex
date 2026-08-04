@@ -1,0 +1,33 @@
+{
+  "machine": "aarch64",
+  "zig": "0.16.0",
+  "clock": {
+    "ghz": 3.6477,
+    "measured": true,
+    "source": "measured (thread_selfcounts, cycles ÷ ns under memory load)",
+    "meter": "thread_selfcounts · THSC_CPI cycles + instructions (unprivileged, per-thread)"
+  },
+  "derived_cyc_per_byte": {
+    "basis": "measured clock GHz ÷ measured tier GB/s",
+    "ghz": 3.6477,
+    "dram_ceiling": 0.047378,
+    "l2_ceiling": 0.035962
+  },
+  "corpus_mib": 22.4,
+  "roof_gbps": 93.347,
+  "tiers": [
+    { "name": "L1", "bytes": 16384, "gbps": 166.286, "gbps_median": 164.666 },
+    { "name": "L2", "bytes": 3145728, "gbps": 101.432, "gbps_median": 99.017 },
+    { "name": "DRAM", "bytes": 536870912, "gbps": 76.991, "gbps_median": 75.216 }
+  ],
+  "matched_ladder": [
+    { "name": "corpus-sized STREAM roof", "gbps": 93.347, "gbps_median": 92.557 },
+    { "name": "matched gate control", "gbps": 85.298, "gbps_median": 82.656 },
+    { "name": "production contiguous", "gbps": 83.595, "gbps_median": 81.899 }
+  ],
+  "gist_scan": [
+    { "needle": "0x00x32", "kind": "full-scan (0 matches, pure streaming)", "gbps": 68.252 },
+    { "needle": "func", "kind": "with matches (early-exit + verify)", "gbps": 50.847 },
+    { "needle": "})", "kind": "with matches (early-exit + verify)", "gbps": 61.717 }
+  ]
+}

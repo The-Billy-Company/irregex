@@ -1,0 +1,13 @@
+class	kind	cand_docs	corpus_docs	candidate_bytes	corpus_bytes	cand_byte_frac	examined_bytes	passes	hits	engine	at_floor
+literal-rare	literal	60	1241	1903650	23470305	0.081109	583473	0.3065	60	simd (≤ 1-pass)	1
+literal-dotted	literal	40	1241	1298465	23470305	0.055324	380861	0.2933	38	simd (≤ 1-pass)	1
+literal-common	literal	367	1241	6590467	23470305	0.280800	1854196	0.2813	366	simd (≤ 1-pass)	1
+literal-punct2	literal	1241	1241	23470305	23470305	1.000000	17509530	0.7460	550	simd (≤ 1-pass)	1
+regex-decl	regex	367	1241	6590467	23470305	0.280800	6590467	1.0000	51	dfa (fused 1-pass)	1
+regex-dotted	regex	11	1241	1237598	23470305	0.052730	1237598	1.0000	6	dfa (fused 1-pass)	1
+regex-anchored	regex	367	1241	6590467	23470305	0.280800	6590467	1.0000	49	dfa (fused 1-pass)	1
+regex-classcount	regex	1241	1241	23470305	23470305	1.000000	23470305	1.0000	3	dfa (fused 1-pass)	1
+regex-alternation	regex	866	1241	14215834	23470305	0.605694	14215834	1.0000	862	dfa (fused 1-pass)	1
+regex-dense-scan	regex	1241	1241	23470305	23470305	1.000000	23470305	1.0000	1241	class-run (dfa-ref 1-pass)	1
+regex-eol	regex	1241	1241	23470305	23470305	1.000000	23470305	1.0000	679	dfa (fused 1-pass)	1
+regex-litalt	regex	1241	1241	23470305	23470305	1.000000	23470305	1.0000	316	dfa (fused 1-pass)	1

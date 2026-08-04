@@ -1,0 +1,16 @@
+{
+  "cpu_model": "Apple M4 Max",
+  "cpu_count": 16,
+  "ram_bytes": 137438953472,
+  "os": "Darwin 25.5.0",
+  "kernel": "25.5.0",
+  "filesystem": "APFS",
+  "git_commit": "f88dfa8f3d2e53c0f7728ad586edf3628d1c4529",
+  "corpus_id": "ecosystem-v1",
+  "corpus_file_count": 1241,
+  "corpus_total_bytes": 23470305,
+  "corpus_sha256": "31a14d9df438a76640f71d1b1f65d2157c1154763e667dc54c2871e9f2392eaf",
+  "runs": 20,
+  "warmup": 3,
+  "roots": "irregex gist relate blast"
+}

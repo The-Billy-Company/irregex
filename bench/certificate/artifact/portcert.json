@@ -1,0 +1,13 @@
+{
+  "layer": "B",
+  "claim": "port-optimality (static microarchitectural bound via llvm-mca)",
+  "generated_by": "bench/bounds/port/mca.sh",
+  "llvm_mca_version": "22.1.8",
+  "sim_iterations": 100,
+  "apple_silicon_note": "No real llvm-mca scheduling model exists for any Apple CPU (A7..M4 all map to the 2013 Cyclone model; LLVM issue #63698). Layer B is therefore a static bound over two REAL modeled reference cores, not this host.",
+  "profiles": [
+    {"target_uarch":"znver4","triple":"x86_64-linux-gnu","desc":"AMD Zen 4"},
+    {"target_uarch":"neoverse-v2","triple":"aarch64-linux-gnu","desc":"Arm Neoverse V2 (AWS Graviton4 / Google Axion)"}
+  ],
+  "results": [{"probe":"simd_contains","source":"src/kernel/scan/simd.zig","bound":"throughput","target_uarch":"znver4","triple":"x86_64-linux-gnu","mca_cpu":"znver4","block_rthroughput_cyc_iter":2.0,"bytes_per_iter":64,"cyc_per_byte":0.0312,"sim_cyc_per_iter":2.120},{"probe":"simd_contains","source":"src/kernel/scan/simd.zig","bound":"throughput","target_uarch":"neoverse-v2","triple":"aarch64-linux-gnu","mca_cpu":"neoverse-v2","block_rthroughput_cyc_iter":5.5,"bytes_per_iter":16,"cyc_per_byte":0.3438,"sim_cyc_per_iter":6.230},{"probe":"dfa_step","source":"src/kernel/regex/linear/dfa/dfa.zig","bound":"latency","target_uarch":"znver4","triple":"x86_64-linux-gnu","mca_cpu":"znver4","block_rthroughput_cyc_iter":1.0,"bytes_per_iter":1,"cyc_per_byte":1.0000,"sim_cyc_per_iter":1.200},{"probe":"dfa_step","source":"src/kernel/regex/linear/dfa/dfa.zig","bound":"latency","target_uarch":"neoverse-v2","triple":"aarch64-linux-gnu","mca_cpu":"neoverse-v2","block_rthroughput_cyc_iter":1.0,"bytes_per_iter":1,"cyc_per_byte":1.0000,"sim_cyc_per_iter":1.170},{"probe":"dfa_mirror","source":"src/kernel/regex/linear/dfa/dfa.zig","bound":"latency","target_uarch":"znver4","triple":"x86_64-linux-gnu","mca_cpu":"znver4","block_rthroughput_cyc_iter":1.0,"bytes_per_iter":1,"cyc_per_byte":1.0000,"sim_cyc_per_iter":6.100},{"probe":"dfa_mirror","source":"src/kernel/regex/linear/dfa/dfa.zig","bound":"latency","target_uarch":"neoverse-v2","triple":"aarch64-linux-gnu","mca_cpu":"neoverse-v2","block_rthroughput_cyc_iter":1.0,"bytes_per_iter":1,"cyc_per_byte":1.0000,"sim_cyc_per_iter":5.090}]
+}

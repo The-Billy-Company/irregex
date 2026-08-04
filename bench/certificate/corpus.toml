@@ -1,0 +1,82 @@
+# What irregex is allowed to publish a certificate OVER.
+#
+# Read by `guard/publish.py` (vendored); enforced by
+# `guard/artifacts.py --public-safe`, which `mint/mint.sh` runs immediately
+# before it copies a bundle into `artifact/`. This file is per-package and
+# committed: what counts as a public corpus is a property of what irregex
+# measures, not of the gate that checks it.
+#
+# WHY THIS FILE EXISTS. Every certificate minted before the repository split was
+# measured over a private monorepo, and said so in five places at once: a
+# manifest listing twenty thousand proprietary paths with sizes and hashes, a
+# `machine.json` naming that tree's roots and commit, and absolute `/Users/…`
+# invocations throughout the command log. The receipts were therefore gitignored,
+# and every gate that reads committed evidence has answered "pending
+# regeneration" ever since — the claims stayed in the README while the proof left
+# the repository. A corpus nobody outside can fetch is not just a privacy
+# problem; it is an unreproducible measurement. So the corpus is now declared,
+# not discovered, and a bundle over an undeclared tree fails the mint.
+
+# ── The ecosystem corpus ──────────────────────────────────────────────────────
+#
+# The four packages of this project side by side: the engine and its three
+# product faces. All Apache-2.0 and all public, so a stranger reproduces the
+# exact measured tree with one command.
+#
+# WHY NOT REUSE gist's LAYER A CORPUS. The layers minted here — J (footprint)
+# and L (index quality) — ask a different question than Layer A does, and the
+# difference decides the corpus. Layer L compares two index *planners* by the
+# candidate bytes each admits, so every probe class has to land strictly between
+# "matches nothing" and "matches everything": at either endpoint both planners
+# admit the identical set, so the row measures noise while still feeding a
+# fail-closed verdict. `rungs/sieve/slate.py --audit` takes that reading with
+# Python's own `re` rather than with the engine under test, and it is emphatic:
+#
+#   gist-synthetic-go-v1  9 of the 12 shared classes saturate, 7 of the 8
+#                         stress classes are vacuous — 16 of 20 rows dead
+#   irregex-self-v1       all 20 discriminate, but the tree is monoglot Zig
+#                         and half the size
+#   ecosystem-v1          all 20 discriminate, over 9 languages
+#
+# Saturation is harmless for Layers A and D — they measure scan throughput, and
+# a class matching every file measures it fine. It is fatal here. The synthetic
+# corpus is right for the job it was built for and wrong for this one.
+#
+# Not pinned by `sha256`: the digest moves with every commit to any of the four
+# packages, so a pin here would fail the mint on the day it was written. The
+# bundle records the digest it measured (`machine.json: corpus_sha256`) and the
+# recipe below reproduces it from four commits, which is the reproducibility
+# claim that can actually hold for a live tree.
+[corpus.ecosystem-v1]
+description = "the four sibling packages (irregex · gist · relate · blast), ~1,486 files / ~46 MiB across Zig, Markdown, Python, C, TOML, Rust, Go, shell and Vimscript — all 20 probe classes discriminating"
+roots = ["irregex", "gist", "relate", "blast"]
+allow_prefixes = ["irregex/", "gist/", "relate/", "blast/"]
+fetch = "bash bench/apparatus/corpora/ecosystem.sh <dir>"
+
+# ── The self corpus ───────────────────────────────────────────────────────────
+#
+# irregex searching its own checkout. Honest, publishable, and it passes the
+# slate audit — but it is 846 files of one language, so a planner result over it
+# is a claim about Zig rather than about code. Kept declared because the
+# engine-local lanes (roofline, port bound, lower bound) legitimately measure it
+# and a lane with no declared corpus cannot publish at all.
+[corpus.irregex-self-v1]
+description = "the irregex checkout itself — engine-local bound lanes only, never a cross-language planner claim"
+roots = ["src", "bench", "bindings", "contract"]
+allow_prefixes = ["src/", "bench/", "bindings/", "contract/"]
+fetch = "git clone https://github.com/The-Billy-Company/irregex"
+
+# ── Never present in a published bundle ───────────────────────────────────────
+#
+# Absolute home paths are caught structurally by `publish.py` and need no entry
+# here. These are the substrings that would say "this was minted over the private
+# monorepo" even after the paths were made relative — the roots that tree has and
+# no public corpus does. A bundle carrying one is not redactable; re-mint it.
+[deny]
+substrings = [
+  "Billy-Company",
+  "services/backend",
+  "services/ai",
+  "clients/web",
+  "infra/pulumi",
+]

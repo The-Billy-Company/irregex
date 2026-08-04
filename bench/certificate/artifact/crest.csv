@@ -1,0 +1,21 @@
+# corpus_files	corpus_mib
+# 760	14.8
+query	pattern	caseless	unicode	alternatives	files	run_survivors	fold_survivors	cnt_survivors	run_prune_pct	fold_prune_pct	cnt_prune_pct	hits	full_ms	sieve_ms	speedup
+hex-8  (uuid/sha)	[0-9a-f]{8}	false	false	1	760	121	121	760	84.08	84.08	0.00	118	1.190	0.322	3.690
+hex-12 (mac/hash)	[0-9a-f]{12}	false	false	1	760	80	80	760	89.47	89.47	0.00	73	1.253	0.095	13.226
+digit-4 (year)	[0-9]{4}	false	false	1	760	334	334	685	56.05	56.05	9.87	334	0.324	0.093	3.495
+digit-6	[0-9]{6}	false	false	1	760	99	99	666	86.97	86.97	12.37	99	0.792	0.130	6.078
+upper-4 (CONST)	[A-Z]{4}	false	false	1	760	683	683	753	10.13	10.13	0.92	683	0.060	0.044	1.349
+upper-6	[A-Z]{6}	false	false	1	760	591	591	752	22.24	22.24	1.05	591	0.193	0.090	2.144
+ci-hex-8  (?i)uuid	[0-9a-f]{8}	true	true	1	760	121	121	760	84.08	84.08	0.00	121	1.462	0.416	3.512
+ci-hex-12 (?i)mac	[0-9a-f]{12}	true	true	1	760	80	80	760	89.47	89.47	0.00	80	1.586	0.110	14.363
+ci-upper-6 -iu A-Z	[A-Z]{6}	true	false	1	760	760	760	760	0.00	0.00	0.00	760	0.006	0.006	0.944
+word-3 (wide)	\w{3,8}	false	false	1	760	760	760	760	0.00	0.00	0.00	760	0.008	0.009	0.891
+alpha-5 (wide)	[A-Za-z]{5}	false	false	1	760	760	760	760	0.00	0.00	0.00	760	0.006	0.006	0.940
+alt hex-12|rule-60	[0-9a-f]{12}|~{60}	false	false	2	760	149	760	760	80.39	0.00	0.00	73	3.696	1.305	2.833
+alt digit-6|CONST-6	[0-9]{6}|[A-Z]{6}	false	false	2	760	609	760	757	19.87	0.00	0.39	609	0.268	0.176	1.520
+\d{6}  -u default	\d{6}	false	true	1	760	273	273	734	64.08	64.08	3.42	99	2.423	1.199	2.021
+\d{4}  -u default	\d{4}	false	true	1	760	443	443	742	41.71	41.71	2.37	334	1.019	0.524	1.943
+\w{8}  -u (wide)	\w{8}	false	true	1	760	760	760	760	0.00	0.00	0.00	760	0.013	0.014	0.978
+\s{4}  -u	\s{4}	false	true	1	760	720	720	760	5.26	5.26	0.00	632	1.240	1.222	1.015
+[0-9]{6} -u (twin)	[0-9]{6}	false	true	1	760	99	99	666	86.97	86.97	12.37	99	0.775	0.122	6.377
