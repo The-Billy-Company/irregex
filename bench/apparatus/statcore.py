@@ -1,22 +1,24 @@
 #!/usr/bin/env python3
-"""Shared measurement statistics for the bench rungs — bootstrap CIs and a
-fail-closed dominance verdict.
+"""Shared measurement statistics — bootstrap CIs and a fail-closed dominance verdict.
 
-This is the Python twin of `bench/apparatus/harness/`'s Zig instruments, and it
-lives here for the same reason: a rung in this package must be runnable from
-this package. Before the ecosystem split these functions were reachable at
-`bench/certificate/report/stats.py`, but the certificate is a `gist` concern and
-went with it — leaving `bench/rungs/sliver/scale_race.py` importing a directory
-that does not exist here. Nothing downstream can rescue that, since `gist`
-depends on this package and not the other way round.
+VENDORED, BYTE-IDENTICAL. This file is the one statistical story the whole
+ecosystem tells, and every package that mints a certificate carries its own copy
+at `bench/apparatus/statcore.py`. The copies are held byte-identical by a pinned
+digest (`bench/apparatus/SHARED.sha256`, checked by `shared_drift.py`), because
+four independently releasable packages cannot import Python across repository
+boundaries and a verdict that means different things in different repos is worse
+than no verdict at all. Edit it in one place, run the gate, paste the new digest
+into every copy in the same change.
 
 The bodies mirror `bench/apparatus/harness/stats.zig`, so the macroscopic
-(process-vs-process) and microscopic (in-process) halves tell one statistical
-story. Fail-closed by construction: a class is a WIN only when the median is
-lower AND the difference is significant. Overlap is PARITY; significantly slower
-is a LOSS. Nothing is averaged into a win.
+(process-vs-process) and microscopic (in-process) halves agree by construction.
+Fail-closed: a class is a WIN only when the median is lower AND the difference is
+significant. Overlap is PARITY; significantly slower is a LOSS. Nothing is
+averaged into a win.
 
-stdlib only, and deterministic — the caller owns the seeded RNG.
+Pure math only — no ingestion, no rendering, no argv. A package's own splicer
+imports these names and adds its own. stdlib only, and deterministic: the caller
+owns the seeded RNG.
 """
 
 import math

@@ -7,13 +7,13 @@ of the code underneath. That is the point: this module is a twin of the one the
 certificate uses in `gist`, and a twin that is only ever checked against itself
 can drift while both halves agree.
 
-    python3 bench/apparatus/test_stats.py
+    python3 bench/apparatus/test_statcore.py
 """
 
 import random
 import sys
 
-from stats import ALPHA, dominance, median_ci, quantile
+from statcore import ALPHA, dominance, median_ci, quantile
 
 
 def check(name: str, got, want, tol: float = 0.0) -> bool:
