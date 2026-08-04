@@ -49,14 +49,6 @@ zones {
     // The error taxonomy. Above assay only because it reports through it.
     fault       fault.zig
 
-    // The answer vocabulary — a byte span, a pattern id, the two together.
-    // std only, and at the bottom because it is what every tier above reports
-    // a position IN: the span engine, the class-run kernel, the hosted API and
-    // the C ABI all speak it, so anywhere higher would force one of them to
-    // invert. It sits above `fault` only to keep the two vocabularies in one
-    // reading order, not because it needs anything from it.
-    mark        mark.zig mark_test.zig
-
     // The wire floor: framing primitives (`frame.zig`), the one artifact
     // digest (`signet.zig`), and the artifact home (`home.zig`). It lives
     // under `corpus/index/` on disk because that is what it frames, but it
