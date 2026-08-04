@@ -4,27 +4,28 @@ Two faces share this crate. The **regex** face is a `regex`-shaped API over a
 buffer. The **substrate** face is the shared analytic base every product binding
 imports (`gist`, `relate`, `blast`).
 
+The regex face is the crate root - its modules are private `mod`s, and `pub mod`
+is reserved for the substrate - which is the same arrangement the Python and Go
+bindings use. [`bindings/README.md`](../../README.md) carries the concern map
+across all three and the reasons the three decompositions are not identical.
+
 ## Regex face
 
 The seam is at the bottom and the `regex`-shaped API is at the top, and nothing
 in between is allowed to skip a layer.
 
-| File | What lives here |
-|---|---|
-| `sys.rs` | The C ABI, declared once. `extern "C"` signatures, the `repr(C)` structs, the flag bits, and the ABI version check. Nothing above this file mentions a raw pointer type. |
-| `error.rs` | Regex-face `Error` and `Status`. The single place a negative status becomes a typed error, and the only place the thread-local fault slot is read. |
-| `pool.rs` | The handles. A compiled C handle is single-threaded, so this hands out an exclusive lease of one and takes it back on drop. This is what makes `Regex` `Sync` without an `unsafe impl`. |
-| `pattern.rs` | `Regex` and `RegexBuilder`, and the two engine calls everything is built on: `find_all` for the match sequence and `captures` for group detail. |
-| `matches.rs` | `Match`, `Captures`, and the three iterators. Byte offsets, checked for UTF-8 boundary alignment before they can slice anything. |
-| `replace.rs` | The `Replacer` trait, `$name` expansion, and the three replace verbs. |
+- **`sys.rs`** declares the C ABI once — `extern "C"` signatures, the `repr(C)` structs, the flag bits, and the ABI version check. Nothing above this file mentions a raw pointer type.
+- **`error.rs`** holds the regex-face `Error` and `Status`. It is the single place a negative status becomes a typed error, and the only place the thread-local fault slot is read.
+- **`pool.rs`** owns the handles. A compiled C handle is single-threaded, so this hands out an exclusive lease of one and takes it back on drop; it is what makes `Regex` `Sync` without an `unsafe impl`.
+- **`pattern.rs`** defines `Regex` and `RegexBuilder`, and the two engine calls everything is built on: `find_all` for the match sequence and `captures` for group detail.
+- **`matches.rs`** defines `Match`, `Captures`, and the three iterators, over byte offsets checked for UTF-8 boundary alignment before they can slice anything.
+- **`replace.rs`** carries the `Replacer` trait, `$name` expansion, and the three replace verbs.
 
 ## Substrate face
 
-| Path | What lives here |
-|---|---|
-| `contract/` | Mirrored TOML constants, calibration, generated `schema.gen.rs` |
-| `request.rs` | `SearchRequest` for the exact plane (shared with `gist`) |
-| `runtime/` | Analytic ladder, row decode, subprocess / session transports, substrate `Error` |
+- **`contract/`** mirrors TOML constants and calibration, plus the generated `schema.gen.rs`.
+- **`request.rs`** builds `SearchRequest` for the exact plane, shared with `gist`.
+- **`runtime/`** is the analytic ladder, row decode, subprocess / session transports, and the substrate `Error`.
 
 The crate-root [`Error`](crate::Error) is the regex face. Analytic callers use
 [`runtime::Error`](crate::runtime::Error).
