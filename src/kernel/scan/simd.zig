@@ -18,6 +18,7 @@
 //! the differential fuzz in `bench/`.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const assay = @import("../../assay/assay.zig"); // instrumentation floor: the plan A/B switch
 const bitsmod = @import("../math/bits.zig");
 const calibrate = @import("calibrate.zig");
@@ -59,6 +60,35 @@ pub const block_bytes: usize = scan_vlen;
 
 /// A wide compare mask, in the geometry `anyLane` accepts.
 pub const BlockHits = @Vector(scan_vlen, bool);
+
+/// Ask the memory system for a block the streaming loops will reach in eight
+/// iterations — where asking is worth anything.
+///
+/// A software prefetch buys a sequential scan nothing that the hardware stream
+/// prefetcher does not already do; the only thing it can sell is a faster RAMP,
+/// on a stream the hardware has not recognized yet. Whether that is worth its
+/// slot in the loop is a property of the core, not of the kernel, and it is not
+/// something any CPUID bit reports — so it is measured per target and named
+/// here rather than left inline where it reads as free.
+///
+/// **x86-64: declined, measured.** On Raptor Lake the hint costs the
+/// single-probe block loop **1.29×** (0.0450 → 0.0349 tick/B, `Qzxjvw` over
+/// 8 MiB, min-of-24 round-robin after warmup, `taskset` to a P-core). The L2
+/// streamer recognizes the stride immediately and the loop is issue-bound, so
+/// the hint is a pure µop tax. This is the coefficient that put the exact
+/// literal kernel BEHIND a bare `memchr` on the first byte (`settle_literal_one`
+/// 0.092 vs `skip_scan` 0.069 cyc/B) and cost the auction a 1.32× regret on
+/// `Qzxjvw`, which is how it was found.
+///
+/// **aarch64: kept.** Its measured cost/benefit is the reason
+/// `bench/bounds/roofline` exists; the ladder there is what re-prices it.
+///
+/// Callers pass the block base and the loop's own bound, so the clamp stays one
+/// expression and no call site re-derives it.
+pub inline fn streamAhead(buf: []const u8, at: usize) void {
+    if (comptime builtin.cpu.arch.isX86()) return;
+    @prefetch(&buf[@min(at + 8 * scan_vlen, buf.len - 1)], .{ .rw = .read, .locality = 2 });
+}
 
 /// The cheap per-block gate of every streaming loop: "did ANY lane hit?".
 /// `@reduce(.Or)` over the compare mask lowers to a short cross-lane OR tree
@@ -531,10 +561,9 @@ inline fn core(hay: []const u8, from: usize, needle: []const u8, plan: ?Plan) ?u
             var blocks: usize = 0;
             var hot: usize = 0;
             while (i + last_off + scan_vlen <= hay.len) : (i += scan_vlen) {
-                // Prefetch accelerates the HW prefetcher's ramp on fresh streams
-                // — a many-small-files scan restarts the stream at every doc
-                // boundary, and the ramp is the dominant per-doc tax.
-                @prefetch(&hay[@min(i + 8 * scan_vlen, hay.len - 1)], .{ .rw = .read, .locality = 2 });
+                // Where the core's stream prefetcher wants the help — see
+                // `streamAhead`, which is where the per-target measurement lives.
+                streamAhead(hay, i);
                 const eq1 = @as(ScanVec, hay[i + o1 ..][0..scan_vlen].*) == p1;
                 blocks += 1;
                 if (!anyLane(eq1)) continue;
@@ -546,7 +575,7 @@ inline fn core(hay: []const u8, from: usize, needle: []const u8, plan: ?Plan) ?u
             }
         }
         while (i + last_off + scan_vlen <= hay.len) : (i += scan_vlen) {
-            @prefetch(&hay[@min(i + 8 * scan_vlen, hay.len - 1)], .{ .rw = .read, .locality = 2 });
+            streamAhead(hay, i);
             const eq = (@as(ScanVec, hay[i + o1 ..][0..scan_vlen].*) == p1) &
                 (@as(ScanVec, hay[i + o2 ..][0..scan_vlen].*) == p2);
             if (!anyLane(eq)) continue;
