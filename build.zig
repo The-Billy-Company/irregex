@@ -530,8 +530,27 @@ pub fn build(b: *std.Build) void {
     }{
         .{
             .step = "check-linux",
-            .blurb = "Cross-compile the library for x86_64-linux (Sema+codegen, no link) — keeps the comptime-pruned Linux legs building",
-            .queries = &.{.{ .cpu_arch = .x86_64, .os_tag = .linux, .abi = .gnu }},
+            .blurb = "Cross-compile the library for x86_64-linux at both ISA floors (Sema+codegen, no link) — keeps the comptime-pruned Linux legs building",
+            .queries = &.{
+                // Baseline: SSE2, no byte permute. Every vector arm prunes to
+                // its portable leg here, which is the only build that compiles
+                // those legs at all.
+                .{ .cpu_arch = .x86_64, .os_tag = .linux, .abi = .gnu },
+                // x86-64-v2, which has SSSE3 — and which is the DEFAULT half of
+                // this pair, in the sense that it is the floor the published
+                // manylinux wheel declares and the shape almost every real
+                // Linux host has. It is here because the vector arms that
+                // `cpu.has(.x86, .ssse3)` now admits — `lanes.shuffle`'s
+                // `pshufb` leg, the 16-lane composition, and the Parabix
+                // transposition — are compiled by NO other query in this table.
+                // Baseline above prunes them away and the AArch64 host builds
+                // the NEON leg instead, so without this row the arms we ship to
+                // the most common target in the world were reachable from no
+                // gate on no machine: exactly the hole that let an arch-shaped
+                // predicate sit in front of a feature-shaped requirement for as
+                // long as it did.
+                .{ .cpu_arch = .x86_64, .os_tag = .linux, .abi = .gnu, .cpu_model = .{ .explicit = &std.Target.x86.cpu.x86_64_v2 } },
+            },
         },
         .{
             .step = "check-portable",
@@ -569,6 +588,11 @@ pub fn build(b: *std.Build) void {
                 .{ .cpu_arch = .x86_64, .os_tag = .windows, .abi = .gnu, .os_version_min = .{ .windows = .win10_rs4 } },
                 .{ .cpu_arch = .aarch64, .os_tag = .windows, .abi = .gnu, .os_version_min = .{ .windows = .win10_rs4 } },
                 .{ .cpu_arch = .x86, .os_tag = .windows, .abi = .gnu, .os_version_min = .{ .windows = .win10_rs4 } },
+                // The SSSE3 arms again, this time behind the Win32 legs — the
+                // one combination where a vector kernel and a platform backend
+                // are pruned by different conditions and could each be green
+                // while their intersection does not compile.
+                .{ .cpu_arch = .x86_64, .os_tag = .windows, .abi = .gnu, .os_version_min = .{ .windows = .win10_rs4 }, .cpu_model = .{ .explicit = &std.Target.x86.cpu.x86_64_v2 } },
             },
         },
     };
@@ -710,7 +734,7 @@ pub fn build(b: *std.Build) void {
         .{ .step = "patternid-rung", .exe = "patternid-rung", .root = "bench/rungs/patternid/bench.zig", .blurb = "PatternID gate: state-count cost of carrying a pattern mask in the determinizer's state key" },
         .{ .step = "multipattern", .exe = "multipattern", .root = "bench/rungs/multipattern/bench.zig", .blurb = "Multi-pattern race arm: per-document attribution throughput, fail-closed against N independent searches" },
         .{ .step = "sweep-rung", .exe = "sweep-rung", .root = "bench/rungs/sweep/bench.zig", .blurb = "Sweep-rung consumer proof: each recursive analysis raced against the fused interned-AST sweep, alone and bundled, fail-closed on any disagreement" },
-        .{ .step = "ladder-price", .exe = "ladder-price", .root = "bench/rungs/price/bench.zig", .blurb = "Ladder price plane: re-time every auction coefficient in isolation (verify), and gate the auction's per-pattern picks against the measured-fastest machine (regret)" },
+        .{ .step = "ladder-price", .exe = "ladder-price", .root = "bench/rungs/price/bench.zig", .instrument = "pmu", .libc = true, .blurb = "Ladder price plane: re-time every auction coefficient in isolation (verify), and gate the auction's per-pattern picks against the measured-fastest machine (regret)" },
         .{ .step = "engine-census", .exe = "engine-census", .root = "bench/rungs/census/bench.zig", .instrument = "probes", .blurb = "Engine census: which ladder machine each certificate probe class actually compiles to" },
     }) |lane| {
         const shipped = lane.posture == .shipped;
@@ -736,6 +760,16 @@ pub fn build(b: *std.Build) void {
         const step = b.step(lane.step, lane.blurb);
         step.dependOn(&run.step);
         step.dependOn(install);
+
+        // `build-<lane>` — the same executable, installed but NOT run. The
+        // certificate mint needs this for two reasons `zig build lab` cannot
+        // serve: a lane whose measurement needs `sudo` has to exist before it is
+        // invoked (Layer B′ reads counters), and a mint should not be aborted by
+        // a production rung mid-refactor that no layer it splices reads.
+        b.step(
+            b.fmt("build-{s}", .{lane.step}),
+            b.fmt("Install (do not run) {s}", .{lane.exe}),
+        ).dependOn(install);
         if (lane.tested) test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = mod })).step);
     }
 
