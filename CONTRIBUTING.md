@@ -418,6 +418,11 @@ it to `extra-files`, and the gate will hold it.
    the stamp needs re-minting from the same script that wrote it. Do not hand-edit
    the JSON; the whole point of the stamp is that a generator put it there.
 
+This repository's tag, changelog, and publish steps are one instance of a
+model shared across every Billy-Company OSS package - see
+[RELEASING.md](https://github.com/The-Billy-Company/.github/blob/main/RELEASING.md)
+for the lifecycle this feeds into and why it's shaped this way.
+
 ## Commits and pull requests
 
 Commit subjects here are a conventional prefix plus a lowercase sentence that
