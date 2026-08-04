@@ -1,5 +1,10 @@
 # Cross-compilation protects the Windows arms from source drift; only a native
 # kernel can prove the library loads, executes, and crosses the ctypes ABI.
+#
+# Two jobs, because they defend different claims. `native` builds the engine
+# here and proves the sources still compile and pass for this platform.
+# `bindings` proves the other half: that the archive each binding ships links
+# and runs under the toolchain a Windows consumer actually has.
 name: windows
 
 on:
@@ -40,38 +45,13 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Provision Zig
+      - uses: ./.github/actions/setup-zig-windows
+        with:
+          version: ${{ env.ZIG_VERSION }}
+          into: ${{ runner.temp }}\zig
+      - name: Put Zig on PATH
         shell: pwsh
-        run: |
-          $ver = $env:ZIG_VERSION
-          $floor = Select-String -Path build.zig.zon -Pattern '\.minimum_zig_version = "([^"]+)"'
-          if (-not $floor) { throw 'no minimum_zig_version in build.zig.zon' }
-          $declared = $floor.Matches[0].Groups[1].Value
-          if ($declared -ne $ver) { throw "workflow pins zig $ver, build.zig.zon declares $declared" }
-
-          # Zig 0.16's arm64 compiler emits malformed LLVM records for bundled
-          # C sources. The x64 compiler runs under Windows emulation and emits
-          # the native matrix target requested by the build below.
-          $target = 'x86_64-windows'
-          $index = Invoke-RestMethod -Uri 'https://ziglang.org/download/index.json'
-          $release = $index.$ver
-          if (-not $release) { throw "ziglang.org carries no $ver release" }
-          $build = $release.$target
-          if (-not $build) { throw "zig $ver has no $target build" }
-
-          $zip = Join-Path $env:RUNNER_TEMP 'zig.zip'
-          Invoke-WebRequest -Uri $build.tarball -OutFile $zip
-          $got = (Get-FileHash -Algorithm SHA256 -LiteralPath $zip).Hash.ToLower()
-          if ($got -ne $build.shasum) { throw "sha256 mismatch: got $got, expected $($build.shasum)" }
-
-          $into = Join-Path $env:RUNNER_TEMP 'zig'
-          New-Item -ItemType Directory -Force -Path $into | Out-Null
-          tar.exe -xf $zip -C $into
-          if ($LASTEXITCODE -ne 0) { throw "tar could not extract the Zig archive" }
-          $root = (Get-ChildItem -Directory -LiteralPath $into | Select-Object -First 1).FullName
-          if (-not $root) { throw "the archive extracted no directory into $into" }
-          Add-Content -LiteralPath $env:GITHUB_PATH -Value $root
-          if ((& (Join-Path $root 'zig.exe') version) -ne $ver) { throw 'provisioned Zig reports the wrong version' }
+        run: Add-Content -LiteralPath $env:GITHUB_PATH -Value "$env:RUNNER_TEMP\zig"
 
       - name: Test and build shipped library
         run: |
@@ -89,11 +69,116 @@ jobs:
           python -c "import irgx; m = irgx.search(r'(?P<key>\w+)=(?P<value>\d+)', 'x=42'); assert m and m.group('key') == 'x' and m.group('value') == '42'"
           if ($LASTEXITCODE -ne 0) { throw "Python ABI smoke exited $LASTEXITCODE" }
 
+  # The Go module and the Rust crate each carry a prebuilt archive per platform
+  # so a consumer needs no Zig, and every other check on those archives is made
+  # from a machine that cannot run one. This job is where that stops being an
+  # assumption.
+  #
+  # It is also the only place `-lntdll` is really tested. The engine reaches the
+  # kernel through 60 `Nt*`/`Zw*`/`Rtl*`/`Ldr*` symbols; mingw-w64's default
+  # library set stops at kernel32, and Zig's own driver adds ntdll silently - so
+  # every link performed off Windows closes for a reason a consumer's link would
+  # not have. Beyond those 60, the archives import nothing but kernel32 and the
+  # dozen-odd C functions (`malloc`, `memcpy`, the ctype table) that msvcrt and
+  # UCRT both export, which is why either mingw flavour links them.
+  #
+  # Which Rust target each arch runs is decided by what the runner can link, and
+  # between them they cover both rungs of build.rs:
+  #
+  #   x64   -> `x86_64-pc-windows-gnu`, linked by the image's mingw-w64 gcc.
+  #            Exercises the *vendored archive* rung the way a consumer does.
+  #   arm64 -> `aarch64-pc-windows-msvc`, the host target and the one nearly
+  #            every Windows arm64 Rust user is on. No archive is vendored for
+  #            any MSVC target and none can be, so this exercises the *source*
+  #            rung: build.rs shells Zig against the installed Visual Studio.
+  #
+  # That leaves `aarch64-pc-windows-gnullvm` linked by nobody here, because
+  # llvm-mingw is not on the image and Zig cannot stand in for it - Zig's mingw
+  # is UCRT-only and Rust's GNU targets ask the linker for `msvcrt`. Its archive
+  # is not untested, though: it is the same engine build, for the same Zig
+  # triple, that the Go arm64 step below links and runs on this kernel.
+  bindings:
+    name: bindings (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: windows-2025
+            rust_target: x86_64-pc-windows-gnu
+          - arch: arm64
+            runner: windows-11-arm
+            rust_target: aarch64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      # arm64 needs it as cgo's C compiler, because mingw-w64's gcc was never
+      # ported there. x64 needs it because the MSVC rung builds the engine from
+      # source, and on that arch the vendored rung is covered by gcc instead.
+      - uses: ./.github/actions/setup-zig-windows
+        with:
+          version: ${{ env.ZIG_VERSION }}
+          into: ${{ runner.temp }}\zig
+      - name: Put Zig on PATH
+        shell: pwsh
+        run: Add-Content -LiteralPath $env:GITHUB_PATH -Value "$env:RUNNER_TEMP\zig"
+
+      # Named as a hard failure rather than a fallback. An arch that quietly
+      # stopped using the toolchain it was chosen for would keep passing while
+      # it stopped testing the thing it exists for.
+      - name: Settle the C toolchain
+        shell: pwsh
+        run: |
+          if ('${{ matrix.arch }}' -eq 'x64') {
+            $gcc = Get-Command gcc -ErrorAction SilentlyContinue
+            if (-not $gcc) { throw 'no gcc on PATH; this arch exists to link the way mingw does' }
+            & gcc --version | Select-Object -First 1
+
+            # rustc synthesises import libraries for `raw-dylib` crates by
+            # shelling the target-prefixed dlltool, and does not fall back to
+            # the bare name. Binutils ships both spellings in some mingw
+            # distributions and only one in others, so bridge it here rather
+            # than discovering it in a linker error three steps later.
+            $prefixed = Get-Command x86_64-w64-mingw32-dlltool -ErrorAction SilentlyContinue
+            if (-not $prefixed) {
+              $bare = Get-Command dlltool -ErrorAction SilentlyContinue
+              if (-not $bare) { throw 'mingw is on PATH without dlltool; rustc cannot bind raw-dylib crates' }
+              Copy-Item -LiteralPath $bare.Source `
+                -Destination (Join-Path (Split-Path $bare.Source) 'x86_64-w64-mingw32-dlltool.exe')
+            }
+          } else {
+            Add-Content -LiteralPath $env:GITHUB_ENV `
+              -Value 'CC=zig cc -target aarch64-windows.win10_rs4-gnu'
+          }
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: bindings/go/go.mod
+
+      - name: Go binding
+        working-directory: bindings/go
+        env:
+          CGO_ENABLED: "1"
+        run: |
+          go vet ./...
+          go test ./...
+
+      - name: Rust binding
+        working-directory: bindings/rust
+        run: |
+          rustup target add ${{ matrix.rust_target }}
+          cargo test --target ${{ matrix.rust_target }}
+
   required:
     name: native
     if: always()
-    needs: [native]
+    needs: [native, bindings]
     runs-on: ubuntu-latest
     steps:
       - run: |
           test '${{ needs.native.result }}' = success
+          test '${{ needs.bindings.result }}' = success
