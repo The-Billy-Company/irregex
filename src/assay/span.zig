@@ -87,26 +87,130 @@ pub const Span = struct {
 /// machine was doing — never an advertised boost. `null` where no such chain is
 /// written for the target, and then a caller must decline to report cycles at
 /// all rather than assume a frequency.
+///
+/// This is deliberately NOT the bench harness's PMU, which counts cycles
+/// outright instead of inferring a rate from them. `assay` is a production tier
+/// and `bench/` sits outside the package, so a coefficient minted here and the
+/// instrument auditing it would be divided by different clocks if this reached
+/// for one. The chain is the reading every tier can take.
 pub const Cadence = struct {
     cyc_per_ns: f64,
 
-    /// `links` × 16 dependent adds. The caller sizes it; 1<<16 is ~1 ms.
+    /// Is a single-cycle dependent link written for this target? Published
+    /// because callers have to decide whether a cycles column exists at all,
+    /// and three benches were each answering it with their own copy of the arch
+    /// test — which is how a fourth target gets ported into `link` below and
+    /// stays dark in the harness that reports it.
+    ///
+    /// 32-bit x86 is excluded rather than given a `u32` chain: a 64-bit add
+    /// lowers to `add`/`adc` there, which is two instructions per link and
+    /// breaks the one-cycle construction the whole reading rests on.
+    pub const measurable: bool = switch (builtin.cpu.arch) {
+        .aarch64, .aarch64_be, .x86_64 => true,
+        else => false,
+    };
+
+    /// One link of the chain: an increment whose input is the previous link's
+    /// output, so two links cannot overlap and the chain retires at exactly one
+    /// per cycle.
+    ///
+    /// Selected on ARCHITECTURE rather than through `builtin.cpu.has`, which is
+    /// the one shape `quality/ratchets/isa-floor` exempts and for its stated
+    /// reason: integer `add` is in the mandatory base ISA of both families, so
+    /// there is no optional feature to ask about and the arch IS the whole
+    /// truth. Every other inline asm in this package must still name its
+    /// feature, because LLVM does not read an asm template.
+    ///
+    /// Refuses to compile off `measurable` rather than returning a sentinel, so
+    /// a target reaches this leaf only through the predicate that admits it.
+    inline fn link(x: u64) u64 {
+        if (comptime builtin.cpu.arch == .aarch64 or builtin.cpu.arch == .aarch64_be)
+            return asm ("add %[o], %[i], #1"
+                : [o] "=r" (-> u64),
+                : [i] "r" (x),
+            );
+        // Two-operand and read-modify-write, so the increment rides a register
+        // (`"0"` ties it to the output) rather than an immediate: `$` is LLVM's
+        // own operand sigil inside an asm template, and a register-sourced 1 is
+        // loop-invariant anyway. The mnemonic stays bare `add` — GAS takes the
+        // width from the operand — because the ratchet exempts it by name.
+        if (comptime builtin.cpu.arch == .x86_64)
+            return asm ("add %[one], %[o]"
+                : [o] "=r" (-> u64),
+                : [i] "0" (x),
+                  [one] "r" (@as(u64, 1)),
+            );
+        @compileError("assay.Cadence.link has no single-cycle chain for this target — callers gate on `measurable`");
+    }
+
+    /// The core's sustained rate, sampled until the reading stops climbing.
+    ///
+    /// `links` sizes ONE sample (× 16 dependent adds); the number of samples is
+    /// the function's own business, because the caller cannot know how long this
+    /// core takes to reach its operating frequency and should not have to.
+    ///
+    /// **Why this repeats rather than timing one pass.** A single pass was what
+    /// this did, and on a laptop whose scheduler parks a new thread on a
+    /// performance core at its operating frequency it was right. On a Linux box
+    /// under the `powersave` governor it is not: cores idle near 800 MHz and
+    /// take tens of milliseconds of load to ramp, so a 0.3 ms pass measures the
+    /// ramp rather than the core. Two `ladder-price mint` runs minutes apart on
+    /// the same idle machine read 1.577 GHz and ~4 GHz — a 2.5× swing that every
+    /// coefficient in the plane was then divided by, which is not a noisy
+    /// measurement but an arbitrary one. Convergence is not a tuning knob bolted
+    /// on afterwards; a clock that reports the ramp is not a clock.
+    ///
+    /// **Why the BEST sample and not the mean or the worst.** Because the work
+    /// this divides is itself reported best-of-N (`fastest` in the price rig
+    /// takes the minimum elapsed time), and a rate must be the same statistic as
+    /// the cost it converts or the two do not cancel — a best-case duration over
+    /// an average-case clock is a number with no referent. It remains an
+    /// ACHIEVED rate, never an advertised boost: nothing here reads a data sheet,
+    /// and a core that never reaches its ceiling reports the rate it did reach.
+    ///
+    /// Convergence is measured, not scheduled: samples continue while any of
+    /// them still improves on the best by more than `noise`, so a hot core exits
+    /// in a few hundred microseconds and a cold one keeps going until it is
+    /// warm. There is no warmup constant to be wrong on the next machine.
     pub fn measure(io: std.Io, links: u64) ?Cadence {
-        if (comptime builtin.cpu.arch != .aarch64 and builtin.cpu.arch != .aarch64_be) return null;
+        if (comptime !measurable) return null;
+        // Below the spread two back-to-back samples show on a settled core
+        // (~0.1% measured on both Apple and Raptor Lake silicon), so a sample
+        // that only clears this is noise rather than the ramp still rising.
+        const noise = 1.0 / 256.0;
+        // Consecutive non-improving samples that end it. One could be a stray
+        // preemption; three in a row is a plateau.
+        const settle = 3;
+        // A machine that never settles still has to return. At the ~0.3 ms
+        // sample the callers size, this bounds the whole reading well under a
+        // tenth of a second — and it is reached only by a host whose frequency
+        // genuinely will not sit still, where any single number is a fiction
+        // anyway and the best one seen is the least misleading of them.
+        const ceiling = 64;
+
+        var top: f64 = 0;
+        var flat: u8 = 0;
+        var taken: u16 = 0;
+        while (taken < ceiling and flat < settle) : (taken += 1) {
+            const r = sample(io, links) orelse continue;
+            if (r > top * (1.0 + noise)) flat = 0 else flat += 1;
+            top = @max(top, r);
+        }
+        return if (top > 0) .{ .cyc_per_ns = top } else null;
+    }
+
+    /// One timed pass of `links` × 16 dependent adds — the reading `measure`
+    /// takes repeatedly. Separate so the chain is timed in exactly one place.
+    fn sample(io: std.Io, links: u64) ?f64 {
         var x: u64 = 1;
         const sp = Span.open(io);
         for (0..links) |_| {
-            inline for (0..16) |_| {
-                x = asm ("add %[o], %[i], #1"
-                    : [o] "=r" (-> u64),
-                    : [i] "r" (x),
-                );
-            }
+            inline for (0..16) |_| x = link(x);
         }
         const elapsed = sp.read(io).ns();
         std.mem.doNotOptimizeAway(x);
         if (elapsed <= 0) return null;
-        return .{ .cyc_per_ns = @as(f64, @floatFromInt(links * 16)) / @as(f64, @floatFromInt(elapsed)) };
+        return @as(f64, @floatFromInt(links * 16)) / @as(f64, @floatFromInt(elapsed));
     }
 
     pub fn cycles(self: Cadence, d: Duration) f64 {
@@ -168,6 +272,34 @@ test "Span.read is monotonic and non-negative" {
     try std.testing.expectEqual(@as(f64, 5.0), d.ms());
     s.start = 5_000_000;
     try std.testing.expectEqual(@as(i128, 5_000_000), s.start);
+}
+
+test "the core clock reads a real rate wherever a chain is written for the target" {
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    // A target either has a chain and reports, or has none and declines. The
+    // two must not disagree: a `measurable` target that returns null is a
+    // harness printing a blank cycles column on hardware that can fill it, and
+    // the reverse is a number nothing produced.
+    const short = Cadence.measure(io, 1 << 14);
+    try std.testing.expectEqual(Cadence.measurable, short != null);
+    const a = short orelse return;
+
+    // Physically possible. This is what catches a chain wired to the wrong
+    // thing — an elided loop reports a rate in the thousands of GHz, and a
+    // zero-length span reports nothing at all.
+    try std.testing.expect(a.ghz() > 0.1 and a.ghz() < 100.0);
+
+    // And the links have to be what costs the time. Quadruple them: a real
+    // dependent chain holds its rate, while an elided one keeps paying only the
+    // fixed span overhead and so reports ~4x the cycles for the same wall time.
+    // The 2x band clears that signature with room for a box carrying ten
+    // coworker agents, which is the load this actually runs under.
+    const b = Cadence.measure(io, 1 << 16) orelse return error.ClockStoppedAnswering;
+    const ratio = @max(a.ghz(), b.ghz()) / @min(a.ghz(), b.ghz());
+    try std.testing.expect(ratio < 2.0);
 }
 
 test "Anchor and Duration do not coerce to each other" {
