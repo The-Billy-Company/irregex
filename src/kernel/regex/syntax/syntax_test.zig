@@ -373,6 +373,73 @@ test "syntax/class: escapes compose inside a class" {
     try std.testing.expect(!s.has('a'));
 }
 
+test "syntax/class: a bare '[' opens a NESTED class, in both modes" {
+    // rust-regex's class *set* grammar, which this engine had been missing: an
+    // unescaped `[` inside a class is not a member, it recurses. So `[[x]` is
+    // unclosed (rg: "unclosed character class") and the literal wants `[\[x]`.
+    inline for (.{ false, true }) |uni| {
+        try std.testing.expectError(ParseError.BadPattern, parseMode("[[x]", false, uni));
+        var pr = try parseMode("[[x]y]", false, uni); // {x} ∪ {y}
+        defer pr.deinit();
+        try std.testing.expect(try holdsCp(&pr, 'x') and try holdsCp(&pr, 'y'));
+        try std.testing.expect(!try holdsCp(&pr, '['));
+        var lit = try parseMode("[\\[x]", false, uni);
+        defer lit.deinit();
+        try std.testing.expect(try holdsCp(&lit, '[') and try holdsCp(&lit, 'x'));
+    }
+}
+
+test "syntax/class: && -- ~~ are set operators, left-associative, equal precedence" {
+    // The operators swift's `simple_identifier` is spelled with. Each case is the
+    // hand-computed set AND was diffed against rg 14 (`.local/classdiff.sh`).
+    const Case = struct { pat: []const u8, in: []const u21, out: []const u21 };
+    const cases = [_]Case{
+        .{ .pat = "[a-e&&b-d]", .in = &.{ 'b', 'c', 'd' }, .out = &.{ 'a', 'e' } },
+        .{ .pat = "[a-e--c]", .in = &.{ 'a', 'b', 'd', 'e' }, .out = &.{'c'} },
+        .{ .pat = "[a-e~~c-g]", .in = &.{ 'a', 'b', 'f', 'g' }, .out = &.{ 'c', 'd', 'e' } },
+        // Left-associative and equal precedence: (a-e ∩ b-d) − c = {b,d}. Under
+        // rust-regex's documented `&&` > `--` precedence this would be a-e ∩ (b-d − c).
+        .{ .pat = "[a-e&&b-d--c]", .in = &.{ 'b', 'd' }, .out = &.{ 'a', 'c', 'e' } },
+        // …and the other order proves it is the FOLD, not the precedence: (a-e − b-d) ∩ c = ∅.
+        .{ .pat = "[a-e--b-d&&c]", .in = &.{}, .out = &.{ 'a', 'c', 'e' } },
+        .{ .pat = "[[a-e]&&[^c]]", .in = &.{ 'a', 'b', 'd' }, .out = &.{'c'} },
+        .{ .pat = "[\\w&&[^_]]", .in = &.{ 'a', '7' }, .out = &.{'_'} },
+        .{ .pat = "[_[:alpha:]&&[^0-9]]", .in = &.{ '_', 'Q' }, .out = &.{'4'} },
+    };
+    inline for (.{ false, true }) |uni| for (cases) |c| {
+        var pr = try parseMode(c.pat, false, uni);
+        defer pr.deinit();
+        for (c.in) |cp| try std.testing.expect(try holdsCp(&pr, cp));
+        for (c.out) |cp| try std.testing.expect(!try holdsCp(&pr, cp));
+    };
+}
+
+test "syntax/class: \\p{Emoji} and the PropertyAliases short names resolve" {
+    // Before this, an unknown `\p{...}` was BadPattern — and swift's identifier
+    // body is spelled with three UTS #51 names plus `&&`, so the whole terminal
+    // was declined and every identifier byte in a swift file surfaced as a stray.
+    inline for (.{ "\\p{Emoji}", "\\p{ExtPict}", "\\p{EMod}", "\\p{Alpha}", "\\p{XIDS}", "\\p{WSpace}" }) |pat| {
+        var pr = try parseMode(pat, false, true);
+        defer pr.deinit();
+    }
+    { // 🍎 is Emoji; 'a' is not. An alias that resolved to the empty set would
+        // pass a "does it parse" test and fail this one.
+        var pr = try parseMode("\\p{Emoji}", false, true);
+        defer pr.deinit();
+        try std.testing.expect(try holdsCp(&pr, 0x1F34E) and !try holdsCp(&pr, 'a'));
+    }
+    { // `\p{XIDS}` must be `\p{XID_Start}`, not a near-miss.
+        var pr = try parseMode("\\p{XIDS}", false, true);
+        defer pr.deinit();
+        try std.testing.expect(try holdsCp(&pr, 'F') and !try holdsCp(&pr, '4'));
+    }
+    { // swift's own body, whole: an ASCII letter is excluded by the `&&`, 🍎 is not.
+        var pr = try parseMode("[\\p{XID_Continue}\\p{Emoji}\\x{FE0F}\\p{EMod}&&[^\\x{0}-\\x{7F}]]", false, true);
+        defer pr.deinit();
+        try std.testing.expect(try holdsCp(&pr, 0x1F34E) and !try holdsCp(&pr, 'F'));
+    }
+}
+
 test "syntax/class: unterminated class is BadPattern" {
     try std.testing.expectError(ParseError.BadPattern, parse("[abc"));
     try std.testing.expectError(ParseError.BadPattern, parse("[a-"));

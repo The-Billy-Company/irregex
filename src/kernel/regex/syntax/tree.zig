@@ -42,6 +42,18 @@ pub const ByteSet = struct {
     pub fn unionWith(self: *ByteSet, o: ByteSet) void {
         for (&self.bits, o.bits) |*w, ow| w.* |= ow;
     }
+    /// The three class-set operators a bracket body can spell between two
+    /// operands - `&&`, `--`, `~~`. Bitwise here for the same reason the union
+    /// is: a byte class is already the whole universe in 256 bits.
+    pub fn intersectWith(self: *ByteSet, o: ByteSet) void {
+        for (&self.bits, o.bits) |*w, ow| w.* &= ow;
+    }
+    pub fn subtract(self: *ByteSet, o: ByteSet) void {
+        for (&self.bits, o.bits) |*w, ow| w.* &= ~ow;
+    }
+    pub fn symmetricWith(self: *ByteSet, o: ByteSet) void {
+        for (&self.bits, o.bits) |*w, ow| w.* ^= ow;
+    }
     pub fn count(self: *const ByteSet) usize {
         return B64.count(&self.bits);
     }

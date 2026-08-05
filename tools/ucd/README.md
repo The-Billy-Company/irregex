@@ -10,7 +10,8 @@ lives in [`../build_unicode_tables.py`](../build_unicode_tables.py) → emits
 
 - **Version:** Unicode 16.0.0 (matches the toolchain `unicodedata.unidata_version`).
 - **Source:** `https://www.unicode.org/Public/16.0.0/ucd/<file>.txt`
-  (`DerivedGeneralCategory.txt` is under `.../ucd/extracted/`).
+  (`DerivedGeneralCategory.txt` is under `.../ucd/extracted/`, `emoji-data.txt`
+  under `.../ucd/emoji/`).
 - **License:** Unicode License v3 — [`LICENSE.txt`](LICENSE.txt) carries the
   copyright and permission notice these Data Files must be distributed with,
   and the package [`NOTICE`](../../NOTICE) lists them alongside the other
@@ -29,6 +30,16 @@ lives in [`../build_unicode_tables.py`](../build_unicode_tables.py) → emits
   (behind `\w`) — sha256 `53d614508e2a0b2305a8aa21cd60d993de9326cdf65993660dfcce4503548583`.
 - **`Scripts.txt`** provides `\p{Script=…}` —
   sha256 `9e88f0a677df47311106340be8ede2ecdacd9c1c931831218d2be6d5508e0039`.
+- **`emoji-data.txt`** provides `Emoji`, `Emoji_Modifier`,
+  `Emoji_Modifier_Base`, `Emoji_Component`, and `Extended_Pictographic`. Same
+  two-field shape as `PropList.txt`, which is why it joins the same loop —
+  sha256 `f1365a5173eee18e1f98b240cdc492e84a25f1ce7e0c9d1094eb29c41a22696a`.
+- **`PropertyAliases.txt`** provides the short spellings every binary property
+  also answers to — `Alpha`, `WSpace`, `XIDS`, `EMod`, `ExtPict` and the rest.
+  Read from the standard's own alias table rather than hand-listed, because a
+  hand-listed set is a set that silently stops matching the competitor the day
+  Unicode adds one — sha256
+  `33a9f2266ad6b8e8de05c0ea3dfac411ac62cf8839ff1c94057471e4c5f6a2b3`.
 
 Verify every pin at once by hashing the vendored files and comparing the
 output to the digests above:

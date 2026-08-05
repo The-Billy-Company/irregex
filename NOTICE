@@ -31,8 +31,11 @@ component and are not superseded by the Apache License, Version 2.0 above.
     Copyright (c) 2024 Unicode, Inc. Unicode and the Unicode Logo are
     registered trademarks of Unicode, Inc. in the U.S. and other countries.
     Pinned upstream data files from https://www.unicode.org/Public/16.0.0/ucd/
-    — used to generate the Unicode property, case-folding, and script tables.
-    See tools/ucd/LICENSE.txt for the full copyright and permission notice.
+    (emoji-data.txt from .../ucd/emoji/, DerivedGeneralCategory.txt from
+    .../ucd/extracted/) — used to generate the Unicode property, case-folding,
+    script, emoji-property, and property-alias tables.
+    See tools/ucd/LICENSE.txt for the full copyright and permission notice, and
+    tools/ucd/README.md for the per-file pin and what each one lowers into.
 
   * ripgrep integration-test corpus, mined
     (gist/bench/conformance/rgsuite/spec.json)

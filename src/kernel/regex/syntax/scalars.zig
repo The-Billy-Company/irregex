@@ -85,6 +85,48 @@ pub const ScalarSet = struct {
         self.list = out;
     }
 
+    /// Keep only what `o` also holds - the `&&` class-set operator.
+    ///
+    /// A merge walk over both coalesced lists rather than the double complement
+    /// the identity would allow: an intersection is the one operator whose
+    /// result is never larger than either side, and routing it through two
+    /// whole-scalar-space negations would build two ~1.1M-codepoint lists to
+    /// answer a question about a handful of ranges.
+    pub fn intersect(self: *ScalarSet, o: *ScalarSet) ParseError!void {
+        self.coalesce();
+        o.coalesce();
+        var out: std.ArrayList([2]u21) = .empty;
+        var i: usize = 0;
+        var j: usize = 0;
+        while (i < self.list.items.len and j < o.list.items.len) {
+            const a = self.list.items[i];
+            const b = o.list.items[j];
+            const lo = @max(a[0], b[0]);
+            const hi = @min(a[1], b[1]);
+            if (lo <= hi) try out.append(self.gpa, .{ lo, hi });
+            if (a[1] < b[1]) i += 1 else j += 1;
+        }
+        self.list = out;
+    }
+
+    /// Drop everything `o` holds - the `--` operator, and half of `~~`.
+    pub fn subtract(self: *ScalarSet, o: *ScalarSet) ParseError!void {
+        var cut: ScalarSet = .{ .gpa = self.gpa };
+        try cut.addTable(o.list.items);
+        try cut.negate();
+        return self.intersect(&cut);
+    }
+
+    /// What exactly one side holds - the `~~` operator.
+    pub fn symmetric(self: *ScalarSet, o: *ScalarSet) ParseError!void {
+        var mine: ScalarSet = .{ .gpa = self.gpa };
+        try mine.addTable(self.list.items);
+        try mine.subtract(o);
+        try o.subtract(self);
+        self.list = mine.list;
+        try self.addTable(o.list.items);
+    }
+
     /// What a *negated class* means, spelled once for `[^…]`, `\D \W \S`, and
     /// `\P{…}`: the complement, minus `\n` in the per-line model (no thread may
     /// consume a line boundary), keeping `\n` under `multiline` — rg treats only

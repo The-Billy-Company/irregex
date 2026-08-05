@@ -71,6 +71,31 @@ def loose(name: str) -> str:
     return name.lower().replace("_", "").replace("-", "").replace(" ", "")
 
 
+def property_aliases(path: Path) -> list[tuple[str, str]]:
+    """Every `SHORT ; LONG ; other...` row of PropertyAliases.txt, as pairs.
+
+    Unicode's own alias file rather than a hand-kept list, because the hand-kept
+    list is always the aliases somebody happened to need: `\\p{EMod}` and
+    `\\p{ExtPict}` are how UTS #51 spells two properties swift's identifier is
+    built from, and neither would have been guessed. Every alias in the file maps
+    onto the long name, so a table built from it answers `\\p{Alpha}` and
+    `\\p{XIDS}` on the way past.
+    """
+    out: list[tuple[str, str]] = []
+    for raw in path.read_text().splitlines():
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        fields = [f.strip() for f in line.split(";")]
+        if len(fields) < 2:
+            continue
+        long = fields[1]
+        for other in fields[:1] + fields[2:]:
+            if other and loose(other) != loose(long):
+                out.append((other, long))
+    return out
+
+
 def gc_map(path: Path) -> dict[str, list[Range]]:
     """All general-category ranges keyed by the fine two-letter category."""
     cats: dict[str, list[Range]] = {}
@@ -157,8 +182,13 @@ def build() -> str:
     # Go, Java, C, Rust, and JavaScript all spell "identifier character", so a
     # generator that emitted only what `\w` was built from could not compile the
     # single most common terminal in any language grammar.
+    #
+    # `emoji-data.txt` joins them for the same reason one file further on: it is
+    # where `Emoji`, `EMod` and `Extended_Pictographic` live, and swift spells
+    # its identifier with all three. It is UTS #51 rather than the core UCD, but
+    # its rows are the same two-field shape and rg resolves the same names.
     binary: dict[str, list[Range]] = {}
-    for src in ("DerivedCoreProperties.txt", "PropList.txt"):
+    for src in ("DerivedCoreProperties.txt", "PropList.txt", "emoji-data.txt"):
         for name, rngs in binary_props(UCD / src).items():
             binary.setdefault(name, []).extend(rngs)
     binary = {k: coalesce(v) for k, v in binary.items()}
@@ -257,6 +287,22 @@ def build() -> str:
     all_named = named + script_named + binary_named
     body = ", ".join(f'.{{ .name = "{n}", .ranges = {ident} }}' for n, ident in all_named)
     lines.append(f"pub const properties: []const NamedRanges = &.{{ {body} }};")
+    lines.append("")
+    lines.append("// ── \\p{...} property-name aliases (PropertyAliases.txt) ──")
+    # Only aliases whose long name reached a table above: an alias onto a
+    # property this build does not carry would resolve to nothing and read, at
+    # the call site, exactly like a property we support and got wrong.
+    have = {loose(n): n for n, _ in all_named}
+    seen: set[str] = set()
+    pairs: list[tuple[str, str]] = []
+    for short, long in property_aliases(UCD / "PropertyAliases.txt"):
+        if loose(long) not in have or loose(short) in have or loose(short) in seen:
+            continue
+        seen.add(loose(short))
+        pairs.append((short, have[loose(long)]))
+    lines.append("pub const Alias = struct { name: []const u8, canonical: []const u8 };")
+    alias_body = ", ".join(f'.{{ .name = "{s}", .canonical = "{c}" }}' for s, c in sorted(pairs))
+    lines.append(f"pub const property_aliases: []const Alias = &.{{ {alias_body} }};")
     lines.append("")
     return "\n".join(lines)
 

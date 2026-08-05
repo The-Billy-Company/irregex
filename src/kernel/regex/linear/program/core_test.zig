@@ -246,11 +246,16 @@ test "regex: POSIX bracket classes ([[:space:]] etc.) match rg byte-mode sets" {
     try std.testing.expect(!try matches("^[[:alnum:]_]+$", "has-dash"));
     try std.testing.expect(try matches("[[:digit:]a-f]", "e")); // range parses alongside
 
-    // A bare `[` that doesn't open `[:…:]` stays a literal member (rg semantics):
-    // `[[x]` is the two-member class {'[','x'}.
-    try std.testing.expect(try matches("[[x]", "z[z"));
-    try std.testing.expect(try matches("[[x]", "zxz"));
-    try std.testing.expect(!try matches("[[x]", "abc"));
+    // A bare `[` that doesn't open `[:…:]` opens a NESTED class, and the old
+    // reading here — "`[[x]` is the two-member class {'[','x'}", attributed to
+    // rg — was never rg's. Measured 2026-08-05 against rg 14: `[[x]` is
+    // `error: unclosed character class`, and `[[x]]` matches only "zxz", never
+    // "z[z". A literal `[` inside a class is `[\[x]`.
+    try std.testing.expectError(ParseError.BadPattern, Regex.compile(a, "[[x]"));
+    try std.testing.expect(try matches("[[x]]", "zxz"));
+    try std.testing.expect(!try matches("[[x]]", "z[z"));
+    try std.testing.expect(try matches("[\\[x]", "z[z"));
+    try std.testing.expect(!try matches("[[x]]", "abc"));
 
     // An unknown class name inside a well-formed `[:…:]` is BadPattern (rg rejects too).
     try std.testing.expectError(ParseError.BadPattern, Regex.compile(a, "[[:bogus:]]"));

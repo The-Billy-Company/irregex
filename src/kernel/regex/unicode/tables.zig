@@ -111,6 +111,12 @@ pub fn property(name_in: []const u8) ?[]const Range {
     }
     if (looseEql(name, "any")) return all;
     for (gen.properties) |p| if (looseEql(p.name, name)) return p.ranges;
+    // Unicode's own property-name aliases, generated from PropertyAliases.txt.
+    // `\p{EMod}` and `\p{ExtPict}` are the UTS #51 spellings swift's identifier
+    // is built from, and no hand-kept list would have contained them.
+    for (gen.property_aliases) |a| if (looseEql(a.name, name)) {
+        for (gen.properties) |p| if (looseEql(p.name, a.canonical)) return p.ranges;
+    };
     for (gc_aliases) |a| if (looseEql(a[0], name)) {
         for (gen.properties) |p| if (looseEql(p.name, a[1])) return p.ranges;
     };
@@ -285,6 +291,7 @@ test "a general category answers to its long name as well as its abbreviation" {
     // Loose matching is the property file's own, so spelling and case are free.
     try testing.expect(property("other punctuation") != null);
     try testing.expect(property("gc=Private_Use") != null);
-    // A name nobody defines still fails closed.
-    try testing.expect(property("Contro") == null);
+    // A name nobody defines still fails closed - one letter short of the real
+    // alias above, deliberately, so a typo fixer must not "fix" it.
+    try testing.expect(property("Contro") == null); // spellchecker:disable-line
 }
