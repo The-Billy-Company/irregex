@@ -297,7 +297,7 @@ pub const Munch = struct {
     /// `at == haystack.len` is legal and asks the only question left at the end
     /// of the input: does anything accept the empty string.
     pub fn longest(m: *Munch, haystack: []const u8, at: usize) ?Match {
-        return m.scan(haystack, at, null);
+        return m.scan(haystack, at, null, .longest);
     }
 
     /// The longest match beginning at `at` **among the permitted patterns**.
@@ -307,10 +307,31 @@ pub const Munch = struct {
     /// behind it, so the restriction has to be part of the walk. It is — one
     /// mask AND per accepting state, nothing per byte.
     pub fn longestAmong(m: *Munch, haystack: []const u8, at: usize, allow: *const Allow) ?Match {
-        return m.scan(haystack, at, allow);
+        return m.scan(haystack, at, allow, .longest);
     }
 
-    fn scan(m: *Munch, haystack: []const u8, at: usize, allow: ?*const Allow) ?Match {
+    /// The **shortest** non-empty match beginning at `at`, among the permitted
+    /// patterns. Null when nothing starts there.
+    ///
+    /// Maximal munch answers "which token is here" only when a state asked for
+    /// the set. Asked over a slate nobody asked for — every terminal a grammar
+    /// has — it answers something else, because such a slate always contains a
+    /// run-of-anything-but-a-delimiter, and that pattern reaches further than
+    /// every real token at every byte. The answer is then a fact about the
+    /// grammar's widest regex rather than about the bytes.
+    ///
+    /// So a caller that wants a *name* for a byte asks for the shortest reading
+    /// instead: the least the slate can commit to, which is the most a caller
+    /// with no state behind it is entitled to claim. Empty matches are passed
+    /// over — a nullable pattern would otherwise name every position at length
+    /// zero, which is a name for nothing.
+    pub fn shortestAmong(m: *Munch, haystack: []const u8, at: usize, allow: *const Allow) ?Match {
+        return m.scan(haystack, at, allow, .shortest);
+    }
+
+    const Pick = enum { longest, shortest };
+
+    fn scan(m: *Munch, haystack: []const u8, at: usize, allow: ?*const Allow, pick: Pick) ?Match {
         std.debug.assert(at <= haystack.len);
         var best: usize = 0;
         var found = false;
@@ -319,12 +340,19 @@ pub const Munch = struct {
         for (m.voices, 0..) |v, vi| {
             const permitted = if (allow) |a| a.words[vi] else ~@as(u64, 0);
             if (permitted == 0) continue;
-            const end = reach(v.dfa, haystack, at, permitted) orelse continue;
-            if (!found or end.at > best) {
+            const end = switch (pick) {
+                .longest => reach(v.dfa, haystack, at, permitted),
+                .shortest => first(v.dfa, haystack, at, permitted),
+            } orelse continue;
+            const better = switch (pick) {
+                .longest => end.at > best,
+                .shortest => end.at < best,
+            };
+            if (!found or better) {
                 best = end.at;
                 found = true;
                 n = 0;
-            } else if (end.at < best) continue;
+            } else if (end.at != best) continue;
             var mask = end.pats;
             while (mask != 0) : (mask &= mask - 1) {
                 m.winners[n] = v.ordinals[@ctz(mask)];
@@ -425,6 +453,32 @@ fn reach(d: *const Munch.Dfa, haystack: []const u8, at: usize, permitted: u64) ?
         if (d.reachableFrom(s) & permitted == 0) break;
     }
     return best;
+}
+
+/// The same walk, stopped at the **first** accept of positive length.
+///
+/// Shortest match needs no lookahead past the accept that answers it, so this
+/// is the cheaper of the two walks as well as the narrower one — it cannot run
+/// past the first place a permitted pattern is happy, where `reach` must go on
+/// to find out whether a longer one exists. The `reachableFrom` exit is kept
+/// for the case where no permitted pattern ever accepts, which is the only way
+/// this walk can still run to the end of the haystack.
+fn first(d: *const Munch.Dfa, haystack: []const u8, at: usize, permitted: u64) ?End {
+    if (at >= haystack.len) return null;
+    var s = d.start;
+    if (d.reachableFrom(s) & permitted == 0) return null;
+
+    const last = haystack.len - 1;
+    var i = at;
+    while (i <= last) : (i += 1) {
+        const tbl = if (i < last) d.trans_in else d.trans_fin;
+        s = tbl[s + d.class[haystack[i]]];
+        if (@import("builtin").is_test) steps += 1;
+        if (s == d.dead) return null;
+        if (accepted(d, s, permitted, i + 1)) |end| return end;
+        if (d.reachableFrom(s) & permitted == 0) return null;
+    }
+    return null;
 }
 
 inline fn accepted(d: *const Munch.Dfa, s: u32, permitted: u64, at: usize) ?End {

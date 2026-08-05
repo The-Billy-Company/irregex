@@ -395,3 +395,70 @@ test "munch: an accept reachable only through the final table is still reachable
     // accept, which is what makes the walk above worth keeping alive.
     try t.expectEqual(@as(?munch.Match, null), m.longestAmong("keeps", 0, &allow));
 }
+
+test "munch: the shortest reading names the byte, where the longest names the slate" {
+    // Maximal munch answers the question "given that every one of these was
+    // asked for, which owns this byte" - and it is the right answer to that
+    // question. It is the wrong answer to "what is here", because a slate
+    // nobody narrowed holds a run-of-anything that out-reaches every real
+    // token at every offset. Ask the whole grammar and it reports the grammar's
+    // widest member, at whatever length the next delimiter allows.
+    //
+    // So the two verbs are two questions rather than a preference. Same slate,
+    // same offset, same automaton; the caller says which it is asking.
+    var m = try build(&.{ "[^\"]+", ",", ";" });
+    defer m.deinit();
+
+    var allow = try m.allowNone(t.allocator);
+    defer allow.deinit(t.allocator);
+    for (0..3) |i| allow.admit(&m, @intCast(i));
+
+    const src = "," ++ "x" ** 4096;
+
+    // Longest: the body pattern, across the whole haystack. This is the reading
+    // that made every diagnostic in outliner's wall board name a body pattern
+    // over a kilobyte of source, at an offset holding a comma.
+    munch.steps = 0;
+    const wide = m.longestAmong(src, 0, &allow).?;
+    try t.expectEqual(src.len, wide.len);
+    try t.expectEqualSlices(u32, &.{0}, wide.patterns);
+    const walked = munch.steps;
+
+    // Shortest: one byte, and *both* patterns that can end there are named.
+    // The body pattern is not excluded - it genuinely accepts a single comma -
+    // so this does not decide anything the slate left open. It narrows the tie
+    // to the readings that stop soonest and hands the choice back, which is the
+    // only part a caller with no state behind the question can settle.
+    munch.steps = 0;
+    const near = m.shortestAmong(src, 0, &allow).?;
+    try t.expectEqual(@as(usize, 1), near.len);
+    try t.expectEqualSlices(u32, &.{ 0, 1 }, near.patterns);
+
+    // Cheaper as well as narrower, and for a structural reason rather than a
+    // measured one: shortest match needs no lookahead past the accept that
+    // answers it, where longest must go on to learn whether more exists.
+    try t.expect(munch.steps < walked);
+    try t.expect(munch.steps < 8);
+}
+
+test "munch: nothing accepting means nothing, not the last thing that did" {
+    // The failure mode a first-accept walk invites: returning early on a state
+    // that merely *could* accept, or falling back to some earlier position when
+    // the permitted set never accepts at all. Neither offset here has a
+    // permitted reading - `;` is admitted and absent - so both must be null
+    // rather than the run the forbidden member would have matched.
+    var m = try build(&.{ "[^\"]+", ";" });
+    defer m.deinit();
+
+    var allow = try m.allowNone(t.allocator);
+    defer allow.deinit(t.allocator);
+    allow.admit(&m, 1);
+
+    try t.expectEqual(@as(?munch.Match, null), m.shortestAmong("abc", 0, &allow));
+    try t.expectEqual(@as(?munch.Match, null), m.shortestAmong("abc", 3, &allow));
+
+    // And where it does accept, it accepts at the accept rather than before it.
+    const hit = m.shortestAmong(";;", 0, &allow).?;
+    try t.expectEqual(@as(usize, 1), hit.len);
+    try t.expectEqualSlices(u32, &.{1}, hit.patterns);
+}
