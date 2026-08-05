@@ -8,8 +8,10 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 from contextlib import suppress
 from dataclasses import dataclass
+from importlib import resources
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -76,9 +78,31 @@ def _locate_root(name: str) -> Path | None:
     return None
 
 
+def _bundled(name: str) -> Path | None:
+    """A binary bundled straight into `name`'s own installed distribution.
+
+    Each product's PyPI distribution name differs from its import name
+    (`gist-search`→`gist`, `relate-search`→`relate`, `blast-search`→`blast`),
+    but the import name and the CLI's own name coincide — so the product's own
+    installed package is exactly where its build hook (`hatch_build.py` in
+    that repository, following this one's) placed the binary it built:
+    `<name>/bin/<name>[.exe]`. Absent for a source checkout that has never
+    built a wheel, and for any `name` this interpreter has no such package
+    for; both read as "nothing bundled here," never as an error — the
+    checkout-local and PATH rungs in `_resolve` are exactly what those cases
+    fall through to.
+    """
+    try:
+        root = resources.files(name)
+    except (ModuleNotFoundError, TypeError):
+        return None
+    candidate = root.joinpath("bin", f"{name}.exe" if sys.platform == "win32" else name)
+    return Path(candidate) if candidate.is_file() else None
+
+
 @functools.cache
 def _resolve(name: str, env_var: str) -> str:
-    """Absolute path to one of the kernel's product binaries. Resolution order: explicit env override, the owning checkout's built `zig-out/bin/<name>`, then `name` on PATH. Checkout-local wins so a worktree never drives a stale globally installed binary. As an *in-repo* last resort — never in a distributed wheel — build the CLIs once from source when `build.zig` and `zig` are present. A missing engine is **fail-closed** (`GistNotFoundError`), never a silent fallback to a second matcher."""
+    """Absolute path to one of the kernel's product binaries. Resolution order: explicit env override, the owning checkout's built `zig-out/bin/<name>` (a dev checkout always wins over a packaged copy), the binary `<name>`'s own wheel bundled at `<name>/bin/<name>` (what a plain `pip install <name>-search` gets), then `name` on PATH. As an *in-repo* last resort — never reached from a distributed wheel, since no `build.zig` sits inside one — build the CLIs once from source when `build.zig` and `zig` are present. A missing engine is **fail-closed** (`GistNotFoundError`), never a silent fallback to a second matcher."""
     env = os.environ.get(env_var)
     if env:
         p = Path(env).expanduser()
@@ -95,6 +119,8 @@ def _resolve(name: str, env_var: str) -> str:
             _build_cli(zig, kernel)
             if built.is_file():
                 return str(built)
+    if (bundled := _bundled(name)) is not None:
+        return str(bundled)
     on_path = shutil.which(name)
     if on_path:
         return on_path

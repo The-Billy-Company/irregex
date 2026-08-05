@@ -22,7 +22,7 @@ CONTRACTS = ("analytic", "engine", "kinship")
 
 # Mirrors `[meta]` in contract/engine.toml (versions).
 ABI_VERSION = 2
-ENGINE_VERSION = "1.0.0"  # x-release-please-version
+ENGINE_VERSION = "1.1.0"  # x-release-please-version
 
 # Mirrors `[request_options]` keys in irregex/contract/engine.toml.
 REQUEST_OPTIONS: frozenset[str] = frozenset(
