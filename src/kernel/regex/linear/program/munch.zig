@@ -354,10 +354,51 @@ pub const Munch = struct {
 
 const End = struct { at: usize, pats: u64 };
 
+/// Bytes every `reach` since the last reset has stepped over — the one thing
+/// about this walk a caller cannot otherwise observe, since a walk that runs
+/// too far returns the same answer as one that stops.
+///
+/// That is exactly why it exists: the whole claim of the exit below is about
+/// distance, and a test with no way to measure distance passes whether the exit
+/// is there or not. `builtin.is_test` is comptime, so outside a test build the
+/// increment is not compiled and this is a global nobody writes.
+pub var steps: usize = 0;
+
 /// Walk one automaton forward from `at`, keeping the last position it accepted
-/// **with a permitted pattern**. The walk itself is unchanged by `permitted` —
-/// same bytes, same states, same dead-state exit — because a forbidden pattern
-/// may still be on the path to a permitted longer one.
+/// **with a permitted pattern**.
+///
+/// A forbidden pattern may still be on the path to a permitted longer one, so
+/// `permitted` cannot filter the *steps* — only which accepts count. That much
+/// was always true, and it used to be the whole story, which made `permitted`
+/// govern what this walk recorded and never how far it ran. The walk ran until
+/// the union died, and a union of sixty-four patterns dies where the *last* of
+/// them does.
+///
+/// The sharper premise is that a forbidden pattern is worth following only
+/// while some permitted one can still reach an accept. Past that point the
+/// remaining bytes cannot produce a reportable match however far they go, so
+/// stopping is not an optimization with a correctness argument attached — it is
+/// the same answer, reached without the walk that could not have changed it.
+///
+/// **What it was worth.** outliner's javascript slate puts
+/// `unescaped_single_jsx_string_fragment` — `([^'&]|&[^#A-Za-z])+`, alive on
+/// every byte but two — in the same voice as `return`, `=`, `case`, `function`
+/// and the rest of the keywords a statement parse asks for at nearly every
+/// position. In a file holding neither `'` nor `&` that member is alive to
+/// end-of-file, so each of ~28,000 positions walked the entire remaining file
+/// to report a three-byte keyword. Parsing a 152 KB file cost 16.5 s, and
+/// appending bytes no walk could ever report from raised it linearly: the same
+/// 28,012 calls took 31.9 s once 200 KB of string literal followed them. That
+/// is the O(n²) this line removes.
+///
+/// **What the all-permitted caller gets.** With every pattern permitted the
+/// test reduces to `reachableFrom(s) == 0`, which in a *minimal* automaton is
+/// the dead state and nothing else, so the expectation was a no-op. These
+/// automata are not minimal: a trap state with no accept ahead of it and no
+/// edge to the sink is reachable, and exiting there is both sound and earlier.
+/// Admitting every terminal, java walks 29% fewer bytes and json 25% fewer for
+/// the same tokens. An unattributed automaton carries no table and answers
+/// all-ones, so it never reaches the compare at all.
 fn reach(d: *const Munch.Dfa, haystack: []const u8, at: usize, permitted: u64) ?End {
     if (at >= haystack.len) {
         const pats = d.empty_pats & permitted;
@@ -366,6 +407,7 @@ fn reach(d: *const Munch.Dfa, haystack: []const u8, at: usize, permitted: u64) ?
 
     var s = d.start;
     var best: ?End = accepted(d, s, permitted, at);
+    if (d.reachableFrom(s) & permitted == 0) return best;
 
     const last = haystack.len - 1;
     var i = at;
@@ -375,8 +417,12 @@ fn reach(d: *const Munch.Dfa, haystack: []const u8, at: usize, permitted: u64) ?
         // walk in this package.
         const tbl = if (i < last) d.trans_in else d.trans_fin;
         s = tbl[s + d.class[haystack[i]]];
+        if (@import("builtin").is_test) steps += 1;
         if (s == d.dead) break;
         if (accepted(d, s, permitted, i + 1)) |end| best = end;
+        // Nothing the caller asked about survives here, so the rest of the
+        // haystack cannot produce a reportable accept. `best` is already final.
+        if (d.reachableFrom(s) & permitted == 0) break;
     }
     return best;
 }

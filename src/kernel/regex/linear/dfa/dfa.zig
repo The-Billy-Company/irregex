@@ -92,6 +92,15 @@ pub const Dfa = struct {
     /// dense DFA pads every row to a power-of-two stride. Runs need no index at
     /// all, so we keep the tight stride and the small table both.
     pat_runs: []const PatRun = &.{},
+    /// Which patterns still have an accept reachable from each state — the
+    /// forward-looking twin of `pat_runs`, which says only what a state accepts
+    /// *here*. Id-indexed (not premultiplied); empty for an unattributed
+    /// automaton, where there is no subset of patterns to ask about.
+    ///
+    /// It exists for one caller and one question: a walk told to report only
+    /// some of a union's patterns needs to know when the rest of the union is
+    /// the only thing keeping it alive. See `reachableFrom` and `munch.reach`.
+    reach: []const u64 = &.{},
     start: u32, // premultiplied start row offset (at_start=true, at_end=false)
     empty_match: bool, // does the pattern match an empty line? (^$, a*, …)
     empty_pats: u64 = 0, // WHICH patterns an empty haystack accepts — the one verdict no interned state holds
@@ -256,6 +265,7 @@ pub const Dfa = struct {
         a.free(self.trans_fin);
         if (self.trans_in_w.len != 0) a.free(self.trans_in_w);
         if (self.pat_runs.len != 0) a.free(self.pat_runs);
+        if (self.reach.len != 0) a.free(self.reach);
         if (self.wide) |w| {
             a.free(w.trans_in);
             a.free(w.trans_fin);
@@ -275,6 +285,23 @@ pub const Dfa = struct {
         if (self.pat_runs.len == 0) return @intFromBool(s < self.match_hi);
         for (self.pat_runs) |r| if (s < r.hi) return r.mask;
         return 0;
+    }
+
+    /// Which patterns can still reach an accept from the premultiplied state
+    /// `s` — everything `patternsAt` might yet report at this position or any
+    /// later one, including through `trans_fin` on the last byte.
+    ///
+    /// All ones when the automaton carries no such table, which is the honest
+    /// answer rather than a convenient one: an unattributed automaton cannot
+    /// rule any pattern out, so a caller filtering on this learns nothing and
+    /// keeps walking exactly as it did before.
+    ///
+    /// The divide is the price of storing one mask per state instead of one per
+    /// row, and it is paid only on a walk that is filtering — which is a walk
+    /// this table is about to cut short. See the measurement in `munch.reach`.
+    pub inline fn reachableFrom(self: *const Dfa, s: u32) u64 {
+        if (self.reach.len == 0) return ~@as(u64, 0);
+        return self.reach[s / self.ncls];
     }
 
     /// Does the premultiplied state `s` match? The match states were renumbered

@@ -221,6 +221,99 @@ fn buildRuns(gpa: std.mem.Allocator, pats: []const u64, nc: u32) std.mem.Allocat
     return runs.toOwnedSlice(gpa);
 }
 
+/// Which patterns have an accept state reachable from each state — the mask a
+/// filtered walk stops on, id-indexed like `is_match` and left that way.
+///
+/// A multi-pattern automaton is a union, so its dead state is where *every*
+/// member has died. That is the wrong bound for a caller who only permitted
+/// some of them: one wide member keeps the union alive long after the patterns
+/// the caller asked about are unreachable, and the walk pays for it at every
+/// position. This is the per-state fact that lets `munch.reach` stop instead —
+/// see the note there for what it was worth.
+///
+/// Built only for an attributed automaton. Single-pattern programs — every
+/// ordinary compile, and most of what gist runs — get an empty slice, so they
+/// carry no array and their walks are not even asked the question.
+///
+/// **Every table, deliberately.** `trans_fin` resolves `$`, so an accept can be
+/// reachable only through it, on the true last byte. A fixpoint over the
+/// interior table alone would call such a state useless and stop a walk one byte
+/// before the anchored accept it was owed — a wrong answer, not a slow one.
+/// Erring the other way is free: a mask too broad only walks a little further.
+/// That asymmetry is why this unions over `tableList` rather than over the two
+/// tables the one current caller steps through.
+///
+/// Fixpoint over reverse edges rather than sweeps, because a DFA has cycles and
+/// so no reverse-topological order to lean on, and because this runs on every
+/// compile — the sweep formulation is `O(V·E)` where this is `O(E)`, and the
+/// startup budget is somebody's active concern.
+fn buildReach(
+    gpa: std.mem.Allocator,
+    t: Tables,
+    ncls: u16,
+    nstates: u32,
+    nmatch: u32,
+) std.mem.Allocator.Error![]u64 {
+    const pats = t.pats.?;
+    const n: usize = nstates;
+    const row: usize = ncls;
+
+    const reach = try gpa.alloc(u64, n);
+    errdefer gpa.free(reach);
+    @memset(reach, 0);
+    for (0..nmatch) |s| reach[s] = pats[s];
+
+    // Reverse edges in CSR, over every table any walk can step through — the
+    // word-context interior included, though no filtered walk reads it today.
+    // Narrowing this to the tables one caller happens to use would make the
+    // mask's soundness depend on that caller's habits, and the failure it buys
+    // is a missed accept rather than a slow one. Breadth is free here.
+    const edges = tableList(t);
+    var head = try gpa.alloc(u32, n + 1);
+    defer gpa.free(head);
+    @memset(head, 0);
+    var count: usize = 0;
+    for (edges) |items| {
+        if (items.len == 0) continue;
+        for (0..n) |s| for (items[s * row ..][0..row]) |tgt| {
+            if (tgt == unknown) continue;
+            head[tgt + 1] += 1;
+            count += 1;
+        };
+    }
+    for (1..n + 1) |i| head[i] += head[i - 1];
+
+    const preds = try gpa.alloc(u32, count);
+    defer gpa.free(preds);
+    var fill = try gpa.dupe(u32, head);
+    defer gpa.free(fill);
+    for (edges) |items| {
+        if (items.len == 0) continue;
+        for (0..n) |s| for (items[s * row ..][0..row]) |tgt| {
+            if (tgt == unknown) continue;
+            preds[fill[tgt]] = @intCast(s);
+            fill[tgt] += 1;
+        };
+    }
+
+    // Every match state seeds the propagation; a state enters the queue again
+    // only when its mask actually grew, which bounds the whole loop by the
+    // number of edges times the 64 times a mask can gain a bit.
+    var queue: std.ArrayList(u32) = .empty;
+    defer queue.deinit(gpa);
+    try queue.ensureTotalCapacity(gpa, nmatch);
+    for (0..nmatch) |s| queue.appendAssumeCapacity(@intCast(s));
+    while (queue.pop()) |s| {
+        const carry = reach[s];
+        for (preds[head[s]..head[s + 1]]) |p| {
+            if (reach[p] | carry == reach[p]) continue;
+            reach[p] |= carry;
+            try queue.append(gpa, p);
+        }
+    }
+    return reach;
+}
+
 /// The tables that actually exist, so every layout pass writes one loop instead
 /// of one loop per table plus a null check.
 fn tableList(t: Tables) [3][]u32 {
@@ -327,6 +420,16 @@ pub fn freeze(
     const pat_runs: []const Dfa.PatRun = if (t.pats) |p| try buildRuns(gpa, p[0..nmatch], nc) else &.{};
     errdefer if (pat_runs.len != 0) gpa.free(pat_runs);
 
+    // Which patterns survive from each state, for the walks that permit only
+    // some of them. Id-indexed and built here for the same reason the runs are:
+    // it reads the tables as a graph, and premultiplication is about to stop
+    // them being one.
+    const reach: []const u64 = if (t.pats != null)
+        try buildReach(gpa, t, ncls, sh.nstates, nmatch)
+    else
+        &.{};
+    errdefer if (reach.len != 0) gpa.free(reach);
+
     // The byte-indexed mirror (`Dfa.Wide`), for the automata that will actually
     // walk it: only the unanchored, no-dwell, no-word-context doc scan reads it,
     // and only while it fits the budget. Also built pre-premultiplication.
@@ -356,6 +459,7 @@ pub fn freeze(
         .trans_fin = try t.final.toOwnedSlice(gpa),
         .match_hi = nmatch * nc,
         .pat_runs = pat_runs,
+        .reach = reach,
         .start = sh.start * nc,
         .empty_match = sh.empty_match,
         .empty_pats = sh.empty_pats,

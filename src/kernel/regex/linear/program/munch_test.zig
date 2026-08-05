@@ -301,3 +301,97 @@ test "munch: differential — one slate agrees with N anchored engines everywher
         }
     }
 }
+
+test "munch: a wide member keeps the union alive, but not a narrowed walk" {
+    // The sibling of the test above, and the reason that one is not the whole
+    // story. `[^'&]+` is alive on every byte but two, so the union it sits in
+    // does not reach its dead state until end-of-file - and the walk used to
+    // exit on nothing else. A caller permitting only the keywords therefore
+    // paid the whole haystack to be told `return`, at every position, which is
+    // where outliner's javascript parse found its O(n^2).
+    //
+    // Two claims, and the first is the one that must never move: the answer is
+    // the answer the union always gave. The second is that it is now reached
+    // without the walk, which is pinned on the automaton rather than on a
+    // clock - `reachableFrom` is the fact the exit reads, so asserting on it
+    // is asserting on the mechanism instead of on this machine's mood.
+    var m = try build(&.{ "[^'&]+", "return", "=", ";" });
+    defer m.deinit();
+
+    const tail = "x" ** 4096;
+    const src = "return" ++ tail;
+
+    // Unrestricted, the wide member wins the whole span. Unchanged, and it is
+    // the reading that makes the narrowed one interesting rather than trivial.
+    const free = m.longest(src, 0).?;
+    try t.expectEqual(src.len, free.len);
+    try t.expectEqualSlices(u32, &.{0}, free.patterns);
+
+    var allow = try m.allowNone(t.allocator);
+    defer allow.deinit(t.allocator);
+    allow.admit(&m, 1);
+    allow.admit(&m, 2);
+    allow.admit(&m, 3);
+
+    munch.steps = 0;
+    const hit = m.longestAmong(src, 0, &allow).?;
+    try t.expectEqual(@as(usize, 6), hit.len);
+    try t.expectEqualSlices(u32, &.{1}, hit.patterns);
+
+    // The distance claim, which is the whole point and is not visible in the
+    // answer: a keyword-only walk over a 4 KiB haystack must cost the keyword,
+    // not the haystack. Before the exit below existed this was `src.len`.
+    try t.expect(munch.steps < 16);
+
+    // And the walk that produced it stopped at the keyword rather than at the
+    // end of the tail. Step the voice by hand over the same bytes and find the
+    // first state from which no permitted pattern can still reach an accept:
+    // that offset is where `reach` breaks, and it must be the keyword's, not
+    // the haystack's. `+ 1` because the exit is tested after the step that
+    // entered the state.
+    const seat = m.seats[1];
+    try t.expect(seat.live);
+    const v = &m.voices[seat.voice];
+    var mask: u64 = 0;
+    for (v.ordinals, 0..) |ord, bit| {
+        if (ord == 1 or ord == 2 or ord == 3) mask |= @as(u64, 1) << @intCast(bit);
+    }
+    try t.expect(mask != 0); // the keywords really are in this voice
+
+    var s = v.dfa.start;
+    var stopped: ?usize = null;
+    for (src, 0..) |c, i| {
+        const tbl = if (i + 1 < src.len) v.dfa.trans_in else v.dfa.trans_fin;
+        s = tbl[s + v.dfa.class[c]];
+        if (s == v.dfa.dead or v.dfa.reachableFrom(s) & mask == 0) {
+            stopped = i + 1;
+            break;
+        }
+    }
+    try t.expectEqual(@as(?usize, 7), stopped);
+}
+
+test "munch: an accept reachable only through the final table is still reachable" {
+    // The hazard the exit above introduces, and the one that would be silent.
+    // `keep$` accepts only on the last byte, through `trans_fin` - the table
+    // that resolves `$`. A reachability fixpoint built from the interior table
+    // alone never sees that edge, calls every state on the way to it useless,
+    // and stops the walk one byte short of a match it was owed. That is a wrong
+    // token stream rather than a slow one, so it gets its own case: the wide
+    // member is forbidden, leaving the anchored pattern as the only thing
+    // keeping the walk alive.
+    var m = try build(&.{ "[a-z]+", "keep$" });
+    defer m.deinit();
+
+    var allow = try m.allowNone(t.allocator);
+    defer allow.deinit(t.allocator);
+    allow.admit(&m, 1);
+
+    const hit = m.longestAmong("keep", 0, &allow).?;
+    try t.expectEqual(@as(usize, 4), hit.len);
+    try t.expectEqualSlices(u32, &.{1}, hit.patterns);
+
+    // And it is still only the last byte: `keep` inside a longer text does not
+    // accept, which is what makes the walk above worth keeping alive.
+    try t.expectEqual(@as(?munch.Match, null), m.longestAmong("keeps", 0, &allow));
+}
