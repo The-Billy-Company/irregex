@@ -40,6 +40,49 @@ it are one file each.
   and emits one summary line, byte-identical to the former `debug.print` in
   text mode, or a single NDJSON record in `--json` mode.
 
+## Standing a Fourth Program Up On This Floor
+
+Two declarations on the root module, both read at comptime, both optional,
+and both defaulting to what this package has always emitted:
+
+```zig
+pub const irgx_brand: irregex.Brand = .{
+    .name = "outliner",          // signs every diagnostic line
+    .env_prefix = "OUTLINER_",   // so the knob is OUTLINER_TRACE
+    .artifact_dir = ".outliner",
+};
+pub const irgx_lenses = enum { lex, press, weave, folio };
+```
+
+`Brand` answers *who is speaking*; `irgx_lenses` answers *what it has to say*.
+Shipping only the first left an embedder owning a `TRACE` knob with no
+vocabulary to put through it — its phases are not `warm` or `reconcile` — so
+`OUTLINER_TRACE=press` lit nothing and, because an unrecognized token used to
+be dropped in the name of forward compatibility, said nothing either. Declared
+lenses are welded onto the engine's own set to make **one** enum, which is why
+there is still one mask, one knob, one `all`, and one `trace`: a guest lens is
+not a second-class lens, and no call site knows which half it names.
+
+Engine lenses keep their ordinals, so adding a guest set cannot renumber a
+mask computed elsewhere. Two mistakes are compile errors rather than a lens
+that quietly never lights: naming more lenses than the 32-bit mask has bits,
+and re-spelling a name the engine already owns. A token matching neither half
+is now reported — `gist: note: TRACE names no lens 'pres'` — because an
+ignored token and an unset knob were indistinguishable from outside.
+
+The root module belongs to the **compilation**, though, not to the package, and
+it moves: under a custom test runner the runner can be the root, and a C-ABI
+host has no Zig root at all. `std_options` lives with the same rule. So `lit`
+and `trace` take the lens *name* — spelled `.press`, exactly as before — and
+resolve it at comptime, which lets the answer be three different things on
+purpose. An engine lens always resolves. A guest lens resolves wherever the
+declaration reached. A name matching neither is a **compile error** where a
+guest set was declared (the vocabulary is closed there, so this is a typo among
+your own lenses) and a **dark channel** where none was (nothing can name it and
+no `TRACE` token can light it, so the call folds to an empty mask). The
+alternative was that a library's own trace line becomes the reason its tests
+will not build.
+
 ## Why the Sink Is Thread-Local
 
 The sink is the seam that makes two properties true by construction rather

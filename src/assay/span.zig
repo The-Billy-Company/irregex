@@ -35,6 +35,17 @@ pub const Duration = enum(i128) {
         return @as(f64, @floatFromInt(@intFromEnum(self))) / 1e6;
     }
 
+    /// Whole microseconds, truncated. The scale below `ms` exists because not
+    /// every program on this floor has millisecond-sized phases: a grammar
+    /// import and an LALR table build land in the hundreds of microseconds,
+    /// where `{d:.1} ms` rounds the difference between two grammars away.
+    /// Truncating rather than rounding is deliberate — it is the same reading
+    /// the open-coded `@divTrunc(ns, ns_per_us)` at those sites produced, so
+    /// adopting the typed clock cannot move a number anyone has recorded.
+    pub fn us(self: Duration) i64 {
+        return @intCast(@divTrunc(@intFromEnum(self), std.time.ns_per_us));
+    }
+
     /// The raw nanosecond count — for callers that sum or compare intervals
     /// (e.g. `cold-load + rank` in the ranked timing line) before formatting.
     pub fn ns(self: Duration) i128 {
@@ -253,6 +264,13 @@ test "Duration.ms matches the legacy ns/1e6 formula" {
     const d: Duration = @enumFromInt(1_500_000); // 1.5 ms
     try std.testing.expectEqual(@as(f64, 1.5), d.ms());
     try std.testing.expectEqual(@as(i128, 1_500_000), d.ns());
+}
+
+test "Duration.us truncates, matching the open-coded divTrunc it replaces" {
+    const d: Duration = @enumFromInt(1_500_900);
+    try std.testing.expectEqual(@as(i64, 1500), d.us());
+    // Sub-microsecond reads as zero rather than rounding up to one.
+    try std.testing.expectEqual(@as(i64, 0), (@as(Duration, @enumFromInt(999))).us());
 }
 
 test "Duration.add sums intervals" {
