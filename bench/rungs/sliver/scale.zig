@@ -37,10 +37,10 @@ const std = @import("std");
 const gist = @import("irregex");
 
 const corpus_mod = gist.corpus;
-const crest = gist.crest;
-const simd = gist.simd;
-const sliver = gist.sliver;
-const Index = gist.trigram.Index;
+const crest = gist.math.crest;
+const simd = gist.scan.simd;
+const sliver = gist.index.sliver;
+const Index = gist.index.trigram.Index;
 const Regex = gist.regex.Regex;
 const Dir = std.Io.Dir;
 
@@ -132,7 +132,7 @@ fn tierCandidates(idx: *const Index, gpa: std.mem.Allocator, n_docs: usize, filt
         w += l.len;
     }
     std.mem.sort(u32, buf[0..w], {}, comptime std.sort.asc(u32));
-    const k = gist.ngram.dedupSorted(u32, buf, w);
+    const k = gist.index.ngram.dedupSorted(u32, buf, w);
     return gpa.realloc(buf, k) catch buf[0..k];
 }
 
@@ -282,7 +282,7 @@ fn report(gpa: std.mem.Allocator, io: std.Io, rows: []const Row, corpus_bytes: u
         }));
     }
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/scale_tiers.tsv", .{gist.home.outDir()});
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/scale_tiers.tsv", .{gist.index.home.outDir()});
     try Dir.cwd().writeFile(io, .{ .sub_path = path, .data = tsv.items });
     std.debug.print("\nscale: wrote {s}\n", .{path});
 }

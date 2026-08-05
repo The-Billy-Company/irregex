@@ -151,18 +151,41 @@ class Target:
 # and depending on that difference is how one of these archives ended up with
 # 52 instructions its own triple never promised.
 #
-# Only Windows names a library. Everywhere else the archive's externals are
-# libc and the platform's crt, which every cgo compiler links by default. On
-# Windows the engine reaches the kernel through ntdll - 60 `Nt*`/`Ldr*`/`Rtl*`
+# Two platforms name a library, and for one reason: `zig cc` links something
+# silently that the consumer's compiler does not, so a probe that leaves it out
+# is evidence about a link nobody performs.
+#
+# On Windows the engine reaches the kernel through ntdll - 60 `Nt*`/`Ldr*`/`Rtl*`
 # symbols, which is Zig's std, not ours - and mingw-w64's default library set
-# stops at kernel32. Zig's own driver adds ntdll silently, so a probe linked by
-# `zig cc` proves nothing about the gcc that cgo will actually use; the flag is
-# declared here, checked into the link file, and cross-checked below.
+# stops at kernel32.
+#
+# On Linux the archive's undefined set includes `exp` and `log` (the cost model's
+# arithmetic), which live in libm on the glibc 2.17 these targets pin; the merge
+# of libm into libc is 2.34 and later. gcc does not add `-lm` on its own, so the
+# link files carry it and the probe must too.
+#
+# Everywhere else the archive's externals are libc and the platform's crt, which
+# every cgo compiler links by default. Each flag declared here is checked into
+# the link file and cross-checked below.
 MATRIX = (
     Target("darwin", "arm64", "aarch64-macos.11.0", "baseline", machines=("arm64", "aarch64")),
     Target("darwin", "amd64", "x86_64-macos.11.0", "x86_64_v2", machines=("x86_64",)),
-    Target("linux", "amd64", "x86_64-linux-gnu.2.17", "x86_64_v2", machines=("x86_64",)),
-    Target("linux", "arm64", "aarch64-linux-gnu.2.17", "baseline", machines=("aarch64",)),
+    Target(
+        "linux",
+        "amd64",
+        "x86_64-linux-gnu.2.17",
+        "x86_64_v2",
+        libs=("-lm",),
+        machines=("x86_64",),
+    ),
+    Target(
+        "linux",
+        "arm64",
+        "aarch64-linux-gnu.2.17",
+        "baseline",
+        libs=("-lm",),
+        machines=("aarch64",),
+    ),
     Target(
         "windows",
         "amd64",

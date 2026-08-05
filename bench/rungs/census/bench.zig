@@ -21,8 +21,8 @@ const irregex = @import("irregex");
 const probes = @import("probes");
 
 const Regex = irregex.regex.Regex;
-const lanes = irregex.regex_compose.lanes;
-const sieve_mod = irregex.regex_sieve;
+const lanes = irregex.regex.compose.lanes;
+const sieve_mod = irregex.regex.sieve;
 
 /// The sieve's own account of itself. It is the one rung whose refusal is
 /// usually a COST verdict rather than a representability one, and the two want
@@ -62,7 +62,7 @@ fn sieveFact(gpa: std.mem.Allocator, re: *const Regex, decider_cost: u32) SieveF
 /// skippable-start-dwell refusal is a dispatch judgment, and no-DFA is a
 /// determinization budget problem no rung can see past.
 fn composeDecline(re: *const Regex) []const u8 {
-    if (!lanes.native) return "not-aarch64";
+    if (lanes.widest == null) return "no-byte-shuffle";
     const d = re.dfa orelse return if (re.lazy != null) "no-eager-dfa(lazy)" else "no-dfa(pike)";
     if (d.word_ctx) return "word-ctx";
     if (d.isMatch(d.start)) return "start-accepts";

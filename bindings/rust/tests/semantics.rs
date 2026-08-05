@@ -9,36 +9,38 @@ use irgx::{Error, Regex, RegexBuilder};
 
 // ── nullable and zero-width patterns ─────────────────────────────────────
 
-/// `a*` over `"abc"` is `[(0, 1), (2, 2)]`. The `regex` crate answers
-/// `[(0, 1), (1, 1), (2, 2), (3, 3)]`.
+/// `a*` over `"abc"` is `[(0, 1), (2, 2), (3, 3)]`, which is what the `regex`
+/// crate answers.
 ///
-/// Two engine rules produce the difference, and both are the engine's to make:
-/// an empty match is suppressed where the previous match ended, which drops
-/// `(1, 1)`; and an empty match is suppressed at the end of the buffer, which
-/// drops `(3, 3)`. This is exactly why the binding never advances a cursor
-/// itself - a hand-rolled loop over `captures(from)` would have to re-invent
-/// both rules, and would get them wrong.
+/// The empty match at 1 is missing because it abuts the `a` that ended there,
+/// and that is the crate's convention rather than the engine's finding: the C
+/// ABI reports it, Python's `re` shows it, and this crate skips it so that code
+/// written against `regex` sees the sequence it expects. The trailing `(3, 3)`
+/// IS reported - an empty match at the end of the text is a match.
+///
+/// `tests/sequence.rs` proves that agreement live against the crate rather than
+/// against this table.
 #[test]
 fn nullable_star() {
     let re = Regex::new("a*").unwrap();
-    assert_eq!(spans(&re, "abc"), [(0, 1), (2, 2)]);
+    assert_eq!(spans(&re, "abc"), [(0, 1), (2, 2), (3, 3)]);
+    // The empty match at the end abuts the `aaa` that ended there, so it goes -
+    // end of text is not a special case, adjacency is.
     assert_eq!(spans(&re, "aaa"), [(0, 3)]);
     assert_eq!(spans(&re, "aXaXa"), [(0, 1), (2, 3), (4, 5)]);
-    // Every position is empty-matchable, and each one is a fresh start except
-    // the last, which is the end of the buffer.
-    assert_eq!(spans(&re, "bbb"), [(0, 0), (1, 1), (2, 2)]);
-    // No match at all in an empty text: the only candidate position is the end
-    // of the buffer, and that one is suppressed. The `regex` crate reports
-    // `[(0, 0)]` here.
-    assert_eq!(spans(&re, ""), []);
-    assert!(!re.is_match(""));
+    // Every position is empty-matchable and none of them abuts a non-empty
+    // match, so every one is reported, end of text included.
+    assert_eq!(spans(&re, "bbb"), [(0, 0), (1, 1), (2, 2), (3, 3)]);
+    // The end of the text is the only candidate position, and it counts.
+    assert_eq!(spans(&re, ""), [(0, 0)]);
+    assert!(re.is_match(""));
 }
 
 #[test]
 fn empty_pattern() {
     let re = Regex::new("").unwrap();
-    assert_eq!(spans(&re, "abc"), [(0, 0), (1, 1), (2, 2)]);
-    assert_eq!(spans(&re, ""), []);
+    assert_eq!(spans(&re, "abc"), [(0, 0), (1, 1), (2, 2), (3, 3)]);
+    assert_eq!(spans(&re, ""), [(0, 0)]);
     // A match is still a match: an empty one has an empty `as_str`, and is not
     // the same thing as no match.
     let found = re.find("abc").unwrap();
@@ -50,10 +52,12 @@ fn empty_pattern() {
 #[test]
 fn word_boundary_is_zero_width() {
     let re = Regex::new(r"\b").unwrap();
-    // Four boundaries in "ab cd", and the one at byte 5 is the end of the
-    // buffer, so three are reported.
-    assert_eq!(spans(&re, "ab cd"), [(0, 0), (2, 2), (3, 3)]);
-    assert_eq!(spans(&re, "a"), [(0, 0)]);
+    // Four boundaries in "ab cd": before `a`, after `b`, before `c`, and the one
+    // at byte 5 after `d`, which is the end of the text and still a boundary.
+    assert_eq!(spans(&re, "ab cd"), [(0, 0), (2, 2), (3, 3), (5, 5)]);
+    assert_eq!(spans(&re, "a"), [(0, 0), (1, 1)]);
+    // No word character, so no boundary anywhere - including at the end, which
+    // is what separates this from the cases above.
     assert_eq!(spans(&re, " "), []);
     assert_eq!(spans(&re, ""), []);
 }
@@ -442,16 +446,56 @@ fn fixed_wins_over_pcre() {
 
 // ── grammar notes the README makes claims about ───────────────────────────
 
-/// A newline is a line terminator here, not ordinary whitespace, so a
-/// single-character class will not match one. A longer match may still span one.
+/// A newline is ordinary whitespace, because the text is one buffer rather than
+/// a sequence of lines. `\s` matches it, a character class containing it matches
+/// it, and `.` does not - which is the same split `regex` and `re` make.
+///
+/// This used to say the opposite. The engine has a line-oriented model for grep
+/// work, where a newline is a terminator no pattern may cross, and the binding
+/// was reaching the engine through it - so `\s` found nothing in `"a\nb"` and a
+/// caller searching a file had no way to write a pattern that spanned a line.
+/// The binding now compiles in the buffer model, which is the one a library
+/// caller means.
 #[test]
-fn newline_is_a_terminator_not_whitespace() {
-    assert_eq!(spans(&Regex::new(r"\s").unwrap(), "a\nb"), []);
+fn newline_is_ordinary_whitespace_in_a_buffer() {
+    assert_eq!(spans(&Regex::new(r"\s").unwrap(), "a\nb"), [(1, 2)]);
     assert_eq!(spans(&Regex::new(r"\s").unwrap(), "a\tb"), [(1, 2)]);
+    assert_eq!(spans(&Regex::new("[ \n]").unwrap(), "a\nb"), [(1, 2)]);
     assert_eq!(
         Regex::new(r"a\sb").unwrap().find("a\nb").unwrap().as_str(),
         "a\nb"
     );
+    // `.` still stops at a newline unless asked otherwise, exactly as it does in
+    // `regex` and `re`. Inline `(?s)` is PCRE2 grammar here, so the portable way
+    // to ask is the builder.
+    assert_eq!(spans(&Regex::new(".").unwrap(), "a\nb"), [(0, 1), (2, 3)]);
+    let dotall = RegexBuilder::new(".")
+        .dot_matches_new_line(true)
+        .build()
+        .unwrap();
+    assert_eq!(spans(&dotall, "a\nb"), [(0, 1), (1, 2), (2, 3)]);
+}
+
+/// `^` and `$` are text anchors by default and line anchors under
+/// `multi_line`, which is what `regex` and `re` both do. The buffer model is a
+/// separate question - the text is one buffer either way.
+#[test]
+fn multi_line_moves_the_anchors_and_nothing_else() {
+    let text = "ab\ncd";
+    assert_eq!(spans(&Regex::new("^..").unwrap(), text), [(0, 2)]);
+    let lines = RegexBuilder::new("^..").multi_line(true).build().unwrap();
+    assert_eq!(spans(&lines, text), [(0, 2), (3, 5)]);
+
+    assert_eq!(spans(&Regex::new("..$").unwrap(), text), [(3, 5)]);
+    let ends = RegexBuilder::new("..$").multi_line(true).build().unwrap();
+    assert_eq!(spans(&ends, text), [(0, 2), (3, 5)]);
+
+    // Still one buffer under either setting: a match may cross the newline.
+    for re in [Regex::new(r"b\nc").unwrap(), {
+        RegexBuilder::new(r"b\nc").multi_line(true).build().unwrap()
+    }] {
+        assert_eq!(spans(&re, text), [(1, 4)]);
+    }
 }
 
 /// The end-of-text anchor is `\z`, as in Rust's `regex` crate and RE2, and it
@@ -555,28 +599,40 @@ fn anchors_are_text_anchors_and_find_all_is_the_authority() {
     );
 }
 
-/// The other half of "the buffer is one unit": you cannot opt out of it. The
-/// linear grammar refuses `(?m)` rather than parsing it and ignoring it, which
-/// matters because a pattern carried over from another engine would otherwise
-/// match the wrong thing silently. The PCRE arm is the escape hatch and does
-/// honor it, so the refusal is a property of the grammar rather than a gap.
+/// The other half of "the buffer is one unit": per-line anchors are a *mode over*
+/// that buffer, asked for once for the whole pattern, and never a claim about
+/// what the text is. Both spellings ask - `multi_line(true)` and a leading
+/// `(?m)` - and they are the same compile, so a pattern carried over from
+/// another engine means here what it meant there.
+///
+/// What stays refused is the scoped `(?m:...)` form, which would make the anchors
+/// mean one thing inside a subexpression and another outside it. Refusing beats
+/// parsing it and applying it to everything, and the PCRE arm is the escape hatch
+/// for a caller who needs the real scoping.
 #[test]
-fn there_is_no_multiline_mode_in_the_linear_grammar() {
-    for pattern in ["(?m)^b", "(?m:^b)", r"(?m)b$"] {
-        let refused = Regex::new(pattern);
-        assert!(
-            refused.is_err(),
-            "{pattern:?} compiled under the linear grammar. If multi-line mode is now \
-             supported the anchor contract changed and this whole file needs rereading; if \
-             it is parsed and ignored, that is worse than refusing it."
-        );
+fn per_line_anchors_are_one_mode_asked_for_two_ways() {
+    for (inline, body) in [("(?m)^b", "^b"), (r"(?m)b$", r"b$")] {
+        let folded = Regex::new(inline).unwrap();
+        let built = RegexBuilder::new(body).multi_line(true).build().unwrap();
+        for text in ["a\nb", "b\na", "b", "a\nb\n", ""] {
+            assert_eq!(
+                folded.find(text).map(|m| m.range()),
+                built.find(text).map(|m| m.range()),
+                "{inline:?} over {text:?}"
+            );
+        }
     }
-    // And the arm that does support it, so the refusal above is not just "this
-    // engine cannot parse an inline flag group".
-    let per_line = RegexBuilder::new("(?m)^b").pcre(true).build().unwrap();
-    assert_eq!(per_line.find("a\nb").map(|m| m.range()), Some(2..3));
-    let text_anchored = RegexBuilder::new("^b").pcre(true).build().unwrap();
-    assert_eq!(text_anchored.find("a\nb"), None);
+    // Off is still off, and the default is still the text's own ends.
+    assert_eq!(Regex::new("^b").unwrap().find("a\nb"), None);
+
+    // The scoped form is a different question and is not answered here.
+    assert!(
+        Regex::new("(?m:^b)").is_err(),
+        "a scoped (?m:...) compiled; applying it to the whole pattern is worse \
+         than refusing it"
+    );
+    let scoped = RegexBuilder::new("(?m:^b)").pcre(true).build().unwrap();
+    assert_eq!(scoped.find("a\nb").map(|m| m.range()), Some(2..3));
 }
 
 /// The reason to use this engine at all. A backtracking implementation takes

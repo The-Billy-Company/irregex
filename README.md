@@ -301,7 +301,7 @@ have said.
 
 ```zig
 const irregex = @import("irregex");
-const slate = irregex.irregex;   // the set-shaped tier over the engine
+const slate = irregex.slate;   // the set-shaped tier over the engine
 
 const specs = [_]irregex.engine.query.Spec{
     .{ .pattern = "WalletService" },

@@ -56,11 +56,29 @@ pub const WORD: u32 = 1 << 2;
 pub const SMART_CASE: u32 = 1 << 5;
 pub const NO_UNICODE: u32 = 1 << 6;
 pub const PCRE: u32 = 1 << 8;
+pub const MULTILINE: u32 = 1 << 9;
+pub const DOTALL: u32 = 1 << 10;
 
 /// An opaque compiled pattern. Never dereferenced on this side.
 #[repr(C)]
 pub struct Regex {
     _opaque: [u8; 0],
+}
+
+/// An opaque compiled slate — many patterns over one text. Never dereferenced
+/// on this side.
+#[repr(C)]
+pub struct Slate {
+    _opaque: [u8; 0],
+}
+
+/// `irgx_slate_pattern`: one pattern of a slate, and the flag word
+/// [`irgx_compile`] takes for a single one.
+#[repr(C)]
+pub struct SlatePattern {
+    pub pattern: *const u8,
+    pub len: usize,
+    pub flags: u32,
 }
 
 /// `irgx_span`: one byte range `[start, end)`, or `(-1, -1)` for a capture
@@ -141,10 +159,23 @@ unsafe extern "C" {
     pub fn irgx_compile(pattern: *const u8, len: usize, flags: u32, out: *mut *mut Regex) -> i32;
     pub fn irgx_free(re: *mut Regex);
     pub fn irgx_is_match(re: *mut Regex, text: *const u8, len: usize) -> i32;
-    pub fn irgx_find_all(
+    // `irgx_find_all` is deliberately not declared: it is the windowed verb below
+    // with an inert bound, and this crate needs the bound anyway for `find_at`.
+    // Declaring both would leave two spellings of one call for a reader to
+    // reconcile.
+    pub fn irgx_is_match_in(
         re: *mut Regex,
         text: *const u8,
         len: usize,
+        from: usize,
+        to: usize,
+    ) -> i32;
+    pub fn irgx_find_all_in(
+        re: *mut Regex,
+        text: *const u8,
+        len: usize,
+        from: usize,
+        to: usize,
         out: *mut Span,
         cap: usize,
         written: *mut usize,
@@ -158,6 +189,26 @@ unsafe extern "C" {
         cap: usize,
         written: *mut usize,
     ) -> i32;
+    pub fn irgx_slate_compile(
+        patterns: *const SlatePattern,
+        count: usize,
+        refused: *mut usize,
+        out: *mut *mut Slate,
+    ) -> i32;
+    pub fn irgx_slate_free(slate: *mut Slate);
+    // `irgx_slate_len` is deliberately not declared: a `RegexSet` holds the
+    // patterns it was built from, so its own length is a field rather than a
+    // call, and the ABI's only use for the number is sizing the `which` buffer.
+    pub fn irgx_slate_is_match(slate: *mut Slate, text: *const u8, len: usize) -> i32;
+    pub fn irgx_slate_which(
+        slate: *mut Slate,
+        text: *const u8,
+        len: usize,
+        out: *mut u32,
+        cap: usize,
+        written: *mut usize,
+    ) -> i32;
+
     pub fn irgx_group_count(re: *mut Regex, out: *mut u32) -> i32;
     // The inverse direction, `irgx_group_index`, is deliberately not declared:
     // the crate reads the whole name table at compile time, so resolving a name

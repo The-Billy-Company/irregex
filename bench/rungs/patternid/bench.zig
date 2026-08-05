@@ -48,7 +48,7 @@
 const std = @import("std");
 const gist = @import("irregex");
 
-const syntax = gist.regex_syntax;
+const syntax = gist.regex.syntax;
 const State = syntax.State;
 const Regex = gist.regex.Regex;
 
@@ -558,9 +558,9 @@ fn buildSection(gpa: std.mem.Allocator, io: std.Io) !void {
 // and `Regex.lineMatch`) over the same corpus, so the ratio is the real one a
 // caller sees, not a microbenchmark of the inner loop.
 
-const chorus_mod = gist.regex_chorus;
+const chorus_mod = gist.regex.chorus;
 const core_mod = gist.regex;
-const patterns_mod = gist.irregex.patterns;
+const patterns_mod = gist.slate.patterns;
 
 /// A synthetic document with the shape the attribution workload actually meets:
 /// mostly lines that match nothing, a few that match one pattern. That is the

@@ -101,8 +101,10 @@ pub const RunOptions = struct {
 /// which never fuse into this exact result.
 pub const MatchKind = enum { match, context };
 
-/// One matched span within a line, as owned byte offsets `[start, end)`.
-pub const Span = struct { start: usize, end: usize };
+/// One matched span within a line, as owned byte offsets `[start, end)` — the
+/// package vocabulary (`../mark.zig`), so a hosted record's spans are the same
+/// type the engine that produced them measured in.
+pub const Span = @import("../mark.zig").Span;
 
 /// One owned result record. Unlike the C-ABI callback's aliased view, every
 /// slice here is copied into the owning `Cursor`'s arena and stays valid until

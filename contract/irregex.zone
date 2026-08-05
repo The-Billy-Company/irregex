@@ -34,6 +34,13 @@ package irregex {
 // fold that reads its persisted pair. A tier is the unit of "may not point
 // up" — so wherever direction is meant, there is a tier.
 zones {
+    // The vocabulary — std only, and below even the platform floor, because it
+    // holds no behavior for a platform to differ about. `Span`, `Match`,
+    // `PatternID`, `Window`, `Authority`: the words every tier above says, minted
+    // once so a span crossing four tiers is the same type at each of them
+    // instead of four identical structs that happen to agree today.
+    mark        mark.zig mark_test.zig
+
     // Platform floor — std only, and below even the instrumentation because it
     // is what the instrumentation writes *through*. One file holding every
     // primitive whose spelling differs across an OS (handle-relative open, the
@@ -156,6 +163,23 @@ zones {
     ffi         surface/ffi/**
 }
 
+// Reach outside the package: the modules the build graph hands us.
+//
+// Everything above orders what this package owns. These are the only names it
+// says that it does not own, and each one is a dependency the build script has
+// to satisfy — so the list is short by construction and worth reading whole.
+// `std`, `builtin` and `root` are the language's, granted without asking.
+
+// The version string root.zig re-exports comes from `b.addOptions`, so the one
+// fact this library cannot derive from its own bytes is injected by the build.
+use build_options
+
+// The C-ABI plane builds against this package *as a consumer sees it* rather
+// than by path, so `libirgx`'s exported functions and a downstream host's
+// compile against the same `root.zig` surface. It reads as a self-import
+// because it is one: the module boundary is the point, not an accident.
+use irregex by ffi
+
 // Guest lists: regions only the named importers may reach at all.
 //
 // Tiers order the stack; they say nothing about peers, because peers at one
@@ -229,10 +253,12 @@ forbid cycles across directories
 
 variance cycle {
     kernel/regex/linear/ladder/verdict.zig
+    kernel/regex/linear/pike/closure.zig
     kernel/regex/linear/pike/scratch.zig
     kernel/regex/linear/pike/search.zig
     kernel/regex/linear/pike/span.zig
     kernel/regex/linear/program/core.zig
+    kernel/regex/linear/program/lower.zig
 } because
         \\`program/core.zig` is the linear engine's interface: it owns the
         \\compiled program every executor reads and re-exports its neighbors'
@@ -243,14 +269,52 @@ variance cycle {
         \\`core.zig` a pure re-exporter.
 
 variance cycle {
+    exec/cold/argv/args.zig
+    exec/cold/argv/catalog.zig
+    exec/cold/argv/grammar.zig
+    exec/cold/argv/intent.zig
+    exec/cold/emit/color.zig
+} because
+        \\What the user asked for and how we paint it are answering each other.
+        \\The parser legitimately needs `color.zig` at parse time — it validates
+        \\`--color=<spec>` where it is typed and stores a resolved `Palette` on
+        \\the options — but `color.enabled` then takes the whole `args.Opts` back
+        \\to decide whether a terminal gets ANSI at all. That one signature is
+        \\the entire back edge. Retire by narrowing it to the resolved colour
+        \\mode it actually reads instead of the parser's option struct, leaving
+        \\one arrow: argv depends on emit, never the reverse.
+
+variance cycle {
+    exec/cold/emit/multiline.zig
+    exec/cold/emit/output.zig
+    exec/cold/emit/output/display.zig
+    exec/cold/emit/output/grid.zig
+    exec/cold/emit/output/multibuf.zig
+    exec/cold/emit/output/replace.zig
+    exec/cold/emit/output/skim.zig
+} because
+        \\`output.zig` is the one name callers face for rendering, and it owns
+        \\the `Emitter` and `Rows` types every renderer beneath it writes
+        \\through. So each of the five `output/` renderers imports its own parent
+        \\to reach those two types, plus the shared word-boundary and span
+        \\helpers. Nothing here is circular *logic* — it is shared vocabulary
+        \\living in the facade that re-exports it. Retire by moving `Emitter`,
+        \\`Rows`, and those helpers down into a leaf the facade and the renderers
+        \\both import, which makes `output.zig` a pure re-exporter.
+
+variance cycle {
     exec/cold/engine/serial.zig
+    exec/cold/engine/swarm/crew.zig
+    exec/cold/engine/swarm/descent.zig
+    exec/cold/engine/swarm/sift.zig
     exec/cold/engine/swarm/swarm.zig
 } because
         \\Work distribution recursion: `serial` hands a multi-file query to
         \\`swarm`, and each swarm worker runs the identical per-file path back in
         \\`serial`, which is what keeps the parallel and sequential answers
-        \\byte-identical. Retire by extracting that per-file path into a leaf both
-        \\import.
+        \\byte-identical. The crew, descent, and sift internals are on that same
+        \\return path, so they are in the loop rather than beside it. Retire by
+        \\extracting that per-file path into a leaf both import.
 
 variance cycle {
     exec/session/answer/gather.zig
@@ -258,12 +322,14 @@ variance cycle {
     exec/session/facet/present.zig
     exec/session/facet/stream.zig
     exec/session/reconcile/reconcile.zig
+    exec/session/warm/overlay.zig
     exec/session/warm/resident.zig
 } because
         \\The warm session's real tangle, and the largest one here:
         \\`resident.zig` drives fold/present/stream and reconcile, and all four
-        \\read resident state back. Four directories are therefore one indivisible
+        \\read resident state back — `overlay.zig` included, since the overlay is
+        \\that state's own reader. Four directories are therefore one indivisible
         \\unit — the session cannot be re-cut without moving all of them. Unlike
-        \\the two cycles above this is debt, not a facade. Retire by giving the
+        \\the cycles above this is debt, not a facade. Retire by giving the
         \\resident state a leaf module the facets read instead of importing the
         \\driver.

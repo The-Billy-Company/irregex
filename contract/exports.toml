@@ -1,0 +1,161 @@
+# irregex — the export surface.
+#
+# The outward half of the law. `irregex.zone` says what a file inside this
+# package may reach; nothing said what the package promises to everyone else,
+# and that asymmetry is exactly how the public surface drifted: a bench needed
+# one automaton stage, the shortest path was a new name at the root, and by the
+# time anyone counted there were seventeen `regex_*` spellings shaped by the
+# test harness rather than by a consumer.
+#
+# So this file is the promise, and `quality/surface/check.py` judges `src/root.zig`
+# against it. A name exported without a row here fails; a row without an export
+# fails. Adding a public name therefore costs one line of prose about who it is
+# for — which is the cheapest possible moment to notice that nobody is.
+#
+# Three tiers, meaning three different promises:
+#
+#   stable       semver protects it. A breaking change to one of these is a
+#                major version, and the name is documented in the README.
+#   provisional  shipping and supported, but the shape is still being learned.
+#                Depend on it; expect a minor version with a changelog entry to
+#                move it, where moving a stable name would need a major.
+#   internal     no promise at all. The product seam the sibling packages ride,
+#                and the retired spellings, which are a semver obligation rather
+#                than a courtesy — see [deprecation].
+#
+# `why` is not decoration. It is the question a reader arrives with, and if a
+# row cannot answer one, the export is answering nobody.
+
+[stable]
+
+# ── the two vocabularies ──
+mark = { why = "where a match landed and which pattern landed it — the types every other signature is written in" }
+Span = { why = "a byte range [start, end) over one haystack" }
+Match = { why = "one match: a span plus the pattern that produced it" }
+PatternID = { why = "which pattern of a slate an answer is about" }
+Window = { why = "what to search vs what to read while searching — so a bounded search does not move the edges every assertion resolves against" }
+Authority = { why = "whether an answer decides or only nominates — the promise that an index may eliminate work and never overrule bytes" }
+fault = { why = "the five fault domains, the declinature enum, and the thread-local detail slot a C host pulls" }
+
+# ── the engine ──
+regex = { why = "the whole engine behind one sealed door: syntax, ast, the automata road, captures, the match seam" }
+Pattern = { why = "a compiled pattern and everything you ask of it — match, find, walk, capture, replace, split, with its own scratch so no signature says Sim" }
+Munch = { why = "anchored longest-match over a slate: the lexer primitive, and the reason a tokenizer can be built on this package" }
+Chorus = { why = "many patterns in one pass, answering which of them occur" }
+scan = { why = "the byte tier: memmem, Teddy, Aho-Corasick, class runs, and the LiteralSet that dispatches across them" }
+slate = { why = "many patterns in one walk with exact per-pattern attribution, and the plan that shapes the rows" }
+math = { why = "the product-free floor: bits, globs, edit distance, union-find, sharding, leases, the hash-consed DAG, the crest calculus, the succinct structures" }
+codex = { why = "the FM-index over the succinct floors, and the persisted multi-doc shelf above it" }
+
+# ── which bytes are eligible, and what is persisted about them ──
+corpus = { why = "the walk and the corpus it materializes" }
+scope = { why = "path eligibility: the committed charter, gitignore precedence, the filter, the type registry, the code/docs/data partition" }
+index = { why = "the persisted artifacts, grouped by what each one eliminates" }
+fresh = { why = "the freshness law: build anchor, change journal, sweep — why a days-old artifact still answers correctly" }
+
+# ── surfaces ──
+api = { why = "the hosted Zig API: Engine, SearchQuery, Cursor, CancelToken over the warm engine" }
+ffi = { why = "the C-ABI substrate every package in the ecosystem returns, plus this one's pattern-over-a-buffer plane" }
+assay = { why = "the instrumentation floor: typed spans, comptime-checked tallies, the one diagnostic channel" }
+Brand = { why = "who the program riding this engine is — the name it signs a diagnostic with" }
+Outcome = { why = "the rg 0/1/2 exit contract, both precedences" }
+fatal = { why = "the catch that keeps an escaped error off Zig's default handler, which would exit 1 on a hard fault" }
+
+# ── identity ──
+version_string = { why = "the engine semver, lifted from build.zig.zon so a release bumps one line" }
+pcre2_version_string = { why = "the vendored PCRE2 the -P backend links" }
+abi = { why = "the C-ABI compatibility integer, so a bench binary linking the module reports what the library would" }
+
+[provisional]
+
+# Exported because the CLI's own module root sits outside this module's path and
+# needs the same door — which is a fact about our build layout, not a promise
+# anyone asked for. Its shape is whatever the engine happens to call today
+# (handle-relative open, read, whole-file map, write, argv, stdin readiness), so
+# it grows a member whenever the descent needs one. Semver-freezing a surface
+# defined that way freezes an accident; a caller may absolutely depend on it,
+# and should expect a minor version with a changelog entry to move it.
+portal = { why = "the platform seam — the POSIX-shaped primitives, with the Windows fork stated once" }
+
+engine = { why = "the transport-neutral compiled query and the certified walk-and-emit control plane both runtimes execute through" }
+session = { why = "the resident core: what is held across queries, and the faces one answer can wear" }
+emit = { why = "rg-shaped output and the --json record stream, for anyone building a grep rather than consuming one" }
+argv = { why = "the flag grammar a face parses" }
+preference = { why = "the machine-local, TTY-gated defaults file — structurally invisible to a pipe, and therefore to every agent" }
+rank = { why = "weighted reciprocal-rank fusion over intrinsic byte signals" }
+signals = { why = "the per-language declaration confidence and codegen demotion that fusion reads" }
+haystack = { why = "the bytes of one file as the walk hands them on" }
+bulkstat = { why = "the batched stat walk the freshness anchor is folded from" }
+
+[internal]
+
+inner = { why = "the product seam: what gist, relate and blast reach that is not curated vocabulary. Versions with them, promises nothing to anyone else" }
+
+# ── what 1.0.0 exported and this tree does not ──
+#
+# A breaking change, declared. The tier tables above say what the surface IS;
+# this says how it CHANGED, which is the question semver actually asks and the
+# one a tier table structurally cannot answer. `quality/surface/check.py` diffs
+# the newest release tag's `root.zig` against this tree and fails on a removal
+# that is not written down here — the arm exists because this pass dropped
+# nineteen names and the only thing that noticed was a downstream bench failing
+# to compile, one name per build.
+#
+# It is keyed on declaration rather than on the version number because
+# release-please owns that number: the working tree stays at the last released
+# version until the release PR moves it, so a gate demanding the major bump
+# first would be red for the whole development window by construction. Naming
+# the removal is something a change can do on the day it happens.
+#
+# The block ends by itself. Once the major ships, the newest tag no longer
+# exports these either, so every row goes stale and the gate says to delete them.
+#
+# Nothing here was load-bearing for a consumer: only four had a caller anywhere
+# in the ecosystem (`verify`, `captures`, `emit_json`, `matcher` — all in gist's
+# bench harness, which is the surface this pass was about), and those moved in
+# the same change.
+[removed]
+
+# The seventeen `regex_*` spellings. Each flattened a grouping the engine's own
+# entry file already had, so the replacement is the door rather than an alias.
+regex_syntax = { why = "the engine is one door now", now = "regex.syntax" }
+regex_ast = { why = "the engine is one door now", now = "regex.ast" }
+regex_dfa = { why = "the engine is one door now", now = "regex.dfa" }
+regex_determinize = { why = "the engine is one door now", now = "regex.determinize" }
+regex_dwell = { why = "the engine is one door now", now = "regex.dwell" }
+regex_reduce = { why = "the engine is one door now", now = "regex.reduce" }
+regex_sieve = { why = "the engine is one door now", now = "regex.sieve" }
+regex_parabix = { why = "the engine is one door now", now = "regex.parabix" }
+regex_rungs = { why = "the engine is one door now", now = "regex.rungs" }
+regex_price = { why = "the engine is one door now", now = "regex.price" }
+regex_analysis = { why = "the engine is one door now", now = "regex.analysis" }
+regex_compose = { why = "the engine is one door now", now = "regex.compose" }
+regex_chorus = { why = "hoisted to the root as a type, since a slate is a thing a consumer names", now = "Chorus" }
+captures = { why = "the match seam belongs behind the engine door", now = "regex.captures" }
+matcher = { why = "named the file, not the thing; it is the engine-neutral match ladder", now = "regex.ladder" }
+
+# The byte tier. Four of its ten files were reachable at the root and six were
+# not, which is a strange way to ship an Aho-Corasick; `scan` is all of it.
+simd = { why = "the byte tier is one door now", now = "scan.simd" }
+verify = { why = "the byte tier is one door now", now = "scan.verify" }
+anchor = { why = "the byte tier is one door now", now = "scan.anchor" }
+calibrate = { why = "the byte tier is one door now", now = "scan.calibrate" }
+
+# The persisted artifacts, grouped by what each one eliminates.
+ngram = { why = "grouped under the artifacts door", now = "index.ngram" }
+trigram = { why = "grouped under the artifacts door", now = "index.trigram" }
+persist = { why = "grouped under the artifacts door", now = "index.persist" }
+sliver = { why = "grouped under the artifacts door", now = "index.sliver" }
+codicil = { why = "grouped under the artifacts door", now = "index.codicil" }
+crest_sidecar = { why = "grouped under the artifacts door", now = "index.crest" }
+signet = { why = "grouped under the artifacts door", now = "index.signet" }
+home = { why = "grouped under the artifacts door", now = "index.home" }
+
+# The product-free floor, and two namespaces named after something other than
+# what they hold.
+crest = { why = "the sieve calculus is arithmetic, not an artifact", now = "math.crest" }
+parallel = { why = "the sharding geometry is part of the math floor", now = "math.parallel" }
+ward = { why = "reader/writer leases; the name also collided with the structure language", now = "math.lease" }
+emit_json = { why = "the two emitters are one door", now = "emit.json" }
+commands = { why = "named six library tiers after the CLI that reached them first", now = "scope" }
+irregex = { why = "a namespace named after the package it was already inside, so every use read irregex.irregex.patterns", now = "slate" }

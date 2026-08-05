@@ -9,8 +9,8 @@
 //! here reports BOTH columns, and the verdict is per consumer, not per package.
 //!
 //! Both arms are PRODUCTION code reached through `regex.zig`'s seal — the
-//! baseline walkers via `regex_analysis` / `regex_parabix`, the fabric via
-//! `regex_ast`. A bench that reconstructed either arm would be racing a copy.
+//! baseline walkers via `regex.analysis` / `regex.parabix`, the fabric via
+//! `regex.ast`. A bench that reconstructed either arm would be racing a copy.
 //!
 //! Answers are compared before times are published. A question whose two arms
 //! disagree on ANY pattern is reported as a divergence and its timing is
@@ -23,10 +23,10 @@
 const std = @import("std");
 const gist = @import("irregex");
 
-const syn = gist.regex_syntax;
-const ana = gist.regex_analysis;
-const parabix = gist.regex_parabix;
-const ast = gist.regex_ast;
+const syn = gist.regex.syntax;
+const ana = gist.regex.analysis;
+const parabix = gist.regex.parabix;
+const ast = gist.regex.ast;
 const Span = gist.assay.Span;
 
 /// The consumers under test: every question the fabric claims to subsume that

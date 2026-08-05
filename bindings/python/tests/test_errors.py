@@ -54,12 +54,26 @@ def test_the_reason_comes_from_the_engine_not_from_this_binding():
     assert _abi._status_text(_abi.INVALID) in message
 
 
-def test_a_declined_pattern_reports_the_engines_own_declinature():
+def test_a_declined_pattern_names_the_grammar_and_the_remedy():
     with pytest.raises(irgx.error) as caught:
         irgx.compile("(?=x)")
-    # A different status, so a different sentence - and it is the engine's, not
-    # a phrase this package made up to stand in for one.
-    assert _abi._status_text(_abi.STALE) in str(caught.value)
+    message = str(caught.value)
+    # This is the one status whose sentence this package writes itself, and the
+    # reason is the test above: there, the engine HAS the reason and records a
+    # fault, so paraphrasing it would be inventing one. A declinature records no
+    # fault at all (`surface/ffi/pattern.zig` asserts `fault.last() == null`),
+    # and the status text is plane-neutral on purpose - "this tier declines,
+    # answer through the fallback" is also what a search tier stepping aside
+    # says. Spliced into a compile error it is vocabulary from a system the
+    # caller is not using, and it names neither the grammar nor the remedy.
+    assert _abi._status_text(_abi.STALE) not in message
+    assert "linear" in message
+    assert "pcre=True" in message
+    # The pattern rides along as the caller spelled it, the way `re.error`
+    # carries `.pattern`, so a retry has what it needs.
+    assert caught.value.pattern == "(?=x)"
+    # And the remedy actually works, which is what makes it a remedy.
+    assert irgx.compile("(?=x)", pcre=True).search("ax") is not None
 
 
 def test_error_is_catchable_the_way_re_error_is():

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"regexp"
 
 	irgx "github.com/The-Billy-Company/irregex/bindings/go"
 )
@@ -42,12 +43,16 @@ func ExampleRegexp_ReplaceAllString() {
 	// Output: host/bob and box/eve
 }
 
-// The engine's match sequence is not the standard library's for a pattern that
-// can match nothing: an empty match is dropped at the end of the text and where
-// the last match ended.
+// A pattern that can match nothing follows the standard library's rules, so
+// swapping regexp for this package does not change which matches you get: the
+// empty match at 1 is dropped for abutting the "a", and the one at the end of
+// the text is kept.
 func ExampleRegexp_FindAllStringIndex_nullable() {
 	fmt.Println(irgx.MustCompile(`a*`).FindAllStringIndex("abc", -1))
-	// Output: [[0 1] [2 2]]
+	fmt.Println(regexp.MustCompile(`a*`).FindAllStringIndex("abc", -1))
+	// Output:
+	// [[0 1] [2 2] [3 3]]
+	// [[0 1] [2 2] [3 3]]
 }
 
 func ExampleCompile_error() {
@@ -74,6 +79,29 @@ func ExampleErrNeedsPCRE() {
 	}
 	fmt.Println(re.FindAllString("foobar foobaz", -1))
 	// Output: [foo]
+}
+
+// Which of many patterns match, in one pass over the text, keeping which one it
+// was. The indices are positions in the compiled list, so Patterns() names them.
+func ExampleSet() {
+	kinds := irgx.MustCompileSet(`^func `, `^type `, `^var `, `^const `)
+	for _, decl := range []string{"type Set struct {", "x := 1"} {
+		fmt.Println(decl, kinds.MatchString(decl), kinds.WhichString(decl))
+	}
+	// Output:
+	// type Set struct { true [1]
+	// x := 1 false []
+}
+
+// A set refuses as a unit and says which pattern caused it, because "one of them
+// is unsupported" is not something a caller with two hundred patterns can act on.
+func ExampleSetError() {
+	_, err := irgx.CompileSet(`^func `, `c(?=at)`, `\d+`)
+	var refused *irgx.SetError
+	if errors.As(err, &refused) {
+		fmt.Println(refused.Index, refused.Expr, errors.Is(err, irgx.ErrNeedsPCRE))
+	}
+	// Output: 1 c(?=at) true
 }
 
 // The other refusal, which no flag rescues. It carries the offset, so a caller

@@ -27,10 +27,11 @@
 // s[loc[0]:loc[1]] is the matched text with no translation, for ASCII and
 // non-ASCII alike.
 //
-// The match sequence is the engine's, and it differs from [regexp] for nullable
-// patterns: an empty match is suppressed at the end of the buffer and where the
-// previous match ended. `a*` over "abc" is two matches here and four in the
-// stdlib. See the package README for the rest of the differences.
+// The match sequence is [regexp]'s, down to the empty matches: the engine
+// reports one at every offset a nullable pattern allows, and this package thins
+// that to Go's two rules before you see it - an empty match abutting the
+// previous one is dropped, and the scan resumes a rune past an empty match
+// rather than a byte past it. See the package README for what does differ.
 package irgx
 
 import (
@@ -46,6 +47,13 @@ import (
 // shows every choice at the call site.
 //
 //	re, err := irgx.CompileOpts{IgnoreCase: true, Word: true}.Compile("cat")
+//
+// A pattern may also ask for these itself, in the leading (?ims-u) form stdlib
+// [regexp] uses. Where both speak, the pattern wins - it is the more specific
+// statement, so CompileOpts{IgnoreCase: true}.Compile("(?-i)cat") is
+// case-sensitive. Only a leading run is a whole-pattern flag, as in regexp
+// itself; (?x), (?U) and (?R) are flags this grammar does not have and need
+// PCRE.
 type CompileOpts struct {
 	// Fixed treats the pattern as a literal string rather than a regex, so a
 	// pattern full of metacharacters is data instead of a syntax error. It wins
@@ -68,6 +76,17 @@ type CompileOpts struct {
 	// backreferences. The linear-time guarantee is PCRE2's problem then, not
 	// the engine's.
 	PCRE bool
+	// MultiLine makes ^ and $ match at line boundaries as well as at the ends
+	// of the text - the (?m) question, and nothing more. It does not change
+	// what the text IS: the text is one buffer either way, \s matches a
+	// newline, and a match may span one.
+	//
+	// A leading (?m) asks for the same thing and is equivalent. A Set has
+	// nowhere to carry either spelling and refuses both.
+	MultiLine bool
+	// DotAll makes . match a newline - the (?s) question. A leading (?s) is
+	// equivalent, and a Set refuses both.
+	DotAll bool
 }
 
 func (o CompileOpts) bits() uint32 {
@@ -76,7 +95,9 @@ func (o CompileOpts) bits() uint32 {
 		bit(o.Word, flagWord) |
 		bit(o.SmartCase, flagSmartCase) |
 		bit(o.ASCII, flagNoUnicode) |
-		bit(o.PCRE, flagPCRE)
+		bit(o.PCRE, flagPCRE) |
+		bit(o.MultiLine, flagMultiLine) |
+		bit(o.DotAll, flagDotAll)
 }
 
 func bit(on bool, flag uint32) uint32 {
@@ -96,6 +117,10 @@ type Regexp struct {
 	// group the pattern did not name.
 	names []string
 	index map[string]int
+	// nullable is whether the pattern can match the empty string, and so whether
+	// the Go empty-match convention has anything to thin. Resolved once here
+	// because it is a property of the pattern, and asked on every walk.
+	nullable bool
 	// pool holds per-goroutine C handles. sync.Pool rather than one handle under
 	// a mutex, because the engine's scratch is the only thing that cannot be
 	// shared and serializing every search on it would give up the concurrency a
@@ -137,6 +162,7 @@ func (o CompileOpts) Compile(expr string) (*Regexp, error) {
 	if err := re.resolve(h); err != nil {
 		return nil, err
 	}
+	re.nullable = re.matchOn(h, "")
 	re.pool.Put(h)
 	return re, nil
 }

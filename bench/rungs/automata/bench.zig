@@ -46,18 +46,18 @@ const builtin = @import("builtin");
 const gist = @import("irregex");
 
 const Regex = gist.regex.Regex;
-const Dfa = gist.regex_dfa.Dfa;
-const syntax = gist.regex_syntax;
-const analysis = gist.regex_analysis;
-const ast_mod = gist.regex_ast;
+const Dfa = gist.regex.dfa.Dfa;
+const syntax = gist.regex.syntax;
+const analysis = gist.regex.analysis;
+const ast_mod = gist.regex.ast;
 /// The first-byte prefilter as the handle carries it, reached through the handle's
 /// own field rather than through a new export: pricing a candidate byte set is the
 /// engine's opinion, and a rung that asked a second implementation would be
 /// measuring its own arithmetic.
 const Prefilter = @FieldType(Regex, "first");
-const determinize = gist.regex_determinize;
-const dwell_mod = gist.regex_dwell;
-const reduce = gist.regex_reduce;
+const determinize = gist.regex.determinize;
+const dwell_mod = gist.regex.dwell;
+const reduce = gist.regex.reduce;
 const Span = gist.assay.Span;
 
 /// Interference from the ~10 coworker agents on this box only ever *slows* a
@@ -1387,7 +1387,7 @@ fn runShape(gpa: std.mem.Allocator, io: anytype) !void {
         // report — so re-derive it rather than skipping the row. `which` says
         // which of the two the numbers describe.
         const which: []const u8 = if (re.dfa != null) "eager" else "forced";
-        var owned: ?*gist.regex_dfa.Dfa = null;
+        var owned: ?*gist.regex.dfa.Dfa = null;
         defer if (owned) |d| d.deinit();
         const d = re.dfa orelse blk: {
             switch (try determinize.build(gpa, re.states, re.start, re.anchored, re.unicode, .unbudgeted)) {
@@ -1681,7 +1681,7 @@ fn mirrorFaithful(d: *const Dfa, w: *const Dfa.Wide) bool {
     const ncls: usize = d.ncls;
     const scale = struct {
         fn f(off: u32, n: usize) u32 {
-            return if (off == gist.regex_dfa.unfilled) off else @intCast(off / n * stride);
+            return if (off == gist.regex.dfa.unfilled) off else @intCast(off / n * stride);
         }
     }.f;
     if (w.start != scale(d.start, ncls) or w.match_hi != scale(d.match_hi, ncls)) return false;
@@ -2081,7 +2081,7 @@ fn buildRow(gpa: std.mem.Allocator, io: anytype, pat: []const u8) !void {
         std.debug.print("{s: <52}  declined even unbudgeted\n", .{pat});
         return;
     };
-    var owned: ?*gist.regex_dfa.Dfa = null;
+    var owned: ?*gist.regex.dfa.Dfa = null;
     defer if (owned) |d| d.deinit();
     const d = re.dfa orelse blk: {
         switch (try determinize.build(gpa, re.states, re.start, re.anchored, re.unicode, .unbudgeted)) {
@@ -2502,7 +2502,7 @@ fn reduceRow(gpa: std.mem.Allocator, io: anytype, pat: []const u8, fill: ?[]cons
         return;
     };
     defer re.deinit();
-    var owned: ?*gist.regex_dfa.Dfa = null;
+    var owned: ?*gist.regex.dfa.Dfa = null;
     defer if (owned) |x| x.deinit();
     const d = re.dfa orelse blk: {
         switch (try determinize.build(gpa, re.states, re.start, re.anchored, re.unicode, .unbudgeted)) {

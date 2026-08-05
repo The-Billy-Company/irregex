@@ -79,6 +79,15 @@ the two `regexp` spells inline instead of as flags - `MultiLine` for `(?m)` and
 `DotAll` for `(?s)`. The zero value is what plain `Compile` uses, so
 `CompileOpts{}.Compile` and `Compile` are the same call.
 
+You can also spell them the way `regexp` does, at the head of the pattern:
+`Compile("(?is)cat.dog")` reads `i` and `s` as the options they ask for, and
+`(?-u)` is the ASCII opt-out. A directive the pattern gives wins over the same
+field in `CompileOpts`, because the pattern is the more specific statement -
+`CompileOpts{IgnoreCase: true}.Compile("(?-i)cat")` is case-sensitive. Only a
+*leading* run is a whole-pattern flag, which is also the only place `regexp`
+itself allows one; `(?x)`, `(?U)` and `(?R)` are flags this grammar does not
+have and route to `PCRE`.
+
 ## Concurrency
 
 A `*Regexp` is safe for concurrent use by multiple goroutines, exactly as
@@ -129,7 +138,10 @@ the bug you would not notice.
 Two things differ from a plain compile. The flags apply to every pattern, which
 is the honest shape for a set that came from a config file - and `MultiLine` and
 `DotAll` are refused rather than ignored, because this plane has nowhere to carry
-them. And a refusal names the pattern: a `*SetError` carrying the index, wrapping
+them. That holds however they are spelled: a pattern whose own head says `(?m)`
+is refused too, while `(?i)` and `(?-u)` are read per pattern, so one member of a
+set can be case-insensitive without the rest of them being. And a refusal names
+the pattern: a `*SetError` carrying the index, wrapping
 the same `*SyntaxError` or `ErrNeedsPCRE` a lone `Compile` would have given, so
 
 ```go

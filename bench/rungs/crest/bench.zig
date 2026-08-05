@@ -29,7 +29,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const gist = @import("irregex");
-const crest = gist.crest;
+const crest = gist.math.crest;
 
 const corpus_mod = gist.corpus;
 const Regex = gist.regex.Regex;
@@ -127,13 +127,29 @@ pub fn main(init: std.process.Init) !void {
     var corpus = try load(gpa, io, roots, .contiguous);
     defer corpus.deinit();
 
+    // A soundness proof over zero documents proves nothing, and this lane is
+    // fail-closed, so it must refuse rather than report a clean sweep of an
+    // empty set. It also cannot survive one: the adversarial sweep below draws
+    // `rnd.uintLessThan(usize, corpus.docs.len)`, which on an empty corpus is
+    // UB — the failure a mint run from the wrong directory actually hit was a
+    // SEGV, which reads as a broken proof instead of a missing corpus.
+    if (corpus.docs.len == 0) {
+        std.debug.print(
+            "crest: no documents under the corpus roots — nothing to prove.\n" ++
+                "Run this from the tree being measured (the mint does: `cd $CORPUS`),\n" ++
+                "or set GIST_ROOTS to roots that exist there.\n",
+            .{},
+        );
+        return error.EmptyCorpus;
+    }
+
     const n = corpus.docs.len;
     const mib = @as(f64, @floatFromInt(corpus.bytes)) / (1 << 20);
 
     // Build the crest table via the PRODUCTION builder (the same parallel pass
     // `gist index` persists as crest.bin) + the count index (ablation).
     const build_sp = Span.open(io);
-    const crests = try gist.crest_sidecar.build(gpa, corpus.docs);
+    const crests = try gist.index.crest.build(gpa, corpus.docs);
     defer gpa.free(crests);
     const build = build_sp.read(io);
 

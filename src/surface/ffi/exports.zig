@@ -29,6 +29,7 @@ const contract = irregex.ffi.contract;
 const corpus = @import("corpus.zig");
 const pattern = irregex.ffi.pattern;
 const rows = irregex.ffi.rows;
+const slate = irregex.ffi.slate;
 
 /// The C-ABI compatibility integer for `libirgx` specifically. It started at
 /// 1 because this artifact is new: the `2` a host may remember belongs to the
@@ -102,6 +103,31 @@ export fn irgx_find_all(re: *pattern.Regex, text: ?[*]const u8, len: usize, out:
     return @intFromEnum(pattern.findAll(re, text, len, out, cap, written));
 }
 
+/// Whether this pattern's engine can honor a live `to` bound: 1 yes, 0 no. A
+/// static property of the compiled pattern — ask once, not per search. The
+/// linear engine can; PCRE2 cannot, because bounding its subject would also move
+/// `$`, `\b` and every lookahead.
+export fn irgx_pattern_windows(re: *pattern.Regex) i32 {
+    return @intFromEnum(pattern.windows(re));
+}
+
+/// `irgx_is_match` over the window `[from, to]` of `text[0..len]`: a match must
+/// fit inside the region while every assertion still reads the whole text. 1 yes,
+/// 0 no, negative on error. `to == len` is the unbounded case; a live bound on an
+/// engine that cannot express one faults with `BoundUnsupported` rather than
+/// silently answering about a slice.
+export fn irgx_is_match_in(re: *pattern.Regex, text: ?[*]const u8, len: usize, from: usize, to: usize) i32 {
+    return @intFromEnum(pattern.isMatchIn(re, text, len, from, to));
+}
+
+/// `irgx_find_all` over the window `[from, to]` of `text[0..len]` — same region
+/// and assertion contract as `irgx_is_match_in`, and the same `cap`/`*written`
+/// contract as `irgx_find_all` (`*written` is the count the WINDOW holds, so a
+/// short `cap` sizes its retry).
+export fn irgx_find_all_in(re: *pattern.Regex, text: ?[*]const u8, len: usize, from: usize, to: usize, out: ?[*]pattern.Span, cap: usize, written: ?*usize) i32 {
+    return @intFromEnum(pattern.findAllIn(re, text, len, from, to, out, cap, written));
+}
+
 /// Write the group spans of the leftmost match at or after `from` into
 /// `out[0..cap]`; `*written` reports how many groups the PATTERN has (so a
 /// short `cap` sizes the retry). `out[0]` is the whole match; a group that did
@@ -127,6 +153,45 @@ export fn irgx_group_index(re: *pattern.Regex, name: ?[*]const u8, len: usize, o
 /// re-parsing the pattern.
 export fn irgx_group_name(re: *pattern.Regex, index: u32, out: ?*rows.Text) i32 {
     return @intFromEnum(pattern.groupName(re, index, out));
+}
+
+// ── the slate plane (many patterns, one pass, with attribution) ───────────────
+// Everything above is about ONE pattern. These four are about N, and they keep
+// which pattern found what — the fact a fused `a|b|c` throws away and N separate
+// calls pay N times over. Same flag word, same unit (the whole text), so a
+// slate's answer about pattern `i` is `irgx_is_match`'s answer about pattern `i`.
+
+/// Compile `patterns[0..count]` as one slate and write the handle to `*out`.
+/// `*refused` receives the index of the offending pattern on a refusal (may be
+/// null). 0 on success; `IRGX_STALE` when some pattern needs `IRGX_PCRE`;
+/// negative on error.
+export fn irgx_slate_compile(patterns: ?[*]const slate.Pattern, count: usize, refused: ?*usize, out: ?**slate.Slate) i32 {
+    return @intFromEnum(slate.compile(patterns, count, refused, out));
+}
+
+/// Release a handle from `irgx_slate_compile`.
+export fn irgx_slate_free(handle: *slate.Slate) void {
+    slate.free(handle);
+}
+
+/// How many patterns the slate holds — the `cap` at which `irgx_slate_which`
+/// can never come up short.
+export fn irgx_slate_len(handle: *const slate.Slate) usize {
+    return slate.len(handle);
+}
+
+/// Does ANY pattern in the slate match `text[0..len]`? 1 yes, 0 no, negative on
+/// error. The cheapest question the plane answers: a SIMD literal roll rejects a
+/// hopeless text with no engine run at all.
+export fn irgx_slate_is_match(handle: *slate.Slate, text: ?[*]const u8, len: usize) i32 {
+    return @intFromEnum(slate.isMatch(handle, text, len));
+}
+
+/// Every pattern matching `text[0..len]`, as ascending indices into the compile
+/// list, written to `out[0..cap]`. `*written` is how many matched whether or not
+/// `cap` held them. 1 when at least one did, 0 when none did, negative on error.
+export fn irgx_slate_which(handle: *slate.Slate, text: ?[*]const u8, len: usize, out: ?[*]u32, cap: usize, written: ?*usize) i32 {
+    return @intFromEnum(slate.which(handle, text, len, out, cap, written));
 }
 
 // ── the shared warm corpus ───────────────────────────────────────────────────

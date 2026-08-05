@@ -61,7 +61,13 @@ pub const Status = enum(i32) {
     pub fn ofFault(f: fault.Fault) Status {
         return switch (f) {
             error.OutOfMemory, error.TimedOut, error.Exhausted => .out_of_memory,
-            error.BadPattern, error.Unsupported, error.TooManyPatterns, error.PowersetCapHit, error.NeedleTooShort => .invalid,
+            error.BadPattern,
+            error.Unsupported,
+            error.BoundUnsupported,
+            error.TooManyPatterns,
+            error.PowersetCapHit,
+            error.NeedleTooShort,
+            => .invalid,
             error.FileNotFound,
             error.AccessDenied,
             error.NotDir,
@@ -95,8 +101,34 @@ pub const flag_no_unicode: u32 = 1 << 6;
 /// 3, 4, and 7; the two sets share one numbering so a flag word means the same
 /// thing whichever ABI a host hands it to.
 pub const flag_pcre: u32 = 1 << 8;
+/// `(?m)`: `^` and `$` also match at a line break, not only at the text's ends.
+/// Off by default, as it is in `re`, `rust-regex`, PCRE2 and Go's `regexp` —
+/// `\A` and `\z` are the text's ends regardless.
+///
+/// This is *not* the engine's internal `multiline`, which says "the haystack is
+/// a buffer rather than one line" and licenses the whole per-line model. That
+/// one is forced on for every pattern this ABI compiles, because a host hands
+/// over a whole string and can make no promise about lines; a `\s` that could
+/// not see a newline was the bug that separating these two fixed. See
+/// `regex/glean/pattern.zig`.
+pub const flag_multiline: u32 = 1 << 9;
+/// `(?s)`: `.` matches a newline too. Also off by default, and also inert
+/// before the buffer model above — the per-line parser had already removed the
+/// byte this flag exists to put back.
+pub const flag_dotall: u32 = 1 << 10;
 
 pub const pattern_flags = flag_fixed | flag_ignore_case | flag_word |
+    flag_smart_case | flag_no_unicode | flag_pcre | flag_multiline | flag_dotall;
+
+/// The subset of `pattern_flags` a slate pattern can carry.
+///
+/// A narrower mask rather than the same one, because the slate compiles through
+/// `query.Spec`, which has no `(?m)`/`(?s)` knob to carry them into. Rejecting
+/// the two it cannot honor is the whole reason this is a separate constant: a
+/// host that passes `IRGX_MULTILINE` to a slate has a wrong belief about what it
+/// is about to be told, and hearing `IRGX_INVALID` now is strictly better than
+/// silently getting single-line anchors and finding out from an answer.
+pub const slate_flags = flag_fixed | flag_ignore_case | flag_word |
     flag_smart_case | flag_no_unicode | flag_pcre;
 
 /// A stable, static, NUL-terminated human message for a status code — for a
@@ -291,12 +323,12 @@ test "each status keeps the channel the contract assigns it" {
 
 test "every fault crosses the seam as a fault — never a result, never a declinature" {
     const all = [_]fault.Fault{
-        error.FileNotFound,    error.AccessDenied,       error.NotDir,         error.SymLinkLoop,
-        error.NameTooLong,     error.Corrupt,            error.Truncated,      error.NonCanonical,
-        error.VersionMismatch, error.GenerationMismatch, error.Oversized,      error.BadPattern,
-        error.Unsupported,     error.TooManyPatterns,    error.PowersetCapHit, error.NeedleTooShort,
-        error.OutOfMemory,     error.TimedOut,           error.Exhausted,      error.ConnClosed,
-        error.UnexpectedFrame, error.StreamTooLong,
+        error.FileNotFound,    error.AccessDenied,       error.NotDir,           error.SymLinkLoop,
+        error.NameTooLong,     error.Corrupt,            error.Truncated,        error.NonCanonical,
+        error.VersionMismatch, error.GenerationMismatch, error.Oversized,        error.BadPattern,
+        error.Unsupported,     error.TooManyPatterns,    error.PowersetCapHit,   error.NeedleTooShort,
+        error.OutOfMemory,     error.TimedOut,           error.Exhausted,        error.ConnClosed,
+        error.UnexpectedFrame, error.StreamTooLong,      error.BoundUnsupported,
     };
     // Pinned to the taxonomy's own size, so a new member cannot slip past this
     // loop by simply not being listed (the switch in `ofFault` catches it too).

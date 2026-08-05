@@ -6,12 +6,23 @@
 //! *tree* — a session, a walk, freshness, an index. Splitting them is what lets
 //! a host that only wants a regex link a library that only has one.
 //!
-//! Every verb here is a shim over machinery the CLI already runs:
-//! `CompiledQuery` (the compile → prefilter → match kernel both engines share)
-//! and `Caps` (the one-pass / Pike / PCRE2 capture seam). Nothing in this file
-//! decides what a pattern means — which is the point. An in-process
-//! `irgx_captures` returns the offsets `gist --json` would print for the
-//! same pattern because it is the same arm, reached through the same door.
+//! Every verb here is a shim over `glean.Pattern` — the engine's own consumer
+//! face, the same type a Zig caller with a pattern and a string reaches for.
+//! Nothing in this file decides what a pattern means, which is the point: the
+//! compile, the walk, the zero-width advance and the `-w` lowering are all one
+//! layer down, so a host and a Zig caller cannot be told different answers.
+//!
+//! **Which walk this plane runs, and why it changed.** The package produces two
+//! legitimate match sequences for a nullable pattern (see `regex/glean/cursor.zig`):
+//! `query`'s grep walk, which suppresses an empty match adjacent to the previous
+//! one and at unterminated end-of-text, and `glean`'s library walk, which reports
+//! both. This plane used to run the first because it was built out of the CLI's
+//! parts. That made `x*` over `abc` three matches here and four in every regex
+//! library a host already knew, and all three bindings had to ship an apology
+//! note for it — Go's README compared its own output to `regexp`'s and asked the
+//! reader to accept the difference. A deviation with no improvement behind it is
+//! a defect, so the plane now runs the library walk. `gist` keeps the grep walk,
+//! which is rg-parity and correct for a page of line-oriented rows.
 //!
 //! Two rules the whole plane keeps:
 //!
@@ -26,13 +37,28 @@
 const std = @import("std");
 const contract = @import("contract.zig");
 const fault = @import("../../fault.zig");
+const mark = @import("../../mark.zig");
 const qy = @import("../../kernel/query/query.zig");
 const rows = @import("rows.zig");
 const rx = @import("../../kernel/regex/regex.zig");
 const verdict = @import("../../exec/cold/argv/verdict.zig");
 
 const Status = contract.Status;
+const Window = mark.Window;
 const gpa = std.heap.c_allocator;
+
+/// Narrow a `glean` error onto the fault vocabulary this ABI publishes.
+///
+/// A widening-free cast, and the reason it is a named function rather than a
+/// bare `@errorCast` at each call site is that the cast carries a claim: every
+/// error a `glean` verb can return is a member of `fault.Fault`. That held by
+/// inspection before and holds by construction now — `BoundUnsupported`, the
+/// one member that used to be translated on the way out, is published in its own
+/// right (`fault.Pattern`), so no verb's error set escapes the taxonomy and
+/// nothing here has to invent a status on a host's behalf.
+fn faultOf(e: anyerror) fault.Fault {
+    return @errorCast(e);
+}
 
 /// The one place a `(pointer, length)` pair becomes a slice. Null with a
 /// non-zero length is a caller error; null with zero length is the empty text,
@@ -74,7 +100,12 @@ fn view(text: ?[*]const u8, len: usize) ?[]const u8 {
 ///
 /// `already_pcre` says PCRE2 is what just refused, so there is nothing left to
 /// consult and no tier left to route to.
-fn refuse(pattern: []const u8, caseless: bool, unicode: bool, already_pcre: bool) Status {
+///
+/// Public for the slate plane, which has the same three answers to give about a
+/// pattern it could not take and must not derive them a second time — a host that
+/// got `.stale` from one plane and a bare fault from the other for the same
+/// pattern would have no way to know the remedy was the same.
+pub fn refuse(pattern: []const u8, caseless: bool, unicode: bool, already_pcre: bool) Status {
     if (already_pcre) return contract.report(.{ .code = error.BadPattern, .at = rx.pcre2.lastErrorOffset() });
 
     var probe = rx.pcre2.Pcre.compileOpts(gpa, pattern, .{ .caseless = caseless, .unicode = unicode }) catch |e| switch (e) {
@@ -99,38 +130,23 @@ pub const Span = extern struct {
     const unset: Span = .{ .start = -1, .end = -1 };
 };
 
-/// A compiled pattern plus the mutable state its finds run in.
+/// A compiled pattern and the scratch its finds run in.
 ///
-/// The two engines are lazily paired, not eagerly: `query` is built at compile
-/// time because every verb needs it, and `caps` only when a caller first asks
-/// for groups. Most hosts never do — `is_match` and `find_all` are the traffic
-/// — and the capture arm is a second lowering plus a determinization attempt.
+/// Almost all of this is `glean.Pattern`: it owns the program, the pooled
+/// scratch and the lazily-built capture arm (most hosts never ask for a group,
+/// and that arm is a second lowering plus a determinization attempt). What
+/// stays here is only what the ABI itself is answerable for — the escaped
+/// spelling `-F` compiles, and the three semantics bits `refuse` needs in order
+/// to ask PCRE2 whether a rejected pattern has any remedy.
 pub const Regex = struct {
-    /// The pattern as given. Owned: `Spec` *aliases* a literal body, so a host
-    /// freeing its buffer after `compile` would leave the query dangling.
-    pattern: []u8,
-    query: qy.CompiledQuery,
-    /// One scratch, because every verb here asks the same line-scoped question:
-    /// `is_match` is `find_all` stopped at the first span, so it runs on the
-    /// same walk and needs the same state.
-    spans: qy.MatchScratch,
-    found: std.ArrayList(qy.Span),
+    inner: rx.Pattern,
+    /// The `-F` spelling, owned. Under a fixed pattern the raw bytes are data,
+    /// so the escaped form is what actually gets compiled — by BOTH arms, which
+    /// is why it is escaped once here rather than re-derived for captures.
+    escaped: []const u8 = &.{},
 
-    caps: ?rx.Caps = null,
-    slots: []isize = &.{},
-    /// Whether the capture arm has been attempted. A refusal is remembered, so
-    /// a host looping over `captures` pays one failed lowering, not N.
-    caps_tried: bool = false,
-    /// The pattern the capture arm compiles: the escaped spelling under `-F`,
-    /// where the raw bytes are data rather than syntax. Empty when unescaped.
-    escaped: []u8 = &.{},
-
-    /// Pattern semantics, kept because the capture arm re-derives them and
-    /// because `-w` is a post-match rule no engine applies for us.
     caseless: bool,
     unicode: bool,
-    word: bool,
-    fixed: bool,
     pcre: bool,
 };
 
@@ -140,6 +156,13 @@ pub const Regex = struct {
 /// `smart_case` resolves HERE rather than in the engine, through the same
 /// `hasUpper` predicate the CLI's `-S` runs — so an FFI host and a shell get
 /// the same case sensitivity for the same pattern.
+///
+/// A leading `(?i)` / `(?-u)` / `(?ms)` directive resolves here too, for the
+/// same reason and with the same consequence: it is a statement about how to
+/// compile, made in the only place that holds both the flag word and the pattern
+/// text. The pattern's own spelling wins over the argument — `(?-i)` under
+/// `IRGX_IGNORE_CASE` is case-sensitive, as it is in rust-regex — because the
+/// more specific statement is the one the author wrote next to the pattern.
 pub fn compile(pattern: ?[*]const u8, len: usize, flags: u32, out: ?**Regex) Status {
     contract.beginCall();
     const slot = out orelse return .invalid;
@@ -147,56 +170,80 @@ pub fn compile(pattern: ?[*]const u8, len: usize, flags: u32, out: ?**Regex) Sta
     if (flags & ~contract.pattern_flags != 0) return .invalid;
 
     const fixed = flags & contract.flag_fixed != 0;
-    const smart = flags & contract.flag_smart_case != 0;
-    const caseless = flags & contract.flag_ignore_case != 0 or (smart and !verdict.hasUpper(bytes));
     // `-F` wins over `-P` the way the CLI's does: a fixed string needs no
     // engine at all, so the backend selector is inert rather than contradicted.
     const pcre = flags & contract.flag_pcre != 0 and !fixed;
+
+    // Neither of the two arms that already own the syntax gets it read for them.
+    // Under `-F` the bytes `(?i)` are data — a host searching for that literal
+    // must find it, which is also rg's and gist's answer — and PCRE2 implements
+    // the whole flag grammar itself, scoping and `(?x)` included, so reading it
+    // here would only be able to make that arm worse.
+    //
+    // `.beyond` (`(?x)`, `(?U)`, `(?R)`) is left whole on purpose: the compile
+    // below then fails and `refuse` asks PCRE2 — which has all three — turning a
+    // flat refusal into the declinature that names the arm which can answer.
+    const asked: rx.syntax.Directive = switch (if (fixed or pcre) .none else rx.syntax.preamble(bytes)) {
+        .asks => |d| d,
+        .none, .beyond => .{ .rest = bytes },
+    };
+
+    // Smart case reads the pattern the ENGINE will see, not the directive in
+    // front of it: a `(?i)` prefix has no case of its own to be smart about.
+    // Resolved before the directive is applied, so an explicit `(?-i)` still
+    // wins over an inference — the whole point of the inference is to guess when
+    // nobody said, and here somebody did.
+    const smart = flags & contract.flag_smart_case != 0;
+    const caseless = asked.caseless orelse
+        (flags & contract.flag_ignore_case != 0 or (smart and !verdict.hasUpper(asked.rest)));
+    const unicode = asked.unicode orelse (flags & contract.flag_no_unicode == 0);
+    const line_anchors = asked.line_anchors orelse (flags & contract.flag_multiline != 0);
+    const dotall = asked.dotall orelse (flags & contract.flag_dotall != 0);
 
     // Assembled by hand rather than with `errdefer`, which a Status-returning
     // entry never fires: each step below unwinds exactly what the steps before
     // it took, so a failed compile leaks nothing into a host that will keep
     // running afterwards.
-    const owned = gpa.dupe(u8, bytes) catch return contract.report(.{ .code = error.OutOfMemory });
+    //
+    // `-F` is resolved by escaping ONCE, here, rather than by a `fixed` knob the
+    // engine carries: a fixed pattern is exactly the regex that matches its own
+    // bytes. Doing it up front is also what makes the capture arm agree, which
+    // it previously only did because it re-derived the same escape by itself.
+    const escaped = if (!fixed) &.{} else qy.escapeLiteral(gpa, bytes) catch
+        return contract.report(.{ .code = error.OutOfMemory });
+    const source = if (fixed) escaped else asked.rest;
 
-    var query = qy.CompiledQuery.compile(gpa, .{
-        .pattern = owned,
-        .mode = .lines,
-        .fixed = fixed,
-        .ignore_case = caseless,
-        .unicode = flags & contract.flag_no_unicode == 0,
+    const inner = rx.Pattern.compileOpts(gpa, source, .{
+        .caseless = caseless,
+        .unicode = unicode,
         .word = flags & contract.flag_word != 0,
+        .multiline = line_anchors,
+        .dotall = dotall,
         .pcre = pcre,
     }) catch |e| {
-        gpa.free(owned);
-        const unicode = flags & contract.flag_no_unicode == 0;
+        if (escaped.len != 0) gpa.free(escaped);
+        // Anything but exhaustion is a statement about the PATTERN, and this
+        // engine's parser cannot tell "I can't express that" from "that is not
+        // a regex" — so `refuse` asks the authority rather than guessing. It
+        // answers `.stale` (a declinature routing the host to `IRGX_PCRE`) or a
+        // located `BadPattern`.
         return switch (e) {
-            error.Unsupported => refuse(bytes, caseless, unicode, pcre),
-            else => contract.report(.{ .code = e }),
+            error.OutOfMemory => contract.report(.{ .code = e }),
+            else => refuse(bytes, caseless, unicode, pcre),
         };
     };
 
-    var spans = query.matchScratch(gpa) catch |e| {
-        query.deinit(gpa);
-        gpa.free(owned);
-        return contract.report(.{ .code = e });
-    };
-
     const handle = gpa.create(Regex) catch {
-        spans.deinit();
-        query.deinit(gpa);
-        gpa.free(owned);
+        var owned = inner;
+        owned.deinit();
+        if (escaped.len != 0) gpa.free(escaped);
         return contract.report(.{ .code = error.OutOfMemory });
     };
     handle.* = .{
-        .pattern = owned,
-        .query = query,
-        .spans = spans,
-        .found = .empty,
+        .inner = inner,
+        .escaped = escaped,
         .caseless = caseless,
-        .unicode = flags & contract.flag_no_unicode == 0,
-        .word = flags & contract.flag_word != 0,
-        .fixed = fixed,
+        .unicode = unicode,
         .pcre = pcre,
     };
     slot.* = handle;
@@ -206,13 +253,8 @@ pub fn compile(pattern: ?[*]const u8, len: usize, flags: u32, out: ?**Regex) Sta
 /// Release a handle from `compile`. Teardown leaves the fault slot alone, so a
 /// host can still read the detail that made it clean up.
 pub fn free(re: *Regex) void {
-    re.found.deinit(gpa);
-    re.spans.deinit();
-    re.query.deinit(gpa);
-    if (re.caps) |*c| c.deinit();
-    if (re.slots.len != 0) gpa.free(re.slots);
+    re.inner.deinit();
     if (re.escaped.len != 0) gpa.free(re.escaped);
-    gpa.free(re.pattern);
     gpa.destroy(re);
 }
 
@@ -231,7 +273,60 @@ pub fn free(re: *Regex) void {
 pub fn isMatch(re: *Regex, text: ?[*]const u8, len: usize) Status {
     contract.beginCall();
     const body = view(text, len) orelse return .invalid;
-    return if (re.query.holds(body, false, &re.spans)) .match else .ok;
+    const hit = re.inner.isMatch(body) catch |e| return contract.report(.{ .code = faultOf(e) });
+    return if (hit) .match else .ok;
+}
+
+/// **What the window plane is for, stated once.**
+///
+/// A search bounded to `[from, to]` while every zero-width assertion still reads
+/// `text[0..len]` end to end. Slicing the text to the same region is a DIFFERENT
+/// question and the reason these verbs exist: a slice moves the haystack edges,
+/// so `$`, `\b`, `\z` and every lookahead at the cut answer about the slice
+/// instead of about the text. `re.compile(p).search(s, pos, endpos)` and
+/// `Regex::find_at` are both this question, and neither is expressible on top of
+/// the unbounded verbs without changing what the pattern means.
+///
+/// Two guards a host should know before calling:
+///
+///   * **`to` is a real bound, so not every engine can honor it.** The linear
+///     engine can — the bound is a ceiling on its walk and its closures never
+///     stopped reading the true haystack. PCRE2 cannot, structurally: its subject
+///     has one length, so stopping a match at `to` means telling the library the
+///     subject ends there, which moves the anchors. A pattern on the PCRE arm
+///     (`IRGX_PCRE`, or a linear declinature escalated) therefore faults with
+///     `BoundUnsupported` rather than quietly answering the sliced question. Ask
+///     `irgx_pattern_windows` once after compiling instead of per search.
+///   * **An inert bound asks nothing of the engine.** `to == len` is the
+///     unbounded case and works on both arms, so a `from`-only windowed search
+///     never has to check the capability at all.
+///
+/// Group spans take a start bound (`captures`'s `from`) and no ceiling: the
+/// capture VM has no `to` yet, and a half-honored bound would be worse than an
+/// absent one. Said here rather than discovered, because the asymmetry is real.
+fn windowOf(text: ?[*]const u8, len: usize, from: usize, to: usize) ?Window {
+    const body = view(text, len) orelse return null;
+    // Refused rather than clamped. A host that computed `to` past the end, or
+    // crossed its bounds, has a bug that a silent `@min` would hide until the
+    // answer was quietly wrong somewhere else.
+    if (from > to or to > len) return null;
+    return .{ .hay = body, .from = from, .to = to };
+}
+
+/// Whether the pattern's engine can honor a live `to` bound: `.match` yes,
+/// `.ok` no. A static property of the compiled pattern, so a host asks once and
+/// caches it — and the reason the windowed verbs can fault at all.
+pub fn windows(re: *Regex) Status {
+    contract.beginCall();
+    return if (re.inner.engineOf().windows()) .match else .ok;
+}
+
+/// `isMatch` bounded to `[from, to]`. See `windowOf` for the window contract.
+pub fn isMatchIn(re: *Regex, text: ?[*]const u8, len: usize, from: usize, to: usize) Status {
+    contract.beginCall();
+    const win = windowOf(text, len, from, to) orelse return .invalid;
+    const hit = re.inner.isMatchIn(win) catch |e| return contract.report(.{ .code = faultOf(e) });
+    return if (hit) .match else .ok;
 }
 
 /// Fill `out[0..cap]` with the matches in `text[0..len]`, writing the count to
@@ -240,12 +335,12 @@ pub fn isMatch(re: *Regex, text: ?[*]const u8, len: usize) Status {
 /// count query (`cap = 0`) writes nothing and still returns `.match`.
 ///
 /// Iteration order and the empty-match rules are the engine's, not this file's:
-/// the text is handed to `collectSpans` as ONE unterminated unit, so a host
-/// walking a buffer gets the same span sequence — zero-width handling,
-/// adjacency, `-w` filtering and all — that the same pattern produces inside a
-/// line of `gist --json`. That is why there is no cursor here: a `find(from)`
-/// loop is precisely where a caller would re-invent those rules and get the
-/// nullable patterns wrong.
+/// the walk is `glean.Cursor`, so a host gets the sequence `Regex::find_iter`,
+/// `re.finditer` and `FindAll` produce for the same pattern — the empty match
+/// adjacent to the previous one and the one at end-of-text both reported. That
+/// is why there is still no cursor in the ABI: a `find(from)` loop is precisely
+/// where a host would re-invent the advance rule and get nullable patterns
+/// wrong, and it is written once, one layer down.
 ///
 /// `cap` is a window over the answer, not a limit on the search: at most `cap`
 /// spans are written, and `*written` reports how many the TEXT HAS — so a short
@@ -257,21 +352,36 @@ pub fn isMatch(re: *Regex, text: ?[*]const u8, len: usize) Status {
 /// call came back short. Reporting the true count answers it in one search, and
 /// makes `cap = 0` with a null `out` a cheap "how many matches are there?"
 pub fn findAll(re: *Regex, text: ?[*]const u8, len: usize, out: ?[*]Span, cap: usize, written: ?*usize) Status {
+    // The whole text IS a window whose bound is inert, so this is the windowed
+    // walk with `to = len` rather than a second implementation of it. Which also
+    // means the unbounded path cannot drift from the bounded one, and that no
+    // backend can decline here: `Window.unbounded` is true, so the arm that
+    // cannot express a live bound is never asked to.
+    return findAllIn(re, text, len, 0, len, out, cap, written);
+}
+
+/// `findAll` bounded to `[from, to]`. See `windowOf` for the window contract:
+/// matches must fit inside the region, assertions still read the whole text, and
+/// a live bound faults on an engine that cannot express one.
+pub fn findAllIn(re: *Regex, text: ?[*]const u8, len: usize, from: usize, to: usize, out: ?[*]Span, cap: usize, written: ?*usize) Status {
     contract.beginCall();
     const count = written orelse return .invalid;
     count.* = 0;
-    const body = view(text, len) orelse return .invalid;
+    const win = windowOf(text, len, from, to) orelse return .invalid;
     if (cap != 0 and out == null) return .invalid;
 
-    re.found.clearRetainingCapacity();
-    re.query.collectSpans(gpa, body, false, &re.spans, &re.found) catch |e|
-        return contract.report(.{ .code = e });
-    if (re.found.items.len == 0) return .ok;
-
-    for (re.found.items[0..@min(cap, re.found.items.len)], 0..) |sp, i|
-        out.?[i] = .{ .start = @intCast(sp.start), .end = @intCast(sp.end) };
-    count.* = re.found.items.len;
-    return .match;
+    var cur = re.inner.matchesIn(win) catch |e| return contract.report(.{ .code = faultOf(e) });
+    defer cur.deinit();
+    // One walk serves both halves of the contract: the window is filled while
+    // the tally keeps running past it, so the true count costs no second search
+    // and nothing is materialized that the host did not ask for.
+    var n: usize = 0;
+    while (cur.next()) |sp| : (n += 1)
+        if (n < cap) {
+            out.?[n] = .{ .start = @intCast(sp.start), .end = @intCast(sp.end) };
+        };
+    count.* = n;
+    return if (n == 0) .ok else .match;
 }
 
 /// How many capture groups the pattern declares, excluding group 0. Forces the
@@ -280,8 +390,8 @@ pub fn findAll(re: *Regex, text: ?[*]const u8, len: usize, out: ?[*]Span, cap: u
 pub fn groupCount(re: *Regex, out: ?*u32) Status {
     contract.beginCall();
     const slot = out orelse return .invalid;
-    const caps = arm(re) catch |e| return contract.report(.{ .code = e });
-    slot.* = @intCast(caps.nslots() / 2 - 1);
+    const n = re.inner.groupCount() catch |e| return contract.report(.{ .code = faultOf(e) });
+    slot.* = @intCast(n - 1);
     return .ok;
 }
 
@@ -292,9 +402,8 @@ pub fn groupIndex(re: *Regex, name: ?[*]const u8, len: usize, out: ?*u32) Status
     contract.beginCall();
     const slot = out orelse return .invalid;
     const key = (name orelse return .invalid)[0..len];
-    const caps = arm(re) catch |e| return contract.report(.{ .code = e });
-    const idx = caps.groupByName(key) orelse return .ok;
-    slot.* = idx;
+    const idx = re.inner.group(key) catch |e| return contract.report(.{ .code = faultOf(e) });
+    slot.* = @intCast(idx orelse return .ok);
     return .match;
 }
 
@@ -313,10 +422,10 @@ pub fn groupIndex(re: *Regex, name: ?[*]const u8, len: usize, out: ?*u32) Status
 pub fn groupName(re: *Regex, index: u32, out: ?*rows.Text) Status {
     contract.beginCall();
     const slot = out orelse return .invalid;
-    const caps = arm(re) catch |e| return contract.report(.{ .code = e });
-    if (index >= caps.nslots() / 2) return .invalid;
-    const name = caps.nameOfGroup(index) orelse return .ok;
-    slot.* = rows.Text.of(name);
+    const n = re.inner.groupCount() catch |e| return contract.report(.{ .code = faultOf(e) });
+    if (index >= n) return .invalid;
+    const name = re.inner.groupName(index) catch |e| return contract.report(.{ .code = faultOf(e) });
+    slot.* = rows.Text.of(name orelse return .ok);
     return .match;
 }
 
@@ -329,10 +438,10 @@ pub fn groupName(re: *Regex, index: u32, out: ?*rows.Text) Status {
 /// `*written` reports what the pattern HAS, so a host can size a second call
 /// without a separate `groupCount`.
 ///
-/// `-w` is honored the way the rest of the plane honors it: a span the word
-/// rule rejects is not a match, and the search resumes past it. Without that,
-/// `captures` would be the one verb whose idea of a match differed from
-/// `find_all`'s.
+/// `-w` needs no handling here any more, and that is the point: the capture arm
+/// is compiled from the same `Options` as the span arm, so the word rule is
+/// lowered into both rather than re-applied to one. This verb used to carry its
+/// own reject-and-resume loop because the arm it built dropped the flag.
 pub fn captures(re: *Regex, text: ?[*]const u8, len: usize, from: usize, out: ?[*]Span, cap: usize, written: ?*usize) Status {
     contract.beginCall();
     const count = written orelse return .invalid;
@@ -341,52 +450,17 @@ pub fn captures(re: *Regex, text: ?[*]const u8, len: usize, from: usize, out: ?[
     if (from > len) return .invalid;
     if (cap != 0 and out == null) return .invalid;
 
-    const caps = arm(re) catch |e| return contract.report(.{ .code = e });
-    const ngroups = caps.nslots() / 2;
+    const got = re.inner.groupsFrom(body, from) catch |e|
+        return contract.report(.{ .code = faultOf(e) });
+    const g = got orelse return .ok;
 
-    var at = from;
-    while (true) {
-        if (!caps.find(body, at, re.slots)) return .ok;
-        const s: usize = @intCast(re.slots[0]);
-        const e: usize = @intCast(re.slots[1]);
-        if (!re.word or qy.wordOk(re.unicode, body, s, e)) break;
-        // A rejected span must not re-find itself: advance one byte past its
-        // start (not its end — an empty span would stand still).
-        at = @max(s + 1, at + 1);
-        if (at > body.len) return .ok;
-    }
-
-    for (0..@min(cap, ngroups)) |g| {
-        const lo = re.slots[2 * g];
-        const hi = re.slots[2 * g + 1];
-        out.?[g] = if (lo < 0 or hi < 0) Span.unset else .{ .start = lo, .end = hi };
-    }
-    count.* = ngroups;
+    for (0..@min(cap, g.len())) |i|
+        out.?[i] = if (g.get(i)) |sp|
+            .{ .start = @intCast(sp.start), .end = @intCast(sp.end) }
+        else
+            Span.unset;
+    count.* = g.len();
     return .match;
-}
-
-/// The capture arm, built on first use and remembered — including its refusal.
-///
-/// Under `-F` the arm compiles the ESCAPED pattern: `-F 'a.b'` means three
-/// literal bytes, and handing `a.b` to a regex parser would quietly widen it.
-fn arm(re: *Regex) error{ BadPattern, OutOfMemory }!*rx.Caps {
-    if (re.caps) |*ready| return ready;
-    if (re.caps_tried) return error.BadPattern;
-    re.caps_tried = true;
-
-    const body = if (!re.fixed) re.pattern else blk: {
-        re.escaped = try qy.escapeLiteral(gpa, re.pattern);
-        break :blk re.escaped;
-    };
-    var built = try rx.Caps.compile(gpa, body, .{
-        .caseless = re.caseless,
-        .unicode = re.unicode,
-        .pcre = re.pcre,
-    });
-    errdefer built.deinit();
-    re.slots = try gpa.alloc(isize, built.nslots());
-    re.caps = built;
-    return &re.caps.?;
 }
 
 // ── tests ────────────────────────────────────────────────────────────────────
@@ -528,6 +602,196 @@ test "find_all reports the engine's span sequence, and sizes a short window" {
     try t.expectEqual(Status.invalid, findAll(re, "aa", 2, null, 0, null));
 }
 
+test "find_all reports the library walk's empty matches, not the grep walk's" {
+    // The sequence a host actually receives for a nullable pattern, pinned to
+    // the bar its bindings are measured against rather than to rg's page rules.
+    // Both cases below used to come back one span short: `gist`'s walk drops an
+    // empty match adjacent to the previous one and an unterminated one at the
+    // end of the text, which is right for printed rows and wrong for a library.
+    //
+    // `x*` over `abc` is the canonical row — 4 in Rust's `regex`, Python's `re`,
+    // Go's `regexp` and JS `matchAll`; 3 in ripgrep.
+    const re = try open("x*", 0);
+    defer free(re);
+    const spans = try spansOf(re, "abc");
+    defer t.allocator.free(spans);
+    try t.expectEqualSlices(Span, &.{
+        .{ .start = 0, .end = 0 },
+        .{ .start = 1, .end = 1 },
+        .{ .start = 2, .end = 2 },
+        .{ .start = 3, .end = 3 }, // the end-of-text empty the grep walk suppresses
+    }, spans);
+
+    // And the adjacency half of the same rule: `b*` over `abcb` keeps the empty
+    // match that immediately follows a consuming one.
+    const bstar = try open("b*", 0);
+    defer free(bstar);
+    const adj = try spansOf(bstar, "abcb");
+    defer t.allocator.free(adj);
+    try t.expectEqualSlices(Span, &.{
+        .{ .start = 0, .end = 0 },
+        .{ .start = 1, .end = 2 },
+        .{ .start = 2, .end = 2 }, // adjacent to the one before it
+        .{ .start = 3, .end = 4 },
+        .{ .start = 4, .end = 4 },
+    }, adj);
+}
+
+/// Every span the window plane reports for `[from, to]` of `text`.
+fn windowSpans(re: *Regex, text: []const u8, from: usize, to: usize) ![]Span {
+    var buf: [16]Span = undefined;
+    var n: usize = 0;
+    _ = findAllIn(re, text.ptr, text.len, from, to, &buf, buf.len, &n);
+    return t.allocator.dupe(Span, buf[0..@min(n, buf.len)]);
+}
+
+test "a window bounds the search without moving the haystack edges" {
+    // THE claim the plane exists for. `c$` over "abc" matches; over the SLICE
+    // "ab" nothing does, because slicing moved `$` to offset 2. A window to=2
+    // has to give the third answer: no match, but for the honest reason — `c`
+    // is outside the region — while `$` still means offset 3.
+    //
+    // The way to prove the edges did not move is to ask a pattern that can only
+    // succeed if they didn't. `b$` inside [0,2] must NOT match: `b` fits the
+    // region, and `$` is still the text's end at 3, which `b` does not reach.
+    // Under a slice it WOULD match, since "ab" ends right after the `b`. So this
+    // single row separates a window from a slice.
+    const dollar = try open("b$", 0);
+    defer free(dollar);
+    try t.expectEqual(Status.ok, isMatchIn(dollar, "abc", 3, 0, 2));
+    // And the same pattern over the sliced bytes does match, which is the answer
+    // a host would have gotten by slicing — the wrong one.
+    try t.expectEqual(Status.match, isMatch(dollar, "ab", 2));
+
+    // The mirror on the left edge: `^` stays at 0 even when the region starts
+    // later, so an anchored pattern cannot match from inside the window.
+    const caret = try open("^b", 0);
+    defer free(caret);
+    try t.expectEqual(Status.ok, isMatchIn(caret, "abc", 3, 1, 3));
+    try t.expectEqual(Status.match, isMatch(caret, "bc", 2));
+
+    // \b reads the byte BEFORE the region too, so a word boundary is judged
+    // against the text rather than against the cut.
+    const word = try open("\\bbc", 0);
+    defer free(word);
+    try t.expectEqual(Status.ok, isMatchIn(word, "abc", 3, 1, 3));
+    try t.expectEqual(Status.match, isMatch(word, "bc", 2));
+}
+
+test "a window restricts which matches are reachable, and nothing else" {
+    const re = try open("a", 0);
+    defer free(re);
+    // Three `a`s at 0, 2, 4. Each window admits exactly the ones that fit.
+    const all = try windowSpans(re, "aBaBa", 0, 5);
+    defer t.allocator.free(all);
+    try t.expectEqualSlices(Span, &.{
+        .{ .start = 0, .end = 0 + 1 },
+        .{ .start = 2, .end = 3 },
+        .{ .start = 4, .end = 5 },
+    }, all);
+
+    // A match must END at or before `to`, so to=3 keeps the first two.
+    const bounded = try windowSpans(re, "aBaBa", 0, 3);
+    defer t.allocator.free(bounded);
+    try t.expectEqualSlices(Span, &.{
+        .{ .start = 0, .end = 1 },
+        .{ .start = 2, .end = 3 },
+    }, bounded);
+
+    // And must START at or after `from`.
+    const shifted = try windowSpans(re, "aBaBa", 1, 5);
+    defer t.allocator.free(shifted);
+    try t.expectEqualSlices(Span, &.{
+        .{ .start = 2, .end = 3 },
+        .{ .start = 4, .end = 5 },
+    }, shifted);
+
+    // An empty window is a legitimate question with a legitimate empty answer,
+    // not an error.
+    var n: usize = 999;
+    try t.expectEqual(Status.ok, findAllIn(re, "aBaBa", 5, 2, 2, null, 0, &n));
+    try t.expectEqual(@as(usize, 0), n);
+}
+
+test "the unbounded verb and an inert window are the same call" {
+    // `findAll` IS `findAllIn` with `to = len`, so this is a claim about the
+    // delegation rather than about the engine: the two cannot drift because
+    // there is only one walk under them. A nullable pattern is the sharp case,
+    // since that is where a second implementation would have gotten the
+    // empty-match rules wrong.
+    const re = try open("x*", 0);
+    defer free(re);
+    const whole = try spansOf(re, "abc");
+    defer t.allocator.free(whole);
+    const inert = try windowSpans(re, "abc", 0, 3);
+    defer t.allocator.free(inert);
+    try t.expectEqualSlices(Span, whole, inert);
+}
+
+test "a live bound on the PCRE arm faults instead of answering a different question" {
+    const sc = fault.scope();
+    defer sc.end();
+
+    // The capability is a property of the compiled pattern, so a host asks once.
+    const linear = try open("abc", 0);
+    defer free(linear);
+    try t.expectEqual(Status.match, windows(linear));
+
+    const pcre = try open("(?=a)b*", contract.flag_pcre);
+    defer free(pcre);
+    try t.expectEqual(Status.ok, windows(pcre));
+
+    // An INERT bound asks nothing of the engine, so the pcre arm answers it with
+    // the search it already has — no fault, and the real answer: the lookahead
+    // sees the `a` at 0 and `b*` takes zero bytes, so there is a match at (0,0).
+    try t.expectEqual(Status.match, isMatchIn(pcre, "abc", 3, 0, 3));
+    try t.expectEqual(Status.match, isMatch(pcre, "abc", 3));
+
+    // A LIVE bound is the one it cannot express. It must fault, and the fault
+    // must be `BoundUnsupported` rather than `Unsupported`: a host reading
+    // `Unsupported` would retry under PCRE2, which is the one arm guaranteed to
+    // refuse again.
+    try t.expectEqual(Status.invalid, isMatchIn(pcre, "abc", 3, 0, 2));
+    try t.expectEqual(fault.Fault.BoundUnsupported, fault.last().?.code);
+
+    var n: usize = 999;
+    try t.expectEqual(Status.invalid, findAllIn(pcre, "abc", 3, 0, 2, null, 0, &n));
+    try t.expectEqual(fault.Fault.BoundUnsupported, fault.last().?.code);
+}
+
+test "a bound that does not describe the text is refused, not clamped" {
+    const re = try open("a", 0);
+    defer free(re);
+    var n: usize = 999;
+    // `to` past the end, and `from` past `to`. Both are caller bugs, and a
+    // silent `@min` would hide them until the answer was wrong elsewhere.
+    try t.expectEqual(Status.invalid, isMatchIn(re, "abc", 3, 0, 4));
+    try t.expectEqual(Status.invalid, isMatchIn(re, "abc", 3, 2, 1));
+    try t.expectEqual(Status.invalid, findAllIn(re, "abc", 3, 0, 4, null, 0, &n));
+    try t.expectEqual(Status.invalid, findAllIn(re, "abc", 3, 2, 1, null, 0, &n));
+    // The whole-text guards still hold on the windowed verb.
+    try t.expectEqual(Status.invalid, findAllIn(re, "abc", 3, 0, 3, null, 0, null));
+    try t.expectEqual(Status.invalid, findAllIn(re, null, 3, 0, 3, null, 0, &n));
+    // And a null text of length zero is still the empty text, not an error.
+    try t.expectEqual(Status.ok, isMatchIn(re, null, 0, 0, 0));
+}
+
+test "the word rule is lowered into both arms, so captures cannot disagree" {
+    // `-w` reaches the capture arm because both arms compile from one options
+    // record. This verb used to need its own reject-and-resume loop, and the
+    // arm it built dropped the flag entirely — so the loop was load-bearing.
+    for ([_]u32{ 0, contract.flag_pcre }) |engine| {
+        const re = try open("cat", contract.flag_word | engine);
+        defer free(re);
+        var got: [1]Span = undefined;
+        var n: usize = 0;
+        try t.expectEqual(Status.ok, captures(re, "concatenate", 11, 0, &got, 1, &n));
+        try t.expectEqual(Status.ok, isMatch(re, "concatenate", 11));
+        try t.expectEqual(Status.match, captures(re, "concatenate cat", 15, 0, &got, 1, &n));
+        try t.expectEqual(Span{ .start = 12, .end = 15 }, got[0]);
+    }
+}
+
 test "the fixed flag makes the pattern data, for the capture arm too" {
     const re = try open("a.c", contract.flag_fixed);
     defer free(re);
@@ -540,6 +804,129 @@ test "the fixed flag makes the pattern data, for the capture arm too" {
     try t.expectEqual(Status.ok, captures(re, "abc", 3, 0, &got, 1, &n));
     try t.expectEqual(Status.match, captures(re, "xa.c", 4, 0, &got, 1, &n));
     try t.expectEqual(Span{ .start = 1, .end = 4 }, got[0]);
+}
+
+test "a leading directive compiles, the way every library a host knows does" {
+    // The gap this closes: `(?i)cat` is the documented way to be
+    // case-insensitive in `re`, `rust-regex`, `regexp` and PCRE2, and every one
+    // of them accepts it with no flag argument at all. This seam used to refuse
+    // it, so a host whose patterns came from a config file it does not own had
+    // no way to spell what its users had already written.
+    const ci = try open("(?i)cat", 0);
+    defer free(ci);
+    try t.expectEqual(Status.match, isMatch(ci, "a CAT", 5));
+
+    // `(?s)` puts the newline back under `.`, `(?m)` moves `^`/`$` to the line
+    // breaks — and each one only where it was asked for.
+    const dot = try open("(?s)a.b", 0);
+    defer free(dot);
+    try t.expectEqual(Status.match, isMatch(dot, "a\nb", 3));
+    const plain = try open("a.b", 0);
+    defer free(plain);
+    try t.expectEqual(Status.ok, isMatch(plain, "a\nb", 3));
+
+    const per_line = try open("(?m)^b", 0);
+    defer free(per_line);
+    try t.expectEqual(Status.match, isMatch(per_line, "a\nb", 3));
+    const per_text = try open("^b", 0);
+    defer free(per_text);
+    try t.expectEqual(Status.ok, isMatch(per_text, "a\nb", 3));
+
+    // `(?-u)` is the ASCII opt-out, spelled as rg and rust-regex spell it: `\w`
+    // stops covering `é`, which the Unicode default does cover.
+    const ascii = try open("(?-u)\\w", 0);
+    defer free(ascii);
+    try t.expectEqual(Status.ok, isMatch(ascii, "é", 2));
+    const uni = try open("\\w", 0);
+    defer free(uni);
+    try t.expectEqual(Status.match, isMatch(uni, "é", 2));
+
+    // A run folds, and a directive with an empty rest is still a pattern — the
+    // empty one, which matches anywhere.
+    const run = try open("(?i)(?s)A.B", 0);
+    defer free(run);
+    try t.expectEqual(Status.match, isMatch(run, "a\nb", 3));
+    const bare = try open("(?i)", 0);
+    defer free(bare);
+    try t.expectEqual(Status.match, isMatch(bare, "x", 1));
+
+    // Groups are numbered from the pattern, not from the bytes in front of it.
+    const caps = try open("(?i)(a)(b)", 0);
+    defer free(caps);
+    var groups: [3]Span = undefined;
+    var n: usize = 0;
+    try t.expectEqual(Status.match, captures(caps, "AB", 2, 0, &groups, 3, &n));
+    try t.expectEqual(@as(usize, 3), n);
+    try t.expectEqual(Span{ .start = 0, .end = 1 }, groups[1]);
+}
+
+test "the pattern's own spelling outranks the flag word, and the inference" {
+    // The more specific statement wins, as it does in rust-regex: a host that
+    // sets `IRGX_IGNORE_CASE` for its whole config file and one pattern that
+    // says `(?-i)` are not in conflict — the pattern is the exception.
+    const off = try open("(?-i)cat", contract.flag_ignore_case);
+    defer free(off);
+    try t.expectEqual(Status.ok, isMatch(off, "CAT", 3));
+    try t.expectEqual(Status.match, isMatch(off, "cat", 3));
+
+    // Smart case is a guess for when nobody said; `(?-i)` said. (Lowercase
+    // pattern + smart case would otherwise fold.)
+    const said = try open("(?-i)cat", contract.flag_smart_case);
+    defer free(said);
+    try t.expectEqual(Status.ok, isMatch(said, "CAT", 3));
+
+    // And the guess is made about the pattern the engine sees, not the directive
+    // in front of it: `(?m)` carries no case of its own.
+    const guess = try open("(?m)cat", contract.flag_smart_case);
+    defer free(guess);
+    try t.expectEqual(Status.match, isMatch(guess, "CAT", 3));
+}
+
+test "the two arms that own the flag syntax are not read for" {
+    // Under `-F` the bytes are data. A host searching for the literal `(?i)x`
+    // must find it — rg and gist answer the same way — and must NOT quietly get
+    // a case-insensitive `x`.
+    const fixed = try open("(?i)x", contract.flag_fixed);
+    defer free(fixed);
+    try t.expectEqual(Status.match, isMatch(fixed, "see (?i)x here", 14));
+    try t.expectEqual(Status.ok, isMatch(fixed, "X", 1));
+
+    // PCRE2 implements the whole flag grammar itself, scoping included, so the
+    // directive is left for it to read.
+    const pcre = try open("(?i)x", contract.flag_pcre);
+    defer free(pcre);
+    try t.expectEqual(Status.match, isMatch(pcre, "X", 1));
+    const scoped = try open("(?i:a)b", contract.flag_pcre);
+    defer free(scoped);
+    try t.expectEqual(Status.match, isMatch(scoped, "Ab", 2));
+    try t.expectEqual(Status.ok, isMatch(scoped, "AB", 2));
+}
+
+test "a flag from the wider grammar routes to the arm that has it" {
+    const sc = fault.scope();
+    defer sc.end();
+    var re: *Regex = undefined;
+
+    // `x`, `U` and `R` are not this grammar's, and the honest answer is the one
+    // the seam already has for every unsupported construct: a declinature that
+    // names the arm which can answer, with no fault installed. Reading the `i`
+    // out of `(?ix)` and dropping the `x` would be the silent wrong answer.
+    for ([_][]const u8{ "(?x)a b", "(?U)a+", "(?ix)a b" }) |p| {
+        try t.expectEqual(Status.stale, compile(p.ptr, p.len, 0, &re));
+        try t.expect(fault.last() == null);
+        try t.expectEqual(Status.ok, compile(p.ptr, p.len, contract.flag_pcre, &re));
+        free(re);
+    }
+
+    // A directive in front of a genuinely broken pattern still reports an offset
+    // measured in the pattern the HOST passed, not in the remainder this seam
+    // compiled — `at` is only useful if it indexes the caller's own string.
+    const broken = "(?i)(unclosed";
+    try t.expectEqual(Status.invalid, compile(broken.ptr, broken.len, 0, &re));
+    const d = fault.last().?;
+    try t.expectEqual(fault.Fault.BadPattern, d.code);
+    try t.expect(d.at.? >= 4);
+    try t.expect(d.at.? <= broken.len);
 }
 
 test "smart case resolves at the seam, on the CLI's own predicate" {

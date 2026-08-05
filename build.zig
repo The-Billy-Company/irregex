@@ -236,6 +236,26 @@ pub fn build(b: *std.Build) void {
     // 4.83 MB.
     const strip = b.option(bool, "strip", "Omit debug info from emitted artifacts (packaging)");
 
+    // ── the mode the SHIPPED library is built in ──
+    // A Debug `libirgx` is not a slower build of the library — for its callers
+    // it is a different library. Compiling `\w` costs 2.3 ms optimized and
+    // 108 ms unoptimized, and neither the Python nor the Go binding has any way
+    // to know which one it dlopened; what a caller sees is an engine that
+    // takes a tenth of a second to compile one class. `zig build` is also the
+    // exact instruction all three binding READMEs give, so Debug was the
+    // default reaching every consumer who did as they were told.
+    //
+    // So the artifact's mode belongs to its job rather than to the last `-D`
+    // flag anyone typed — the same call the test binary already makes below
+    // (pinned ReleaseSafe, for the checks). `-Doptimize` keeps governing the
+    // module a dependent imports, `check` and `test` keep their own fast modes,
+    // and `-Dlib-optimize=Debug` steps through the C ABI when that is the job.
+    const lib_optimize = b.option(
+        std.builtin.OptimizeMode,
+        "lib-optimize",
+        "optimize mode for the installed libirgx (default ReleaseFast — it is what a binding loads)",
+    ) orelse .ReleaseFast;
+
     // ── the LLVM knobs, and where the granularity actually stops ──
     // Four tiers are reachable from a build script, coarsest first: the
     // **subtarget** (`-Dcpu=baseline+avx2`, which becomes LLVM's feature string
@@ -258,7 +278,7 @@ pub fn build(b: *std.Build) void {
         .frame_pointer = b.option(bool, "frame-pointer", "Keep the frame-pointer chain in optimized builds so a sampling profiler can walk it"),
         .lto = b.option(std.zig.LtoMode, "lto", "Link-time optimization for the shipped artifacts and the lab executables (default none)") orelse .none,
         .debug_compress = debug_compress_asked orelse
-            if (target.result.ofmt == .elf and strip != true and optimize != .Debug) .zlib else .none,
+            if (target.result.ofmt == .elf and strip != true and lib_optimize != .Debug) .zlib else .none,
         // A build ID is only *needed* by the artifact that has lost its DWARF,
         // so it rides `-Dstrip` rather than being one more thing the packaging
         // matrix has to remember. `sha1` over Zig's cheaper `fast` because the
@@ -303,8 +323,8 @@ pub fn build(b: *std.Build) void {
         // is the alternative, and a build that dies inside the linker reads
         // like a broken toolchain rather than a flag that was never going to
         // work. Retest it when the vendored LLD moves.
-        if (asked != .none and optimize == .Debug)
-            std.process.fatal("-Ddebug-compress={t} crashes LLD at -ODebug: the compressor faults on the DWARF this library emits unoptimized. Use a release mode (all three compress fine), or drop the flag — the ELF default already stands itself down here.", .{asked});
+        if (asked != .none and lib_optimize == .Debug)
+            std.process.fatal("-Ddebug-compress={t} crashes LLD at -Dlib-optimize=Debug: the compressor faults on the DWARF this library emits unoptimized. Use a release mode (all three compress fine), or drop the flag — the ELF default already stands itself down here.", .{asked});
     }
 
     var floor = Floor{ .b = b, .target = target };
@@ -360,9 +380,40 @@ pub fn build(b: *std.Build) void {
         .imports = &.{.{ .name = "irregex", .module = engine }},
     }));
 
+    // The pair that actually ships, at `-Dlib-optimize`. A module carries its
+    // own mode, so an optimized artifact rooted at a Debug engine would be an
+    // optimized shim over the slow library — the twin has to go all the way
+    // down. Kept separate from `abi` above rather than replacing it so the ABI
+    // *tests* keep the mode a test wants and the edit loop stays where it was:
+    // `zig build` compiles this pair, `zig build test-abi` compiles that one,
+    // and neither step pays for the other. When the two modes agree there is
+    // one of everything, which is what `-Dlib-optimize=Debug` asks for. (Named
+    // `shipped_abi`, because `shipped` further down is a lab lane's posture.)
+    const shipped_engine = if (lib_optimize == optimize) engine else blk: {
+        const twin = codegen.module(b.createModule(.{
+            .root_source_file = b.path("src/root.zig"),
+            .target = target,
+            .optimize = lib_optimize,
+            .pic = true,
+            .strip = strip,
+        }));
+        floor.under(twin);
+        twin.addOptions("build_options", version);
+        break :blk twin;
+    };
+    const shipped_abi = if (shipped_engine == engine) abi else codegen.module(b.createModule(.{
+        .root_source_file = b.path("src/surface/ffi/exports.zig"),
+        .target = target,
+        .optimize = lib_optimize,
+        .pic = true,
+        .link_libc = true,
+        .strip = strip,
+        .imports = &.{.{ .name = "irregex", .module = shipped_engine }},
+    }));
+
     // Dynamic (Python cffi dlopens it) owns the header install; static is what
     // Go cgo and a Rust build.rs link.
-    const dynamic_lib = codegen.artifact(b.addLibrary(.{ .name = "irgx", .linkage = .dynamic, .root_module = abi }));
+    const dynamic_lib = codegen.artifact(b.addLibrary(.{ .name = "irgx", .linkage = .dynamic, .root_module = shipped_abi }));
     dynamic_lib.installHeader(b.path("include/irgx.h"), "irgx.h");
     b.installArtifact(dynamic_lib);
 
@@ -415,11 +466,11 @@ pub fn build(b: *std.Build) void {
     if (target.result.ofmt == .coff) {
         // Not installed as an artifact — see the ambiguity note above; it exists
         // only to hand the archiver this compilation's own objects.
-        repack.addArtifactArg(b.addLibrary(.{ .name = "irgx", .linkage = .static, .root_module = abi }));
-        repack.addArtifactArg(floor.pcre2At(optimize));
-        repack.addArtifactArg(floor.libsaisAt(optimize));
+        repack.addArtifactArg(b.addLibrary(.{ .name = "irgx", .linkage = .static, .root_module = shipped_abi }));
+        repack.addArtifactArg(floor.pcre2At(lib_optimize));
+        repack.addArtifactArg(floor.libsaisAt(lib_optimize));
     } else {
-        repack.addArtifactArg(b.addObject(.{ .name = "irgx", .root_module = abi }));
+        repack.addArtifactArg(b.addObject(.{ .name = "irgx", .root_module = shipped_abi }));
     }
     b.getInstallStep().dependOn(&b.addInstallLibFile(merged, "libirgx.a").step);
     // Because it installs as a file, the archive is invisible to a dependent's
@@ -732,7 +783,6 @@ pub fn build(b: *std.Build) void {
         .{ .step = "parabix-rung", .exe = "parabix-rung", .root = "bench/rungs/parabix/bench.zig", .blurb = "Parabix-rung production proof: corpus-scale agreement with the shipped ladder, negative-case throughput vs both baselines, and the refusal rows" },
         .{ .step = "automata-rung", .exe = "automata-rung", .root = "bench/rungs/automata/bench.zig", .blurb = "Automata-layout proof: per-pattern automaton shape, and the match test priced both ways over one machine" },
         .{ .step = "patternid-rung", .exe = "patternid-rung", .root = "bench/rungs/patternid/bench.zig", .blurb = "PatternID gate: state-count cost of carrying a pattern mask in the determinizer's state key" },
-        .{ .step = "multipattern", .exe = "multipattern", .root = "bench/rungs/multipattern/bench.zig", .blurb = "Multi-pattern race arm: per-document attribution throughput, fail-closed against N independent searches" },
         .{ .step = "sweep-rung", .exe = "sweep-rung", .root = "bench/rungs/sweep/bench.zig", .blurb = "Sweep-rung consumer proof: each recursive analysis raced against the fused interned-AST sweep, alone and bundled, fail-closed on any disagreement" },
         .{ .step = "ladder-price", .exe = "ladder-price", .root = "bench/rungs/price/bench.zig", .instrument = "pmu", .libc = true, .blurb = "Ladder price plane: re-time every auction coefficient in isolation (verify), and gate the auction's per-pattern picks against the measured-fastest machine (regret)" },
         .{ .step = "engine-census", .exe = "engine-census", .root = "bench/rungs/census/bench.zig", .instrument = "probes", .blurb = "Engine census: which ladder machine each certificate probe class actually compiles to" },

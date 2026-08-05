@@ -221,6 +221,23 @@ purpose.
   and lets the engine stop at the first one without building a span. `re`
   has no equivalent, so it is named after what it does.
 
+- **`$` is the end of the text, and not the byte before a trailing newline.**
+  This one is not an improvement, it is a gap, and it is the only place the two
+  libraries disagree about whether a pattern matches at all. `re` inherits
+  Perl's rule where `$` also matches just before a final `\n`; Rust's `regex`
+  and Go's `regexp` do not, and neither does this engine. So a pattern ending in
+  `$` against text that ends in `\n` finds nothing here:
+
+  ```python
+  [m.span() for m in irgx.finditer(r"[a-z]+$", "cat\ndog\n")]  # []
+  [m.span() for m in re.finditer(r"[a-z]+$", "cat\ndog\n")]  # [(4, 7)]
+  ```
+
+  Three spellings do agree, and one of them is probably what you meant:
+  `(?m)[a-z]+$` (every line's end, which is where a trailing newline stops
+  being special), `[a-z]+\z` (the text's end, said exactly), or stripping the
+  newline first. `pcre=True` also has Perl's rule, since it *is* Perl's.
+
 ## Introspection
 
 A few module attributes describe what is actually loaded, which matters the

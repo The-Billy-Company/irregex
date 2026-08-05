@@ -6,6 +6,7 @@ exclusion (test vocabulary, private control flow, consuming positions) is pinned
 against a *live* production shape taken from the tree, not a toy.
 """
 
+import re
 import sys
 import tempfile
 import unittest
@@ -20,6 +21,17 @@ from fault_taxonomy_ratchet import (  # noqa: E402
 
 DECLARED = frozenset({"Corrupt", "Truncated", "OutOfMemory", "Unsupported", "GenerationMismatch"})
 
+FAULT_ZIG = Path(__file__).resolve().parents[3] / "src" / "fault.zig"
+DOMAIN_SET = re.compile(r"pub const \w+ = error\{([^}]*)\}", re.S)
+
+
+def source_members() -> frozenset[str]:
+    """Every member of every domain set in `src/fault.zig` — the taxonomy itself."""
+    body = FAULT_ZIG.read_text(encoding="utf-8")
+    return frozenset(
+        name.strip() for row in DOMAIN_SET.findall(body) for name in row.split(",") if name.strip()
+    )
+
 
 def total(src: str, declared: frozenset[str] = DECLARED) -> int:
     return count_undeclared(src, declared).total
@@ -28,10 +40,13 @@ def total(src: str, declared: frozenset[str] = DECLARED) -> int:
 class ContractTest(unittest.TestCase):
     def test_reads_the_live_contract_block(self) -> None:
         members = declared_members()
-        # The taxonomy is five domains totaling 22 members, each domain's list
-        # exactly the matching `pub const` error set in src/fault.zig; spot-check
-        # the collapse target and the two spellings it replaced.
-        self.assertEqual(22, len(members))
+        # Each domain's list is exactly the matching `pub const` error set in
+        # src/fault.zig, so the claim is asserted against that source rather than
+        # against a total somebody has to bump by hand whenever a fault is minted
+        # — a number nobody can check is how a contract drifts from its code.
+        # Then spot-check the collapse target and the two spellings it replaced.
+        self.assertEqual(source_members(), members)
+        self.assertTrue(members, "src/fault.zig parsed to nothing — the reader is broken")
         self.assertIn("Corrupt", members)
         self.assertNotIn("BadFormat", members)
         self.assertNotIn("CorruptIndex", members)

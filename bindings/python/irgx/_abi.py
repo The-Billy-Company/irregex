@@ -70,6 +70,10 @@ class error(Exception):  # noqa: N801 - named to match `re.error` so `except` cl
         when it did not locate one. A pattern that is refused for its *grammar*
         rather than its spelling is not wrong anywhere, so there is nothing to
         point at; see :class:`UnsupportedPattern`.
+    :ivar index: which pattern of a :class:`irgx.PatternSet` this is about, or
+        ``None`` for a lone pattern. With two hundred patterns, "one of them is
+        unsupported" is not something a caller can act on, so the position in
+        the list travels with the reason.
     """
 
     def __init__(
@@ -77,11 +81,13 @@ class error(Exception):  # noqa: N801 - named to match `re.error` so `except` cl
         msg: str,
         pattern: str | bytes | None = None,
         pos: int | None = None,
+        index: int | None = None,
     ) -> None:
         super().__init__(msg)
         self.msg = msg
         self.pattern = pattern
         self.pos = pos
+        self.index = index
 
 
 class UnsupportedPattern(error):
@@ -117,6 +123,21 @@ class Fault(ctypes.Structure):
         ("path", ctypes.POINTER(ctypes.c_uint8)),
         ("path_len", ctypes.c_size_t),
         ("at", ctypes.c_uint64),
+    )
+
+
+class SlatePattern(ctypes.Structure):
+    """``irgx_slate_pattern``: one pattern of a slate, and its own flag word.
+
+    ``pattern`` is declared ``c_char_p`` so a ``bytes`` can be assigned to it
+    directly; ctypes then keeps that object alive in the array's ``_objects``
+    for as long as the array lives, which covers the compile call that reads it.
+    """
+
+    _fields_ = (
+        ("pattern", ctypes.c_char_p),
+        ("len", ctypes.c_size_t),
+        ("flags", ctypes.c_uint32),
     )
 
 
@@ -201,6 +222,13 @@ _SIGNATURES = (
         ctypes.c_int32,
         (_VOID, _U8P, _SIZE, ctypes.POINTER(Span), _SIZE, ctypes.POINTER(_SIZE)),
     ),
+    ("irgx_pattern_windows", ctypes.c_int32, (_VOID,)),
+    ("irgx_is_match_in", ctypes.c_int32, (_VOID, _U8P, _SIZE, _SIZE, _SIZE)),
+    (
+        "irgx_find_all_in",
+        ctypes.c_int32,
+        (_VOID, _U8P, _SIZE, _SIZE, _SIZE, ctypes.POINTER(Span), _SIZE, ctypes.POINTER(_SIZE)),
+    ),
     (
         "irgx_captures",
         ctypes.c_int32,
@@ -213,6 +241,19 @@ _SIGNATURES = (
         (_VOID, _U8P, _SIZE, ctypes.POINTER(ctypes.c_uint32)),
     ),
     ("irgx_group_name", ctypes.c_int32, (_VOID, ctypes.c_uint32, ctypes.POINTER(Text))),
+    (
+        "irgx_slate_compile",
+        ctypes.c_int32,
+        (ctypes.POINTER(SlatePattern), _SIZE, ctypes.POINTER(_SIZE), ctypes.POINTER(_VOID)),
+    ),
+    ("irgx_slate_free", None, (_VOID,)),
+    ("irgx_slate_len", _SIZE, (_VOID,)),
+    ("irgx_slate_is_match", ctypes.c_int32, (_VOID, _U8P, _SIZE)),
+    (
+        "irgx_slate_which",
+        ctypes.c_int32,
+        (_VOID, _U8P, _SIZE, ctypes.POINTER(ctypes.c_uint32), _SIZE, ctypes.POINTER(_SIZE)),
+    ),
 )
 
 
@@ -303,7 +344,12 @@ def _fault() -> _Detail | None:
     return _Detail(name, at, path)
 
 
-def check(status: int, doing: str, pattern: str | bytes | None = None) -> int:
+def check(
+    status: int,
+    doing: str,
+    pattern: str | bytes | None = None,
+    index: int | None = None,
+) -> int:
     """Return ``status`` when the call produced a result; raise otherwise.
 
     ``IRGX_OOM`` becomes ``MemoryError`` because that is what a Python caller
@@ -327,9 +373,10 @@ def check(status: int, doing: str, pattern: str | bytes | None = None) -> int:
             f"{doing}: {_status_text(status)} - but this call has no fallback to "
             f"answer through, so the declinature cannot be honored here",
             pattern,
+            index=index,
         )
     detail = _fault()
     reason = f"{detail}; {_status_text(status)}" if detail else _status_text(status)
     if status == OOM:
         raise MemoryError(f"{doing}: {reason}")
-    raise error(f"{doing}: {reason}", pattern, detail.pos if detail else None)
+    raise error(f"{doing}: {reason}", pattern, detail.pos if detail else None, index)

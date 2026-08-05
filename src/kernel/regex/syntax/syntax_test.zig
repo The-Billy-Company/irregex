@@ -573,3 +573,29 @@ test "syntax/safety: adversarial patterns parse or BadPattern, never panic/UB" {
         pr.deinit();
     }
 }
+
+test "syntax/flags: (?i:…) folds its own body and leaves the rest alone" {
+    var p = try parse("(?i:k)k");
+    defer p.deinit();
+    // `k` under the fold picks up `K`; the `k` after the group must not.
+    const kids = p.node.concat;
+    try std.testing.expect(kids[0].class.has('k') and kids[0].class.has('K'));
+    try std.testing.expect(kids[1].class.has('k') and !kids[1].class.has('K'));
+}
+
+test "syntax/flags: (?u:…) turns Unicode on for one group only" {
+    var p = try parse("(?u:\\x{00ac})");
+    defer p.deinit();
+    // A non-ASCII scalar can only be carried by a `uclass`, which is what the
+    // scoped flag bought - byte mode would have refused the codepoint.
+    try std.testing.expectEqual(@as(u21, 0x00ac), p.node.uclass[0][0]);
+}
+
+test "syntax/flags: the flags this engine spells differently refuse" {
+    // `m` is whole-buffer here and line-anchored in JavaScript, `x` is not
+    // implemented, and a bare `(?i)` scopes to the enclosing group - each is a
+    // wrong answer rather than a missing one, so none of them parse.
+    for ([_][]const u8{ "(?m:a)", "(?x:a b)", "(?i)a", "(?-i:a)" }) |src| {
+        try std.testing.expectError(ParseError.BadPattern, parse(src));
+    }
+}

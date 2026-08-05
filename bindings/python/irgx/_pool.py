@@ -23,9 +23,10 @@ from __future__ import annotations
 
 import ctypes
 import threading
+from collections.abc import Callable
 from typing import Any
 
-from ._abi import _VOID, STALE, UnsupportedPattern, _status_text, check, lib
+from ._abi import _VOID, STALE, UnsupportedPattern, check, lib
 
 
 class Compiled:
@@ -82,26 +83,29 @@ class Compiled:
 
 
 class Pool:
-    """One :class:`Compiled` per thread, for one pattern and one flag word.
+    """One compiled handle per thread, minted by ``recompile``.
 
-    Holds only what a compile needs, all of it immutable, so the pool itself is
-    safe to share; the handles it hands out never are, and never leave the
-    thread that asked for one.
+    The pool holds a recipe rather than a handle: a callable that returns a fresh
+    owner object with a ``ptr``, closed over whatever the compile needs. All of
+    that is immutable, so the pool itself is safe to share; the handles it hands
+    out never are, and never leave the thread that asked for one.
+
+    Generic in what it compiles because the pattern plane is not the only plane
+    with a single-threaded handle - :class:`irgx.PatternSet` has one too, for the
+    same reason, and the pooling rule is the same rule.
     """
 
-    __slots__ = ("_flags", "_local", "_pattern", "_source")
+    __slots__ = ("_local", "_recompile")
 
-    def __init__(self, pattern: bytes, flags: int, source: str | bytes | None = None) -> None:
-        self._pattern = pattern
-        self._flags = flags
-        self._source = source
+    def __init__(self, recompile: Callable[[], Any]) -> None:
+        self._recompile = recompile
         self._local = threading.local()
 
     def handle(self) -> Any:
         """This thread's handle, compiling one the first time it asks."""
         compiled = getattr(self._local, "compiled", None)
         if compiled is None:
-            compiled = Compiled(self._pattern, self._flags, self._source)
+            compiled = self._recompile()
             # The thread-local dies with the Pool, and each thread's entry dies
             # with the thread, so a pool of short-lived workers frees its
             # handles as it goes rather than accumulating them.

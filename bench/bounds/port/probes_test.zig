@@ -45,12 +45,12 @@ fn scribble(rng: std.Random, doc: []u8) void {
     }
 }
 
-// The SIMD `contains` probe must agree with the real `gist.simd.contains` on
+// The SIMD `contains` probe must agree with the real `gist.scan.simd.contains` on
 // every needle length + every hay, including the boundary regimes the vector
 // loop versions on (needle at the very end, hay shorter than a vector, matches
 // straddling the scalar tail). Random bytes are drawn from a small alphabet so
 // real matches (not just misses) are exercised.
-test "simd_contains probe ≡ gist.simd.contains" {
+test "simd_contains probe ≡ gist.scan.simd.contains" {
     var prng = std.Random.DefaultPrng.init(0xC0FFEE);
     const rng = prng.random();
     var hay: [512]u8 = undefined;
@@ -70,7 +70,7 @@ test "simd_contains probe ≡ gist.simd.contains" {
         const h = hay[0..hlen];
         const nd = needle[0..nlen];
         const got = simd_probe.portcert_simd_contains(h.ptr, h.len, nd.ptr, nd.len);
-        const want = gist.simd.contains(h, nd);
+        const want = gist.scan.simd.contains(h, nd);
         try std.testing.expectEqual(want, got);
     }
 }

@@ -320,7 +320,9 @@ jobs:
         run: uv run --no-project --with zizmor==1.29.0 zizmor --no-online-audits --strict-collection .
 
   ratchets:
-    # Five baseline-guarded lints over src/**/*.zig — see quality/ratchets/.
+    # Five baseline-guarded lints over src/**/*.zig — see quality/ratchets/ —
+    # plus the export gate, which asks the same kind of question about the same
+    # tree: does the front door still hand out what contract/exports.toml says.
     # They are text scans, so there is no Zig step: compiling the engine to
     # count `std.debug.print` call sites would tie a grep to a toolchain it
     # does not use, and would make this the slowest job instead of the fastest.
@@ -344,6 +346,13 @@ jobs:
           for t in quality/ratchets/*/test_*.py; do
             uv run --no-project --python 3.12 python "$t"
           done
+      # The zone contract's other half: it governs what a file inside may
+      # reach, this governs what the package hands out. A row is the fix — never deleting
+      # one to go green while the export is still there.
+      - name: export surface
+        run: uv run --no-project --python 3.12 python quality/surface/check.py
+      - name: export gate proofs
+        run: uv run --no-project --python 3.12 python quality/surface/test_check.py
 
   topology:
     # `contract/irregex.zone` declares this package's import topology - the zone
@@ -367,8 +376,12 @@ jobs:
       # The fix is in the code, or in a `variance ... because "..."` that says
       # what would retire it - never in quietly widening the contract to match
       # what the imports happen to do today.
+      #
+      # `--complete` adds the claim no law can make: every package here carries a
+      # contract. A green run over the packages that opted in says nothing about
+      # the one somebody adds next week, and coverage nobody checks decays.
       - name: Import topology
-        run: uv run --no-project --with zoning==0.1.1 zoning verify
+        run: uv run --no-project --with zoning==1.1.0 zoning verify --complete
 
   version:
     # One number lives in `build.zig.zon`; the manifests that cannot import it —

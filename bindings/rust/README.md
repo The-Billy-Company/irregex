@@ -222,7 +222,11 @@ They come back as different variants, and the engine decides which by asking
 PCRE2 rather than by matching the pattern against a list of constructs:
 
 **`Error::NeedsPcre`** - the pattern is fine, the linear grammar just cannot
-express it. Lookaround, backreferences, atomic groups, inline flag groups.
+express it. Lookaround, backreferences, atomic groups, a flag letter it does not
+have (`(?x)`, `(?U)`, `(?R)`). A *leading* `(?i)`, `(?s)`, `(?m)` or `(?-u)` is
+not in that list: it is read as the flag it asks for, exactly as `regex` reads
+it, and compiles on the linear engine, where it beats the same field on the
+builder because the pattern is the more specific statement.
 The same pattern under `pcre(true)` compiles. So the retry is two lines:
 
 ```rust

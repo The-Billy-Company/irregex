@@ -62,7 +62,7 @@ const floor = 2; // shortest literal the sieve will carry (shorter ⇒ `stubs`)
 /// SIMD lanes win; above it its buckets are saturated and shared-bucket
 /// verification grows, while the trawl's per-byte cost is flat in the slate's
 /// width. The two curves cross tightly — best-of-3 over the 67 MB packed corpus,
-/// each column a real slate mined by `bench/rungs/multipattern/slate.py` (GB/s):
+/// each column a real slate mined by `relate/bench/rungs/multipattern/slate.py` (GB/s):
 ///
 ///   literals   14     16     18     20     24     28     32
 ///   dragnet    2.87   2.55   2.14   2.03   1.84   1.53   1.45
@@ -73,7 +73,7 @@ const floor = 2; // shortest literal the sieve will carry (shorter ⇒ `stubs`)
 /// groups saturate. They cross at 18: at 16 the sieve is still 14% ahead, at 18
 /// the trawl takes it by 2%. So the handover sits at 18 — the last width where
 /// the sieve is genuinely the better mechanism, not a round number near it.
-/// `gist/bench/dominance/races/multipattern.sh` re-derives the crossing, and
+/// `relate/bench/dominance/races/multipattern.sh` re-derives the crossing, and
 /// `GIST_MUSTER_TIER` forces either side of it.
 const trawl_from = 18;
 
@@ -81,7 +81,7 @@ const trawl_from = 18;
 /// same way `GIST_NO_PARALLEL_LOAD` is one: the differential tests use it to
 /// prove BOTH mechanisms answer identically at a given N (not merely that
 /// whichever one the threshold picked does), and the crossing race above
-/// (`gist/bench/dominance/races/multipattern.sh`) uses it to measure the
+/// (`relate/bench/dominance/races/multipattern.sh`) uses it to measure the
 /// crossover the threshold is set from. An unset or unrecognized value means
 /// "decide by size" — it can never select a third behavior, so a typo degrades
 /// to the default rather than to something silent.
@@ -337,7 +337,7 @@ pub const Muster = struct {
     /// Which mechanism the roll is actually carrying. Reportable because the tier
     /// choice is a measured claim (`trawl_from`), and a benchmark row that does not
     /// say which side of the crossing produced it cannot support that claim —
-    /// `gist/bench/dominance/races/multipattern.sh` records this per row.
+    /// `relate/bench/dominance/races/multipattern.sh` records this per row.
     pub fn tier(self: *const Muster) []const u8 {
         if (self.trawl != null) return "trawl";
         if (self.net != null) return "dragnet";
@@ -437,7 +437,7 @@ pub fn build(
     // so a wider slate only shares harder until the nibble tables saturate and
     // every position is a candidate). There the trawl's per-byte cost, constant
     // in N and free of any verify, takes over. The crossover is measured — see
-    // `bench/rungs/multipattern/` — not assumed, and a trawl that declines to build
+    // `relate/bench/rungs/multipattern/` — not assumed, and a trawl that declines to build
     // (too large for its table) falls back to the dragnet rather than to nothing.
     var net: ?Dragnet = null;
     var trawl: ?trawl_mod.Trawl = null;

@@ -38,7 +38,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const gist = @import("irregex");
-const compose = gist.regex_compose;
+const compose = gist.regex.compose;
 
 const Compose = compose.Compose;
 const Regex = gist.regex.Regex;
@@ -95,23 +95,15 @@ const specs = [_]Spec{
 /// cycle per link by construction. The advertised boost is a marketing number
 /// and a shared box never reaches it; this is what the machine was actually
 /// doing while the rows above it were timed.
+///
+/// The chain itself lives in `assay.Cadence`, which is also where the ladder's
+/// coefficients are minted and audited. It was copied here, and a copy is how a
+/// row's clock and the coefficient it is compared against come to be divided by
+/// different readings. `0` where the target has none, which the caller prints
+/// as an absent column rather than as a rate.
 fn calibrate(io: std.Io, links: u64) f64 {
-    if (comptime builtin.cpu.arch != .aarch64 and builtin.cpu.arch != .aarch64_be) return 0;
-    var x: u64 = 1;
-    const sp = Span.open(io);
-    var i: u64 = 0;
-    while (i < links) : (i += 1) {
-        inline for (0..16) |_| {
-            x = asm ("add %[o], %[i], #1"
-                : [o] "=r" (-> u64),
-                : [i] "r" (x),
-            );
-        }
-    }
-    const ns = sp.read(io).ns();
-    std.mem.doNotOptimizeAway(x);
-    if (ns <= 0) return 0;
-    return @as(f64, @floatFromInt(links * 16)) / @as(f64, @floatFromInt(ns));
+    const c = gist.assay.Cadence.measure(io, links) orelse return 0;
+    return c.ghz();
 }
 
 /// One contiguous buffer, because sequential throughput is what is under test.
@@ -166,7 +158,15 @@ pub fn main(init: std.process.Init) !void {
         7;
 
     std.debug.print("Compose — transformation-composition rung · abi v{d}\n", .{gist.abi()});
-    std.debug.print("machine: {s} · zig {s} · rung armable: {}\n", .{ @tagName(builtin.target.cpu.arch), builtin.zig_version_string, compose.lanes.native });
+    // Two separate facts, and printing one as both is what let an unpriced
+    // target read as armed: the widest lane count this build can DRIVE, and
+    // whether the ladder will actually let the rung bid (that, plus a price).
+    std.debug.print("machine: {s} · zig {s} · widest kernel: {s} · rung armable: {}\n", .{
+        builtin.cpu.model.name,
+        builtin.zig_version_string,
+        if (compose.lanes.widest) |w| @tagName(w) else "none",
+        gist.regex.rungs.compose_armable,
+    });
     std.debug.print("haystack: {d} B ({d:.1} MiB) · rounds: {d} (min-of-N, interleaved)\n", .{ hay.len, @as(f64, @floatFromInt(hay.len)) / (1 << 20), rounds });
     std.debug.print("clock: {d:.3} GHz at start-up; each row carries the clock measured beside it,\n", .{calibrate(io, 3_000_000)});
     std.debug.print("       and its own B/cyc columns are derived with THAT clock, not with {d:.3}.\n\n", .{norm_ghz});
@@ -248,8 +248,8 @@ pub fn main(init: std.process.Init) !void {
 /// What this lowering would bid in the ladder's auction — asked of the SHIPPED
 /// price plane, so the number printed beside the fallback's is the number the
 /// auction actually compared and not this harness's opinion of it.
-fn bid(cx: *const Compose) gist.regex_price.Cost {
-    return gist.regex_price.price(.{ .compose = .{
+fn bid(cx: *const Compose) gist.regex.price.Cost {
+    return gist.regex.price.price(.{ .compose = .{
         .width = cx.width,
         .eol = cx.index == .byte_eol,
         .table_bytes = cx.table.len,
@@ -259,7 +259,7 @@ fn bid(cx: *const Compose) gist.regex_price.Cost {
 /// Why `lower` said no, read back off the DFA so the declined rows are
 /// informative rather than blank.
 fn reason(dfa: anytype) []const u8 {
-    if (!compose.lanes.native) return "not AArch64";
+    if (compose.lanes.widest == null) return "no byte-shuffle unit on this target";
     if (dfa.word_ctx) return "word context (\\b) needs a second table axis";
     if (dfa.isMatch(dfa.start)) return "start closure already accepts";
     return "more than 31 non-accepting states";

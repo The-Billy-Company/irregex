@@ -128,6 +128,12 @@ pub const Dfa = struct {
     /// (`Wide.afford`). Only the multi-line doc walk consults it.
     wide: ?Wide = null,
     allocator: std.mem.Allocator,
+    /// Do the tables belong to someone else? An automaton assembled over memory
+    /// the caller owns - a mapping, one inflate buffer, an arena it will drop
+    /// whole - is walked exactly like a determinized one, and differs only in
+    /// who frees it. False for everything `powerset.zig` builds, so a caller
+    /// that never sets it sees the automaton it always did.
+    borrowed: bool = false,
 
     /// One contiguous block of match states accepting the same pattern set:
     /// every premultiplied offset below `hi` (and at or above the previous run's)
@@ -244,6 +250,8 @@ pub const Dfa = struct {
 
     pub fn deinit(self: *Dfa) void {
         const a = self.allocator;
+        // The handle is still ours to release; the tables under it are not.
+        if (self.borrowed) return a.destroy(self);
         a.free(self.trans_in);
         a.free(self.trans_fin);
         if (self.trans_in_w.len != 0) a.free(self.trans_in_w);

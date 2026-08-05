@@ -62,6 +62,27 @@ pub const fatal = @import("surface/cli/outcome.zig").fatal;
 // Vocabulary and payload only — transport stays assay's.
 pub const fault = @import("fault.zig");
 
+// ── what an answer is made of ──
+// The other vocabulary, and the one a consumer holds: a byte range, the pattern
+// that produced it, and the two together. Hoisted to the root as TYPES rather
+// than a namespace because they are the nouns every tier's signature is written
+// in — the span engine, the class-run kernel, the hosted API and the C ABI each
+// declared their own until this file existed, so a span crossing between two of
+// them was a copy the compiler could not distinguish from a conversion.
+pub const mark = @import("mark.zig");
+pub const Span = mark.Span;
+pub const Match = mark.Match;
+pub const PatternID = mark.PatternID;
+/// What to search vs what to read while searching — the separation that lets a
+/// bounded search keep `$`, `\b` and every look-around answering about the whole
+/// text instead of about a slice's edges.
+pub const Window = mark.Window;
+/// Whether an answer decides or merely nominates. The package's central
+/// promise as a type: an index, a sieve or a prefilter may eliminate work and
+/// may never overrule bytes, which is why a stale artifact here costs speed
+/// rather than correctness.
+pub const Authority = mark.Authority;
+
 // The platform seam: the POSIX-shaped primitives the engine actually calls —
 // handle-relative open, read, whole-file map, write, argv, stdin readiness —
 // with the Windows fork stated once behind a comptime branch rather than
@@ -69,163 +90,158 @@ pub const fault = @import("fault.zig");
 // sits outside this module's path) reaches it through the same door.
 pub const portal = @import("portal.zig");
 
-// ── candidate index ──
-pub const ngram = @import("corpus/index/trigrams/ngram.zig");
-pub const trigram = @import("corpus/index/trigrams/trigram.zig");
-pub const persist = @import("corpus/index/trigrams/persist.zig");
-pub const sliver = @import("corpus/index/trigrams/sliver.zig");
-pub const codicil = @import("corpus/index/trigrams/codicil.zig");
+// ── the product-free floor ──
+// Arithmetic and structure that does not know a pattern exists: bit identities,
+// the glob matcher, edit distance and its did-you-mean, union-find, hash mixing,
+// the sharding geometry every parallel lane divides work by, reader/writer
+// leases, the hash-consed DAG, the crest sieve calculus, and the succinct
+// sublayer. Half of it is what a reader would otherwise write themselves, which
+// is why it is named rather than left behind whichever consumer got there first
+// — the glob matcher spent its life addressed as `commands.scope.glob`.
+pub const math = @import("kernel/math/math.zig");
 
-// ── the crest sieve (math floor + persisted sidecar) ──
-// The forced-class-run necessary condition that prunes the trigram index's one
-// structural hole — literal-free class-repetition patterns ([0-9a-f]{8}) that
-// extract no required substring. Kernel is pure math; the sidecar rides the
-// same generation-atomic publish as the trigram pair. Proof: research/crest/.
-pub const crest = @import("kernel/math/crest.zig");
-pub const crest_sidecar = @import("corpus/index/crest/sidecar.zig");
+// ── the persisted artifacts over a corpus ──
+// Grouped by what each one ELIMINATES, which is the only useful way to read
+// them: trigrams rule out files that cannot match, the crest sieve rules out
+// files a LITERAL-FREE pattern cannot match (the trigram index's one structural
+// hole — `[0-9a-f]{8}` extracts no required substring), and the frame/signet
+// floor is the byte discipline all of them are sealed with.
+pub const index = struct {
+    pub const ngram = @import("corpus/index/trigrams/ngram.zig");
+    pub const trigram = @import("corpus/index/trigrams/trigram.zig");
+    pub const persist = @import("corpus/index/trigrams/persist.zig");
+    pub const sliver = @import("corpus/index/trigrams/sliver.zig");
+    pub const codicil = @import("corpus/index/trigrams/codicil.zig");
+    /// The sieve's persisted half — the kernel is `math.crest`. Rides the same
+    /// generation-atomic publish as the trigram pair. Proof: `research/crest/`.
+    pub const crest = @import("corpus/index/crest/sidecar.zig");
+    /// The seal every artifact carries, and the digest an embedder needs to
+    /// speak the same integrity language as the index it maps. Deliberately NOT
+    /// hash-table keys or sketch hashes — see the module header.
+    pub const signet = @import("corpus/index/frame/signet.zig");
+    /// Where artifacts live, and how a foreign tree's are recognized as inert.
+    pub const home = @import("corpus/index/frame/home.zig");
+};
 
-// ── the signet (one durable identity for bytes that outlive the process) ──
-// The seal every persisted artifact carries and the digest an embedder needs to
-// speak the same integrity language as the index it maps. Hash-table keys and
-// the kinship sketch hashes are deliberately NOT this — see the module header.
-pub const signet = @import("corpus/index/frame/signet.zig");
-pub const home = @import("corpus/index/frame/home.zig");
+// ── the regex engine ──
+// One name, because the engine is already one deep module and its own entry
+// file is already the grouping: `regex.syntax` and `regex.ast` are the parsed
+// shape; `regex.dfa`, `regex.determinize`, `regex.dwell`, `regex.reduce`,
+// `regex.sieve` and `regex.parabix` are the automata road, with `regex.rungs`
+// and `regex.price` the auction that picks along it; `regex.captures` and
+// `regex.ladder` are the match seam; `regex.chorus` and `regex.munch` are the
+// two faces of a slate.
+//
+// Seventeen `regex_*` names used to flatten that file into this one. The
+// flattening added no capability, cost every reader the question of whether the
+// two groupings agreed, and — since most were minted so one bench could reach
+// one stage — made the package's public surface a function of its own test
+// harness. The seal (`contract/irregex.zone`) is what makes a single door
+// load-bearing rather than merely tidy: nothing enters this engine except
+// through it, so a second grammar cannot grow beside the first.
+pub const regex = @import("kernel/regex/regex.zig");
 
-// ── the ward (shared reader/writer discipline) ──
-// The concurrency-axis peer of `parallel.zig`: lease guards + the double-checked
-// read-mostly `readReconciled` dance the warm session rides instead of
-// hand-rolling `std.Io.RwLock` lock/unlock pairs. Pure `std.Io` plumbing.
-pub const ward = @import("kernel/math/lease.zig");
+/// **A compiled pattern, and everything you ask of it** — `isMatch`, `find`,
+/// `matches` (a cursor with the zero-width advance already right), `groups`,
+/// `replace`, `split`. It owns its own scratch, so no signature here mentions a
+/// Pike VM's thread list, and it compiles the capture arm only if someone asks
+/// for a group.
+///
+/// This is the one type most callers need, which is why it is the one hoisted.
+/// `regex.Regex` — the compiled program the walk planner interrogates — is the
+/// engine's own face on the same pattern and stays behind the engine door with
+/// the machinery that reads it; a `Pattern` hands it back through `engineOf`
+/// for an index or a planner that genuinely wants it.
+pub const Pattern = regex.Pattern;
 
-// ── the fan-out floor (byte-balanced sharding + partial-spawn-safe spawn/join) ──
-// The other half of that pair, re-exported for the same reason: the bench harness
-// has to reproduce a product lane's EXACT shard geometry to price it honestly, and
-// re-deriving `greedyBounds`/`fanOut` in the harness would make the instrument
-// disagree with the thing it measures.
-pub const parallel = @import("kernel/math/parallel.zig");
-
-// ── regex engine ──
-// The engine is a sealed deep module: every consumer enters through its one
-// entry file, so a second grammar cannot grow beside it. These names re-export
-// the stages the C-ABI / library consumers bind, through that same door.
-const regex_engine = @import("kernel/regex/regex.zig");
-pub const regex = regex_engine.program;
-pub const regex_chorus = regex_engine.chorus;
-/// The anchored, longest-first face of the same slate: maximal munch, the rule
-/// every lexer runs on. A chorus asks which patterns occur SOMEWHERE; a munch
-/// asks which one reaches furthest starting exactly HERE. Named at the root
-/// because a tokenizer built on this engine is a consumer of the package and
+/// The anchored, longest-first face of a slate: maximal munch, the rule every
+/// lexer runs on. A chorus asks which patterns occur SOMEWHERE; a munch asks
+/// which reaches furthest starting exactly HERE. Hoisted for the same reason
+/// `Pattern` is — a tokenizer built on this engine is a consumer of the package,
 /// not of one of its internals.
-pub const regex_munch = regex_engine.munch;
-pub const regex_dfa = regex_engine.dfa;
-/// The determinizer that discovers that `Dfa` — re-exported for the automata
-/// lane's cost harness (`bench/rungs/automata/`), whose claims are each about
-/// one function inside it. A harness that reconstructed subset construction to
-/// time it would be timing a copy; this re-runs the shipped one over the NFA the
-/// shipped compile already lowered.
-pub const regex_determinize = regex_engine.determinize;
-/// Which states a finished automaton can be skipped out of — re-exported for the
-/// same harness, which prices C4's premise by asking it about EVERY state and then
-/// measuring how many of a real document's bytes such a skip would delete. The
-/// engine itself asks only about the start state.
-pub const regex_dwell = regex_engine.dwell;
-/// Collapsing a finished determinization in both dimensions — re-exported for the
-/// same harness, which prices C5 by asking what the BYTE road's tables still
-/// contain that no suffix can distinguish, and what removing it costs. The
-/// symbolic road runs it in production; the byte road's answer is a measurement.
-pub const regex_reduce = regex_engine.reduce;
-/// The accelerator tier's auction and the measured plane it bids in —
-/// re-exported for `bench/rungs/price/`, which re-times every coefficient in
-/// isolation and then gates the auction's per-pattern choices against the
-/// measured-best machine. Both names, because those are two different claims:
-/// one about a number, one about a decision made with it.
-pub const regex_rungs = regex_engine.rungs;
-pub const regex_price = regex_engine.price;
-/// The SP-quotient sieve harvested from a `Dfa` — re-exported for its
-/// corpus-scale soundness + speed bench (`bench/rungs/sieve/`).
-pub const regex_sieve = regex_engine.sieve;
-pub const regex_compose = regex_engine.compose;
-/// The Parabix bit-parallel rung, lowered from the AST — re-exported for its
-/// corpus-scale throughput + agreement bench (`bench/rungs/parabix/`).
-pub const regex_parabix = regex_engine.parabix;
-/// The parser's own tree and the analyses that walk it — the baseline arm of
-/// the sweep bench, and what a planner reads today.
-pub const regex_syntax = regex_engine.syntax;
-pub const regex_analysis = regex_engine.analysis;
-/// The interned, canonicalized shape and its one-pass fused facts — re-exported
-/// for the per-consumer A/B bench (`bench/rungs/sweep/`) that decides, walker by
-/// walker, whether the fabric actually beats the recursion it would replace.
-pub const regex_ast = regex_engine.ast;
-/// The engine-neutral match seam (`Matcher`) the presentation layer programs
-/// to — re-exported for the bench lab's isolated output-path profiles.
-pub const matcher = regex_engine.ladder;
+pub const Munch = regex.Munch;
+
+/// Many patterns in one pass with exact per-pattern attribution.
+pub const Chorus = regex.Chorus;
 
 // ── ranking ──
 pub const rank = @import("kernel/rank/rank.zig");
 pub const signals = @import("kernel/rank/signals.zig");
 
-// ── byte-level match execution ──
-pub const simd = @import("kernel/scan/simd.zig");
-pub const anchor = @import("kernel/scan/anchor.zig");
-pub const calibrate = @import("kernel/scan/calibrate.zig");
-pub const verify = @import("kernel/scan/verify.zig");
+// ── the byte tier: candidates without an automaton ──
+// One needle to the rare-byte-pair memmem, a handful to Teddy, a large set to
+// sparse Aho–Corasick, a dense class to the class-run scan — and `LiteralSet`
+// dispatching across that whole range so a caller need not know which answered.
+// Every result carries an `Authority`: `.exact` decides, `.candidate` only
+// nominates. Four of these ten files were reachable here and six were not,
+// which is a strange way to ship an Aho–Corasick.
+pub const scan = @import("kernel/scan/scan.zig");
+
+// ── many patterns in one walk ──
+// `PatternSet` compiles a slate and keeps which pattern found what; the dragnet
+// and the trawl are the two engines under it, chosen on width, so per-byte cost
+// stops growing with N; `loom` shapes the attributed rows engine-side instead of
+// leaving every consumer to re-implement filter/group/sort/limit over rendered
+// text. Its two ordered faces, `Chorus` and `Munch`, are automaton
+// constructions and live in the engine, hoisted above beside `Regex`.
+pub const slate = @import("kernel/slate/slate.zig");
 
 // ── the presentation layer (rg-shaped output; -n/-v/-o/-c frames) ──
-// The `Emitter` that turns one file's matches into ripgrep-shaped bytes, and
-// the `Opts` flag record that steers it. Re-exported so the bench lab can
-// profile individual output-path functions (line-number formatting, the
-// invert selection loop) in isolation.
-pub const emit = @import("exec/cold/emit/output.zig");
-/// The `rg --json` record-stream encoder — re-exported so the bench lab can
-/// profile the per-record hot path (`pathData` cache, `writeUint`, `asciiOnly`)
-/// over the real corpus in isolation, the same way it profiles the text
-/// Emitter's line-number itoa and invert loop.
-pub const emit_json = @import("exec/cold/emit/json.zig");
+// The `Emitter` that turns one file's matches into ripgrep-shaped bytes, the
+// `Opts` record that steers it, and the `rg --json` record-stream encoder.
+// Named for anyone building a grep rather than consuming one — which is the
+// only audience for it, and a real one.
+pub const emit = struct {
+    pub const output = @import("exec/cold/emit/output.zig");
+    pub const json = @import("exec/cold/emit/json.zig");
+};
+
+// ── the flag surface ──
+// What a face parses, and the two persisted files that answer before argv does:
+// the committed tree charter (`scope.charter`) and the machine-local,
+// TTY-gated preference file, which is structurally invisible to a pipe and
+// therefore to every agent.
 pub const argv = @import("exec/cold/argv/args.zig");
-/// The personal, TTY-gated half of the persisted pair: flag defaults a reader
-/// keeps for their own terminal. Its committed sibling is `commands.scope.charter`.
 pub const preference = @import("exec/cold/argv/preference.zig");
-/// The `-r`/`--replace` capture seam (`Caps`/`Captures`) — re-exported so the
-/// bench lab can profile the replacement template expander (`emit.expandInto`)
-/// against a naive reference in isolation, the same way it profiles the
-/// line-number itoa and the invert loop.
-pub const captures = regex_engine.captures;
 
 // ── corpus + freshness ──
 pub const corpus = @import("corpus/tree/corpus.zig");
 pub const haystack = @import("corpus/tree/haystack.zig");
 pub const bulkstat = @import("corpus/tree/bulkstat.zig");
 pub const fresh = @import("corpus/fresh/fresh.zig");
-// atlas/frag (relate's persisted artifacts) live in the `relate` package.
-// ── irregex: the irregular-expression primitives (match ∪ relate ∪ weave) ──
-// The set-shaped tier over the engine: PatternSet compiles MANY intents with
-// exact per-pattern attribution (the match half), Sketch measures compression
-// kinship between byte bodies (the relate half — LZ dictionaries, no parsing),
-// loom executes a closed filter/group/sort/limit plan over the attributed
-// stream engine-side, and bits is the shared two's-complement identity floor
-// (set-bit walks, word-packed bit sets) the other tiers ride instead of
-// hand-rolling. Primitives only — faces (CLI verbs, bindings) consume.
-pub const irregex = struct {
-    pub const bits = @import("kernel/math/bits.zig");
-    pub const patterns = @import("kernel/slate/patterns.zig");
-    // sketch/silhouette (the relate half) live in the `relate` package.
-    pub const loom = @import("kernel/slate/loom.zig");
+
+/// Path eligibility: which files are in the corpus at all, and why. The
+/// committed `.irregex.toml` charter, gitignore precedence, the path filter,
+/// the type registry, and the `code`/`docs`/`data` partition behind
+/// `--docs`/`--code`. Previously reachable only as `commands.scope.*`, which
+/// addressed a library tier by the name of the CLI that happened to call it.
+pub const scope = struct {
+    pub const filter = @import("corpus/scope/filter.zig");
+    pub const types = @import("corpus/scope/types.zig");
+    pub const genus = @import("corpus/scope/genus.zig");
+    pub const charter = @import("corpus/scope/charter.zig");
 };
 
-// compose (exact ∩ compression kernels) moved to the `relate`
-// package — its context/family halves run kinship inside the exact filter,
-// so it lives above this library in the ecosystem DAG.
+// atlas/frag (relate's persisted artifacts) live in the `relate` package.
+// compose (exact ∩ compression kernels) moved to the `relate` package — its
+// context/family halves run kinship inside the exact filter, so it lives above
+// this library in the ecosystem DAG.
 
-// ── succinct floors + FM-index + shelf ──
-// SA-IS / RRR / wavelet are the math floors; the FM-index composition
-// (`kernel/codex`) and its persisted multi-doc shelf sit above them. Both
-// used to live in `relate`, which made gist's `codex` verb depend on relate
-// for an index tier — a cycle once the relate face also needed gist's
+// ── the FM-index and its persisted shelf ──
+// The FM-index composition (`kernel/codex`) and the multi-doc shelf above it.
+// Both used to live in `relate`, which made gist's `codex` verb depend on
+// relate for an index tier — a cycle once the relate face also needed gist's
 // answer keep. An index tier belongs with the other index tiers.
+//
+// The floors it is BUILT from — SA-IS, RRR, the wavelet tree — are not here.
+// They were, and it made the same three files reachable at two addresses
+// (`codex.sais` and `math.succinct.sais` are one file), which is the precise
+// shape of drift this pass exists to remove: two doors onto one thing let two
+// readers form two mental models of where it lives, and neither is wrong. They
+// are arithmetic over bitvectors that does not know an FM-index exists, so they
+// belong to the product-free floor and are reached at `math.succinct.*`. What
+// remains under this door is what is genuinely the codex.
 pub const codex = struct {
-    pub const sais = @import("kernel/math/succinct/sais.zig");
-    pub const rrr = @import("kernel/math/succinct/rrr.zig");
-    pub const wavelet = @import("kernel/math/succinct/wavelet.zig");
     pub const index = @import("kernel/codex/codex.zig");
     pub const shelf = @import("corpus/index/shelf/shelf.zig");
 };
@@ -240,6 +256,11 @@ pub const codex = struct {
 // execute through, so the two engines cannot drift on what matches.
 pub const engine = struct {
     pub const query = @import("kernel/query/query.zig");
+    /// The certified ripgrep-parity walk-and-emit control plane the whole cold
+    /// pipeline runs through, and what the rgsuite parity certificate is a
+    /// statement about. The warm session re-enters this same per-file path
+    /// rather than keeping a second opinion about what a hit is.
+    pub const search = @import("exec/cold/engine/serial.zig");
 };
 
 // ── resident search session: the warm in-memory engine +
@@ -258,27 +279,12 @@ pub const session = struct {
 // the `gist` package, which owns the session-shaped ABI. This library's
 // C ABI is the future match-shaped surface.
 
-/// CLI surfaces built on the engine above. Not part of the C ABI — the `gist`
-/// executable (`surface/face/gist/main.zig`) and the bench harness dispatch through
-/// these; grouped here so the whole command tree resolves through the module.
-pub const commands = struct {
-    pub const scope = struct {
-        pub const glob = @import("kernel/math/glob.zig");
-        pub const filter = @import("corpus/scope/filter.zig");
-        pub const types = @import("corpus/scope/types.zig");
-        /// The corpus partition (`code`/`docs`/`data`) behind `--docs`/`--code`.
-        pub const genus = @import("corpus/scope/genus.zig");
-        /// The committed tree declaration (`.irregex.toml`) every face honors.
-        pub const charter = @import("corpus/scope/charter.zig");
-        /// How either persisted configuration file reports being misread.
-        pub const misread = @import("kernel/math/misread.zig");
-    };
-    /// The unified search engine — the certified ripgrep-parity walk-and-emit
-    /// control plane (`engine/serial.zig`). Backs the rgsuite parity certificate.
-    pub const search = @import("exec/cold/engine/serial.zig");
-    // Every verb/face driver (gist · relate · blast binaries), the daemon,
-    // and the warm client moved to their product packages.
-};
+// `commands` retired here. It was a CLI-shaped alias namespace over library
+// tiers — `commands.scope.glob` was the math floor's glob matcher and
+// `commands.search` was the cold engine — so it named six modules after the
+// executable that happened to reach them first. The modules did not move (the
+// walk, the charter and the filter are load-bearing inside this library); the
+// address did: `math.glob`, `math.misread`, `scope.*`, `engine.search`.
 
 /// The curated Zig-native hosted API: a small vocabulary of owned
 /// handles — `Engine`, `SearchQuery`, `Cursor` (pull `next`/`nextBatch`),
@@ -305,6 +311,11 @@ pub const ffi = struct {
     /// module, so a host linking two of the ecosystem's libraries gets one
     /// definition of each symbol.
     pub const pattern = @import("surface/ffi/pattern.zig");
+    /// The same plane asked about N patterns at once, with attribution: which of
+    /// them match this text, in one pass rather than N. Its unit is the whole
+    /// text, exactly as `pattern`'s is, so the two never disagree about whether
+    /// a pattern matches a string.
+    pub const slate = @import("surface/ffi/slate.zig");
     /// The other half every package's ABI shares: a materialized run of rows
     /// plus the position a host reads it from. Each library exports its own
     /// `…_run` and returns THIS, so three questions cost one cursor protocol.
@@ -385,6 +396,20 @@ pub fn abi() u32 {
 /// caller reads and the library actually linked have one name between them.
 pub const pcre2_version_string = "10.47";
 
+// No retired spellings live here. Every name 1.0.0 exported that this file no
+// longer does is declared in `contract/exports.toml`'s `[removed]`, with the
+// address that replaced it, and `quality/surface/check.py` fails a removal that
+// was never declared — the arm exists because this pass dropped nineteen of
+// them and the only thing that noticed was a downstream bench failing to
+// compile, one name per build.
+//
+// Carrying them as aliases was the other option, and what they WERE is what
+// rejected it: `regex_dfa`, `emit_json` and their kin flattened a grouping the
+// engine already had, most of them minted so one bench could reach one stage.
+// An alias block would have re-created precisely the surface this pass removed,
+// and re-created it at the root, where a reader meets it first. A major version
+// is the mechanism for that trade, so this is one.
+
 // The session export shims and the analytic-plane exports belong to the `gist`
 // package; what lives here is the substrate underneath all of them (`ffi`).
 
@@ -399,6 +424,7 @@ test {
     _ = @import("surface/ffi/rows.zig"); // the self-describing row protocol the analytic ABIs share
     _ = @import("surface/ffi/answer.zig"); // the shared row cursor: one walk, batching from the same position, fail-closed arguments
     _ = @import("surface/ffi/pattern.zig"); // the regex-over-text plane: argument guards, the lazy capture arm, -F/-w/smart-case at the seam
+    _ = @import("surface/ffi/slate.zig"); // the many-patterns plane: parity with the pattern plane, pattern copying, per-pattern refusal
     _ = @import("kernel/anatomy/lexspan.zig"); // the shared comment/code/string lexer: `inner` is one level deep, so its tests need naming here
     _ = @import("assay/assay.zig"); // instrumentation floor: Span/Duration/Anchor, Tally(Schema), the diagnostic channel
     _ = @import("surface/api_test.zig"); // hosted API facade: Engine/Cursor/CancelToken over a live warm tree
@@ -459,6 +485,7 @@ test {
     _ = @import("corpus/tree/loadpar.zig"); // fused parallel walk+read: byte-identical membership vs serial oracle
     _ = @import("corpus/tree/drain.zig"); // stdout cadence: line boundaries, block ramp, order under a refused sink
     _ = @import("kernel/regex/syntax/syntax_test.zig"); // T2 syntax: ByteSet + recursive-descent parser
+    _ = @import("kernel/regex/syntax/directive.zig"); // T2 syntax: the leading `(?flags)` head, read as options
     _ = @import("kernel/regex/analysis/analysis_test.zig"); // T2 analysis: required-literal + cover + anchored
     _ = @import("kernel/regex/analysis/swell_test.zig"); // crest sieve, query half: forced-crest ĝ vs hand-computed + Sieve Theorem vs the matcher
     _ = @import("kernel/regex/linear/program/core_test.zig"); // T2 engine: parser + Pike VM + prefilters
@@ -477,6 +504,9 @@ test {
     _ = @import("kernel/regex/linear/shuffle/shuffle_test.zig"); // transformation composition: kernel ≡ scalar fold, fail-closed gates, line + doc differential vs Pike
     _ = @import("kernel/regex/linear/parabix/parabix_test.zig"); // Parabix bit-parallel rung: transpose + class circuits vs their definitions, fail-closed gate, line + doc differential vs Pike
     _ = @import("kernel/regex/linear/ladder/rungs_test.zig"); // the auction, through a real compile: what a PATTERN is bid
+    _ = @import("kernel/regex/glean/glean_test.zig"); // the consumer face: zero-width advance, bounded windows, pooled scratch, absent groups
+    _ = @import("kernel/query/zero_width_test.zig"); // the two empty-match rules, each pinned to its own outside bar (Python re vs ripgrep)
+    _ = @import("kernel/query/word_rule_test.zig"); // the -w rule, pinned across query's walk and glean's cursor, on both backends
     _ = @import("kernel/regex/unicode/utf8seq.zig"); // scalar-range → UTF-8 byte-range decomposition
     _ = @import("kernel/regex/unicode/decode.zig"); // UTF-8 codepoint decode (fwd/last) for \b
     _ = @import("kernel/regex/unicode/tables.zig"); // Unicode data API: Perl/\p classes, fold orbits
@@ -503,6 +533,7 @@ test {
     _ = Outcome; // the rg exit-code contract, incl. the -q short-circuit precedence
     _ = @import("surface/cli/outcome.zig");
     _ = @import("fault.zig"); // the fault/declinature vocabulary + the detail slot
+    _ = @import("mark_test.zig"); // the answer vocabulary: half-open spans, zero width, pattern ids
     _ = @import("surface/cli/jsonstr.zig"); // the one JSON string escaper every JSON/NDJSON face shares
     _ = @import("exec/cold/view/ranked.zig"); // `--rank` definition-first ranked view
 

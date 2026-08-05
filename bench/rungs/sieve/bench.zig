@@ -32,13 +32,13 @@ const builtin = @import("builtin");
 const gist = @import("irregex");
 const corpus_mod = gist.corpus;
 const Regex = gist.regex.Regex;
-const sieve_mod = gist.regex_sieve;
+const sieve_mod = gist.regex.sieve;
 /// The measured price plane, so every cost this bench quotes or hands the gate is
 /// the same number the gate itself reads.
 const price = sieve_mod.price;
 const Sieve = sieve_mod.Sieve;
 const Class = sieve_mod.Class;
-const Quotient = gist.regex_sieve.quotient.Quotient;
+const Quotient = gist.regex.sieve.quotient.Quotient;
 const Span = gist.assay.Span;
 
 const Query = struct { label: []const u8, pattern: []const u8 };
@@ -66,7 +66,7 @@ const Walk = struct {
     violations: u64 = 0, // truth ∧ ¬fallthrough — the only fatal outcome
 };
 
-fn walk(d: *const gist.regex_dfa.Dfa, qs: []const Quotient, doc: []const u8, w: *Walk) void {
+fn walk(d: *const gist.regex.dfa.Dfa, qs: []const Quotient, doc: []const u8, w: *Walk) void {
     var s: u32 = d.start;
     var st: [4]u8 = undefined;
     for (qs, 0..) |*q, i| st[i] = q.start;
@@ -406,8 +406,8 @@ pub fn main(init: std.process.Init) !void {
         });
         std.debug.print("  model: est f={e:.2} (uniform {e:.2} · text {e:.2}) · measured f={e:.2}{s}\n", .{
             s.fallthrough,
-            gist.regex_sieve.quotient.fallthroughRate(&s.q[0], .uniform),
-            gist.regex_sieve.quotient.fallthroughRate(&s.q[0], .text),
+            gist.regex.sieve.quotient.fallthroughRate(&s.q[0], .uniform),
+            gist.regex.sieve.quotient.fallthroughRate(&s.q[0], .text),
             measured,
             if (shipped == null and measured > 0.4) "  ← correctly declined" else "",
         });

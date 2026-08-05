@@ -22,7 +22,9 @@
 //! two different repairs, and they are two variants rather than one string.
 //!
 //! [`Error::NeedsPcre`] means the pattern is fine and only the linear grammar
-//! cannot express it - lookaround, a backreference, an inline flag group. The
+//! cannot express it - lookaround, a backreference, a flag letter it does not
+//! have (`(?x)`, `(?U)`, `(?R)`). A *leading* `(?i)` is not in that list: it is
+//! read as the flag it asks for, as `regex` reads it, and compiles. The
 //! same pattern under [`RegexBuilder::pcre`] compiles, so the retry is a match
 //! arm:
 //!
@@ -94,14 +96,11 @@
 //!
 //! # How this differs from the `regex` crate
 //!
-//! * **The empty-match rules are the engine's.** `a*` over `"abc"` is
-//!   `[(0,1), (2,2)]` here; the `regex` crate reports `(0,1), (1,1), (2,2),
-//!   (3,3)`. The engine suppresses an empty match at the end of the buffer and
-//!   one where the previous match ended. The whole sequence comes from a single
-//!   engine call for exactly this reason: those rules are not re-derivable from
-//!   a resumable cursor.
 //! * **[`Regex::find_iter`] is eager**, and therefore knows its length and runs
-//!   backwards.
+//!   backwards. The sequence itself is the `regex` crate's, empty matches
+//!   included — `a*` over `"abc"` is `(0,1), (2,2), (3,3)` in both — and the
+//!   differential in `tests/sequence.rs` holds it there over a corpus of
+//!   nullable patterns.
 //! * **Lookaround and backreferences exist**, behind
 //!   [`RegexBuilder::pcre`]. The default engine is linear in the length of the
 //!   text; the PCRE2 arm is not. A pattern that needs the other arm is
@@ -128,6 +127,7 @@ mod matches;
 mod pattern;
 mod pool;
 mod replace;
+mod set;
 mod sys;
 
 /// Shared contract mirrors — engine/analytic/kinship constants and row tables.
@@ -147,6 +147,7 @@ pub use crate::error::{Error, Status};
 pub use crate::matches::{CaptureMatches, Captures, Match, Matches, Split};
 pub use crate::pattern::{Regex, RegexBuilder};
 pub use crate::replace::{NoExpand, Replacer};
+pub use crate::set::{RegexSet, RegexSetBuilder, SetMatches};
 
 /// The C-ABI version this crate speaks. The linked library must report the same
 /// number or every [`Regex::new`] fails with [`Error::Abi`].
