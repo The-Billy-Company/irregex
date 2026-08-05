@@ -109,6 +109,16 @@ env FORCE=$RANDOM zig build test -Dtest-filter='<name>' -Dtest-shards=1 --verbos
 BRIGADE_SHARD=0/1 BRIGADE_FILTER='<name>' BRIGADE_TIMES=1 ./.zig-cache/o/<hash>/test
 ```
 
+**A test about uninitialized memory must not build its fixture with `@memcpy`.**
+A copy carries the *source's* bytes, so copying from a `.rodata` literal lays
+that literal's zeros over your poison and the slack you meant to exercise is
+never read. The test then passes against the **unfixed** code, which is worse
+than having no test — `intern.zig`'s first regression for the `[2]u21` interning
+defect did exactly this, and `dag_test.zig` was green for the whole life of that
+defect because both of its operands were `.rodata`. Assign field by field, the
+way the production writer does, and open the test by asserting the two fixtures
+really do differ byte-wise before asserting they compare equal.
+
 The bindings each have their own suite, and each is a separate CI job:
 
 ```bash

@@ -21,7 +21,21 @@ pub inline fn finalize(x: u64) u64 {
 /// Wyhash HashMap context over `[]const T` keys. `std.AutoHashMap` rejects
 /// slice keys, so seven automata engines once hand-rolled this identical
 /// struct; the generic states the std gap exactly once.
+///
+/// `T` must own every one of its bytes. `hash` reads the key as bytes, so a `T`
+/// with slack hashes memory no field assigned: two keys that name the same
+/// thing then land in different buckets, and the interner they front hands back
+/// two ids for one value. `std.mem.eql` already consults this predicate before
+/// it is willing to `memcmp`, so refusing here keeps the pair agreeing on what
+/// identity means instead of letting `hash` be the looser of the two. The same
+/// law on the persisted side is `frame.seamless`, which can afford to explain
+/// itself in terms of a file.
 pub fn SliceCtx(comptime T: type) type {
+    comptime if (!std.meta.hasUniqueRepresentation(T)) @compileError(
+        @typeName(T) ++ " has bytes no field owns, so hashing a slice of it" ++
+            " hashes whatever the allocation held. Widen the short field, or" ++
+            " give the context a hash that reads values rather than bytes.",
+    );
     return struct {
         pub fn hash(_: @This(), k: []const T) u64 {
             return std.hash.Wyhash.hash(0, std.mem.sliceAsBytes(k));

@@ -112,3 +112,23 @@ test "bindingHolds: only this tree's own recording passes the gate" {
     frame.publishBinding(io, binding);
     try std.testing.expect(frame.bindingHolds(binding));
 }
+
+test "the seam law separates a record with slack from one without" {
+    // Anti-vacuity for every `frame.seamless` in the tree. The law is a
+    // compile error, so no call site can be observed failing - which means the
+    // only thing that can make all of them vacuous is a predicate that says
+    // yes to everything, and that is what this checks.
+    //
+    // The negative control is the exact shape that put four bytes of one
+    // process into every folio outliner wrote: Zig seats the `u64` first under
+    // auto layout and rounds the pair to sixteen.
+    try std.testing.expect(!std.meta.hasUniqueRepresentation(struct { hi: u32, mask: u64 }));
+    // A non-byte integer is the other way in, and the one that has no visible
+    // gap to notice: `u21` spans four bytes and fills twenty-one bits.
+    try std.testing.expect(!std.meta.hasUniqueRepresentation([2]u21));
+    // The positive control is the repair `phantom/treemap.zig` already ships -
+    // the slack spelled as a field, so there is nothing left unassigned.
+    try std.testing.expect(std.meta.hasUniqueRepresentation(
+        extern struct { name_off: u32, name_len: u16, kind: u8, _pad: u8 = 0, dir_ix: u32 },
+    ));
+}

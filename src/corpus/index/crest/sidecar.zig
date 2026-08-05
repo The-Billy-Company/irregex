@@ -17,7 +17,25 @@
 const std = @import("std");
 const portal = @import("../../../portal.zig");
 const crest = @import("../../../kernel/math/crest.zig");
+const frame = @import("../frame/frame.zig");
 const signet = @import("../frame/signet.zig");
+
+comptime {
+    // `crest.Vector` is `[K]u16` today, so every byte of it belongs to an
+    // element and `bytesAsSlice` over the body is a view of real data. Said
+    // here as a build failure because the sentence is a *precondition*, not an
+    // observation: the moment a vector grows a tag, a length, or anything else
+    // that leaves it with bytes no field owns, this file writes that slack to
+    // disk and the reader below hands it back as if it meant something.
+    //
+    // One assertion, not one per reader. A comptime check is a fact about the
+    // type rather than about this call site - `codicil.zig` maps the same
+    // vectors back with its own `bytesAsSlice` and needs no second copy of
+    // this, because a `crest.Vector` that failed here would fail the build
+    // before codicil ever ran. Same predicate the treemap's persisted records
+    // are held to; see `frame.seamless`.
+    frame.seamless(crest.Vector);
+}
 
 pub const file_name = "crest.bin";
 

@@ -243,14 +243,24 @@ test "dag: census counts parents, and live separates the DAG from the rubble" {
 
 // A payload whose identity lives behind a slice — the case a bitwise hash gets
 // wrong by interning on the address. Declaring the pair is the contract.
+//
+// Both halves read the bounds as VALUES. Reading them as bytes compiles, is
+// shorter, and is what this fixture said until a `[2]u21` was measured: the
+// type spans eight bytes and its two bounds fill forty-two bits, so a byte view
+// carries twenty-two bits of whatever the allocation last held. The real
+// payload this stands in for is `regex/ast/intern.zig`'s `uclass`, which had
+// the byte spelling and split one class into two nodes.
 const Ranges = struct {
     r: []const [2]u21,
     pub fn hash(self: Ranges) u64 {
-        return std.hash.Wyhash.hash(0, std.mem.sliceAsBytes(self.r));
+        var h: std.hash.Wyhash = .init(0);
+        for (self.r) |x| h.update(std.mem.asBytes(&[2]u32{ x[0], x[1] }));
+        return h.final();
     }
     pub fn eql(a: Ranges, b: Ranges) bool {
-        return a.r.len == b.r.len and
-            std.mem.eql(u8, std.mem.sliceAsBytes(a.r), std.mem.sliceAsBytes(b.r));
+        return a.r.len == b.r.len and for (a.r, b.r) |x, y| {
+            if (x[0] != y[0] or x[1] != y[1]) break false;
+        } else true;
     }
 };
 
@@ -259,11 +269,21 @@ test "dag: a slice payload interns by content once it declares hash/eql" {
     defer tr.deinit(t.allocator);
 
     const one = [_][2]u21{.{ 'a', 'z' }};
-    const copy = [_][2]u21{.{ 'a', 'z' }}; // equal content, different address
     const other = [_][2]u21{.{ 'a', 'y' }};
 
+    // The second copy is built on the heap over poison and assigned bound by
+    // bound, which is what an `ArrayList` append does and what the parser's
+    // scalar set is. Two `.rodata` literals — what this test compared for its
+    // whole life — cannot tell an address-interner from a content-interner
+    // that reads the slack, because a constant's slack is zero on both sides.
+    const copy = try t.allocator.alloc([2]u21, 1);
+    defer t.allocator.free(copy);
+    @memset(std.mem.sliceAsBytes(copy), 0xAA);
+    copy[0] = .{ 'a', 'z' };
+    try t.expect(!std.mem.eql(u8, std.mem.sliceAsBytes(&one), std.mem.sliceAsBytes(copy)));
+
     const x = try tr.intern(t.allocator, .{ .r = &one }, .{.none});
-    try t.expectEqual(x, try tr.intern(t.allocator, .{ .r = &copy }, .{.none}));
+    try t.expectEqual(x, try tr.intern(t.allocator, .{ .r = copy }, .{.none}));
     try t.expect(x != try tr.intern(t.allocator, .{ .r = &other }, .{.none}));
     try t.expectEqual(@as(usize, 2), tr.len());
 }

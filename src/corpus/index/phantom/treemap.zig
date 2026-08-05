@@ -75,6 +75,17 @@ pub const Ent = extern struct {
 /// names during descent, so none are stored.
 pub const Rec = extern struct { first: u32, count: u32 };
 
+comptime {
+    // Both arrays go to disk through `sliceAsBytes` and come back through
+    // `bytesAsSlice`, so every byte of both has to belong to a field - which is
+    // what `Ent._pad` is for and why it cannot be deleted as unused. Stated as
+    // a build failure rather than as prose, because prose is what it was when
+    // outliner's copy of this format shipped four bytes of its own heap into
+    // every folio on disk. See `frame.seamless`.
+    frame.seamless(Rec);
+    frame.seamless(Ent);
+}
+
 /// Zero-copy read view over a mapped `tree.map`. All slices alias the mapping.
 pub const View = struct {
     map: frame.Mapping,

@@ -246,6 +246,37 @@ pub fn mapAt(
     return v;
 }
 
+/// Refuse, at compile time, a record type whose bytes are not all owned by a
+/// field - the precondition every `sliceAsBytes` write and every `bytesAsSlice`
+/// read in this package silently assumes.
+///
+/// `@sizeOf` rounds a type up to its own alignment and gives a non-byte integer
+/// a whole number of bytes, so a record can be twelve bytes of fields in a type
+/// that spans sixteen. Zig promises nothing about the difference, and the two
+/// answers it gives in practice are both bad: a struct literal inherits the
+/// stack frame, an array-list element inherits the allocation. Writing that to
+/// disk puts arbitrary process memory in a file meant to travel between
+/// machines, and - because these blobs are compared, sealed and cached - makes
+/// two runs over one corpus disagree about bytes nothing reads.
+///
+/// The predicate is `std.meta.hasUniqueRepresentation`, which is the same one
+/// `std.mem.eql` consults before it is willing to `memcmp` a type. Anything
+/// hashed or compared by its bytes owes the same debt, and the sites that are
+/// not persisted state it against std directly rather than through this - see
+/// `kernel/math/mix.zig`. Named here because this is where the compile error
+/// can say what a folio is.
+///
+/// The repair is a field, not a wider buffer: spell the slack (`_pad: u8 = 0`,
+/// as `phantom/treemap.zig` does) or widen the field to a whole number of bytes.
+pub fn seamless(comptime T: type) void {
+    comptime if (!std.meta.hasUniqueRepresentation(T)) @compileError(
+        @typeName(T) ++ " spans " ++ std.fmt.comptimePrint("{d}", .{@sizeOf(T)}) ++
+            " bytes and its fields do not, so a byte view of it carries memory" ++
+            " no field assigned. Spell the slack as a `_pad` field, or widen" ++
+            " the field that is short - do not reach for a byte view anyway.",
+    );
+}
+
 pub fn putInt(gpa: std.mem.Allocator, out: *std.ArrayList(u8), comptime T: type, v: T) !void {
     var buf: [@sizeOf(T)]u8 = undefined;
     std.mem.writeInt(T, &buf, v, .little);
