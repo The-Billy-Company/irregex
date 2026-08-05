@@ -1,7 +1,7 @@
 """`irgx.runtime.shell` binary resolution — env override, dev checkout, bundled wheel, PATH.
 
 Each rung is proved by making exactly one of them findable and asserting
-`_resolve` returns THAT one, not a plausible-looking neighbour. `_resolve` is
+`_resolve` returns THAT one, not a plausible-looking neighbor. `_resolve` is
 `functools.cache`d, so every test names a binary that no other test (and
 nothing on this machine) would otherwise resolve, and clears the cache after
 itself rather than sharing state through import order.
