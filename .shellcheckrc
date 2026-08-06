@@ -9,3 +9,10 @@ enable=avoid-nullary-conditions
 enable=check-sourced
 enable=deprecate-which
 enable=useless-use-of-cat
+
+# SC2034 cannot see that field.sh is vendored, byte-identical apparatus
+# (bench/apparatus/SHARED.sha256): gist's own bench/dominance/races/field.sh
+# sources it and reads SCOPE/HAVE_RG/HAVE_UGREP/HAVE_AG/HAVE_GGREP/HAVE_GITGREP
+# to build its race rosters, but irregex carries no races of its own to read
+# them back — the same false positive gist's .shellcheckrc already disables.
+disable=SC2034
