@@ -6,7 +6,7 @@ import (
 	"log"
 	"regexp"
 
-	irgx "github.com/The-Billy-Company/irregex/bindings/go"
+	irgx "github.com/The-Billy-Company/irregex/bindings/go/v2"
 )
 
 func ExampleRegexp_FindAllString() {

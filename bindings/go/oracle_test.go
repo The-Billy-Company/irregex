@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"testing"
 
-	irgx "github.com/The-Billy-Company/irregex/bindings/go"
+	irgx "github.com/The-Billy-Company/irregex/bindings/go/v2"
 )
 
 // The cross-check against the reference implementation.

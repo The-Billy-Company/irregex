@@ -402,10 +402,19 @@ jobs:
       # produce a usable module.
       - name: Prove the proxy can serve it
         env:
-          MODULE: github.com/${{ github.repository }}/bindings/go
+          BASE_MODULE: github.com/${{ github.repository }}/bindings/go
           VERSION: ${{ github.ref_name }}
         run: |
           set -euo pipefail
+          # Go's semantic import versioning ties the module PATH to the same
+          # major version go.mod declares from v2 on, so a v1-only path here
+          # would fail this same proof the moment a release crosses v2.0.0.
+          major=${VERSION#v}
+          major=${major%%.*}
+          MODULE=$BASE_MODULE
+          if [ "$major" -ge 2 ]; then
+            MODULE="$BASE_MODULE/v$major"
+          fi
           for attempt in 1 2 3 4 5; do
             if GOFLAGS='' go list -m "$MODULE@$VERSION"; then
               echo "proxy serves $MODULE@$VERSION"

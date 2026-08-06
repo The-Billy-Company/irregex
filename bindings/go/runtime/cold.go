@@ -13,7 +13,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/The-Billy-Company/irregex/bindings/go/analytic"
+	"github.com/The-Billy-Company/irregex/bindings/go/v2/analytic"
 )
 
 // ErrNoBinary reports that none of the certified binaries could be found, which

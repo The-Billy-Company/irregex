@@ -23,4 +23,4 @@ default_branch = "main"
 [registries]
 pypi = "irregex"
 crates = "irgx"
-go_module = "github.com/The-Billy-Company/irregex/bindings/go"
+go_module = "github.com/The-Billy-Company/irregex/bindings/go/v2"

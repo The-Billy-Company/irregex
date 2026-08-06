@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	irgx "github.com/The-Billy-Company/irregex/bindings/go"
+	irgx "github.com/The-Billy-Company/irregex/bindings/go/v2"
 )
 
 func TestCompileErrorNamesTheProblem(t *testing.T) {

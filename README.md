@@ -121,7 +121,7 @@ native library with it, so installing needs no Zig and no compiler.
  `import irgx`. Transport is `ctypes` over a shared library inside the wheel.
  - **[Rust](bindings/rust/README.md)** – `cargo add irgx`, then `use irgx::`. A
  static archive is vendored per target triple.
- - **[Go](bindings/go/README.md)** – `go get github.com/The-Billy-Company/irregex/bindings/go`,
+ - **[Go](bindings/go/README.md)** – `go get github.com/The-Billy-Company/irregex/bindings/go/v2`,
  then cgo. A prebuilt archive ships per platform, so no toolchain is needed.
  - **[Zig](src/root.zig)** – a `build.zig.zon` dependency, then
  `@import("irregex")`. Source, built with your project.

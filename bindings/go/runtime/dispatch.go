@@ -17,7 +17,7 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/The-Billy-Company/irregex/bindings/go/analytic"
+	"github.com/The-Billy-Company/irregex/bindings/go/v2/analytic"
 )
 
 // native answers q in-process. A nil cursor with a nil error means this tier
