@@ -19,6 +19,7 @@
 //! signatures. Bodies: `contract.zig` (substrate) and `pattern.zig` (verbs).
 
 const std = @import("std");
+const builtin = @import("builtin");
 const irregex = @import("irregex");
 
 const answer = irregex.ffi.answer;
@@ -30,6 +31,21 @@ const corpus = @import("corpus.zig");
 const pattern = irregex.ffi.pattern;
 const rows = irregex.ffi.rows;
 const slate = irregex.ffi.slate;
+
+/// `std.Io.Threaded`'s vtable makes every method reachable the moment one is
+/// instantiated, and `netWriteFile` is `@panic("TODO ...")`-stubbed on every
+/// backend — which the MSVC ABI cannot compile: `SelfInfo.Windows.zig`'s
+/// `loadNtdllProc` (reached only from `defaultPanic`'s stack walk, and only
+/// for `.msvc`) casts `*anyopaque` to a function pointer without the
+/// `@alignCast` Zig itself now requires. Upstream bug, not ours — a static or
+/// object artifact for ANY `-msvc` target hits this in zig 0.16.0, panic or
+/// not. Every other ABI keeps the default, fully symbolicated panic
+/// unchanged; only the one target Zig cannot otherwise compile degrades to
+/// the message-only handler.
+pub const panic = if (builtin.abi == .msvc)
+    std.debug.simple_panic
+else
+    std.debug.FullPanic(std.debug.defaultPanic);
 
 /// The C-ABI compatibility integer for `libirgx` specifically. It started at
 /// 1 because this artifact is new: the `2` a host may remember belongs to the
