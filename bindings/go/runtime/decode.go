@@ -14,7 +14,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/The-Billy-Company/irregex/bindings/go/analytic"
+	"github.com/The-Billy-Company/irregex/bindings/go/v2/analytic"
 )
 
 // jsonKeys maps a schema field onto the JSON path(s) a CLI row spells it with,

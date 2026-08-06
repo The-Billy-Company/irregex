@@ -406,6 +406,14 @@ jobs:
           VERSION: ${{ github.ref_name }}
         run: |
           set -euo pipefail
+          # Go's major-version-suffix rule: a v2+ module path must end in /vN,
+          # or the proxy refuses to resolve it at all ("module contains a
+          # go.mod file, so module path must match major version").
+          major="${VERSION%%.*}"
+          major="${major#v}"
+          if [ "$major" -ge 2 ]; then
+            MODULE="$MODULE/v$major"
+          fi
           for attempt in 1 2 3 4 5; do
             if GOFLAGS='' go list -m "$MODULE@$VERSION"; then
               echo "proxy serves $MODULE@$VERSION"

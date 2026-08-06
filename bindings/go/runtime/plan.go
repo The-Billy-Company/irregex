@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strconv"
 
-	"github.com/The-Billy-Company/irregex/bindings/go/analytic"
+	"github.com/The-Billy-Company/irregex/bindings/go/v2/analytic"
 )
 
 // plan is one verb lowered onto a child process: which face of the kernel to

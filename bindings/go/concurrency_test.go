@@ -8,7 +8,7 @@ import (
 	"sync"
 	"testing"
 
-	irgx "github.com/The-Billy-Company/irregex/bindings/go"
+	irgx "github.com/The-Billy-Company/irregex/bindings/go/v2"
 )
 
 // The package-level var is the shape every Go programmer writes, and it is the

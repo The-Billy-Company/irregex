@@ -5,7 +5,7 @@ package runtime
 import (
 	"testing"
 
-	"github.com/The-Billy-Company/irregex/bindings/go/analytic"
+	"github.com/The-Billy-Company/irregex/bindings/go/v2/analytic"
 )
 
 // TestEveryVerbNamesAnEntry pins routing to the contract rather than to the op

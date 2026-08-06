@@ -24,7 +24,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/The-Billy-Company/irregex/bindings/go/analytic"
+	"github.com/The-Billy-Company/irregex/bindings/go/v2/analytic"
 )
 
 // Enum is a decoded enum field: the ordinal is the ABI, the label is this

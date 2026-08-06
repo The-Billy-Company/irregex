@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/The-Billy-Company/irregex/bindings/go/analytic"
+	"github.com/The-Billy-Company/irregex/bindings/go/v2/analytic"
 )
 
 // TestProbeIsCoherent pins the introspection's internal agreement: a build with

@@ -4,7 +4,7 @@ A regex engine for Go that matches in linear time, shipped as an ordinary Go
 module with the engine inside it.
 
 ```bash
-go get github.com/The-Billy-Company/irregex/bindings/go
+go get github.com/The-Billy-Company/irregex/bindings/go/v2
 ```
 
 That is the whole install. There is no compiler step, no Zig toolchain, and no
@@ -42,7 +42,7 @@ should use it.
 ## A Short Tour
 
 ```go
-import irgx "github.com/The-Billy-Company/irregex/bindings/go"
+import irgx "github.com/The-Billy-Company/irregex/bindings/go/v2"
 
 var mailbox = irgx.MustCompile(`(?P<user>\w+)@(\w+)`)
 

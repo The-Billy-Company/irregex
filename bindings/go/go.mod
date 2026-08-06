@@ -7,7 +7,7 @@
 // build constraint links the matching one. cgo itself is required - there is no
 // pure-Go engine here to fall back to, and the module says so at compile time
 // rather than at run time.
-module github.com/The-Billy-Company/irregex/bindings/go
+module github.com/The-Billy-Company/irregex/bindings/go/v2
 
 go 1.24
 

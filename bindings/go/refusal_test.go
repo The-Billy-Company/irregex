@@ -10,7 +10,7 @@ import (
 	"sync"
 	"testing"
 
-	irgx "github.com/The-Billy-Company/irregex/bindings/go"
+	irgx "github.com/The-Billy-Company/irregex/bindings/go/v2"
 )
 
 // The two halves of a refused compile. The engine decides which is which by
