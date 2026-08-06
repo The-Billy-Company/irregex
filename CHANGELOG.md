@@ -930,7 +930,6 @@ All notable changes to the `irregex` kernel (formerly `gist`; the gist CLI is it
   the caller's - the fast iteration loop stays fast, and what leaves the build is
   what a consumer should have.
 
-
 ## [1.0.0] - 2026-08-02
 
 ### Added
