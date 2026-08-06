@@ -393,6 +393,12 @@ All notable changes to the `irregex` kernel (formerly `gist`; the gist CLI is it
 
 ### Changed
 
+- The Go module's import path is now
+  `github.com/The-Billy-Company/irregex/bindings/go/v2` — Go's own
+  major-version-suffix rule for a v2+ module, without which the proxy refuses
+  to resolve the tag at all. `go get .../bindings/go/v2` and update the
+  import; the package name (`irgx`) is unchanged.
+
 - Both vendoring scripts link a probe program against each fresh archive before
   committing it, so a missing symbol is their failure rather than somebody's
   `go build` a week later. The catch is that nobody ever performs that link. A Go
