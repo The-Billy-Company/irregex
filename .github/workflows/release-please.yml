@@ -125,7 +125,7 @@ jobs:
         run: |
           set -euo pipefail
           version=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["version"])' \
-            <<<'${STEPS_VERSION_OUTPUTS_RESULT}')
+            <<<"${STEPS_VERSION_OUTPUTS_RESULT}")
           uv run --no-project --python 3.12 --with towncrier==25.8.0 \
             towncrier build --yes --version "$version"
           if git diff --quiet -- CHANGELOG.md changelog.d; then
