@@ -247,7 +247,7 @@ fn emit(io: std.Io, cal: price.Calibration) !void {
 /// What to call the row this run produces: its permute class, which is the same
 /// name `fitsBuild` selects on — so re-minting at a given ISA floor replaces the
 /// row it replaced last time, and minting at a NEW floor adds one rather than
-/// overwriting a neighbour.
+/// overwriting a neighbor.
 ///
 /// It read the core's model name, and before that
 /// `switch (builtin.cpu.arch) { .aarch64 => "apple_arm64", … }`, so a mint run

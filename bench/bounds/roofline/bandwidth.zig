@@ -320,7 +320,7 @@ fn measureGhz(io: std.Io, meter: *pmu.Meter, buf: []u64) Clock {
     if (cycles <= 0) return .{ .ghz = assumed_ghz, .source = "assumed (PMU returned no cycles)", .meter = meter.note, .measured = false };
     // One arm per tier `pmu.Kind` can report, exhaustive on purpose: a new
     // backend must decide how it wants to be named in a certificate rather than
-    // inherit a neighbour's name. (`.none` is unreachable behind the `has_pmu`
+    // inherit a neighbor's name. (`.none` is unreachable behind the `has_pmu`
     // guard above, but it is a real enum value and naming it is free.)
     return .{ .ghz = cycles / ns, .meter = meter.note, .measured = true, .source = switch (meter.kind()) {
         .kperf => "measured (kperf, cycles ÷ ns under memory load)",

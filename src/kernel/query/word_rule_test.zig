@@ -59,7 +59,7 @@ fn viaGlean(gpa: std.mem.Allocator, pat: []const u8, hay: []const u8, pcre: bool
 
 /// The cases worth disagreeing on: a word embedded in a longer one (the whole
 /// point of `-w`), edges of the text, punctuation boundaries, a Unicode
-/// neighbour, and a pattern whose own alternation straddles the rule.
+/// neighbor, and a pattern whose own alternation straddles the rule.
 const cases = [_]struct { pat: []const u8, hay: []const u8 }{
     .{ .pat = "cat", .hay = "concatenate cat scatter cat." },
     .{ .pat = "cat", .hay = "cat" },
@@ -106,7 +106,7 @@ test "the rule is LOWERED, not filtered — which is why the choosing case works
     //
     // This is pinned separately from the differential above because the two
     // implementations agree on every ordinary case; only this shape tells them
-    // apart. glean shipped the filter-equivalent behaviour — `Options.pcreOpts`
+    // apart. glean shipped the filter-equivalent behavior — `Options.pcreOpts`
     // silently dropped `word` — and every other row above still passed.
     const gpa = t.allocator;
     for ([_]bool{ false, true }) |pcre| {

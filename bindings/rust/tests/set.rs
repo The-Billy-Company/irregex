@@ -189,7 +189,7 @@ fn a_refused_pattern_names_itself() {
 }
 
 #[test]
-fn a_set_is_shareable_and_clonable() {
+fn a_set_is_shareable_and_cloneable() {
     let set = RegexSet::new([r"\d+", r"[a-z]+"]).unwrap();
     let clone = set.clone();
     assert_eq!(clone.patterns(), set.patterns());

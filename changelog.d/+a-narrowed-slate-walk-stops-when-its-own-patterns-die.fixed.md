@@ -41,7 +41,7 @@ over a 128 KiB file:
 | json       | 3.8      | 2.4   |
 
 Call counts are identical to the byte on all three, which is the point: the
-answer never moved, only the distance travelled to reach it. Parsing that
+answer never moved, only the distance traveled to reach it. Parsing that
 javascript file went from 34,776 ns/byte to 1,168, and the file that took 16.5 s
 takes 186 ms.
 

@@ -317,7 +317,7 @@ set CC=zig cc -target aarch64-windows.win10_rs4-gnu
 go build ./...
 ```
 
-Either mingw flavour links them. Beyond the sixty ntdll symbols and a handful
+Either mingw flavor links them. Beyond the sixty ntdll symbols and a handful
 of kernel32 imports, the archives ask the C runtime for nothing but `malloc`,
 `free`, `memcpy`, and the ctype table - names msvcrt and UCRT both export - so
 they carry no dependency on which one your gcc was built against.

@@ -43,7 +43,7 @@ const Vec = lanes.Vec;
 /// assert in `shuffle` forbids the domain where they differ — so it lives here
 /// rather than in the module it describes.
 ///
-/// Keyed on the permute class, which has four members against three behaviours:
+/// Keyed on the permute class, which has four members against three behaviors:
 /// `vpshufb` is `pshufb` in a VEX encoding and handles an index identically, so
 /// the two share an arm here. They are separate classes because their COST
 /// differs, which is a question for `ladder/price.zig` and not for semantics.

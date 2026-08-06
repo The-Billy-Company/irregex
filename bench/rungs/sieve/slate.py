@@ -2,7 +2,7 @@
 """The slate — what Layer L asks, and whether a corpus can answer it.
 
 Two things that have to agree, so they live together: the probe rows as the Zig
-registries declare them, and the judgement of whether a given tree exercises
+registries declare them, and the judgment of whether a given tree exercises
 those rows at all.
 
 WHY THE SECOND HALF EXISTS. Layer L compares two index planners by the candidate

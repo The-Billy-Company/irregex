@@ -280,7 +280,7 @@ variance cycle {
         \\`--color=<spec>` where it is typed and stores a resolved `Palette` on
         \\the options — but `color.enabled` then takes the whole `args.Opts` back
         \\to decide whether a terminal gets ANSI at all. That one signature is
-        \\the entire back edge. Retire by narrowing it to the resolved colour
+        \\the entire back edge. Retire by narrowing it to the resolved color
         \\mode it actually reads instead of the parser's option struct, leaving
         \\one arrow: argv depends on emit, never the reverse.
 

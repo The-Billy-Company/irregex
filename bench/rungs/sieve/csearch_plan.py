@@ -39,7 +39,7 @@ from pathlib import Path
 MAX_ATOMS = 4096
 
 # The slate is `slate.py`'s to define — it owns both the registry rows and the
-# judgement of whether a corpus exercises them, and two parsers for one Zig
+# judgment of whether a corpus exercises them, and two parsers for one Zig
 # literal is exactly the drift this whole layer exists to rule out.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from slate import read_probes  # noqa: E402
