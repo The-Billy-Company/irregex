@@ -1,1 +1,0 @@
-Windows portability now has native runtime evidence on x64 and arm64. The new lane executes the Zig suite, builds the shipped DLL, and loads it through the real Python `ctypes` binding, complementing the existing cross-target compile gate rather than mistaking compilation for execution.
