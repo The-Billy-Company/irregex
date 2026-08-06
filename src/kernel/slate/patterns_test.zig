@@ -90,13 +90,13 @@ fn expectCompiledMaskParity(
 
 test "attribution parity: mixed literals + regex against the single-pattern oracle" {
     const doc =
-        \\const store = try SessionStore.init(gpa);
-        \\pub fn handleRefund(w: *SessionStore) !void {
+        \\const store = try AcmeStore.init(gpa);
+        \\pub fn handleRefund(w: *AcmeStore) !void {
         \\    return w.refund(amount);
         \\}
     ;
     const specs = [_]Spec{
-        .{ .pattern = "SessionStore", .fixed = true },
+        .{ .pattern = "AcmeStore", .fixed = true },
         .{ .pattern = "refund\\(", .fixed = false },
         .{ .pattern = "nonexistent_needle_zzz", .fixed = true },
         .{ .pattern = "handle[A-Z]\\w+", .fixed = false },
@@ -108,13 +108,13 @@ test "gate off (mixed case demands): still exact" {
     // ignore_case differs across specs ⇒ no fused gate; confirm-only must
     // still produce oracle-exact attribution.
     const specs = [_]Spec{
-        .{ .pattern = "SESSIONSTORE", .fixed = true, .ignore_case = true },
-        .{ .pattern = "SESSIONSTORE", .fixed = true, .ignore_case = false },
+        .{ .pattern = "ACMESTORE", .fixed = true, .ignore_case = true },
+        .{ .pattern = "ACMESTORE", .fixed = true, .ignore_case = false },
     };
     var set = try PatternSet.compile(gpa, &specs);
     defer set.deinit(gpa);
     try std.testing.expect(set.gate == null);
-    try expectMaskParity(&specs, "one SessionStore here");
+    try expectMaskParity(&specs, "one AcmeStore here");
 }
 
 test "fixed metacharacters never leak into the gate as syntax" {
@@ -323,7 +323,7 @@ test "muster settles a pure-literal alternation, and the answer still matches th
     // treated it as a mere cover and re-confirmed every hit through the engine.
     const specs = [_]Spec{
         .{ .pattern = "TODO|FIXME|XXX", .fixed = false },
-        .{ .pattern = "SessionStore", .fixed = true },
+        .{ .pattern = "AcmeStore", .fixed = true },
     };
     try std.testing.expect(try settles(&specs, 0));
 
@@ -331,7 +331,7 @@ test "muster settles a pure-literal alternation, and the answer still matches th
     // while still containing near-miss text.
     try expectMaskParity(&specs, "a TODO here");
     try expectMaskParity(&specs, "a FIXME here");
-    try expectMaskParity(&specs, "XXX and TODO and SessionStore");
+    try expectMaskParity(&specs, "XXX and TODO and AcmeStore");
     try expectMaskParity(&specs, "TOD0 FIXM3 XX — none of them, really");
     try expectLineHitsParity(&specs, &.{ "TODO alone", "nothing at all", "XXX" });
 }
@@ -363,16 +363,16 @@ test "a word query is nominated, never settled" {
 }
 
 test "a literal-prefixed regex is covered but not settled" {
-    // `pgxpool\.\w+` has required literal "pgxpool", which is a complete cover
-    // and an unsound verdict: "pgxpool" alone, with no `.`, must not match.
+    // `acmepool\.\w+` has required literal "acmepool", which is a complete cover
+    // and an unsound verdict: "acmepool" alone, with no `.`, must not match.
     const specs = [_]Spec{
-        .{ .pattern = "pgxpool\\.\\w+", .fixed = false },
-        .{ .pattern = "JetStream", .fixed = true },
+        .{ .pattern = "acmepool\\.\\w+", .fixed = false },
+        .{ .pattern = "AcmeStream", .fixed = true },
     };
     try std.testing.expect(!try settles(&specs, 0));
-    try expectMaskParity(&specs, "pgxpool on its own, no member access");
-    try expectMaskParity(&specs, "pgxpool.Acquire here");
-    try expectLineHitsParity(&specs, &.{ "pgxpool", "pgxpool.Acquire", "JetStream" });
+    try expectMaskParity(&specs, "acmepool on its own, no member access");
+    try expectMaskParity(&specs, "acmepool.Acquire here");
+    try expectLineHitsParity(&specs, &.{ "acmepool", "acmepool.Acquire", "AcmeStream" });
 }
 
 test "differential fuzz: settled patterns agree with N oracles over random haystacks" {
@@ -476,7 +476,7 @@ test "the fused gate may reject, but a -w slate's gate may not decide" {
 
 test "prefilter delegates per pattern" {
     const specs = [_]Spec{
-        .{ .pattern = "SessionStore", .fixed = true },
+        .{ .pattern = "AcmeStore", .fixed = true },
         .{ .pattern = "ab", .fixed = true }, // too short for a trigram
     };
     var set = try PatternSet.compile(gpa, &specs);
@@ -484,7 +484,7 @@ test "prefilter delegates per pattern" {
     var one: [1][]const u8 = undefined;
     const lits = set.prefilter(0, &one);
     try std.testing.expectEqual(@as(usize, 1), lits.len);
-    try std.testing.expectEqualStrings("SessionStore", lits[0]);
+    try std.testing.expectEqualStrings("AcmeStore", lits[0]);
     var one2: [1][]const u8 = undefined;
     try std.testing.expectEqual(@as(usize, 0), set.prefilter(1, &one2).len);
 }

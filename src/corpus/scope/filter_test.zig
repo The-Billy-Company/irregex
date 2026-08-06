@@ -28,7 +28,7 @@ test "PathFilter: type glob union, AND with globs, exclude veto" {
     const no_test = PathFilter{ .exts = &.{"*.go"}, .excludes = &.{ "*_test.go", "*.pb.go" } };
     try expect(no_test.admits("services/api/handler.go"));
     try expect(!no_test.admits("services/api/handler_test.go"));
-    try expect(!no_test.admits("services/api/wallet.pb.go"));
+    try expect(!no_test.admits("services/api/acme.pb.go"));
 }
 
 test "PathFilter: a genus gate narrows, composes with roots, and never un-hides" {

@@ -171,7 +171,7 @@ semver-stable for anyone but the sibling faces that consume them.
 ```c
 #include "irgx.h"
 
-static const char pat[] = "\\bwallet[A-Za-z_]*";
+static const char pat[] = "\\bacme[A-Za-z_]*";
 #define PAT (const uint8_t *)pat, sizeof pat - 1
 
 irgx_regex *re = NULL;
@@ -209,7 +209,7 @@ materializing the rest, so the two can never disagree about the same text.
 ```zig
 const irregex = @import("irregex");
 
-var pat = try irregex.Pattern.compile(gpa, "\\bwallet[A-Za-z_]*");
+var pat = try irregex.Pattern.compile(gpa, "\\bacme[A-Za-z_]*");
 defer pat.deinit();
 
 if (try pat.isMatch(line)) { … }
@@ -304,9 +304,9 @@ const irregex = @import("irregex");
 const slate = irregex.slate;   // the set-shaped tier over the engine
 
 const specs = [_]irregex.engine.query.Spec{
-    .{ .pattern = "WalletService" },
-    .{ .pattern = "billing_check", .fixed = true },
-    .{ .pattern = "grant", .word = true },
+    .{ .pattern = "AcmeService" },
+    .{ .pattern = "acme_check", .fixed = true },
+    .{ .pattern = "acme_grant", .word = true },
 };
 var set = try slate.patterns.PatternSet.compile(gpa, &specs);
 defer set.deinit(gpa);
@@ -341,7 +341,7 @@ candidates.
 var idx = try irregex.trigram.Index.build(gpa, docs);
 defer idx.deinit();
 
-const candidates = try idx.queryLiteral(gpa, "WalletService");
+const candidates = try idx.queryLiteral(gpa, "AcmeService");
 defer gpa.free(candidates);   // doc ids: a sound SUPERSET, never a verdict
 ```
 
@@ -385,7 +385,7 @@ from one compilation, or they can disagree. `CompiledQuery` is that one form.
 ```zig
 const query = @import("irregex").engine.query;
 
-var q = try query.CompiledQuery.compile(gpa, .{ .pattern = "\\bwallet\\w*", .mode = .lines });
+var q = try query.CompiledQuery.compile(gpa, .{ .pattern = "\\bacme\\w*", .mode = .lines });
 defer q.deinit(gpa);
 
 var one: [1][]const u8 = undefined;
@@ -418,7 +418,7 @@ defer engine.close();
 
 var stop = api.CancelToken{};           // trip it from any thread
 const answer = try engine.search(
-    .{ .pattern = "\\bwallet\\w*", .ignore_case = true },
+    .{ .pattern = "\\bacme\\w*", .ignore_case = true },
     .{ .cancel = &stop, .timeout_ns = 2 * std.time.ns_per_s, .max_results = 500 },
 );
 switch (answer) {

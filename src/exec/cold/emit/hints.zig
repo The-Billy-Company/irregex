@@ -356,9 +356,9 @@ fn rendered(a: std.mem.Allocator, s: Shape, files: ?usize) ![]u8 {
 test "uppercase pattern gets -i first; -uu rides along" {
     var arena = std.heap.ArenaAllocator.init(t.allocator);
     defer arena.deinit();
-    const got = try rendered(arena.allocator(), shape(&.{"SessionStore"}, .{}, &.{}, false), 1204);
+    const got = try rendered(arena.allocator(), shape(&.{"AcmeStore"}, .{}, &.{}, false), 1204);
     try t.expectEqualStrings(
-        \\gist: no matches for 'SessionStore' · 1204 files scanned
+        \\gist: no matches for 'AcmeStore' · 1204 files scanned
         \\gist: try -i — the pattern has uppercase; retry case-insensitive
         \\gist: try -uu — gitignored and hidden files were excluded from this search
         \\
@@ -384,10 +384,10 @@ test "a preferences file that steered the answer is named first" {
     // Every other hint's premise is visible in the command line. This one's is
     // in a file the reader is not looking at, which is why it outranks them and
     // why the run stays silent about a preferences file that changed nothing.
-    var s = shape(&.{"Wallet"}, .{ .no_ignore = true, .hidden = true }, &.{}, false);
+    var s = shape(&.{"Acme"}, .{ .no_ignore = true, .hidden = true }, &.{}, false);
     s.steered_by = "/home/x/.config/gist/preferences";
     try t.expectEqualStrings(
-        \\gist: no matches for 'Wallet'
+        \\gist: no matches for 'Acme'
         \\gist: note: flags from /home/x/.config/gist/preferences are in force and change what matches — --no-config ignores them
         \\gist: try -i — the pattern has uppercase; retry case-insensitive
         \\
@@ -479,12 +479,12 @@ test "later notices are pure progress — the advice cannot have changed" {
 test "an already-scoped walk with ignores in force has no advice to offer" {
     var arena = std.heap.ArenaAllocator.init(t.allocator);
     defer arena.deinit();
-    const got = try paced(arena.allocator(), shape(&.{"Wallet"}, .{}, &.{"services/backend"}, true), .{
+    const got = try paced(arena.allocator(), shape(&.{"Acme"}, .{}, &.{"services/backend"}, true), .{
         .secs = 4,
         .walked = 812,
         .outstanding = 40,
     });
-    try t.expectEqualStrings(assay.tag ++ "still searching for 'Wallet' after 4s · 812 directories walked, 40 outstanding\n", got);
+    try t.expectEqualStrings(assay.tag ++ "still searching for 'Acme' after 4s · 812 directories walked, 40 outstanding\n", got);
 }
 
 test "a vigil that never armed is silent rather than crashing on no progress" {
@@ -497,6 +497,6 @@ test "a vigil that never armed is silent rather than crashing on no progress" {
 test "bare shape (warm path): pattern facts still drive hints" {
     var arena = std.heap.ArenaAllocator.init(t.allocator);
     defer arena.deinit();
-    const got = try rendered(arena.allocator(), shapeBare("SessionStore", false, false), null);
+    const got = try rendered(arena.allocator(), shapeBare("AcmeStore", false, false), null);
     try t.expect(std.mem.indexOf(u8, got, "-i — the pattern has uppercase") != null);
 }

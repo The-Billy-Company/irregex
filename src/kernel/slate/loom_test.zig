@@ -12,23 +12,23 @@ const gpa = std.testing.allocator;
 const Row = loom.Row;
 
 const rows = [_]Row{
-    .{ .pattern = 0, .path = "services/backend/api/wallet.go", .line = 10 },
-    .{ .pattern = 1, .path = "services/backend/api/wallet.go", .line = 12 },
+    .{ .pattern = 0, .path = "services/backend/api/acme.go", .line = 10 },
+    .{ .pattern = 1, .path = "services/backend/api/acme.go", .line = 12 },
     .{ .pattern = 0, .path = "clients/web/app/pay.ts", .line = 3 },
     .{ .pattern = 0, .path = "services/ai/tools/pay.py", .line = 7 },
     .{ .pattern = 2, .path = "clients/web/app/pay.ts", .line = 9 },
-    .{ .pattern = 0, .path = "services/backend/api/wallet.go", .line = 2 },
+    .{ .pattern = 0, .path = "services/backend/api/acme.go", .line = 2 },
 };
-const pattern_labels = [_][]const u8{ "wallet", "refund", "charge" };
+const pattern_labels = [_][]const u8{ "acme", "refund", "charge" };
 
 test "rows: filter by glob, total path order, limit" {
     var res = try loom.execute(gpa, .{ .filter_glob = "services/**", .limit = 3 }, &rows, &.{});
     defer res.deinit(gpa);
     const got = res.rows;
     try std.testing.expectEqual(@as(usize, 3), got.len);
-    // Total order: path asc, then line asc — wallet.go line 2 precedes line 10.
+    // Total order: path asc, then line asc — acme.go line 2 precedes line 10.
     try std.testing.expectEqualStrings("services/ai/tools/pay.py", got[0].path);
-    try std.testing.expectEqualStrings("services/backend/api/wallet.go", got[1].path);
+    try std.testing.expectEqualStrings("services/backend/api/acme.go", got[1].path);
     try std.testing.expectEqual(@as(u32, 2), got[1].line);
     try std.testing.expectEqual(@as(u32, 10), got[2].line);
 }
@@ -45,8 +45,8 @@ test "group by pattern: counts match a hand tally, labels resolve" {
     defer res.deinit(gpa);
     const g = res.groups;
     try std.testing.expectEqual(@as(usize, 3), g.len);
-    // Hand tally: wallet=4, refund=1, charge=1. Ties break on label asc.
-    try std.testing.expectEqualStrings("wallet", g[0].label);
+    // Hand tally: acme=4, refund=1, charge=1. Ties break on label asc.
+    try std.testing.expectEqualStrings("acme", g[0].label);
     try std.testing.expectEqual(@as(u64, 4), g[0].count);
     try std.testing.expectEqualStrings("charge", g[1].label);
     try std.testing.expectEqualStrings("refund", g[2].label);
@@ -61,7 +61,7 @@ test "group by file with filter and limit composes" {
     }, &rows, &.{});
     defer res.deinit(gpa);
     try std.testing.expectEqual(@as(usize, 1), res.groups.len);
-    try std.testing.expectEqualStrings("services/backend/api/wallet.go", res.groups[0].label);
+    try std.testing.expectEqualStrings("services/backend/api/acme.go", res.groups[0].label);
     try std.testing.expectEqual(@as(u64, 3), res.groups[0].count);
 }
 

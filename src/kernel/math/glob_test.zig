@@ -42,7 +42,7 @@ test "double-star segment token anchors at path-segment boundaries (rg parity)" 
     try expect(globMatch("**/*_pb2*", "a/outreach_pb2.pyi")); // leading `*` DOES span the prefix
     try expect(globMatch("**/target/**", "services/x/target/debug/app"));
     try expect(!globMatch("**/target/**", "services/x/mytarget/debug/app")); // segment, not substring
-    try expect(globMatch("**/*.pb.go", "a/b/wallet.pb.go"));
+    try expect(globMatch("**/*.pb.go", "a/b/acme.pb.go"));
     try expect(!globMatch("**/generated/**", "a/pregenerated/x.ts")); // 'generated' as a segment only
     try expect(globMatch("**/generated/**", "a/generated/x.ts"));
 }
@@ -70,8 +70,8 @@ test "character classes: ranges, negation, literal-close, slash-immunity" {
 
 test "star backtracking does not over- or under-match" {
     try expect(globMatch("*test*.go", "my_test_thing.go"));
-    try expect(globMatch("*_test.go", "wallet_test.go"));
-    try expect(!globMatch("*_test.go", "wallet.go"));
+    try expect(globMatch("*_test.go", "acme_test.go"));
+    try expect(!globMatch("*_test.go", "acme.go"));
     // adversarial: many stars against a long non-matching tail must terminate false
     try expect(!globMatch("a*a*a*a*b", "aaaaaaaaaaaaaaaaaaaaaaaac"));
     try expect(globMatch("a*a*a*a*b", "aaaaaaaaaaaaaaaaaaaaaaaab"));

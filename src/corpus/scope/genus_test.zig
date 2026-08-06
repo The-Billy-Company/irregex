@@ -69,7 +69,7 @@ test "source, build recipes, and IDLs are code" {
         .{ .path = "infra/Dockerfile", .want = .code, .why = "contains-glob *Dockerfile*" },
         .{ .path = "contracts/wire/proto/chat.proto", .want = .code, .why = "IDL compiled into code" },
         .{ .path = "schema.graphql", .want = .code, .why = "IDL" },
-        .{ .path = "queries/wallet.sql", .want = .code, .why = "SQL is source" },
+        .{ .path = "queries/acme.sql", .want = .code, .why = "SQL is source" },
         .{ .path = "main.tf", .want = .code, .why = "Terraform has expressions" },
         .{ .path = "policy.cedar", .want = .code, .why = "policy as code" },
         .{ .path = "styles/app.css", .want = .code, .why = "Linguist markup, the UI half" },

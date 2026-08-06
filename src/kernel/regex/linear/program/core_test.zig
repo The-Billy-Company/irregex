@@ -33,8 +33,8 @@ fn matchesCI(pattern: []const u8, line: []const u8) !bool {
 
 test "regex: caseless (-i) folds literals, classes, and ranges both ways" {
     // Literal bytes fold both directions (the pattern case is irrelevant).
-    try std.testing.expect(try matchesCI("SessionStore", "type sessionstore struct"));
-    try std.testing.expect(try matchesCI("sessionstore", "SESSIONSTORE = 1"));
+    try std.testing.expect(try matchesCI("AcmeStore", "type acmestore struct"));
+    try std.testing.expect(try matchesCI("acmestore", "ACMESTORE = 1"));
     try std.testing.expect(try matchesCI("Func", "FUNC main"));
     // A class range gains its opposite-case twin: [a-c] also admits [A-C].
     try std.testing.expect(try matchesCI("[a-c]at", "BAT"));
@@ -42,7 +42,7 @@ test "regex: caseless (-i) folds literals, classes, and ranges both ways" {
     try std.testing.expect(try matchesCI("err[0-9]", "ERR7"));
     try std.testing.expect(!try matchesCI("err[0-9]", "ERRx"));
     // Sound vs case-SENSITIVE baseline: the same pattern must NOT match folded.
-    try std.testing.expect(!try matches("SessionStore", "sessionstore"));
+    try std.testing.expect(!try matches("AcmeStore", "acmestore"));
 }
 
 fn matchesU(pattern: []const u8, line: []const u8) !bool {
@@ -145,14 +145,14 @@ test "regex: caseless empties the required literal (prefilter falls back to scan
     // A folded literal byte is a 2-member class, so `only()`→null and the longest
     // required literal is "" — the cli grep path then seeds every doc (sound,
     // since trigrams are case-sensitive and cannot prune a caseless needle).
-    var re = try Regex.compileOpts(std.testing.allocator, "sessionstore", .{ .caseless = true });
+    var re = try Regex.compileOpts(std.testing.allocator, "acmestore", .{ .caseless = true });
     defer re.deinit();
     try std.testing.expectEqual(@as(usize, 0), re.required.len);
     try std.testing.expectEqual(@as(usize, 0), re.alts.len);
     // The case-SENSITIVE compile keeps its full required literal for the prefilter.
-    var cs = try Regex.compile(std.testing.allocator, "sessionstore");
+    var cs = try Regex.compile(std.testing.allocator, "acmestore");
     defer cs.deinit();
-    try std.testing.expectEqualStrings("sessionstore", cs.required);
+    try std.testing.expectEqualStrings("acmestore", cs.required);
 }
 
 test "regex: dot, star, plus, quest" {
@@ -909,7 +909,7 @@ test "regex/span: a window equals a slice wherever the two must agree" {
         "",
         "foo",
         "xx foo yy foobar zz",
-        "  const SessionStore = makeThing(user_id_key, HTTPServer);",
+        "  const AcmeStore = makeThing(user_id_key, HTTPServer);",
         "mail bob@host.com and eve@x.io done",
         "foo bar x foo baz x",
         "aaaa bbbb 1234 5678 zzzz",

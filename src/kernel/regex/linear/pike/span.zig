@@ -80,7 +80,7 @@ fn firstMatch(re: *const Regex, list: []const u32, starts: []const usize, end: u
 fn litSpan(re: *const Regex, sim: *SpanSim, region: []const u8, from: usize) ?Span {
     if (from > region.len) return null;
     // A single literal IS the span, so the position needs no attribution — and
-    // this is the shape most code searches have (`gist SessionStore`), so it
+    // this is the shape most code searches have (`gist AcmeStore`), so it
     // stays exactly the one scan and one add it was before the fused jump.
     if (re.lits.len == 1) {
         const lit = re.lits[0];

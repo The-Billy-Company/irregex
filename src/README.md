@@ -33,7 +33,7 @@ executes, the surface speaks, the floor instruments.
 
 ## The Anatomy of a Query
 
-What happens when an agent types `gist 'pgxpool\.\w+' services/`:
+What happens when an agent types `gist 'acmepool\.\w+' services/`:
 
 1. **argv → intent** (`exec/cold/argv/`). One flag catalog drives both the
    parser and the `--schema` manifest; a flag gist doesn't support fails

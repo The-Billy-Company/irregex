@@ -125,7 +125,7 @@ test "caliper: leftmost-first preference is the Pike VM's" {
 
 test "caliper: the multi-segment shapes the VM used to own alone" {
     const gpa = t.allocator;
-    const line = "  const SessionStore = makeThing(user_id_key, HTTPServer);";
+    const line = "  const AcmeStore = makeThing(user_id_key, HTTPServer);";
     try t.expect(try agree(gpa, "[A-Z][a-z]+[A-Z][A-Za-z]*", line) > 0);
     try t.expect(try agree(gpa, "[a-z]+_[a-z]+_[a-z]+", line) > 0);
     try t.expect(try agree(gpa, "[a-z]+\\(", line) > 0);

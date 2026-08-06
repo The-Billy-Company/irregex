@@ -113,8 +113,8 @@ test "anchor: the probe slot carries the rarer byte" {
     // the wrong byte. That regression was introduced and caught once already
     // (`anchor.zig`: "Never sort this pair").
     for ([_][]const u8{
-        "SessionStore", "pgxpool",  "context.Context", "SELECT", "buf.validate",
-        "Zq9_x",        "aaaaaaaa", "})",              "impl",   "substrate",
+        "AcmeStore", "acmepool", "context.Context", "SELECT", "buf.validate",
+        "Zq9_x",     "aaaaaaaa", "})",              "impl",   "acmekernel",
     }) |needle| {
         const p = anchor.select(needle);
         try t.expect(p.probe != p.confirm);
@@ -126,7 +126,7 @@ test "anchor: the probe slot carries the rarer byte" {
 test "anchor: selection is a pure function of the bytes" {
     // A pair that depends on iteration incident rather than on the needle makes
     // every measurement above unreproducible.
-    for ([_][]const u8{ "substrate", "aaaaaaaa", "Zq9_x", "the " }) |needle| {
+    for ([_][]const u8{ "acmekernel", "aaaaaaaa", "Zq9_x", "the " }) |needle| {
         const a = anchor.select(needle);
         for (0..8) |_| {
             const b = anchor.select(needle);
@@ -144,7 +144,7 @@ test "plan: containsWith ≡ contains ≡ std.mem.indexOf" {
     // which two offsets the block filter compares, and `eql` decides the match.
     // Checked against std as the third opinion so a shared bug in both gist
     // paths still fails.
-    const needles = [_][]const u8{ "ab", "ctx", "func", "pgxpool", "SessionStore", "aaaa", "})", "Zq9_x" };
+    const needles = [_][]const u8{ "ab", "ctx", "func", "acmepool", "AcmeStore", "aaaa", "})", "Zq9_x" };
     var prng: std.Random.DefaultPrng = .init(0x9E3779B97F4A7C15);
     const rnd = prng.random();
 
@@ -187,7 +187,7 @@ test "plan: a Gate answers the same planned or unplanned" {
     // cost decision and not a semantic one: `Gate.of` mints a plan, and a gate
     // built without one (what `GIST_NO_PLAN` produces, and what a caseless or
     // 1-byte gate is) must give the identical verdict and the identical position.
-    const needles = [_][]const u8{ "x", "ab", "ctx", "pgxpool", "context.Context", "aaaa", "})" };
+    const needles = [_][]const u8{ "x", "ab", "ctx", "acmepool", "context.Context", "aaaa", "})" };
     var prng: std.Random.DefaultPrng = .init(0x5DEECE66D);
     const rnd = prng.random();
     var buf: [2048]u8 = undefined;

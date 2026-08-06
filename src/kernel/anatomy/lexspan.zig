@@ -186,18 +186,18 @@ test "commentMask marks line and block comments, skips strings" {
 test "spanMask separates the three spans, and comments project to commentMask" {
     const gpa = std.testing.allocator;
     const src =
-        "call(WalletService);            // WalletService is documented here\n" ++
-        "const route = \"WalletService/Get\";\n" ++
-        "/* WalletService in a block */\n";
+        "call(AcmeService);            // AcmeService is documented here\n" ++
+        "const route = \"AcmeService/Get\";\n" ++
+        "/* AcmeService in a block */\n";
     const map = try spanMask(gpa, src);
     defer gpa.free(map);
 
     // The same identifier, three times, three different answers — the whole
     // reason blast can tell a call site from a route string from a stale doc.
-    try std.testing.expectEqual(Span.code, map[std.mem.indexOf(u8, src, "WalletService").?]);
-    try std.testing.expectEqual(Span.comment, map[std.mem.indexOf(u8, src, "WalletService is").?]);
-    try std.testing.expectEqual(Span.literal, map[std.mem.indexOf(u8, src, "WalletService/Get").?]);
-    try std.testing.expectEqual(Span.comment, map[std.mem.indexOf(u8, src, "WalletService in a block").?]);
+    try std.testing.expectEqual(Span.code, map[std.mem.indexOf(u8, src, "AcmeService").?]);
+    try std.testing.expectEqual(Span.comment, map[std.mem.indexOf(u8, src, "AcmeService is").?]);
+    try std.testing.expectEqual(Span.literal, map[std.mem.indexOf(u8, src, "AcmeService/Get").?]);
+    try std.testing.expectEqual(Span.comment, map[std.mem.indexOf(u8, src, "AcmeService in a block").?]);
 
     // One walk, two projections: `commentMask` must agree byte for byte, or a
     // comment-scoped match and a blast report would disagree about the tree.

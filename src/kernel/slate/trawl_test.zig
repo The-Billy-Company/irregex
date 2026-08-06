@@ -54,7 +54,7 @@ fn expectPlay(lits: []const []const u8, owner: []const u32, npat: usize, hay: []
 test "the trawl reports exactly what a substring search would" {
     const lits = [_][]const u8{ "refund", "session", "Store", "fund" };
     const owner = [_]u32{ 0, 1, 2, 3 };
-    try expectPlay(&lits, &owner, 4, "pub fn handleRefund(w: *SessionStore) void {}");
+    try expectPlay(&lits, &owner, 4, "pub fn handleRefund(w: *AcmeStore) void {}");
     try expectPlay(&lits, &owner, 4, "refund the session");
     try expectPlay(&lits, &owner, 4, "nothing here at all");
     try expectPlay(&lits, &owner, 4, "");

@@ -55,7 +55,7 @@ fn rank_row(line: &str) -> Option<Ranked> {
 
 /// Strip the `\s*\d+\.\s*` rank-index prefix, leaving the bare path. Dot-safe:
 /// only a leading run of digits followed by `.` is removed, so a dotted path
-/// (`atelier.pb.go`) survives intact.
+/// (`acme.pb.go`) survives intact.
 fn strip_rank_index(head: &str) -> &str {
     let h = head.trim_start();
     let digits = h.find(|c: char| !c.is_ascii_digit()).unwrap_or(h.len());

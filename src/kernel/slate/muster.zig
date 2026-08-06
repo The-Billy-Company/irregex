@@ -549,13 +549,13 @@ fn expectSoundOver(specs: []const query.Spec, doc: []const u8) !void {
 
 test "roll excludes only patterns the engine also rejects" {
     const specs = [_]query.Spec{
-        .{ .pattern = "SessionStore", .fixed = true },
+        .{ .pattern = "AcmeStore", .fixed = true },
         .{ .pattern = "refund\\(", .fixed = false },
         .{ .pattern = "nonexistent_needle_zzz", .fixed = true },
         .{ .pattern = "handle[A-Z]\\w+", .fixed = false },
         .{ .pattern = "alpha|beta|gamma", .fixed = false },
     };
-    try expectSoundOver(&specs, "pub fn handleRefund(w: *SessionStore) !void { return w.refund(amount); }");
+    try expectSoundOver(&specs, "pub fn handleRefund(w: *AcmeStore) !void { return w.refund(amount); }");
     try expectSoundOver(&specs, "nothing of interest lives in this line");
     try expectSoundOver(&specs, "gamma rays only");
 }
@@ -572,7 +572,7 @@ test "settling follows the match EQUIVALENCE, not the body kind" {
         .{ .pattern = "TODO|FIXME|XXX", .fixed = false }, // 4: alternation of literals
         .{ .pattern = "err != nil", .fixed = false }, // 5: regex that IS a literal
         .{ .pattern = "^anchored", .fixed = false }, // 6: containment ≠ line start
-        .{ .pattern = "pgxpool\\.\\w+", .fixed = false }, // 7: literal PREFIX only covers
+        .{ .pattern = "acmepool\\.\\w+", .fixed = false }, // 7: literal PREFIX only covers
     };
     var built = try compileAll(&specs);
     defer built.deinit();

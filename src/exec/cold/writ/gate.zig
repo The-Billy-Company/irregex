@@ -228,11 +228,11 @@ test "caseless gate: fold-closed literal, lowered spelling, pure-literal equival
     const a = arena.allocator();
 
     // A pure literal with an ASCII-closed fold: gate present, lowered, equiv.
-    var lit = Matcher{ .linear = try Regex.compileOpts(a, "WalletProvider", .{ .caseless = true, .unicode = true }) };
-    const g = requiredLiteralGate(a, .{ .caseless = true }, "WalletProvider", &lit).?;
+    var lit = Matcher{ .linear = try Regex.compileOpts(a, "AcmeProvider", .{ .caseless = true, .unicode = true }) };
+    const g = requiredLiteralGate(a, .{ .caseless = true }, "AcmeProvider", &lit).?;
     try t.expect(g.ci);
     try t.expect(g.equiv);
-    try t.expectEqualStrings("walletprovider", g.bytes);
+    try t.expectEqualStrings("acmeprovider", g.bytes);
 
     // A regex body keeps the gate (fold-closed required literal) without equiv.
     var rex = Matcher{ .linear = try Regex.compileOpts(a, "provider\\d+", .{ .caseless = true, .unicode = true }) };
