@@ -5,6 +5,931 @@ All notable changes to the `irregex` kernel (formerly `gist`; the gist CLI is it
 
 <!-- towncrier release notes start -->
 
+## [2.0.0] - 2026-08-05
+
+### Added
+
+- A character class parsed as a flat list of members. rust-regex parses it as a
+  *set expression*, and the difference is three operators and a recursion this
+  engine did not have: `&&` intersection, `--` difference, `~~` symmetric
+  difference, and a bare `[` that opens a nested class rather than standing for
+  itself.
+
+  The absence was not visible as an error, which is why it lasted. `[a&&b]` read
+  as the four members `a`, `&`, `&`, `b` - a class that matches, just not the
+  class you wrote. `[[x]y]` read as `{[,x}` followed by a literal `y]`. rg calls
+  both of those what they are: an intersection, and `error: unclosed character
+  class` for the unterminated `[[x]`. Now so do we, in Unicode mode and under
+  `(?-u)` alike.
+
+  The operators fold left-to-right at equal precedence, which is what rust-regex
+  actually does rather than what its documentation says (`&&` > `--` > `~~`).
+  `[a-e&&b-d--c]` is `{b,d}` on both engines, and it would be `{b,d}` on neither
+  reading if the precedence were real - forty cases spanning the operators, the
+  nesting, POSIX classes as operands, and both engine modes are diffed against rg
+  14 stdout-and-exit-code, and the parser tests carry the hand-computed sets
+  beside them.
+
+  One test changed rather than one being added: `core_test.zig` asserted that
+  `[[x]` was the two-member class `{[,x}` and attributed that reading to rg. rg
+  has never done that - measured 2026-08-05 against rg 14, `[[x]` is `error:
+  unclosed character class`. The literal is `[\[x]`.
+
+  Which is the part worth keeping. A parity test does not fail when the claim
+  about the competitor is wrong; it fails when we stop agreeing with a claim
+  nobody re-checked. That one asserted a divergence rg never had, passed green for
+  its whole life, and was the reason a nested class read as a member for as long
+  as it did. Every parity assertion here now cites the run and the date it was
+  measured, so the next person can tell an agreement from a story about one.
+- A leading `(?i)`, `(?s)`, `(?m)` or `(?-u)` is read as the flag it asks for and
+  folded into the compile, in the C ABI and in every binding on top of it.
+
+  This is the spelling every host language's own library documents.
+  `re.compile("(?i)cat")`, `Regex::new("(?i)cat")`,
+  `regexp.MustCompile("(?i)cat")` - and until now `irgx_compile("(?i)cat", 0)` was
+  refused, because the recursive-descent parser has no production for a bare flag
+  group and the seam had nothing that turned one into the option it asks for. That made the *documented*
+  way to be case-insensitive unavailable to a host whose pattern came out of a
+  config file it does not own, which is exactly the case where the host has no flag
+  word to pass: it would have to read the pattern to know which one it needed.
+
+  The reading lives in the syntax tier as one pure function, because it was already
+  living in the CLI and a second grammar that agrees today is a divergence waiting
+  to happen. Only the head is folded: `(?i)` inside a group and the scoped
+  `(?i:…)` form are per-subexpression scoping, a real AST feature, and a fold that
+  pretended otherwise would quietly apply a nested flag to the whole pattern. A
+  non-leading global flag is also the case `re` itself has refused since 3.11.
+
+  What the pattern says beats what the caller passed, since the pattern is the more
+  specific statement - `IRGX_IGNORE_CASE` with `(?-i)cat` is case-sensitive. Under
+  `IRGX_FIXED` nothing is folded, because the bytes are data. And `(?x)`, `(?U)`
+  and `(?R)` are named rather than skipped past: they are flags of the wider grammar
+  this engine does not implement, so the letter is reported and the pattern stays
+  whole, which routes a host to the PCRE2 arm that does have them. Honoring the
+  letters it recognized and dropping the rest is the silent wrong answer.
+
+  Slates read the directive per pattern, so one member of a two-hundred-pattern set
+  can fold case without the rest of it folding. `(?m)` and `(?s)` are refused there
+  by index, the same refusal the flag word already gets, because that plane has
+  nowhere to carry them.
+- A munch answered one question: starting here, which pattern reaches furthest. Real lexers ask a narrower one, because only some terminals are legal where the parser currently stands - lex's start conditions, tree-sitter's valid-symbol set, Lezer's contextual tokenizer.
+
+  `longestAmong` takes an `Allow` and answers among the permitted patterns only. It is not a filter over `longest`: a long illegal match hides every short legal one behind it, so by the time you have an answer to filter, the answer you wanted is already gone. tree-sitter-json is the smallest possible demonstration - `string_content` is `[^\\"\n]+`, which asked unconditionally takes `: [1, true, null],` in one bite and swallows six structural tokens. So the restriction rides the walk instead, where it costs one AND per accepting state and nothing per byte.
+
+  `Allow` is addressed in the caller's own pattern ordinals and refilled per token, so a lexer asking a different question at every token allocates once. A pattern the slate refused has no seat, and admitting it is a no-op rather than a bit landing on somebody else's pattern.
+- The certificate's meter had two backends and both were Apple's. Everywhere else - x86-64 Linux, Windows - cycles/byte silently became a wall clock, so the repo's most carefully measured numbers were unmeasurable on the platform most regex work actually runs on.
+
+  Linux now opens `PERF_COUNT_HW_CPU_CYCLES` and `PERF_COUNT_HW_INSTRUCTIONS` as one group and reads both in a single `read()`, because two independent reads let a deschedule land between them and the pair then describes two different instants - an IPC no core can physically produce. `exclude_kernel` is what carries the event past `kernel.perf_event_paranoid = 2`, the hardened default Debian, Ubuntu, and most container images ship, so this needs no `sudo`, no capability, and no sysctl. Windows gets `QueryThreadCycleTime`: cycles only, and honestly so, because there is no unprivileged retired-instruction counter there. It reports `counts_instructions = false` rather than dividing by a wall clock and calling the quotient an IPC, and `Meter.has_instructions` is published before anything is measured so a report knows whether it has that column to print at all.
+
+  Every backend still proves its counters advance across real work before claiming `has_pmu`. A paravirtual PMU that opens cleanly and never increments degrades to the wall clock with a note naming the wall it hit, since "one sysctl away from a real number" and "this box has no counters" are different situations for whoever reads the certificate. Provenance follows: `cpuBrand` reads the CPUID brand string on x86-64 for both new OSes, `/sys/devices/soc0` or `/proc/cpuinfo` on Linux aarch64. `requestPerformanceQos` gains a Windows arm and still returns false on Linux, where the only unprivileged lever is a hard affinity pin to a core we would have to guess was a fast one.
+- The public surface is now a contract with a gate over it. Every top-level `pub`
+  in `src/root.zig` has a row in the new `contract/exports.toml` naming its tier -
+  `stable`, `provisional`, or `internal` - and stating in one line who it is for,
+  and `quality/surface/check.py` fails when the two disagree in either direction.
+
+  `contract/irregex.zone` already governed what a file inside this package may
+  reach, and nothing governed what the package hands out. That asymmetry is how
+  seventeen `regex_*` names shaped by one bench harness ended up in the front door
+  with no note saying who they were for, beside a `commands` namespace that
+  existed because a CLI once wanted that spelling. Someone arriving at the root
+  could not tell the vocabulary every signature is written in from a door opened
+  for one benchmark, because the file gave them no way to tell.
+
+  A retired spelling carries `now = "<address>"` saying where the name went, and
+  the gate checks that address still resolves - so a migration note cannot outlive
+  the thing it points at, which is the failure that makes a deprecation worse than
+  no deprecation. A name declared in two tiers, a row with an empty `why`, and a
+  contract that stopped parsing are each their own error rather than fifty-three
+  lines of phantom drift.
+
+  The schedule is checked too, and that check earned its place immediately: the
+  first draft of this contract scheduled the retired block for removal in `0.5.0`,
+  on a package shipping `1.0.0`. Nothing would ever have come due, so the aliases
+  would have been carried forever while reading as temporary. `[deprecation]
+  remove_in` is now compared against `build.zig.zon`, and a target the live
+  version has already passed fails the gate. The real target is `2.0.0`, because
+  these names shipped in 1.0.0 - thirteen of the fifteen have no consumer left in
+  the ecosystem, which is an argument for keeping them rather than against it,
+  since an alias nobody here imports is exactly the one an outside consumer of
+  1.0.0 might.
+
+  It reads text and needs no Zig, like the ratchets it runs beside. The `why` is
+  the load-bearing part: a name nobody can write one for is a name that should not
+  be public.
+- Windows portability now has native runtime evidence on x64 and arm64. The new lane executes the Zig suite, builds the shipped DLL, and loads it through the real Python `ctypes` binding, complementing the existing cross-target compile gate rather than mistaking compilation for execution.
+- Windows was the one platform where "just install it" was not true. The engine
+  built and passed there, and had for a while - `windows.yml` runs the suite on
+  real x64 and arm64 kernels - but only Python could actually be installed, and
+  only on x64. Go rejected Windows at compile time with a named constant, Rust had
+  no vendored archive to find, and Windows arm64 had nothing anywhere. Three
+  bindings, and Windows was first class in none of them.
+
+  It is now in all three, on both architectures:
+
+  - **Go** vendors `libirgx_windows_amd64.a` and `libirgx_windows_arm64.a`
+    beside the other four, selected the same way, by the build constraint on a
+    `link_windows_*.go` file. `link_unsupported.go` no longer catches Windows.
+  - **Rust** vendors `x86_64-pc-windows-gnu` and `aarch64-pc-windows-gnullvm`.
+    Those are the two names Rust gives the GNU ABI: x86_64 leads with `-gnu`
+    (mingw-w64's gcc), and arm64 has no `-gnu` at all, because that toolchain was
+    never ported to it. `x86_64-pc-windows-gnullvm` is the same runtime and the
+    same COFF reached through clang, so `build.rs` maps it onto the `-gnu`
+    directory rather than committing a second copy of three megabytes.
+  - **Python** adds a `win_arm64` wheel, which is the last hole in a matrix that
+    otherwise covered every other platform on both architectures.
+
+  Two things had to be true for any of it. The archive has to carry its own C
+  floor, which `build.zig` already does on COFF by splicing the two floor archives
+  in with `zig ar qcsL` - COFF has no partial link, so the merged object every
+  other platform packs is not available there. And the link has to name `ntdll`:
+  the engine reaches the kernel through sixty `Nt*`/`Ldr*`/`Rtl*` symbols, which
+  are Zig's std rather than ours, and mingw-w64's default library set stops at
+  kernel32. Zig's own driver adds ntdll silently, which is exactly why every check
+  made from a macOS laptop closed for a reason a consumer's link would not have.
+
+  So `windows.yml` grew a second job. `native` compiles the engine here and proves
+  the sources still hold; `bindings` asks the other question - whether what we
+  ship links and runs under the toolchain a consumer has. On x64 that is
+  mingw-w64's gcc, linking the committed archive for both Go and
+  `x86_64-pc-windows-gnu`, exactly the way an install does. On arm64 Go links the
+  committed archive through `zig cc`, and Rust runs `aarch64-pc-windows-msvc` -
+  the target nearly every Windows arm64 Rust user is on, and the one rung no
+  archive can serve, so `build.rs` builds the engine from source against the
+  Visual Studio already on the runner. Between them, both rungs of that ladder now
+  run on a real kernel, and until now neither did.
+
+  `aarch64-pc-windows-gnullvm` is the one target nothing there links, because
+  llvm-mingw is not on the image and Zig cannot stand in for it: Zig's mingw is
+  UCRT-only, and Rust's GNU targets ask the linker for `msvcrt`. Its archive is
+  not therefore unexercised - it is the same engine build, for the same Zig
+  triple, that the Go arm64 step links and runs.
+
+  Every Windows target pins Windows 10 RS4, which is the floor `build.zig`'s own
+  `check-windows` drift gate compiles against, so the shipped artifact and the
+  gate guarding it describe one platform. A wheel tag cannot carry a version the
+  way `manylinux_2_17` can, so on Python that promise exists in the Zig triple and
+  nowhere else.
+
+  The one Windows ABI still missing a prebuilt is MSVC, and it is missing by
+  construction rather than by oversight. Zig cross-compiles every target above
+  from a single host; it cannot cross-compile to `*-pc-windows-msvc`, because the
+  MSVC C runtime headers are not redistributable and there is nothing to compile
+  PCRE2 against without Visual Studio on the machine. `build.rs` carries the MSVC
+  triples for its source rung instead, so a Windows box with Zig installed builds
+  and links normally, and one without gets a message that says which target it
+  was, why no archive exists for it, and that `-pc-windows-gnu` is vendored.
+- `(?i:…)`, `(?s:…)`, `(?u:…)` and `(?-u:…)` parse. The flags hold for the group's body and are put back at its closing paren, so the rest of the pattern is unaffected.
+
+  This is not a corner of the syntax. Generated lexer slates are full of it: a language whose keywords are case-insensitive spells every one of them `(?i:…)`, and a generator that emits per-token Unicode mode wraps each token body in `(?u:…)`. Across thirty tree-sitter grammars pressed into slates, 114 of 115 refused patterns refused on this one construct, 87 of them in a single grammar.
+
+  A scoped `i` folds its own subtree at the closing paren rather than waiting for the caller's whole-tree fold, which never runs when the caller did not ask for `-i`. Without that the pattern would parse and then match case-sensitively, which is worse than refusing.
+
+  `m` and `x` refuse, and so does a bare `(?flags)`. This engine's `multiline` is whole-buffer matching rather than JavaScript's line-anchored `^`, `x` is not implemented, and a bare group's flags scope to the end of the enclosing group. Each of those is a wrong answer available cheaply; a refusal says so.
+
+  `Munch` now says why it turned a pattern down. `declined` carries the ordinals and the new `because` carries a `Munch.Because` for each - `syntax`, `states`, or `word_context` - so a caller can tell a pattern this engine cannot express from one it merely would not build.
+- `Brand` already let a fourth binary pick the name it signs a diagnostic with and the namespace its knobs live in, so an embedder could own `OUTLINER_TRACE` outright. It just had nothing to put through it. The lens vocabulary was a closed enum of this engine's own phases, and an embedder's phases are not `warm` or `reconcile` - so `OUTLINER_TRACE=press` lit nothing, and because an unrecognized token was dropped in the name of forward compatibility, it said nothing either. Rebranding got you a knob that looked wired and wasn't.
+
+  A root module can now declare `pub const irgx_lenses = enum { lex, press, weave, folio };` the same way it declares `irgx_brand`, and those names are welded onto the engine's own set to make one enum. One enum, so there is still one mask, one env knob, one `all`, and one `trace` - a guest lens is not a second-class lens, and no call site knows which half it is naming. Engine lenses keep their ordinals, so adding a guest set can't renumber a mask somebody computed elsewhere.
+
+  Two ways to get it wrong are compile errors instead of a lens that quietly never lights: more lenses than the 32-bit mask has bits, and a guest re-spelling a name the engine already owns. And a token matching neither half is now reported (`gist: note: TRACE names no lens 'pres'`) rather than ignored, because an ignored token and an unset knob looked identical from outside - which is the whole failure this was.
+
+  One wrinkle worth naming, because the first embedder hit it inside an hour: the root module is a property of the compilation, not of the package, and it moves. Under a custom test runner the runner can be the root, and a C-ABI host has no Zig root at all - `std_options` lives with exactly this. So `lit` and `trace` now take the lens *name* (still spelled `.press`, no call site changed) and resolve it at comptime, which lets the answer differ where it should: an engine lens always resolves, a guest lens resolves wherever the declaration reached, and a name matching neither is a compile error where a guest set was declared - your own typo, worth stopping for - but a dark channel where none was, since nothing there can name it and no `TRACE` token can light it. Otherwise an embedder's own trace lines are the reason its test build fails.
+- `Munch.adopt` assembles a slate from automata the caller already holds, and
+  `Dfa.borrowed` says the tables under one are somebody else's to free.
+
+  Determinizing a slate is the expensive half of `Munch.compile`, and its result
+  is a pure function of the slate. A caller whose slate is fixed - shipped inside
+  an artifact rather than written at the prompt - can now pay that cost once,
+  store the automata, and arrive with the answer instead of the question. The
+  tables can live in a mapping or in one inflate buffer, because a borrowed `Dfa`
+  releases its handle and leaves the memory to whoever owns it.
+
+  Both are additions. `Munch.compile` builds exactly the slate it always did,
+  and a `Dfa` nobody marks `borrowed` frees exactly what it always freed.
+- `Munch.shortestAmong` - the shortest non-empty match at an offset, beside the
+  longest one that was already there.
+
+  Maximal munch answers "which token is here" only when something vouched for the
+  slate. Asked over every pattern a grammar has, it answers something else: such a
+  slate always contains a run-of-anything-but-a-delimiter, and that member reaches
+  further than every real token at every byte. The result is a fact about the
+  grammar's widest regex rather than about the bytes - measured on outliner's wall
+  survey, the median such answer was **1,777 bytes long**, and one of them named
+  `xml_text` over a scala file containing no XML.
+
+  So a caller with no state behind the question can now ask for the least the
+  slate can commit to instead. The walk backing it stops at the first accept
+  rather than the last, which makes it the cheaper of the two as well as the
+  narrower; empty matches are passed over, since a nullable pattern would
+  otherwise name every position at length zero.
+
+  `longest` and `longestAmong` are untouched, and the shared `scan` takes the mode
+  as a comptime-known enum, so neither pays for the other.
+- `Pattern` is the door most callers actually wanted: compile once, then `isMatch`,
+  `find`, `matches`, `groups`, `replace`, `split`. It owns its own scratch through
+  a `Pool`, so no signature a consumer touches mentions a Pike VM thread list, and
+  it compiles the capture arm only if somebody asks for a group. `regex.Regex` is
+  still there for an index or a planner that genuinely wants the compiled program;
+  it just stopped being the thing you have to hold to ask a question.
+
+  The part worth reading twice is the walk. Resuming at `span.end` is right for a
+  match that consumed something and an infinite loop for one that did not, so a
+  cursor has to step past an empty match deliberately. It steps one **byte**. A
+  codepoint-sized step is the plausible-looking mistake, and the first draft here
+  made it: `l*` over `héllo` has an empty match at byte 2, the continuation byte of
+  `é`, and stepping a whole character quietly loses it. Python, `rust-regex` and
+  ripgrep all report that match. Measuring against them is what caught it; the
+  test that had been written asserted the bug, in confident prose.
+
+  Where the rules genuinely fork is the empty match *adjacent* to the previous one
+  and the one at the very end of the text, and this package now answers that twice
+  on purpose. `Cursor` reports both, matching Python `re`, `rust-regex` and JS.
+  `kernel/query`'s `walk` - what the `gist` CLI runs, and what the C ABI hands a
+  host's buffer to - suppresses both, matching ripgrep byte for byte. `b*` over
+  `abcb` is five spans through one door and three through the other. Neither is a
+  regression: rg drops those because it prints line-oriented rows and they are
+  noise on a page, and a library that dropped them would disagree with every regex
+  library its caller has used.
+
+  That is the kind of difference someone eventually "fixes" into a single rule,
+  because it reads like drift until you know which audience each side serves. So
+  `kernel/query/zero_width_test.zig` holds both sequences side by side, each row
+  carrying the outside authority it was measured against and one line saying why
+  that row exists. A case where the two agree is in there for the same reason as
+  one where they differ: it proves the fork stayed in the empty-match rule and did
+  not leak into ordinary matching.
+
+  Nothing in the C ABI or the three language bindings changed, and looking closely
+  enough to be sure was the useful half of this. `irgx_find_all` hands the buffer
+  to that same `walk` as one unterminated unit and returns the whole answer, and
+  Go, Rust and Python all iterate what it returns rather than running a
+  `find(from)` loop of their own. The advance rule was never written five times
+  out there; it was written once, on purpose, and the header in
+  `surface/ffi/pattern.zig` says so.
+- `\p{...}` resolved general categories and scripts. It did not resolve `XID_Start` or `XID_Continue`, which is how Go, Java, C, Rust, and JavaScript each spell "identifier character" - so the single most common terminal in any language grammar was a pattern this engine rejected.
+
+  The data was already pinned: `DerivedCoreProperties.txt` is where `\w`'s `Alphabetic` comes from, and the two identifier properties sit a few hundred lines further down the same file. What was missing was the generator reading it. It now reads every binary property in `DerivedCoreProperties.txt` and `PropList.txt` generically rather than lifting the three the Perl classes happened to need, which is 57 properties and matches what rust-regex resolves. A three-field row (`InCB; Linker`) is a property *value* and is skipped, so no class is invented that Unicode does not define; a name a category or script already claimed is dropped rather than emitted where the first-match lookup would never see it.
+
+  The tables grow from 340 KB to 577 KB of source. Compile time did not move.
+- `\p{Control}` now resolves, and so does every other UAX #44 long name for a
+  general category - `\p{Uppercase_Letter}`, `\p{Other_Symbol}`,
+  `\p{Space_Separator}`, and the rest of the forty. The generated property table
+  carries these categories only by their two-letter abbreviation, so a pattern
+  spelling the long name got `unknown property after \P or \p` and refused,
+  where PCRE, ICU and rust-regex all take either spelling.
+
+  The aliases are hand-written next to the lookup rather than folded into the
+  generated table, because they are the property file's own names and do not move
+  with a Unicode revision; the ranges they resolve to are still the generated
+  ones, and the test asserts the two spellings return the same slice rather than
+  merely both returning something. Matching stays loose in the same way the rest
+  of the lookup is, so `gc=private use` and `Private_Use` are one name.
+
+  Nothing that already compiled changes: the alias table is consulted only after
+  the generated table has already failed to answer, and an undefined name still
+  fails closed.
+- `\p{Emoji}`, `\p{EMod}` and `\p{ExtPict}` were rejected, and so was every short
+  property alias - `\p{Alpha}`, `\p{XIDS}`, `\p{WSpace}`. rg resolves all six.
+
+  Both gaps were the generator lifting the names somebody happened to need rather
+  than reading the file that defines them. The emoji properties live in UTS #51's
+  `emoji-data.txt`, whose rows are the same two-field shape
+  `DerivedCoreProperties.txt` already parses, so it joins the binary-property
+  source list and nothing else changes. The aliases live in `PropertyAliases.txt`,
+  so the alias table is generated from it instead of hand-kept: an alias whose
+  long name this build does not carry is dropped rather than emitted, because an
+  alias resolving to nothing reads at the call site exactly like a property we
+  support and got wrong.
+
+  Both files are vendored under `tools/ucd/` beside the rest of the UCD, at the
+  same Unicode version, each with its own sha256 pin in that folder's README and
+  its own line in `NOTICE` under the Unicode License v3 entry.
+
+  Why it mattered enough to chase: the three emoji names are how Swift and Julia
+  spell an identifier. A grammar whose identifier terminal will not build does not
+  fail loudly - the terminal simply never wins, and every byte it should have
+  owned surfaces downstream as a stray, hundreds of bytes away and wearing a
+  different defect's name. Swift's parse went from 49.5% to 77.0% of the file
+  under a root on the back of this and the class-set operators; Julia's from 21.2%
+  to 67.2%. Measured by rebuilding the same parser against an engine with only
+  these two changes reverted: the other twenty-eight grammars are byte-identical,
+  and the two that move are exactly the two whose patterns contain this syntax.
+
+  Not all of it is tree. Julia's 12,579 recovered bytes are 8,847 under a
+  construct and 3,732 under a bare token - identifiers that now lex correctly
+  inside a docstring whose external scanner still walls, so they are named rubble.
+  Swift's landed under constructs. Same headline, different meanings, which is why
+  the caller now reports both.
+- `assay.Cadence` reads the core's real sustained rate off a dependent `ADD` chain, one cycle per link by construction, and it had an arm for exactly one architecture. Off AArch64 it returned null, so every consumer downstream of it went dark: the price lane cannot mint a coefficient without a clock, and `zig build ladder-price mint` is how the ladder's auction learns what a kernel costs. x86-64 had no minted row for the same reason it had no clock, which reads as "we never measured there" when the truth is that nothing there could measure.
+
+  The x86-64 arm is two-operand and read-modify-write - the increment rides a register tied to the output rather than an immediate, since `$` is LLVM's own operand sigil inside an asm template. Emitted, the loop is sixteen `add r15, rdx` with the constant hoisted out and nothing between them, which is the same one-cycle chain the AArch64 arm builds. 32-bit x86 is deliberately left out instead of given a `u32` chain: a 64-bit add lowers to `add`/`adc` there, two instructions per link, and the whole reading rests on the link being one.
+
+  Both arms select on architecture rather than `cpu.has`, which is the one shape the isa-floor ratchet exempts and for its stated reason - integer `add` is mandatory base ISA on both families, so there is no optional feature to ask about.
+
+  `Cadence.measurable` is now published, because three benches were each answering "does this target have a clock" with their own copy of the arch test, and `bench/rungs/parabix` and `bench/rungs/shuffle` each carried a byte-identical copy of the chain itself. A copy is how a row's clock and the coefficient that row is compared against come to be divided by two different readings. They delegate now, as the price lane's probe already did.
+- `commentMask` answered one bit per byte: is this commented out. That is the only question a ranker needs, and the wrong shape for a consumer that has to tell a call site apart from a name printed inside a string.
+
+  `spanMask` returns the three-way answer the lexer already computed and threw away - `code`, `comment`, or `literal` - one `Span` per byte. `commentMask` is now a projection of it, so the two cannot disagree about where a comment ends, and both walk through one shared `paint` routine instead of two copies of the state machine.
+
+  `lexspan` also joins the root test block by name. It sits a level below what `refAllDecls` analyzes, so its assertions compiled and never ran.
+
+  `blast` is the first consumer: a symbol named in a benchmark's string constant is no longer reported as code that breaks when you change it.
+- `irgx.runtime.shell._resolve` gained a fourth rung: a binary a *product's own*
+  wheel bundled at `<name>/bin/<name>[.exe]`, checked through
+  `importlib.resources` after the explicit `GIST_BIN`/`RELATE_BIN`/`BLAST_BIN`
+  override and a sibling dev checkout's `zig-out/bin/<name>`, and before the
+  plain `PATH` lookup. Nothing about the existing three rungs moved — an
+  override still wins outright, and a dev checkout still wins over a packaged
+  copy — so a contributor who never sees the new rung sees no change at all.
+
+  The rung exists for the products this substrate underlies, not for this
+  package itself: `gist-search`, `relate-search`, and `blast-search` each ship a
+  per-platform wheel that bundles its own CLI now (`hatch_build.py` in each of
+  those repositories), and until this change nothing in the shared resolver knew
+  to look inside one. Without it, "the wheel bundles the binary" and "the
+  binary is findable" were two separate, unconnected claims — a `pip install
+  gist-search` would still raise `GistNotFoundError` the moment its first verb
+  shelled out, because the resolver had no fourth place to check. `irregex`
+  carries no bundled binary of its own and never will (it ships a shared
+  library, not a CLI), so this package's own behavior is unchanged; it is
+  purely the shared place three sibling products' bundling now has a matching
+  lookup for.
+- `libirgx` grew a slate plane: `irgx_slate_compile` takes N patterns, and
+  `irgx_slate_is_match` / `irgx_slate_which` answer about all of them in one pass
+  over the text, with attribution. Everything else in this ABI is about one
+  pattern, and the two ways a C host had to fake this were both bad. N calls to
+  `irgx_is_match` read the bytes N times. One fused `a|b|c` reads them once and
+  throws away which pattern hit, which is usually the answer you wanted.
+
+  The kernel has had this for a while - it is what `gist`'s `patterns` verb runs
+  on, but it had it in the wrong unit. `PatternSet.docMask` answers per LINE, which
+  is right for a grep walking a corpus and wrong for a plane whose neighbor treats
+  the whole text as one unit: `^b` over `"a\nb"` is a match to a grep and not a
+  match to a regex library, and shipping the line face would have meant one
+  library telling a host two different things about the same string. So the kernel
+  grew the buffer face first - `bufMask` / `bufAnyMatch`, confirming through the
+  same `holds` the single-pattern plane goes through - and the parity suite holds
+  it to `irgx_is_match` pattern by pattern, with the SIMD prefilter on and off,
+  because a prefilter that changes an answer is a prefilter with a bug.
+
+  The fused gate the line face uses is deliberately not on this path. It is an
+  alternation of every pattern, which over-approximates per line and is unsound
+  per buffer: `a\sb` over `"a\nb"` matches the buffer and no line, so a gate that
+  says no would have withheld a real match.
+
+  `*refused` is the part a single pattern never needed. With two hundred patterns,
+  "one of them is unsupported" is not something you can act on, so a refusal names
+  the index, and it names it in the vocabulary `irgx_compile` already uses -
+  `IRGX_STALE` when `IRGX_PCRE` would take the pattern, a located `BadPattern`
+  when nothing will. It costs one recompile per pattern on a path that already
+  failed, and it is the only way to answer the question a host actually has.
+
+  There is no per-pattern span verb, and that is the edge rather than an omission.
+  A slate is a classifier: once you know pattern 7 is in this text,
+  `irgx_find_all` on pattern 7 is the walk you were going to run anyway, against a
+  text that is now known to be worth walking. `Munch` stayed out too - it has a
+  Zig consumer and no C one, and a verb minted for nobody is a verb that gets
+  maintained for nobody.
+
+### Changed
+
+- Both vendoring scripts link a probe program against each fresh archive before
+  committing it, so a missing symbol is their failure rather than somebody's
+  `go build` a week later. The catch is that nobody ever performs that link. A Go
+  consumer's link is driven by the `#cgo LDFLAGS` line in
+  `link_<goos>_<goarch>.go`; a Rust consumer's is driven by what `build.rs`
+  emits. If either disagrees with what the probe used, the proof is evidence about
+  a build that does not happen.
+
+  That was harmless while every archive closed against libc alone. Windows ends
+  it: those archives need `-lntdll`, and it is now the kind of thing a matrix can
+  declare and a link file can quietly not.
+
+  So each script checks the other side of the link before compiling anything.
+  Go's reads every target's `link_*.go` and holds its `#cgo LDFLAGS` to the
+  libraries the matrix declares - and holds `link_unsupported.go`'s build
+  constraint to excluding every target the matrix now serves, which is the failure
+  where you add a platform, forget the constraint, and both files compile at once
+  and die on an undefined constant in the consumer's build. Rust's checks that
+  every library a target declares is one `build.rs` actually emits. Both run off a
+  file read, before the first byte is compiled, because the alternative costs
+  several minutes per target to learn the same thing.
+
+  Two smaller things fell out. Both scripts decided whether to *run* the probe
+  rather than only link it by asking `os.uname()`, which does not exist on
+  Windows, so somebody vendoring from a Windows machine got a cross-compile note
+  for their own platform. That is `platform.machine()` now, and each target names
+  the machines it is native to. And the Python wheel matrix pins Windows 10 RS4 in
+  its triple like every other target pins its floor, rather than inheriting
+  whatever Zig defaults to.
+- Every package index this project publishes to now shows the repository's own
+  `README.md` as the project's page, rather than the short one kept beside each
+  binding. PyPI and crates.io are where most people meet this project first, and
+  they were being shown a page about the ctypes surface and nothing else - not the toolkit that surface is a binding for, and not the three tools built on it.
+
+  The README could not simply be pointed at, because a relative link resolves
+  against whatever page displays it. `include/irgx.h` is correct on GitHub and a 404
+  under `pypi.org/project/irregex/`. crates.io is the worse of the two: it rewrites
+  relative links against the crate's own subdirectory, so the same path becomes a
+  well-formed URL into `bindings/rust/` pointing at a file that was never there,
+  and nothing looks broken.
+
+  So `tools/registry_readme.py` is now the one rewriter both ends share. It
+  absolutizes every relative target against the `repository` URL the manifest
+  already declares, in the form that serves what the target is - `raw` for an
+  image, `tree` or `blob` chosen by what the path is on disk - and a target the
+  repository does not contain fails the build instead of publishing a dead link.
+  GitHub's `> [!NOTE]` alert, which renders as literal text anywhere else, is
+  lowered to a bold lead line. Headings need no help: both renderers rewrite
+  in-document anchors to match the ids they mint, so the table of contents arrives
+  intact.
+
+  Python gets it through a Hatchling metadata hook, so the corrected page exists
+  only inside the artifact. Cargo has no metadata hook, so `readme` now points at
+  a gitignored `bindings/rust/PROJECT_README.md` that the same tool mints at
+  package time - `cargo package` fails loudly if it was never generated, and
+  `cargo build` never reads it. Both indexes end up with a byte-identical page.
+
+  An sdist is the one artifact with no repository above it, so it carries the
+  corrected README beside the sources and a source build reads that, rather than
+  being asked for a file the archive does not contain.
+
+  Go needed no rewriting - pkg.go.dev renders the README at the module root and
+  resolves its links against the repository - but a dead one there is still a dead
+  link on the module's landing page, and a Go module has no build step to catch
+  it. `--check` now proves those targets resolve too, on every commit.
+
+  The README stays written for the repository it lives in.
+- The repository README now points its historical, mathematical, and benchmark
+  narrative at the dedicated irregex technical report while keeping the API,
+  contracts, architecture, and executable proof local.
+- Three bindings, one C ABI, and until now three arrangements that happened to
+  agree without anything saying they should. `bindings/README.md` is that
+  something: a concern map across Zig's FFI plane, Rust, Go and Python, plus the
+  reasons the three decompositions are deliberately not identical.
+
+  The rule the map is built on is that the regex face **is** the binding's root.
+  Somebody who wants a regex over a buffer is the larger audience by a wide margin,
+  so they get `irgx.finditer`, `irgx::Regex::new`, `irgx.MustCompile` and pay for
+  nothing; the analytic substrate a sibling product binding wants lives in named
+  packages beside it (`contract/`, `request`, `runtime/`). Rust already said this
+  in the language - private `mod`s for the regex face, `pub mod` reserved for the
+  substrate - and Go said it by keeping the face at the package root. A Python
+  `irgx.regex.pattern` was briefly a real import path here, and it was a level of
+  nesting with no counterpart in the other two, so it is gone.
+
+  Two things moved to finish the map. Python grew `_pool.py`, which is where a
+  `Compiled` handle and the per-thread pool over it now live together; the handle
+  had been sitting in the ABI module and the pool inline in `Pattern`, which meant
+  the one genuinely hard invariant in the binding - *a C handle belongs to one
+  thread, and it owns the scratch its finds run in* - was the only concern with no
+  file to its name, in the one binding where that is true. Rust's `pool.rs` has
+  carried it since the crate existed. Python's `_template.py` is `_replace.py` for
+  the same reason: `replace.rs` and `replace.go` are named for what a caller asks
+  for, and it was the last file named for the artifact instead. In Go,
+  `irregex.go` is `pattern.go` - the package is `irgx`, the file was named after
+  the repository, and the concern is the one every other surface spells
+  `pattern`.
+
+  What the map does *not* do is force one spelling everywhere. The file that
+  projects a span into something a caller can slice is `matches.rs` in Rust,
+  `find.go` in Go and `_match.py` in Python, because that is what the `regex`
+  crate, the `regexp` package and `re` each call it, and a binding is worth having
+  because it reads like the library its caller already knows. Nor does it force one
+  file count: Rust splits its seam from its refusal vocabulary because it *links*
+  the engine and its seam has no failure to report, where Python *loads* one and a
+  wrong `IRGX_LIB` is a refusal the seam itself raises. Splitting those two in
+  Python would be a cycle rather than a ladder. Each fusion in the table is a
+  language forcing it, and each one now says so out loud instead of reading like
+  somebody's oversight.
+
+  No behavior changed, and no public name in any of the three bindings moved.
+
+### Removed
+
+- `PatternSet.ends` is gone, and with it the union automaton a slate used to
+  determinize at compile time. Compiling eight mixed patterns went from ~175 ms to
+  17 ms; the worst combination I could find in that set went from 194 ms to 34 ms.
+
+  The verb had no callers. Not in the kernel, not in the three faces, not in any of
+  the four consumer repos - and it cost every slate a powerset construction over
+  the alternation of all N patterns. A Unicode `\d+` in the set is what makes that
+  visible: the class expands to hundreds of ranges before the subset construction
+  starts, so two patterns cost 7 ms and eight cost most of a fifth of a second, all
+  of it for a `?Ends` nobody ever read. It surfaced through the new C ABI slate
+  plane, where compiling a set is something a host does out loud rather than a
+  step buried in a corpus walk.
+
+  Nothing was lost. The automaton itself lives where it always did, in
+  `regex/linear/program/chorus.zig`, tested there, and `Munch` compiles one
+  directly for the lexer face. What went away is a slate holding one for free.
+  Anyone who wants every end position - including the ends a leftmost scan
+  swallows, which is the one question the confirm path genuinely cannot answer -
+  compiles a `Chorus` and pays for it deliberately.
+
+  Its absence from the hot path was already measured, which is why the removal is
+  cheap to believe: `bench/rungs/patternid` puts one union walk against the N
+  engine confirms it would replace and the union runs at 0.06x-0.41x their speed,
+  because a literal pattern's confirm is a SIMD memmem that never reaches a DFA at
+  all. So the slate was paying at compile time for something it correctly refused
+  to use at match time.
+
+### Fixed
+
+- A calibration row is now claimed by the byte-permute it was measured over
+  instead of by the CPU it was measured on, and the published manylinux wheel
+  gets its vector rungs back.
+
+  `Calibration.hosts` - a list of `builtin.cpu.model.name` prefixes - is replaced
+  by `Calibration.isa`, one member of the new `lanes.Isa` (`portable`, `ssse3`,
+  `avx`, `neon`). `price.active` selects the row whose class equals this build's
+  `lanes.isa`. Both sides are comptime reads of the same feature bits that chose
+  the SIMD arms in the first place, so a row is selected by the property its
+  coefficients are a function of.
+
+  The wheel is the reason. Its declared floor is x86-64-v2, so its model name is
+  `x86_64_v2`, so it matched neither `apple_` nor `raptorlake`, so it fell to
+  `unmeasured` - and `measured = false` is what the vector rungs consult before
+  bidding. The thing most people install had the SSSE3 composition and the
+  Parabix transposition compiled into it and never let either one bid, and
+  nothing anywhere said so. Being precise about who a row spoke for had turned
+  into almost nobody having one.
+
+  Selecting on the permute is the middle of two spellings that were both wrong.
+  `builtin.cpu.arch` claimed too much: every AArch64 target read the Apple row,
+  so a Graviton, an Ampere part and a Raspberry Pi bid an M4 Max's ratios. The
+  model name then claimed too little, in the way above. The permute is what the
+  numbers actually vary on, and they vary a lot - `compose_eol` is 40% dearer
+  under legacy `pshufb` than under VEX `vpshufb` on the identical core, and the
+  two Parabix halves come out nearly inverted between them.
+
+  A third row, `ssse3`, is minted for that floor. It is the same i5-13500 built
+  `-Dcpu=x86_64_v2`, so the core is held fixed and the only difference from `avx`
+  is the encoding. A real v2-only part is older than that core, which makes these
+  numbers a modern CPU executing a conservative build - the case that actually
+  ships rather than a hypothetical Nehalem.
+
+  Giving the v2 floor a row of its own also changes what the auction does there,
+  which is the point of having one. `compose_eol` at 1.418 against a 1.924 walk
+  means the end-of-line composition LOSES on that floor where it wins on AVX at
+  1.008 against 2.001, so `^[a-z]{6}[0-9]$` now goes to the fallback - and the
+  bench measures that composition at 2.27 cyc/B, exactly what the row predicts,
+  with worst regret across the slate at 1.00x. Two tests had been reading the
+  agreement of the two rows that existed as a law and had to be told it was a
+  measurement instead: one asserted the widest composition beats its walk with the
+  end-of-line index on, which is now asked of the plain form (true everywhere) and
+  pinned per class for the `+eol` form; the other floored a differential's case
+  count at what the richest build arms, which failed the leaner build for arming
+  correctly.
+
+  The claim is now wider than the measurement behind it: a row speaks for every
+  core in its class. That is the trade, taken deliberately, and `verify` is the
+  instrument that reports when a given machine disagrees with its class. There is
+  no AVX-512 member, because `shuffle` has no `vpermi2b` arm and a class for it
+  would name a kernel this engine cannot build.
+
+  `lanes.Isa` lives beside `shuffle` and `widest` rather than in the price plane,
+  with a test holding the class and the lane cap in step, so adding an arm without
+  a class fails at the arm rather than silently pricing the new one as the old.
+- A sibling parser found uninitialized memory in its own persisted records and
+  asked whether this engine had the same class of defect. It had one, in the AST
+  interner: `Op.uclass` is `[]const [2]u21`, and both `hash` and `eql` read it
+  through `std.mem.sliceAsBytes`.
+
+  `@sizeOf(u21)` is four and only twenty-one bits are a bound, so eight bytes of a
+  range carry forty-two bits of set and twenty-two bits of whatever the allocation
+  last held. Two byte images of one class therefore compare unequal, and the
+  hash-consed DAG keeps **two nodes for one Unicode class** — after which the
+  alphabet, the determinization, and the automaton every consumer receives are
+  downstream of a graph that failed to canonicalize.
+
+  The reason `eql` read bytes is the part worth keeping. `std.mem.eql([2]u21, …)`
+  **does not compile** — Zig will not apply `!=` to that type — so the byte view
+  was the short spelling available, and it is the one this type cannot honor. A
+  type that refuses the obvious comparison pushes every author toward the unsound
+  one. Both halves now read values: `hash` widens each range through
+  `extern struct { lo: u32, hi: u32 }`, whose fields tile it, and `eql` compares
+  bounds.
+
+  **Measured, and nothing moved.** Ten Unicode-heavy patterns interned on both
+  arms give the same 79 offered / 49 distinct. An adversarial arm — one arena,
+  `reset(.retain_capacity)`, a pointer-heavy non-class pattern parsed between
+  rounds so the recycled bytes belong to `Node` structs — interns eight parses of
+  `[α-ω]` to **one** node on both arms. The raw bytes say why: `b1 03 00 00 c9 03
+  00 00` every round, because the parser's store path zero-extends. So the defect
+  was latent, it was costing zero, and `gist` / `relate` / `blast` inherit that
+  same zero. The number is recorded so nobody rediscovers the type and assumes it
+  was expensive.
+
+  It is still a fix rather than a formality: the guarantee is absent, and the
+  absence is visible in this repo. The regression's `twoWays` helper assigns
+  `dst.* = .{ src[0], src[1] }` and the `0xAA` poison **survives** in the slack,
+  where the parser's own path zeroes it — two spellings of one type's store,
+  disagreeing about the bytes. Today's canonical image is a property of which
+  spelling the hot path uses, at this optimization level, on this target.
+
+  The near-miss: my first regression built the second copy with `@memcpy` from a
+  `.rodata` literal, which copies the source's zeroed slack over the poison, so it
+  **passed against the unfixed code**. A test that reproduces a bug only when the
+  bug is absent is worse than no test. It assigns element-wise now and opens by
+  asserting the two sides really do differ byte-wise. `dag_test.zig`'s slice
+  payload was green for the whole life of this defect for exactly that reason and
+  has been given a heap allocation and a poison fill.
+
+  The rule is now structural in three places. `frame.seamless(T)` is a comptime
+  `@compileError` when a type's fields do not tile it; `phantom/treemap.zig`'s
+  `Rec` and `Ent` assert it — which is what `Ent._pad: u8 = 0` has always been for
+  and why it cannot be deleted as unused — and `crest/sidecar.zig` asserts it of
+  `crest.Vector` before writing vectors to disk. `mix.SliceCtx(T)` refuses to
+  instantiate over an element type with unowned bytes at all, so the shape cannot
+  be respelled through the shared context. Anti-vacuity is a test that the
+  predicate still says **no**, over `struct { hi: u32, mask: u64 }` and over
+  `[2]u21` itself, because a predicate that says yes to everything reads exactly
+  like a clean sweep.
+- A slate now builds the accelerators for the face it will be asked:
+  `PatternSet.compileFor(gpa, specs, .buffer)` skips the fused gate, and the C ABI's
+  slate plane compiles that way. `PatternSet.compile` is the line face's
+  constructor and is unchanged, so every corpus walk in the ecosystem compiles
+  exactly what it did before.
+
+  The gate is one `CompiledQuery` over `(?:p0)|(?:p1)|…`, so unlike everything else
+  in a slate its price grows with the whole slate rather than with any one pattern.
+  The buffer face cannot use it at any price - an alternation over-approximates per
+  line and is outright unsound per buffer, which is why `bufMask` never consulted
+  it - so a C host was paying, at compile time, for the one accelerator that could
+  never answer its question.
+
+  That is the difference between an ABI you can hand two hundred patterns and one
+  you can't. `irgx_slate_compile` over 200 patterns of the shape `a<i>x+\d?` cost
+  about 5.5 s with the gate; without it the slate compiles at parity with
+  compiling the same patterns one at a time (0.5x-0.8x of that, since the muster
+  pools their literals in one pass). The realistic case moved even further: the
+  eight mixed patterns the binding suites use went from ~175 ms to 3.2 ms, and the
+  Python suite's 497 tests from 35 s to 6.6 s.
+
+  The muster stays on both faces, because both faces use it. A prefilter you run
+  is worth its compile; a gate you refuse to run is not.
+- Both vector rungs refused every x86-64 host at compile time, and neither refusal was about x86. Compose gated on `builtin.cpu.has(.aarch64, .neon)` and Parabix on `arch == .aarch64`; the comment defending the second one named a throughput measurement, which is a fact about who has run a benchmark, not about what instructions a machine has. So an architecture test was standing in for a pricing question on the target where most regex work actually happens, and the answer it gave was "no kernel here" when the truth was "nobody minted a coefficient here yet".
+
+  Those are now two predicates, and the ladder takes the conjunction itself (`rungs.zig`: the kernel exists **and** `price.calibrated`). Widening a capability therefore arms nothing that was never measured - it makes the refusal legible, and mintable, instead of hiding a missing price behind a missing instruction.
+
+  `lanes.native`, one NEON bool, became `lanes.widest: ?Width` plus `armed(w)`. One bool could only answer for the narrower width by lying about the wider: the 16-lane composition is a single 16-byte table lookup, which is `tbl` on NEON and `pshufb` on SSSE3 - `shuffle` has had both arms all along - while the 32-lane form needs a lookup across a register pair that SSSE3 has no equivalent for at any width. Every SSE machine was running a kernel it held the instruction for through the scalar oracle.
+
+  `plane.on_neon` became `plane.vectorized`, on the same reasoning and with a measured floor. The transposition is three rounds of even/odd byte de-interleave and three delta swaps - `@shuffle` and shift/xor, portable Zig - so what differs per target is what it compiles to, and for one 128-byte block that is 178 instructions on NEON, 245 under AVX2, 292 under SSSE3, and 398 at SSE2 baseline. NEON wins because `uzp1`/`uzp2` *is* the de-interleave; SSE2 has to emulate it with `punpck` chains. 1.6x is a rung with something left to sell against the DFA, 2.2x is emulation, so the line sits at the byte permute - the same instruction the 16-lane arm draws its own line at, so there is one answer to "is there a shuffle unit here" rather than two that can drift.
+
+  Both predicates now ask `cpu.has` rather than the architecture, which also closes a build that never produced an artifact at all: NEON is an optional AArch64 feature, and an arch-shaped gate in front of `shufflePair`'s feature-shaped `@compileError` meant any `-mcpu` profile without SIMD failed to compile rather than falling back.
+
+  `zig build check-linux` and `check-windows` grew an `x86_64_v2` row each, because the arms this admits were compiled by no query in that table: baseline prunes them to their portable legs and the AArch64 host builds the NEON leg instead. The arms we ship to the most common target in the world were reachable from no gate on no machine, which is how the original conflation survived as long as it did. The full suite now also executes on x86-64 SSSE3, not merely type-checks there - `lanes`, the Parabix transposition against its scalar oracle, and the Compose differential all run on the instruction rather than beside it.
+- Every README in the repository, all 118 of them, was audited against the
+  source it documents and rewritten wherever it disagreed. Most of the drift
+  traced to one cause: this package split out of Billy's monorepo, and the prose
+  kept describing the shape it had before the move. The root `README.md` still
+  named `regex_dfa` and `matcher` as sibling top-level exports, which retired
+  when the engine consolidated behind one `regex` door; `vendor/README.md`
+  pointed at a `libsais` path and a `zig build codex-scale` command that never
+  existed; `tools/whatwg/README.md` and `tools/ucd/README.md` credited a sibling
+  project's decoders for tables this engine's own kernel and corpus build.
+
+  Real fixes beyond the split: `contract/README.md` now documents `exports.toml`
+  and `contract/irregex.zone`, both born after the last time anyone touched that
+  file. `quality/surface/README.md` described a deprecation-schedule table shape
+  that isn't how `check.py` actually diffs `[removed]` entries against the last
+  release tag. `src/kernel/regex/oracle/README.md` and the root `README.md` each
+  cited a fixed differential case count for the composition, symbolic, and
+  one-pass rungs - numbers that appear nowhere in the tree as constants, because
+  the generators are randomized against an asserted floor rather than a fixed
+  total. Both now cite the floor the test actually holds the build to. The
+  `ladder/`, `shuffle/`, and `oracle/` accelerator docs had each drifted from
+  `price.zig`'s live calibration independently, in three different directions,
+  and no two of them agreed on the composition rung's own measured speedup until
+  this pass traced all three back to the same reference run.
+
+  Every table became a bulleted list, every bold-lead paragraph became a real
+  heading, and every number left standing was checked against a committed source
+  rather than an earlier draft's memory of one.
+- Parabix is now priced as two costs instead of one. `Calibration` gained
+  `parabix_base` beside `parabix_op`, and the scan model reads
+  `parabix_base + parabix_op x (stripe_ops - transpose_ops) / stripe_width`
+  rather than one slope through the origin.
+
+  Every admitted program pays the same transposition to get the bytes into bit
+  planes - `104 x plane.stripe` operations, now named `admit.transpose_ops`
+  instead of living as a literal inside `stripeOps` - and then pays for the
+  marker operations its pattern actually asked for. The old model summed those
+  two into `stripe_ops` and fit a single slope through zero, which forces one
+  number to stand for two costs with different physics. The fit then splits the
+  difference: it over-charges the programs that are mostly transposition and
+  under-charges the ones that are mostly markers.
+
+  The two coefficients are not close, and they are not in the same proportion on
+  both cores. On Raptor Lake the transposition is the dearer half by a factor of
+  five (`1.208` against `0.223`); on the M4 they are near parity (`0.492` against
+  `0.543`), because `tbl` does in one instruction what SSSE3 spends a sequence
+  on. A single slope cannot express that, so the same arithmetic that read
+  correctly on one machine had to read wrong on the other - which is the whole
+  argument for a per-core calibration restated as a bug.
+
+  The auction found it rather than the arithmetic looking suspicious.
+  `\b[a-z]{4}[0-9]{4}` was priced 29% dear on x86 and lost to a fallback that
+  measurement says it beats. That is what the regret gate is for: a model can be
+  wrong in a way no coefficient looks wrong, and only the pick reveals it.
+
+  `probe.separate` was generalized from the two-point line it had been to an
+  ordinary least squares fit over N points, since separating an intercept from a
+  slope needs more than two observations to mean anything. Both callers that were
+  already passing two points get the identical answer - for `n = 2` the fit is
+  the line through them. The mint now arms a slate of eight programs and fits
+  across whichever of them the target can actually build.
+- ShellCheck failed CI over `bench/apparatus/field.sh`, flagging `SCOPE` and
+  every `HAVE_*` availability flag as unused. Both are true and neither is a bug:
+  `field.sh` is vendored byte-identical across irregex/gist/relate/blast
+  (`bench/apparatus/SHARED.sha256`), and only gist's own
+  `bench/dominance/races/field.sh` sources it to build a rival-tool roster -
+  irregex mints no races of its own to read them back. ShellCheck cannot see a
+  downstream sourcer analyzing a file in isolation, so the same false positive
+  gist's `.shellcheckrc` already carries for this exact file is now disabled
+  here too, with the same reasoning recorded beside it.
+- The Go vendoring matrix declares `-lm` on both Linux targets, so its link probe
+  links the way a consumer's cgo build links.
+
+  The two sides had drifted: `link_linux_amd64.go` and its arm64 twin carry
+  `-lm`, while the matrix declared no library there, and the parity check added with
+  the Windows targets refused to vendor a Linux archive until the two agreed. The
+  archive really does need it - `exp` and `log` come out of the cost model
+  undefined, and libm only merges into libc in glibc 2.34, well past the 2.17 these
+  targets pin. What hid it is the same thing that hid `-lntdll`: `zig cc` links
+  libm silently, so a probe that leaves it out closes anyway and proves nothing
+  about the gcc that will actually perform the link.
+
+  Reconciled toward the link file rather than away from it, because the link file is
+  the one a consumer runs.
+- The Rust install instructions named a package nobody can install. Both the
+  binding README and the root README's Install section still said `irregex =
+  "0.1"` and "a path or git dependency" - the former is an unrelated 2023 crate
+  and the latter had not been true since the crate went to crates.io as
+  [`irgx`](https://crates.io/crates/irgx) 1.0.0. Copying either got you a
+  resolution error at best and a stranger's code at worst.
+
+  Both now say `cargo add irgx`, and the Install section explains once why the
+  name differs per registry rather than leaving three spellings unaccounted for:
+  PyPI keeps `irregex` because it was free, crates.io takes `irgx` because it was
+  not, and the import is `irgx` either way.
+- The measurement instruments now compile to their documented wall-clock fallback on non-macOS targets instead of analyzing unavailable dynamic-library operations.
+- The settled-pattern differential now reuses its immutable compiled queries across haystacks, preserving all 2,000 adverse cases while avoiding 24,000 redundant compilations.
+- The software prefetch in the SIMD literal scan is now a named per-target policy
+  in `simd.streamAhead`, and it is declined on x86-64.
+
+  The block loop hinted eight vectors ahead on every core, which was measured on
+  an M4 and never re-measured anywhere else. On Raptor Lake it costs **1.29x**
+  (0.0450 against 0.0349 tick/B, `Qzxjvw` over 8 MiB, min-of-24 round-robin after
+  warmup, pinned to a P-core). The L2 streamer recognizes a sequential stride
+  immediately and the loop is issue-bound, so the hint buys a ramp that already
+  happened and pays for it in slots.
+
+  That single coefficient is why the exact literal kernel was losing to a bare
+  `memchr` on x86 - `settle_literal_one` at 0.092 against `skip_scan` at 0.069
+  cyc/B - and it cost the auction a 1.32x regret on `Qzxjvw`, which is how it
+  surfaced. A kernel written to beat `memchr`, shipped losing to it on the most
+  common target in the world, because a constant tuned on a laptop rode along.
+
+  It was measured over many small documents as well as one large one, since the
+  obvious defense of a prefetch is that it only pays on a cold stream the
+  hardware has not learned yet. It does not pay there either.
+
+  The hint stays on aarch64, where it was measured, and the roofline bench is
+  what re-prices it. Both the kernel and `bench/bounds/roofline` now call the
+  same function instead of each spelling the policy out, so a benchmark cannot
+  measure a loop the engine does not run.
+- Towncrier ran with `wrap = true`, which is right for one-line release notes and
+  wrong for the multi-paragraph Markdown the fragments here actually are. It
+  reflows each entry as one flat block, so a fenced code sample lost its fence, a
+  hanging `-` at the end of a wrapped line became a setext heading, an inline code
+  span got split across a paragraph break, and the `*` that fell to the start of
+  the next line was read as a bullet. The v1.0.0 fold surfaced 25 markdownlint
+  findings that were all the same bug wearing different rule numbers.
+
+  Off, the fragment's own layout survives and towncrier only indents it. Three
+  fragments that were relying on the reflow - a broken `len >= 16 * k * budget`
+  span, an indented `pshufb` sample, and four `*` bullets in a document whose
+  other lists are dashes - are corrected at the source, so the fold is clean
+  rather than patched afterwards.
+- `Munch.longestAmong` takes a permission set, and until now that set governed
+  what the walk **recorded** and never how far it **ran**. The walk ran until the
+  union automaton died, and a union of sixty-four patterns dies where the last of
+  them does - so one wide member kept every narrow one walking. Ask a slate for
+  `return` at a position where `[^'&]+` is also alive, and you paid for `[^'&]+`
+  to reach end-of-file before being told about the six bytes you asked for.
+
+  The old premise is in the doc comment that shipped, and it is true:
+
+  > a forbidden pattern may still be on the path to a permitted longer one
+
+  It is just not the whole rule. A forbidden pattern is worth following only while
+  some *permitted* one can still reach an accept. Past that point no number of
+  remaining bytes can produce a reportable match, so stopping is not an
+  optimization with a correctness argument bolted on - it is the same answer,
+  reached without the walk that could not have changed it.
+
+  So a `Dfa` now carries `reach`, one `u64` per state saying which patterns still
+  have an accept ahead of them, and the walk exits on `s == dead` **or**
+  `reach[s] & permitted == 0`. It is built at freeze by a worklist fixpoint over
+  reverse edges, only for an attributed automaton; single-pattern programs - which
+  is most of what gist compiles - get no table and are not even asked.
+
+  Two things about that fixpoint are load-bearing and neither is obvious. It
+  unions successors over `trans_in` **and** `trans_fin`, because `trans_fin` is
+  what resolves `$` and an accept can be reachable only through it, on the true
+  last byte; an interior-only fixpoint would stop one byte short of an anchored
+  accept, which is a wrong token stream rather than a slow one. And erring broad
+  is free - a mask that admits too much only walks a little further - so where
+  there was a choice it went that way.
+
+  What it was worth, measured on outliner's javascript slate, where
+  `unescaped_single_jsx_string_fragment` shares a voice with the keywords a
+  statement parse asks for at nearly every position. Mean bytes walked per call,
+  over a 128 KiB file:
+
+  | grammar    | before   | after |
+  | ---------- | -------- | ----- |
+  | javascript | 16,322.6 | 1.9   |
+  | java       | 78.5     | 1.8   |
+  | json       | 3.8      | 2.4   |
+
+  Call counts are identical to the byte on all three, which is the point: the
+  answer never moved, only the distance traveled to reach it. Parsing that
+  javascript file went from 34,776 ns/byte to 1,168, and the file that took 16.5 s
+  takes 186 ms.
+
+  The all-permitted caller was expected to be a no-op, since with every pattern
+  permitted the test reduces to `reach[s] == 0`, which in a *minimal* automaton is
+  the dead state and nothing else. These automata are not minimal, and the traps
+  turn out to be worth having: with every terminal admitted, java walks 29% fewer
+  bytes and json 25% fewer, for the same tokens. So it is a small win rather than
+  nothing, which is the better half of the two answers that were available.
+
+  The test pins the distance rather than the effect, because a walk that runs too
+  far returns the same answer as one that stops - which is exactly why nobody
+  noticed for so long. `munch.steps` counts bytes stepped under
+  `builtin.is_test`, comptime-erased everywhere else, and the case asserts a
+  keyword-only walk over a 4 KiB haystack costs under sixteen steps. Disabling the
+  new exit turns that case red; without the counter it stayed green, which was the
+  first draft.
+- `Munch` determinized under `max_visits`, the same cost policy a search pays. Measured, that budget refuses `\w+`, `\p{L}+`, and `[_\p{XID_Start}][_\p{XID_Continue}]*` - respectively the most common token body in any grammar, and how five separate languages spell `identifier`. Each of them declined as `too_costly` and none as `too_large`, so nothing was ever too big to hold; the build was only judged too expensive to attempt.
+
+  That judgment is right for the caller it was calibrated against - a pattern the user typed a second ago, run once against one haystack - and wrong by several orders of magnitude for a lexer slate, which is compiled once and then amortized over every byte of every file for the life of the process. Munch now builds unbudgeted. `max_states` is the safety bound rather than the cost policy and still applies, so the automaton stays bounded and the build still terminates; a group too large to hold declines exactly as before and the bisection narrows it.
+- `isGenerated` read the first eight lines for a `Code generated ... DO NOT EDIT` banner. That works for the generators that stamp line one, and fails for every generator that carries its source contract's leading comment above its own banner - `protoc-gen-connect-go` puts a 24-line proto comment first, so the marker lands at line 26 and the file reads as hand-written.
+
+  Now the header is the leading run of comment and blank lines, however long that is, and the old eight-line count survives as a floor for banners that sit just under a package clause. The scan still stops at the first line of real code, so a mention in the body is a mention, not a banner, and it is still capped at 2048 bytes.
+
+  `isGeneratedPath` also learned `.connect.go` and `.connect.swift`, the two buf output names with no generator token in them. Callers holding no file bytes - the atlas-warm kinship verbs - get the demotion from the name alone.
+- `libirgx` would not compile for any `-msvc` Windows target in zig 0.16.0,
+  static or dynamic, whether or not a caller ever panicked. `std.Io.Threaded`'s
+  vtable makes every method reachable the moment one instance exists, and its
+  `netWriteFile` is `@panic("TODO implement netWriteFile")`-stubbed on every
+  backend - so the mere presence of that vtable pulled the default panic
+  handler's stack walk into the build. On the MSVC ABI that walk runs through
+  `SelfInfo.Windows.zig`'s `loadNtdllProc`, which casts a `*anyopaque` to a
+  function pointer without the `@alignCast` Zig itself now demands: a bug in the
+  standard library, not in this engine, and one that blocks every `-msvc`
+  target's static or object artifact regardless of whether the panic path is
+  ever exercised at runtime.
+
+  The artifact's root now declares its own panic namespace, `std.debug.
+  simple_panic`, for `.msvc` only - message to stderr, then trap, no stack walk,
+  no `SelfInfo`. Every other ABI keeps the default, fully symbolicated panic
+  handler unchanged.
+- `version_parity.py` discovers mirrors by walking for a marker rather than
+  keeping a list, which is the right instinct - a mirror added next year is
+  covered the day it is written. But a mirror is only guessed at: a line carrying
+  `x-release-please-version` and a version number. Release notes defeat that,
+  because their whole subject is versions and the machinery that moves them, so an
+  entry describing a bot bumping the engine to `0.3.0` and naming the marker in
+  the same sentence looks exactly like a stale mirror.
+
+  `changelog.d` was already skipped for this reason; `CHANGELOG.md` was not, and
+  nothing noticed until the 1.0.0 fold turned 237 fragments into one file. The
+  second fault it raised was the tell that the rule was backwards: it wanted
+  `CHANGELOG.md` added to release-please's `extra-files`, which would have the bot
+  rewriting past releases' numbers. Towncrier owns that file and the bot is
+  deliberately kept out of it, so the notes are now skipped before and after the
+  fold.
+- `zig build` now installs `libirgx.dylib` / `libirgx.a` at `ReleaseFast`
+  regardless of the mode the rest of the build runs in, and `-Dlib-optimize`
+  overrides that on its own.
+
+  The default `optimize` mode is `Debug`, which is right for the test binary and
+  for `zig build check`, and wrong for the artifact a host links. The Python
+  binding loads the dynamic library, so a plain `zig build` handed it a Debug
+  engine and nothing said so. Compiling `\w` cost 108 ms there against 2.6 ms in
+  Go, which links the vendored archive and had therefore been optimized all along -
+  a 40x gap that looked exactly like an engine problem in the Unicode class
+  lowering, and was the build mode.
+
+  A cache footgun is not a tuning knob. So the ABI artifacts get their own module
+  tree at the shipped mode, while the module the tests and `check` compile keeps
+  the caller's - the fast iteration loop stays fast, and what leaves the build is
+  what a consumer should have.
+
 ## [1.0.0] - 2026-08-02
 
 ### Added
