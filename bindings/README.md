@@ -15,7 +15,9 @@ analytic substrate. The first audience is the larger one by far, so it gets the
 root and pays for nothing:
 
 ```python
-import irgx; irgx.finditer(r"\w+", text)          # Python
+import irgx
+
+irgx.finditer(r"\w+", text)  # Python
 ```
 
 ```rust

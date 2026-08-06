@@ -224,9 +224,7 @@ def main() -> int:
     # in `home.zig` resolves, so the splicer reads the file the lane just wrote
     # even when a mint relocated the artifact home. Anchored off this file rather
     # than the CWD so it works from anywhere, like the zig steps and port/mca.sh.
-    out_dir = Path(
-        os.environ.get("GIST_DIR") or Path(__file__).resolve().parents[3] / ".gist"
-    )
+    out_dir = Path(os.environ.get("GIST_DIR") or Path(__file__).resolve().parents[3] / ".gist")
     ap = argparse.ArgumentParser(description="gist Layer D lower-bound certificate splicer")
     ap.add_argument(
         "--csv",

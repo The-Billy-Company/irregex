@@ -44,7 +44,6 @@ MAX_ATOMS = 4096
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from slate import read_probes  # noqa: E402
 
-
 # ── csearch Query.String() → tree ────────────────────────────────────────────
 # atom := '"' go-quoted '"' | '(' expr ')' | '+' | '-'
 # term := atom ('|' atom)*      → OR when > 1

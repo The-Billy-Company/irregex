@@ -44,9 +44,10 @@ from __future__ import annotations
 
 import re
 import sys
-import tomllib
 from dataclasses import dataclass
 from pathlib import Path
+
+import tomllib
 
 HERE = Path(__file__).resolve().parent
 CERTIFICATE = HERE.parent  # guard → certificate
@@ -238,8 +239,10 @@ def main() -> int:
         corpus = charter.corpora.get(sys.argv[2])
         if corpus is None:
             known = ", ".join(sorted(charter.corpora)) or "(none)"
-            print(f"publish: no corpus {sys.argv[2]!r} in {CHARTER_PATH.name}; declared: {known}",
-                  file=sys.stderr)
+            print(
+                f"publish: no corpus {sys.argv[2]!r} in {CHARTER_PATH.name}; declared: {known}",
+                file=sys.stderr,
+            )
             return 2
         print(" ".join(corpus.roots) if verb == "roots" else corpus.fetch)
         return 0
