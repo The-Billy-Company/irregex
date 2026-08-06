@@ -49,8 +49,8 @@
 # claim that can actually hold for a live tree.
 [corpus.ecosystem-v1]
 description = "the four sibling packages (irregex · gist · relate · blast), ~1,486 files / ~46 MiB across Zig, Markdown, Python, C, TOML, Rust, Go, shell and Vimscript — all 20 probe classes discriminating"
-roots = ["irregex", "gist", "relate", "blast"]
-allow_prefixes = ["irregex/", "gist/", "relate/", "blast/"]
+roots = [ "irregex", "gist", "relate", "blast" ]
+allow_prefixes = [ "irregex/", "gist/", "relate/", "blast/" ]
 fetch = "bash bench/apparatus/corpora/ecosystem.sh <dir>"
 
 # ── The self corpus ───────────────────────────────────────────────────────────
@@ -62,8 +62,8 @@ fetch = "bash bench/apparatus/corpora/ecosystem.sh <dir>"
 # and a lane with no declared corpus cannot publish at all.
 [corpus.irregex-self-v1]
 description = "the irregex checkout itself — engine-local bound lanes only, never a cross-language planner claim"
-roots = ["src", "bench", "bindings", "contract"]
-allow_prefixes = ["src/", "bench/", "bindings/", "contract/"]
+roots = [ "src", "bench", "bindings", "contract" ]
+allow_prefixes = [ "src/", "bench/", "bindings/", "contract/" ]
 fetch = "git clone https://github.com/The-Billy-Company/irregex"
 
 # ── Never present in a published bundle ───────────────────────────────────────
