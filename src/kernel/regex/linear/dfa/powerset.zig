@@ -40,14 +40,40 @@ const freeze = @import("../automata/freeze.zig");
 const State = syn.State;
 const Dfa = @import("dfa.zig").Dfa;
 
-/// Hard ceiling on the automaton's SIZE: it caps table memory and guarantees
-/// termination on an exponential powerset, so nothing overrides it. Under the
-/// visit budget it is normally unreachable — visits grow at least as fast as
-/// states × classes, so the cost ceiling is crossed first — and it becomes
-/// load-bearing exactly when a caller waives that budget (`force_dfa`), which is
-/// what lets the differential tests determinize every pattern they generate
-/// without risking a blow-up.
+/// Default ceiling on the automaton's SIZE: it caps table memory and guarantees
+/// termination on an exponential powerset. Under the visit budget it is normally
+/// unreachable — visits grow at least as fast as states × classes, so the cost
+/// ceiling is crossed first — and it becomes load-bearing exactly when a caller
+/// waives that budget, which is what lets the differential tests determinize
+/// every pattern they generate without risking a blow-up.
+///
+/// A ceiling is mandatory; *this* ceiling is a memory policy, and `Budget.states`
+/// is how a caller with different memory arithmetic names its own (see `slate`).
 pub const max_states: u32 = 4096;
+
+/// Size ceiling for a lexer slate (`Budget.slate`), where the arithmetic that set
+/// `max_states` does not hold.
+///
+/// Calibrated the way `max_visits` was: the smallest round value admitting every
+/// automaton measured to need it. Over the thirty-grammar tree-sitter corpus the
+/// largest terminal is markdown's `entity_reference` — the HTML entity table,
+/// 2,231 literal alternatives sharing prefixes — at **5,991 states over 110 byte
+/// classes**. It was the only one past 4,096 and the sole reason that corpus had
+/// a pattern the engine would not build; second place is scala at 2,945, and no
+/// other grammar reaches 2,200. So 4,096 was right for twenty-nine of thirty and
+/// wrong for one, which is a ceiling set against the wrong population rather than
+/// a pattern that deserved refusing.
+///
+/// Priced, not waved through. Tables are `u32` targets, so an automaton costs
+/// `states × classes × 4` per table and there are two (three under word context):
+/// `entity_reference` is 5.3 MiB, and a state-maxed automaton at the corpus's
+/// widest alphabet (179 classes, haskell) would be 11.7 MiB. That is affordable
+/// exactly because a slate is built once per grammar and then amortized over
+/// every byte of every file for the life of the process — the same asymmetry
+/// `munch.voice` invokes to waive the visit budget, which is a COST policy. This
+/// is the SIZE policy, and it is raised rather than removed: the powerset is still
+/// bounded, the build still terminates, and a genuine blow-up still declines.
+pub const slate_states: u32 = 8192;
 
 /// Effort cap for the eager build, in NFA-state visits (`Subset.visits`) — the
 /// unit that actually costs time, since one closure's price is the size of the
@@ -66,18 +92,37 @@ pub const max_states: u32 = 4096;
 /// and a compile-bound pattern set — the optimum is a broad, flat minimum.
 pub const max_visits: u64 = 750_000;
 
-/// Whether to enforce `max_visits`. `.unbudgeted` (from `force_dfa`) says the
-/// caller wants the automaton whatever it costs — the differential oracles, which
-/// need every generated pattern to actually reach the DFA rather than only the
-/// cheap ones. `max_states` still applies either way.
-pub const Budget = enum { budgeted, unbudgeted };
+/// What a caller will spend to get the automaton, on the two axes that are not
+/// the same question: TIME to discover it (`visits`) and MEMORY to hold it
+/// (`states`). Folding them into one word is what hid `entity_reference` — the
+/// lexer waived the cost cap and inherited a size cap set for somebody else.
+///
+/// The named seats are the whole vocabulary; nothing constructs this literally.
+pub const Budget = struct {
+    /// Enforce `max_visits`. False says the caller wants the automaton whatever
+    /// it costs to *find*.
+    visits: bool = true,
+    /// Ceiling on the automaton's size. Never optional — it is the termination
+    /// guarantee on an exponential powerset, so a caller may raise it and may
+    /// not waive it.
+    states: u32 = max_states,
+
+    /// A pattern typed a second ago, to run against one haystack. Both caps.
+    pub const budgeted: Budget = .{};
+    /// `force_dfa` — the differential oracles, which need every generated
+    /// pattern to actually reach the DFA rather than only the cheap ones.
+    pub const unbudgeted: Budget = .{ .visits = false };
+    /// A lexer slate: compiled once per grammar, amortized over every byte of
+    /// every file for the process's life. See `slate_states`.
+    pub const slate: Budget = .{ .visits = false, .states = slate_states };
+};
 
 /// Why the eager driver produced no automaton.
 pub const Decline = enum {
     /// Not determinizable this way at all: a buffer anchor (`\A`/`\z`) means
     /// multiline, where position flags are content-dependent.
     unsupported,
-    /// Past `max_states` — the automaton itself is too big to hold.
+    /// Past `budget.states` — the automaton itself is too big to hold.
     too_large,
     /// Past `max_visits` — small enough to hold, too expensive to discover.
     too_costly,
@@ -116,7 +161,7 @@ const Worklist = struct {
 };
 
 /// Determinize the Thompson NFA (`states`, entry `start`) into an immutable
-/// byte-class DFA, or decline — the automaton exceeds `max_states`, the walk
+/// byte-class DFA, or decline — the automaton exceeds `budget.states`, the walk
 /// exceeds `max_visits` (unless `budget` waives it), or the program carries a
 /// buffer anchor (multiline, where no DFA is built). `anchored` mirrors
 /// `analysis.startsAnchored`: every match begins at line start, so we never re-seed.
@@ -168,8 +213,8 @@ pub fn build(gpa: std.mem.Allocator, states: []const State, start: u32, anchored
             if (word_ctx) try wl.push(&sub, try sub.expand(id, k, .interior_word));
             // Last byte (at_end=true, word_after=false) resolves `$`/`\b`-at-EOL. Targets are terminal — the line ends right after — so interned for `is_match` but not enqueued.
             _ = try sub.expand(id, k, .final);
-            if (sub.nstates > max_states) return .{ .declined = .too_large };
-            if (budget == .budgeted and sub.visits > max_visits) return .{ .declined = .too_costly };
+            if (sub.nstates > budget.states) return .{ .declined = .too_large };
+            if (budget.visits and sub.visits > max_visits) return .{ .declined = .too_costly };
         }
     }
 

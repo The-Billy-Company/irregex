@@ -552,21 +552,26 @@ fn voice(
     // Balance bounds this recursion and the determinizer's closure stack at
     // `log2 N`; it buys no work, for the reasons `split.tree` records at length.
     const start = try split.tree(&c, entries);
-    // Unbudgeted, and this is the one place in the package where that is the
-    // conservative choice rather than the reckless one. `max_visits` is a COST
-    // policy calibrated for a pattern the user typed a second ago and will run
+    // The slate seat, and this is the one place in the package where spending
+    // more is the conservative choice rather than the reckless one. Both of its
+    // caps are calibrated for a pattern the user typed a second ago and will run
     // against one haystack; a lexer slate is compiled once and then amortized
     // over every byte of every file for the life of the process, so refusing an
-    // automaton to save two milliseconds of build is a trade in the wrong
-    // direction by several orders of magnitude. Measured, the budget refuses
-    // `\w+`, `\p{L}+`, and `[_\p{XID_Start}][_\p{XID_Continue}]*` — respectively
-    // the most common token body in any grammar and how Go, Java, C, Rust, and
-    // JavaScript each spell `identifier`. All three build unbudgeted.
+    // automaton to save two milliseconds of build — or five megabytes of table —
+    // is a trade in the wrong direction by several orders of magnitude.
     //
-    // `max_states` is the SAFETY bound and still applies, so the automaton is
-    // still bounded in memory and the build still terminates; a group too large
-    // to hold declines exactly as before and `admit` bisects it.
-    const outcome = try powerset.build(gpa, c.states.items, start, true, opts.unicode, .unbudgeted);
+    // On the COST axis, measured, the visit budget refuses `\w+`, `\p{L}+`, and
+    // `[_\p{XID_Start}][_\p{XID_Continue}]*` — respectively the most common token
+    // body in any grammar and how Go, Java, C, Rust, and JavaScript each spell
+    // `identifier`. All three build with it waived.
+    //
+    // On the SIZE axis the default ceiling refused exactly one terminal in the
+    // thirty-grammar corpus, markdown's `entity_reference`, which needs 5,991
+    // states against 4,096; `slate_states` is the measured ceiling that admits it
+    // (see there for the arithmetic). Raised, not waived — the automaton is still
+    // bounded, the build still terminates, and a group too large to hold declines
+    // exactly as before and `admit` bisects it to name the pattern responsible.
+    const outcome = try powerset.build(gpa, c.states.items, start, true, opts.unicode, .slate);
     return switch (outcome) {
         .declined => .{ .refused = .states },
         .built => |dfa| if (dfa.word_ctx) blk: {

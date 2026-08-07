@@ -109,6 +109,59 @@ test "munch: a slate with nothing usable in it is a decline, not an empty munch"
     try t.expectEqual(@as(?munch.Munch, null), try munch.Munch.compile(t.allocator, &.{}, .{}));
 }
 
+test "munch: a slate holds an automaton a one-shot query would refuse" {
+    // The two size ceilings are two policies, and what deserves pinning is the
+    // GAP between them, not either number — so this calibrates itself rather
+    // than hardcoding a state count that a smarter determinizer would falsify.
+    //
+    // The probe has to be an *irregular* literal set. A tidy one is a trap: all
+    // 8^4 strings over eight letters looks like a 4,681-node trie and is really
+    // just `[a-h]{4}`, which determinizes to five states. The entity table does
+    // not collapse because nobody designed it — so these literals are drawn from
+    // an LCG, and the trie is the automaton.
+    //
+    // Grow the set until the one-shot ceiling refuses it, then require the slate
+    // to hold the very same pattern. The real occupant of that window is
+    // markdown's `entity_reference` at 5,991 states.
+    const a = t.allocator;
+    var found = false;
+    var n: usize = 256;
+    while (n <= 4096 and !found) : (n *= 2) {
+        var pat: std.ArrayList(u8) = .empty;
+        defer pat.deinit(a);
+        var seed: u64 = 0x9E3779B97F4A7C15;
+        for (0..n) |i| {
+            if (i != 0) try pat.append(a, '|');
+            for (0..6) |_| {
+                seed = seed *% 6364136223846793005 +% 1442695040888963407;
+                try pat.append(a, 'a' + @as(u8, @intCast((seed >> 33) % 26)));
+            }
+        }
+
+        // A pattern the user typed. `force_dfa` waives only the COST cap, so a
+        // null DFA here is the SIZE ceiling and nothing else.
+        var re = try core.Regex.compileOpts(a, pat.items, .{ .force_dfa = true });
+        const refused = re.dfa == null;
+        re.deinit();
+        if (!refused) continue;
+
+        // The same automaton as a lexer slate: admitted, and it answers.
+        var m = try build(&.{pat.items});
+        defer m.deinit();
+        try t.expectEqual(@as(usize, 0), m.declined.len);
+        try t.expectEqual(@as(usize, 1), m.admitted());
+
+        // Anchored and longest, exactly as for any other slate: the first
+        // literal is a member, and a string off the set is a miss.
+        try t.expectEqual(@as(usize, 6), m.longest(pat.items[0..6], 0).?.len);
+        try t.expect(m.longest("zzzzzz", 0) == null);
+        found = true;
+    }
+    // If this trips, the query ceiling now reaches past every set tried — which
+    // means the gap this seat exists for has closed, and the seat should go too.
+    try t.expect(found);
+}
+
 test "munch: the empty string at the end of input is answerable" {
     var m = try build(&.{ "x*", "y" });
     defer m.deinit();
