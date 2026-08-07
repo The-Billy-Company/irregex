@@ -28,9 +28,23 @@ TWO METRICS, ONLY ONE OF WHICH IS A COST
     On Linux `/usr/bin/time -v` reports maxrss only, so the owned column is
     absent rather than invented.
 
+AND THE ANSWER IS CORPUS-SHAPED, WHICH IS WHY `--root` REPEATS
+    A single tree cannot carry this claim. Measured on the same day with the
+    same binaries, a deep C++ checkout puts gist near 1.9x rg on owned memory
+    while a tree of many cloned repositories puts it UNDER rg at 0.78x — rg's
+    own footprint moves more between those two than gist's does. So one root
+    would let whoever picks it pick the verdict. Pass every tree the claim is
+    supposed to hold over; each becomes its own row pair, and the reporter takes
+    its headline from gist's WORST corpus rather than its best.
+    (`scale_resident.tsv` holds the history of what this instrument was built to
+    settle, and what it found.)
+
 Usage:
-  python3 bench/rungs/sliver/walkcost.py --root <tree> [--pattern pgxpool]
-      [--reps 3] [--out bench/rungs/sliver/artifact]
+  python3 bench/rungs/sliver/walkcost.py --root <tree> [--root <tree> …]
+      [--pattern pgxpool] [--reps 3] [--out bench/rungs/sliver/artifact]
+
+  The `gist` half is the sibling checkout's release build; `GIST_BIN` pins a
+  specific one (see `product.gist_cli`).
 """
 
 from __future__ import annotations
@@ -45,9 +59,10 @@ import sys
 import time
 from pathlib import Path
 
+from product import gist_cli
+
 HERE = Path(__file__).resolve().parent
 KERNEL = HERE.parent.parent.parent
-GIST = KERNEL / "zig-out" / "bin" / "gist"
 
 # `/usr/bin/time -l` (Darwin, BSD) and `/usr/bin/time -v` (GNU) name the same
 # quantity differently and in different units; both shapes are read so the lane
@@ -61,10 +76,11 @@ MIB = 1024.0 * 1024.0
 
 
 class Sample:
-    """One tool's matched-pair measurement over the reps."""
+    """One tool's half of one corpus's matched pair, over the reps."""
 
-    def __init__(self, tool: str, argv: list[str]) -> None:
+    def __init__(self, tool: str, argv: list[str], corpus: str, files: int) -> None:
         self.tool, self.argv = tool, argv
+        self.corpus, self.files = corpus, files
         self.rss: list[float] = []
         self.owned: list[float] = []
         self.seconds: list[float] = []
@@ -88,18 +104,23 @@ def _timed(argv: list[str], root: Path, env: dict[str, str]) -> tuple[str, bytes
 
 
 def measure(a: argparse.Namespace) -> list[Sample]:
-    root = a.root.resolve()
+    return [s for root in a.root for s in _measure_one(a, root.resolve())]
+
+
+def _measure_one(a: argparse.Namespace, root: Path) -> list[Sample]:
     # `-c` (count) so neither tool is billed for rendering a repo-wide result,
     # and `-F` so the needle is a literal to both engines rather than a regex to
     # one of them. GIST_UNCAP=1 keeps gist's agent-context output budget from
     # clipping the answer, the same fairness flag `_compete.sh` sets.
     pairs = [
-        ("gist", [str(GIST), "--no-index", "-uu", "-F", "-c", a.pattern, "."]),
+        ("gist", [gist_cli(), "--no-index", "-uu", "-F", "-c", a.pattern, "."]),
         ("rg", ["rg", "-uu", "--no-messages", "-F", "-c", a.pattern, "."]),
     ]
+    where, walked = _where(root), _walked(root)
+    print(f"\n{where} · {walked:,} files walked", flush=True)
     out: list[Sample] = []
     for tool, argv in pairs:
-        s = Sample(tool, argv)
+        s = Sample(tool, argv, where, walked)
         if tool != "gist" and not shutil.which(tool):
             s.failed = "not installed"
             out.append(s)
@@ -152,9 +173,12 @@ def _shown(argv: list[str]) -> str:
 
 
 def _where(root: Path) -> str:
-    """`root` relative to the repository, when it is inside it — same reasoning as
-    `_shown`, applied to the corpus."""
-    repo = KERNEL.parent.parent.parent
+    """`root` relative to the workspace holding this checkout, when it is inside
+    it — same reasoning as `_shown`, applied to the corpus. The anchor is the
+    checkout's PARENT because that is where the corpora and the sibling packages
+    sit now; anchoring inside the checkout, as the monorepo layout did, would put
+    a home directory name in a committed artifact."""
+    repo = KERNEL.parent
     return str(root.relative_to(repo)) if root.is_relative_to(repo) else str(root)
 
 
@@ -163,7 +187,7 @@ def _walked(root: Path) -> int:
     same `-uu` scope, so the denominator is the tree as measured rather than a
     separate traversal with its own idea of what counts."""
     p = subprocess.run(
-        [str(GIST), "--no-index", "-uu", "--files", "."],
+        [gist_cli(), "--no-index", "-uu", "--files", "."],
         cwd=root,
         env=dict(os.environ, GIST_UNCAP="1", GIST_NO_AUTOSERVE="1"),
         capture_output=True,
@@ -171,12 +195,34 @@ def _walked(root: Path) -> int:
     return p.stdout.count(b"\n")
 
 
+def _pairs(samples: list[Sample]) -> dict[str, dict[str, Sample]]:
+    """Samples regrouped as corpus → tool → sample, in measurement order."""
+    by: dict[str, dict[str, Sample]] = {}
+    for s in samples:
+        by.setdefault(s.corpus, {})[s.tool] = s
+    return by
+
+
+def _ratio(pair: dict[str, Sample], metric: str) -> float | None:
+    """gist/rg on one metric, or None where either half is missing it.
+
+    Taken over the medians AS PUBLISHED, not the full-precision ones: the cells
+    carry one decimal, and a reader dividing the two numbers in front of them
+    should land on the ratio printed beside them. Recomputing from hidden digits
+    puts a 0.01 disagreement between this artifact and the certificate that
+    renders it, which reads as a mistake in whichever one you checked second.
+    """
+    g, r = pair.get("gist"), pair.get("rg")
+    if not g or not r:
+        return None
+    gv, rv = g.med(getattr(g, metric)), r.med(getattr(r, metric))
+    return round(gv, 1) / round(rv, 1) if gv and rv else None
+
+
 def report(samples: list[Sample], a: argparse.Namespace) -> int:
     out = a.out.resolve()
     out.mkdir(parents=True, exist_ok=True)
     tsv = out / "scale_walkcost.tsv"
-    by = {s.tool: s for s in samples}
-    g, r = by.get("gist"), by.get("rg")
     lines = [
         "# The matched pair behind Layer J's residency refutation: what a LIVE tree",
         "# walk costs in memory, with no index in play on either side. Same needle,",
@@ -186,38 +232,51 @@ def report(samples: list[Sample], a: argparse.Namespace) -> int:
         "# footprint') is the dirty memory the process cannot have reclaimed. The",
         "# ratio that is a cost is the owned one.",
         "#",
-        f"# corpus={_where(a.root.resolve())} files={_walked(a.root.resolve())}",
+        "# One row pair PER CORPUS, because the ratio is corpus-shaped and a single",
+        "# tree would let whoever chose it choose the verdict — rg's own footprint",
+        "# moves more between these trees than gist's does. The reporter takes its",
+        "# headline from gist's worst corpus here, never its best.",
+        "#",
         f"# needle={a.pattern} reps={a.reps} platform={sys.platform}",
-        "tool\tinvocation\tmaxrss_mib\towned_mib\tseconds\tmatches",
+        "corpus\tfiles\ttool\tinvocation\tmaxrss_mib\towned_mib\tseconds\tmatches",
     ]
-    for s in samples:
-        if s.failed and not s.rss:
-            lines.append(f"{s.tool}\t{_shown(s.argv)}\t\t\t\t{s.failed}")
-            continue
-        lines.append(
-            f"{s.tool}\t{_shown(s.argv)}\t{_cell(s.med(s.rss))}\t"
-            f"{_cell(s.med(s.owned))}\t{_cell(s.med(s.seconds))}\t{s.hits}"
-        )
-    if g and r and g.rss and r.rss:
-        lines.append(
-            f"# ratio gist/rg: maxrss {g.med(g.rss) / r.med(r.rss):.2f}x"
-            + (f" · owned {g.med(g.owned) / r.med(r.owned):.2f}x" if g.owned and r.owned else "")
-        )
+    for corpus, pair in _pairs(samples).items():
+        for s in pair.values():
+            stem = f"{corpus}\t{s.files}\t{s.tool}\t{_shown(s.argv)}"
+            if s.failed and not s.rss:
+                lines.append(f"{stem}\t\t\t\t{s.failed}")
+                continue
+            lines.append(
+                f"{stem}\t{_cell(s.med(s.rss))}\t{_cell(s.med(s.owned))}\t"
+                f"{_cell(s.med(s.seconds))}\t{s.hits}"
+            )
+        rss, owned = _ratio(pair, "rss"), _ratio(pair, "owned")
+        if rss:
+            lines.append(
+                f"# ratio gist/rg over {corpus}: maxrss {rss:.2f}x"
+                + (f" · owned {owned:.2f}x" if owned else "")
+            )
     tsv.write_text("\n".join(lines) + "\n")
     print(f"\nwrote {tsv}")
-    # The pair is the whole point: a run that could not obtain both halves has
+    # The pair is the whole point: a corpus that could not obtain both halves has
     # measured nothing, and saying so beats publishing one side as a comparison.
-    return 0 if (g and r and g.rss and r.rss) else 1
+    # Every named corpus must land, so a lane that quietly measured three of four
+    # cannot pass as a four-corpus claim.
+    pairs = _pairs(samples)
+    return 0 if pairs and all(_ratio(p, "rss") for p in pairs.values()) else 1
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--root", type=Path, required=True, help="tree to walk")
+    ap.add_argument(
+        "--root", type=Path, required=True, action="append", help="tree to walk (repeatable)"
+    )
     ap.add_argument("--pattern", default="pgxpool", help="literal needle")
     ap.add_argument("--reps", type=int, default=3)
     ap.add_argument("--out", type=Path, default=HERE / "artifact")
     a = ap.parse_args()
-    print(f"walk cost · root {a.root} · needle {a.pattern!r} · reps {a.reps}", flush=True)
+    roots = " · ".join(str(r) for r in a.root)
+    print(f"walk cost · needle {a.pattern!r} · reps {a.reps} · roots {roots}", flush=True)
     return report(measure(a), a)
 
 

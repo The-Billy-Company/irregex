@@ -47,9 +47,8 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 KERNEL = HERE.parent.parent.parent
 sys.path.insert(0, str(KERNEL / "bench" / "apparatus"))
+from product import gist_cli  # noqa: E402
 from statcore import dominance, median_ci  # noqa: E402
-
-GIST = KERNEL / "zig-out" / "bin" / "gist"
 
 # Byte-identical to gist/bench/certificate/guard/ratio.py PROBES — the canonical 12.
 # Needles are host-repo shaped on purpose: keeping them identical is what makes
@@ -95,7 +94,7 @@ def _run(cmd: list[str], cwd: Path, env: dict[str, str]) -> tuple[float, int, st
 def _cmd(tool: str, kind: str, pat: str, a: argparse.Namespace) -> list[str] | None:
     """The files-with-matches invocation for each engine, or None if unsupported."""
     if tool == "gist":
-        base = [str(GIST), "-l", "--sort", "none"]
+        base = [gist_cli(), "-l", "--sort", "none"]
         return base + (["-F"] if kind == "literal" else []) + [pat, "."]
     if tool == "zoekt":
         # zoekt's query language treats the argument as a regexp; a literal needs
