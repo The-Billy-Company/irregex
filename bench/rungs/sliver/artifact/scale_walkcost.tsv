@@ -6,9 +6,16 @@
 # footprint') is the dirty memory the process cannot have reclaimed. The
 # ratio that is a cost is the owned one.
 #
-# corpus=.etc files=239162
+# One row pair PER CORPUS, because the ratio is corpus-shaped and a single
+# tree would let whoever chose it choose the verdict — rg's own footprint
+# moves more between these trees than gist's does. The reporter takes its
+# headline from gist's worst corpus here, never its best.
+#
 # needle=pgxpool reps=3 platform=darwin
-tool	invocation	maxrss_mib	owned_mib	seconds	matches
-gist	gist --no-index -uu -F -c pgxpool .	54.1	37.5	5.5	0
-rg	rg -uu --no-messages -F -c pgxpool .	33.9	31.9	5.9	0
-# ratio gist/rg: maxrss 1.60x · owned 1.18x
+corpus	files	tool	invocation	maxrss_mib	owned_mib	seconds	matches
+billy/.etc/llvm-project	193744	gist	gist --no-index -uu -F -c pgxpool .	69.6	57.0	5.8	0
+billy/.etc/llvm-project	193744	rg	rg -uu --no-messages -F -c pgxpool .	33.8	31.8	4.6	0
+# ratio gist/rg over billy/.etc/llvm-project: maxrss 2.06x · owned 1.79x
+billy/.etc	449684	gist	gist --no-index -uu -F -c pgxpool .	89.2	76.6	8.0	0
+billy/.etc	449684	rg	rg -uu --no-messages -F -c pgxpool .	112.4	110.4	9.2	0
+# ratio gist/rg over billy/.etc: maxrss 0.79x · owned 0.69x

@@ -55,6 +55,27 @@ MIN_WORTH_FACTOR = 2.0
 #     be DISCLOSED numerically in the rendered section — never silently tolerated. The
 #     ceiling exists so gross breakage still fails closed; it is not a pass mark.
 WALK_SHORTFALL_CEILING = 0.03
+# The worst owned-memory ratio against rg this layer will certify for a live walk.
+#
+# Layer J claims gist's *implementation* of walking is no longer what costs it. That
+# claim was true, then false, then true again: the walk once materialized every path
+# it walked in the immortal per-worker arena, twice per entry, and the certificate
+# went on quoting the pre-fix figure for a whole release because the number lived in
+# prose nobody re-derived. Rendering it from the artifact fixed the staleness; only a
+# ceiling fixes the silence, because a regression would otherwise render as a larger
+# number in a well-formed table and splice.
+#
+# Set to catch the regression it exists for, not to pin the current measurement. The
+# per-entry arena growth this guards against measured 6.0x when it was live; the fix
+# lands between 0.69x and 1.79x depending on the tree. It is deliberately not tighter
+# than that, because the denominator is another engine: rg's own walk footprint moves
+# 3.5x across the two real corpora on record (31.8 → 110.4 MiB), so a ratio pinned
+# near the worst observation would fault on corpus shape rather than on a defect.
+#
+# Absence is not a fault — a checkout with no committed artifact mints a narrower
+# Layer J, the same posture every optional artifact here gets. The guard binds the
+# measurement that IS on record; it does not compel one to be taken.
+WALK_OWNED_CEILING = 2.5
 
 
 def _rows(path: Path, delimiter: str = "\t") -> tuple[list[dict], dict[str, str]]:
@@ -97,6 +118,7 @@ def audit(
     race: list[dict],
     pareto: list[dict],
     elision: list[dict],
+    walkcost: list[dict],
 ) -> list[str]:
     """Every reason this layer must refuse to splice. Empty ⇒ the claims hold."""
     faults: list[str] = []
@@ -156,6 +178,21 @@ def audit(
                     f"{cls}: the tier does not win at multi-GB scale "
                     f"(verdict={rival.get('verdict') or 'none'})"
                 )
+
+    # Judge the SAME corpus `_walkcost` puts in its headline — gist's worst — so the
+    # gate and the rendered claim can never disagree about which measurement is the
+    # claim. A corpus missing either half is already dropped upstream: half a matched
+    # pair is not a comparison, and the lane exits non-zero for it in its own right.
+    for where, _, gist, rival in _walkcost_corpora(walkcost):
+        owned, rg_owned = _num(gist, "owned_mib"), _num(rival, "owned_mib")
+        if owned <= 0 or rg_owned <= 0:
+            continue
+        if (ratio := owned / rg_owned) > WALK_OWNED_CEILING:
+            faults.append(
+                f"walk cost over `{where}`: gist owns {owned:.1f} MiB against rg's "
+                f"{rg_owned:.1f} MiB ({ratio:.2f}x), past the {WALK_OWNED_CEILING:.1f}x "
+                "ceiling — the walk is materializing per-entry memory again"
+            )
 
     # The "declined" verdict is itself gated: a cheap threshold that really pays would
     # make the narrative false, so find one and fail rather than explain it away.
@@ -468,27 +505,38 @@ def _race_section(
                 "findable. The matched pair below is the instrument that settled it: same "
                 "needle, same `-uu` scope, same cwd, both counting, both a fresh process with "
                 "no index and no daemon, so the only difference left is the implementation of "
-                "walking. It is measured on its own tree rather than the race corpus above, "
+                "walking. It is measured on its own trees rather than the race corpus above, "
                 "because what it isolates is walk cost per file and it must be re-runnable "
-                "anywhere:"
+                "anywhere — and on more than one of them, because it turned out that which "
+                "tree you walk decides who wins:"
             ),
             "",
         ]
         out += _walkcost(walkcost, walkcost_meta)
         out += [
             (
-                "> **The honest score, on the metric that is a cost.** gist's owned working set "
-                "is **93–96 MiB, flat across every query class** — a rare literal, a "
-                "corpus-wide literal, a sub-trigram needle and a zero-candidate probe all land "
-                "within 3 MiB of each other. That is ~10x csearch, and **5.8x better than "
-                "zoekt**, whose 558 MiB of owned memory for a single common term is the largest "
-                "working set in this table. Against csearch gist loses maxrss outright, and "
-                "that is the standing shortfall: csearch does not walk, so it is not charged "
-                "for a tree it never reads. The residual in-lane waste is "
-                "bounded and named: `crest.bin`'s 5.3 MiB is walked eagerly at load to derive "
-                "the sliver rescue set that only a 1–2 byte needle consumes, worth ~1% of the "
-                "number and left alone because making it lazy would entangle that set's "
-                "base-table lifetime with the codicil merge its soundness proof depends on."
+                "> **The honest score, on the metric that is a cost — and what in it is stale.** "
+                "gist's owned working set is **flat across every query class**: a rare literal, "
+                "a corpus-wide literal, a sub-trigram needle and a zero-candidate probe all "
+                "land within 3 MiB of each other, where zoekt spends 558 MiB on one common "
+                "term, the largest owned working set in this table. Against csearch gist loses "
+                "maxrss outright, and that is the standing shortfall: csearch does not walk, so "
+                "it is never charged for a tree it does not read. But the gist **figures** in "
+                "the rows above predate the two walk retentions closed in the pair below — they "
+                "were captured while the walk still kept a path copy per walked entry — so read "
+                "them as a pre-fix ceiling, not as today's number. Refreshing them needs the "
+                "multi-GB corpus with csearch and zoekt re-indexed over byte-identical files, "
+                "which is a deliberate re-measure; deriving the delta instead of measuring it "
+                "would be worse than saying so. The flatness, the rival ordering, and the "
+                "matched pair against ripgrep are unaffected."
+            ),
+            "",
+            (
+                "> The residual in-lane waste is bounded and named: `crest.bin`'s 5.3 MiB is "
+                "walked eagerly at load to derive the sliver rescue set that only a 1–2 byte "
+                "needle consumes, worth ~1% of the number and left alone because making it lazy "
+                "would entangle that set's base-table lifetime with the codicil merge its "
+                "soundness proof depends on."
             ),
             "",
         ]
@@ -502,46 +550,123 @@ def _walkcost(rows: list[dict], meta: dict[str, str]) -> list[str]:
     shape a fix invalidates silently — and one did: the walk path's own retention
     was found and closed, and the certificate went on quoting the pre-fix figure.
     An absent measurement now reads as absent instead of as the last one anybody
-    took."""
-    by = {r["tool"]: r for r in rows if r.get("maxrss_mib")}
-    gist, rg = by.get("gist"), by.get("rg")
-    if not gist or not rg:
+    took.
+
+    It is a table per CORPUS, and the headline ratio is gist's WORST of them. The
+    lane measures several because the ratio turned out to be corpus-shaped — rg's
+    own footprint swings further between two real trees than gist's does — so a
+    single-tree rendering would report whichever verdict the corpus chose. Taking
+    the worst is the only reading a rival could not accuse of shopping."""
+    per = _walkcost_corpora(rows)
+    if not per:
         return [
             "This mint carries no matched-pair measurement (`scale_walkcost.tsv` absent or "
             "one half unobtainable), so the refutation above is not restated with numbers "
-            "here. Take it with `bench/rungs/sliver/walkcost.py --root <tree>`.",
+            f"here — and the {WALK_OWNED_CEILING:.1f}x owned-memory ratchet this layer "
+            "normally enforces has nothing to bind, so read the claim as unguarded on this "
+            "mint. Take it with `bench/rungs/sliver/walkcost.py --root <tree>`.",
             "",
         ]
-    where = meta.get("corpus", "an unnamed tree")
-    files = meta.get("files")
+    needle = meta.get("needle", "a literal")
+    reps = meta.get("reps")
     out = [
-        f"| scanner over `{where}`"
-        + (f" ({int(files):,} files)" if files and files.isdigit() else "")
-        + " | maxrss | owned |",
-        "|---|--:|--:|",
+        f"| scanner (`{needle}`" + (f", median of {reps}" if reps else "") + ") | corpus "
+        "| maxrss | owned |",
+        "|---|---|--:|--:|",
     ]
-    out += [
-        f"| `{r['invocation']}` | {_num(r, 'maxrss_mib'):.1f} MiB | **{_num(r, 'owned_mib'):.1f} MiB** |"
-        for r in (rg, gist)
+    for where, files, gist, rg in per:
+        scope = f"`{where}`" + (f" ({files:,} files)" if files else "")
+        out += [
+            f"| `{r['invocation']}` | {scope} | {_num(r, 'maxrss_mib'):.1f} MiB "
+            f"| **{_num(r, 'owned_mib'):.1f} MiB** |"
+            for r in (rg, gist)
+        ]
+    ratios = [
+        (
+            _num(g, "owned_mib") / max(_num(r, "owned_mib"), 1e-9),
+            _num(g, "maxrss_mib") / max(_num(r, "maxrss_mib"), 1e-9),
+            w,
+        )
+        for w, _, g, r in per
     ]
-    owned = _num(gist, "owned_mib") / max(_num(rg, "owned_mib"), 1e-9)
-    rss = _num(gist, "maxrss_mib") / max(_num(rg, "maxrss_mib"), 1e-9)
+    owned, rss, worst = max(ratios)
+    spread = (
+        ""
+        if len(ratios) < 2
+        else (
+            f" That is the worst of {len(ratios)} corpora — `{worst}`; the best of them puts "
+            f"gist at **{min(ratios)[0]:.2f}x**, and the honest summary of the spread is that "
+            "which tree you walk decides who wins, so both ends are published."
+        )
+    )
     out += [
         "",
         (
             "So walking is not what costs it — gist's *implementation* of walking was, and "
             f"that is now closed to **{owned:.2f}x rg on owned memory**, the metric that is a "
             f"cost, and **{rss:.2f}x on maxrss**, which charges an engine for clean evictable "
-            "page cache a `read(2)`-based scanner is never billed for. What closed it was "
-            "naming the retention rather than the phase: the walk was holding every large "
-            "file it had mapped until the process exited, so its resident set tracked the "
-            "corpus instead of the query. A worker now drops each mapping in the frame that "
-            "rendered it. The freshness defense was never the answer here — rg has perfect "
-            "freshness, it reads the tree every time and trusts nothing, and it is cheap — "
-            "which is exactly why rg is the honest denominator for a walk-cost claim."
+            f"page cache a `read(2)`-based scanner is never billed for.{spread}"
+        ),
+        "",
+        (
+            f"That ratio is a **ratchet, not a readout**: this layer refuses to splice at all "
+            f"when the worst corpus above exceeds **{WALK_OWNED_CEILING:.1f}x** rg on owned "
+            "memory. It is bound because the claim came undone once already: the retentions "
+            "named below were closed in the engine while this section went on quoting the "
+            "pre-fix number as current. Rendering the table from an artifact fixed the "
+            "staleness; a threshold on that artifact is what keeps a regression from "
+            "re-entering as nothing louder than a bigger number."
+        ),
+        "",
+        (
+            "Two retentions closed it, and naming them separately matters because they move "
+            "different columns. **maxrss**: the walk mapped every large file it read and held "
+            "all of them until the process exited, so its resident set tracked the corpus "
+            "rather than the query; a worker now drops each mapping in the frame that "
+            "rendered it, on the branch where a gate has already proven the file cannot "
+            "match. **owned**: the walk materialized every path it walked in the immortal "
+            "per-worker arena, twice per entry — the display path and the scope-relative "
+            "path are the same slice on every walk but an explicitly-rooted one, and both "
+            "were joined — so one prefix compare drops the second copy, and the remaining "
+            "joins moved onto the per-directory scratch a worker already recycles. Only the "
+            "three branches that outlive a directory still own arena memory: a queued child "
+            "directory, a file deferred while the elision oracle is loading, and a `--sort` "
+            "record."
+        ),
+        "",
+        (
+            "> The freshness defense was never the answer here — rg has perfect freshness, it "
+            "reads the tree every time and trusts nothing, and it is cheap — which is exactly "
+            "why rg is the honest denominator for a walk-cost claim."
         ),
         "",
     ]
+    return out
+
+
+def _walkcost_corpora(rows: list[dict]) -> list[tuple[str, int, dict, dict]]:
+    """`(corpus, files, gist_row, rg_row)` for every corpus with BOTH halves measured.
+
+    A corpus missing a half is dropped rather than rendered one-sided: half a
+    matched pair is not a comparison, and the lane already exits non-zero for it.
+    Rows predating the per-corpus schema carry no `corpus` column, so they fall
+    back to one unnamed tree — an old artifact still renders instead of vanishing.
+    """
+    order: list[str] = []
+    by: dict[str, dict[str, dict]] = {}
+    for r in rows:
+        if not r.get("maxrss_mib"):
+            continue
+        where = (r.get("corpus") or "an unnamed tree").strip()
+        if where not in by:
+            order.append(where)
+        by.setdefault(where, {})[r["tool"]] = r
+    out = []
+    for where in order:
+        pair = by[where]
+        if (gist := pair.get("gist")) and (rg := pair.get("rg")):
+            files = (gist.get("files") or "").strip()
+            out.append((where, int(files) if files.isdigit() else 0, gist, rg))
     return out
 
 
@@ -679,8 +804,12 @@ def write_sidecar(
             if (r.get(col) or "").strip() not in ("", "—")
         )
     for r in walkcost:
+        # The lane measures one row pair per corpus, so the tool alone no longer
+        # names a measurement — two corpora would collapse onto one key and the
+        # side-car would silently publish whichever was written last.
+        key = f"{r.get('corpus') or 'unnamed'}/{r['tool']}"
         out.extend(
-            f"walkcost\t{r['tool']}\t{col}\t{r.get(col)}"
+            f"walkcost\t{key}\t{col}\t{r.get(col)}"
             for col in ("maxrss_mib", "owned_mib", "seconds")
             if (r.get(col) or "").strip() not in ("", "—")
         )
@@ -741,7 +870,7 @@ def main() -> int:
         _rows(args.walkcost) if args.walkcost and args.walkcost.exists() else ([], {})
     )
 
-    if faults := audit(rows, meta, race, pareto, elision):
+    if faults := audit(rows, meta, race, pareto, elision, walkcost):
         print("certify_scale_report: REFUSING to splice — the layer's own claims do not hold:")
         for fault in faults:
             print(f"  · {fault}")

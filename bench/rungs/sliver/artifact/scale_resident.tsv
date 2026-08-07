@@ -30,33 +30,55 @@
 #      still costs 535 MiB. So the index accounts for only ~48 MiB of maxrss and
 #      ~14 MiB of footprint; the remaining ~535 MiB is present without it.
 #
-# Where the remaining ~535 MiB comes from is NOT yet explained, and a second wrong
-# answer has been retired here too. The draft that replaced "the index is resident"
-# said the cost was inherent to walking a live tree: every query re-walks all 336,780
-# files to honor "a stale index can accelerate a live tree without owning truth", one
-# touched byte costs a whole 16 KiB page on macOS ARM64, so residency would track FILE
-# COUNT rather than query or index size. That reasoning predicts any engine walking
-# this tree pays this bill. RIPGREP WALKS THIS TREE AND DOES NOT (matched pair below,
-# both -uu over the same corpus from the same cwd, both returning zero matches):
+# Where the remaining ~535 MiB came from went unexplained for a while, and a second
+# wrong answer was retired here on the way to the right one. The draft that replaced
+# "the index is resident" said the cost was inherent to walking a live tree: every
+# query re-walks all 336,780 files to honor "a stale index can accelerate a live tree
+# without owning truth", one touched byte costs a whole 16 KiB page on macOS ARM64, so
+# residency would track FILE COUNT rather than query or index size. That reasoning
+# predicts any engine walking this tree pays this bill. RIPGREP WALKS THIS TREE AND
+# DOES NOT — which is what made the remainder gist's OWN, and findable.
 #
-#   rg   -uu -F -c pgxpool .            35.7 MiB maxrss   36.5 MiB owned   9.02 s
-#   gist -uu --no-index -F -c pgxpool . 661.7 MiB maxrss  219.2 MiB owned   9.84 s
+# The matched pair that settles it is deliberately NOT two numbers typed here any
+# more. It is measured by `walkcost.py` and committed as `scale_walkcost.tsv`, which
+# records its own corpus and walked-file count, because a pair in a comment is
+# exactly the shape a fix invalidates in silence — and two fixes did:
 #
-# So walking is not what costs it — gist's IMPLEMENTATION of walking is. The gap
-# survives on the fair metric: owned footprint, which excludes clean evictable page
-# cache, still puts gist at 6.0x rg for identical work with no index in play. And the
-# freshness defense does not hold either, because rg has PERFECT freshness (it reads
-# the tree every time and trusts nothing) for 36 MiB. csearch's 3-11 MiB does come
-# from not walking — it trusts its index and opens only the files its postings name,
-# which is why it also cannot see a file created after indexing (see scale_truth.tsv)
-# — but rg is the honest denominator for a walk-cost claim, and rg is cheap.
+#   · maxrss. The walk mapped every large file it read and held all of them until the
+#     process exited, so its resident set tracked the CORPUS rather than the query. A
+#     worker now drops each mapping in the frame that rendered it, on the branch where
+#     a required-literal gate has already proven the file cannot match
+#     (`corpus/read/slurp.zig`'s `release`).
+#   · owned. The walk materialized every path it walked in the immortal per-worker
+#     arena, and twice per entry: `task.rel` and `task.scope` are the same slice on
+#     every walk but an explicitly-rooted one, and `handleEntry` joined both. One
+#     prefix compare drops the second copy; the remaining joins moved onto the
+#     per-directory scratch the worker already recycles, so only the three branches
+#     that genuinely outlive a directory still dupe into the arena — a queued child
+#     `DirTask`, a file deferred while the elision oracle is still loading, and a
+#     `--sort` record. Worth 26.4 MiB of worker arena down to 3.0 on llvm-project
+#     (`exec/cold/engine/swarm/descent.zig`).
 #
-# HONEST SCORE. On owned memory gist is flat at 93-96 MiB whatever the query and
-# ~5.8x BETTER than zoekt, whose 558 MiB for one common term is the largest owned
-# working set in the table. Against rg as a pure scanner gist owns 6.0x, and against
-# csearch it loses maxrss outright. That gap is UNATTRIBUTED overhead in gist's walk
-# path, not a measured price of freshness: an open optimization target, and the
-# strongest surviving form of the original scale claim until it is profiled.
+# Neither was a price of freshness, and that was the tell: rg has PERFECT freshness —
+# it reads the tree every time and trusts nothing — for 36 MiB. csearch's 3-11 MiB
+# does come from not walking: it trusts its index and opens only the files its
+# postings name, which is why it also cannot see a file created after indexing (see
+# scale_truth.tsv). rg stays the honest denominator for a walk-cost claim.
+#
+# STALE, AND STAMPED RATHER THAN RE-TYPED: every gist column below predates both
+# closures. The owned figures were captured while the walk still retained a path copy
+# per entry, so "flat at 93-96 MiB" is a PRE-FIX reading and the live number is lower
+# by this corpus's arena term. Refreshing them needs the multi-GB corpus and rebuilt
+# csearch/zoekt indexes over byte-identical files — a deliberate re-measure, not a
+# side effect of the change that invalidated them, and inventing the delta would be
+# worse than labelling it. The rival columns are untouched by anything on gist's side.
+#
+# HONEST SCORE, on what survives that staleness. gist's owned working set is FLAT
+# across every query class — a rare literal, a corpus-wide literal, a sub-trigram
+# needle and a zero-candidate probe all land within 3 MiB of each other — where zoekt
+# spends 558 MiB on one common term, the largest owned working set in this table.
+# Against csearch gist loses maxrss outright, and that is the standing shortfall:
+# csearch does not walk, so it is never charged for a tree it does not read.
 #
 # Residual in-lane opportunity, bounded and not taken: crest.bin's 5.3 MiB is walked
 # eagerly at every load to derive the sliver tier's rescue set, though only a 1-2 byte
@@ -71,6 +93,7 @@ func	corpus-wide literal	566	96	55	10	2266	558
 # --- controls that isolate the mechanism (gist only) ---
 pgxpool	zero-candidate, index elides every read	583	96	—	—	—	—
 pgxpool	zero-candidate, --no-index (no index mapped)	535	82	—	—	—	—
-# The rg matched pair (gist -uu --no-index 662/219 vs rg -uu 36/37) is NOT a row here:
-# these columns are headed csearch/zoekt, and borrowing them to carry rg's numbers
-# would misattribute the refutation. It is rendered as its own table in the layer.
+# The rg matched pair is NOT a row here: these columns are headed csearch/zoekt, and
+# borrowing them to carry rg's numbers would misattribute the refutation. It lives in
+# `scale_walkcost.tsv` and is rendered as its own table in the layer — which is also
+# why it is the one number in this file that did not go stale when the walk changed.

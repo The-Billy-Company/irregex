@@ -163,11 +163,22 @@ tree of 336,780 files, since one touched byte costs a whole 16 KiB page on
 ARM64 — was retired too, by the matched pair against ripgrep in
 [Walk Cost](#walk-cost-the-matched-pair-against-ripgrep) below: if the cost
 were a property of walking, ripgrep would pay it walking the same tree, and it
-does not. The excess is gist's own *implementation* of walking, which that
-section found and partly fixed. On owned memory — `peak memory footprint`,
-what the process cannot have reclaimed and the metric that fix does not touch
-— gist is flat at **93–96 MiB** on this corpus, ~10× csearch and **5.8×
-better than zoekt's 558 MiB**.
+does not. The excess was gist's own *implementation* of walking, in two
+retentions that move different columns — held file mappings on `maxrss`, and a
+path materialized per walked entry on **owned** memory. Both are closed; that
+section carries the current pair.
+
+Which is why the owned figures in `scale_resident.tsv` are stamped **pre-fix**
+rather than quoted here as current. They were captured while the walk still
+kept a copy of every path it walked in the immortal per-worker arena, so the
+familiar "flat at 93–96 MiB" reading now **overstates** what gist owns, by this
+corpus's arena term. What survives it is the *shape* of that row and the rival
+comparison, neither of which the walk's own retention touched: gist's owned
+working set is flat across every query class where zoekt spends 558 MiB on one
+common term, and csearch still wins `maxrss` outright because it never walks.
+Refreshing the numbers themselves needs the multi-GB corpus with rebuilt
+csearch and zoekt indexes over byte-identical files — a deliberate re-measure,
+not a side effect of the change that invalidated them.
 
 ## Walk Cost: The Matched Pair Against Ripgrep
 
@@ -180,18 +191,43 @@ same two metrics, and reports the owned ratio as the one that is a cost. Artifac
 absent measurement reads as absent instead of as the last one anybody took.
 
 ```bash
-python3 bench/rungs/sliver/walkcost.py --root <tree> [--pattern pgxpool] [--reps 3]
+python3 bench/rungs/sliver/walkcost.py --root <tree> [--root <tree> …] \
+    [--pattern pgxpool] [--reps 3]
 ```
 
-This is where the walk's own retention was found: gist mapped every large file it
-read and held all of them to exit, so its resident set tracked the corpus rather
-than the query. Dropping each mapping in the frame that rendered it closed most
-of the gap: the committed `scale_walkcost.tsv` run, a zero-match `pgxpool` needle
-over the checked-out `.etc/` tree (239,162 files, 3 reps), shows gist at
-**54.1 MiB maxrss / 37.5 MiB owned** against ripgrep's **33.9 MiB / 31.9 MiB** —
-a 1.60× maxrss ratio and 1.18× on owned memory, down from the unfixed number this
-section used to carry. The remaining gap is real and open, not zero; re-run
-`walkcost.py` after any further change to the walk's file-mapping lifecycle.
+`--root` repeats because the answer is **corpus-shaped**, and that is not a
+caveat — it is the finding. Ripgrep's own footprint swings further between two
+real trees than gist's does, so one tree would let whoever picked it pick the
+verdict. Both ends are published. The artifact is the source of truth and the
+shape below is what it looks like, not a second copy to keep in step — read
+`scale_walkcost.tsv` for this machine's current cells:
+
+| corpus | gist | ripgrep | owned ratio |
+|---|--:|--:|--:|
+| `.etc/llvm-project` (193,744 files) | 69.6 / 57.0 MiB | 33.8 / 31.8 MiB | **1.79×** |
+| `.etc` (449,684 files) | 89.2 / 76.6 MiB | 112.4 / 110.4 MiB | **0.69×** |
+
+(`maxrss / owned`, zero-match `pgxpool`, 3 reps.) Layer J quotes the **worst** of
+them, never the best. On a deep C++ checkout ripgrep still wins; on a tree of many
+cloned repositories gist now owns less memory than ripgrep does for the same
+zero-match answer. Which is the point of measuring more than one: a lane that had
+only ever walked `.etc` would have reported a win it does not have everywhere.
+
+This is where both of the walk's own retentions were found, and they move
+different columns. On `maxrss`: gist mapped every large file it read and held all
+of them to exit, so its resident set tracked the corpus rather than the query —
+closed by dropping each mapping in the frame that rendered it. On **owned**: the
+walk materialized every path it walked in the immortal per-worker arena, and
+twice per entry, because the display path and the scope-relative path are the
+same slice on every walk but an explicitly-rooted one and `handleEntry` joined
+both. One prefix compare drops the second copy; the remaining joins moved onto
+the per-directory scratch a worker already recycles, leaving only the three
+branches that outlive a directory owning arena memory — a queued child
+`DirTask`, a file deferred while the elision oracle is still loading, and a
+`--sort` record. Worth 26.4 MiB of worker arena down to 3.0 on llvm-project.
+
+Re-run `walkcost.py` after any change to the walk's mapping lifecycle **or** to
+what it allocates per entry; those are the two things this pair is watching.
 
 That walk is also the one cause of the cheap-literal latency losses (~1.2 s over
 337,949 files), and it is the freshness contract being paid for, not overhead: a
