@@ -1,6 +1,6 @@
 # irregex — the export surface.
 #
-# The outward half of the law. `irregex.zone` says what a file inside this
+# The outward half of the law. `charter.zone` says what a file inside this
 # package may reach; nothing said what the package promises to everyone else,
 # and that asymmetry is exactly how the public surface drifted: a bench needed
 # one automaton stage, the shortest path was a new name at the root, and by the

@@ -31,10 +31,10 @@ python3 quality/surface/check.py
 
 ## Import Topology
 
-[`irregex.zone`](irregex.zone) is the machine-checkable half of the package's layering — which tier a file may import from, judged by the standalone [`zoning`](https://github.com/The-Billy-Company/zoning) tool rather than convention. `src/README.md` and the per-tier READMEs are the prose version of the same law; this file is what actually fails a build when an import points the wrong way. CI runs it as the `topology` job:
+[`../charter.zone`](../charter.zone) is the machine-checkable half of the package's layering — which tier a file may import from, judged by the standalone [`zoning`](https://github.com/The-Billy-Company/zoning) tool rather than convention. `src/README.md` and the per-tier READMEs are the prose version of the same law; that file is what actually fails a build when an import points the wrong way. It sits at the package root rather than in this drawer because a contract governs the directory it sits in, and the thing it governs is the whole package. CI runs it as the `topology` job:
 
 ```bash
-uv run --no-project --with zoning==0.1.1 zoning verify
+uv run --no-project --with zoning==1.3.1 zoning verify --complete
 ```
 
 ## Kinship Vocabulary

@@ -1,0 +1,76 @@
+// irgx — import topology of the Python binding.
+//
+// This is the floor the other three bindings stand on: the request model, the
+// row decoder, the shell runner, the CFFI loader, the grade bands, and the
+// error taxonomy. `gist`, `relate`, and `blast` each ship a thin wheel that
+// imports this one, so a change here is a change to all of them — which is
+// most of the reason the layering below is worth writing down.
+//
+// Named `irgx`, not `irregex`, because that is the import name and because the
+// Zig package next door already answers to `irregex` in `charter.zone`. One
+// tree, two contracts, two names.
+//
+// Judged by `zoning verify` under the `python` dialect, from the repository
+// root, alongside `charter.zone` (the Zig side).
+
+package irgx {
+    root     .
+    language python
+}
+
+// Tiers, low to high. An import may only point back up the page.
+zones {
+    // The wheel's build hooks. They run under hatchling and never under the
+    // package, so they import nothing of ours and sit at the bottom.
+    packaging  *.py
+
+    // The generated contract surface: the row-schema table the engine and the
+    // decoder agree on, and the calibrated grade bands. Depends on nothing
+    // here, which is what makes it safe for everything else to depend on.
+    contract   irgx/contract/**
+
+    // The runtime and the request model it serves. One zone: the decoder
+    // resolves an enum id to the request model's own calibrated type, and the
+    // request model is decoded by the decoder — the two are a single unit of
+    // change. See the cycle variance below.
+    core       irgx/*.py irgx/runtime/**
+
+    // Wheel-building scripts. Operational, above the package because they
+    // drive it rather than the other way round.
+    scripts    scripts/**
+
+    // Behavioral tests, including the parity suites that hold the Python
+    // decode path to the C ABI's own answer.
+    tests      tests/**
+}
+
+// Reach outside the package.
+
+// The in-process bridge to `libirgx`. Held by the core alone; the cold
+// subprocess path answers without it.
+use cffi by core
+
+// Build- and test-time only, carried by the tier that runs under them.
+use hatchling by packaging
+use pytest by tests
+
+// Structural laws.
+limit  reach to 1 hop
+forbid cycles across directories
+
+// The one cycle, and why it stays.
+//
+// `request` is decoded by `runtime/decode`, so it imports it at load. The
+// back-edge is `_typed()`, a cached lookup that maps an engine enum id onto
+// the package's own calibrated Python type — so `row.grade.meets("strong")`
+// works instead of handing back a bare string. Those types live in the modules
+// that stand on the decoder, so the import is deferred to first use and the
+// load-time graph stays acyclic.
+//
+// Breaking it would mean either giving up typed enums on decoded rows, or
+// moving the type table into the decoder, where it would be a second copy of
+// a contract the request model already owns.
+variance cycle {
+    irgx/request.py
+    irgx/runtime/decode.py
+} because "a decoded enum resolves to the request model's calibrated type rather than a bare string, and the lookup that does it is a cached deferred import so the load-time graph stays acyclic"
