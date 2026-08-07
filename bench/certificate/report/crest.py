@@ -84,7 +84,7 @@ def render(rows: list[dict], files: str, mib: str, machine: str, zig: str) -> st
         ),
         "",
         f"- machine: **{machine}** · zig `{zig}` · corpus {files} files · {mib} MiB",
-        "- sidecar: 8 byte-classes · 16 bytes/file · built by the same parallel pass `gist index` persists as `crest.bin`",
+        "- sidecar: 8 classes × 3 alphabets (ascii/scalar/codepoint, 24 lanes) · 48 bytes/file · built by the same parallel pass `gist index` persists as `crest.bin`",
         "",
         "| query | pattern | RUN prune% | CNT prune% (cousin) | full ms | sieve ms | speedup |",
         "|---|---|--:|--:|--:|--:|--:|",

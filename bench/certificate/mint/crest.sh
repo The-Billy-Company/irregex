@@ -30,7 +30,12 @@ gist_resolve_roots "${HERE}" || exit 1
 OUT="${CERT_OUT:-${GIST_VERIFY}}"
 CERT="${OUT}/CERTIFICATE.md"
 CREST_CSV="${OUT}/crest.csv"
-CREST_RAW="${KERNEL}/.local/crest-evidence/crest.csv"
+# The binary is run with CORPUS as its CWD (see below), and bench.zig's evidence
+# writer resolves `.local/crest-evidence/` relative to wherever it stands — so
+# the raw file lands under CORPUS, not KERNEL, whenever the two differ
+# (GIST_CORPUS_ROOT set). Pointing this at KERNEL silently copied a stale
+# self-corpus run's leftovers into the certificate instead of failing loud.
+CREST_RAW="${CORPUS}/.local/crest-evidence/crest.csv"
 
 die() {
   echo "certify_crest: $*" >&2
