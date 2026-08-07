@@ -26,19 +26,29 @@ test "crest vector: longest per-class run" {
 }
 
 /// ρ(d) straight from the definition: walk the document one byte at a time,
-/// extend or reset each member's run. Derived from `crest.membership` — the
-/// contract — and from what "longest run" MEANS, so it is an oracle for the
-/// vectorized pass rather than a second copy of it.
+/// extend, HOLD, or reset each member's run. Derived from `crest.membership`
+/// plus one further fact (`crest.isContinuation`) — the contract — and from
+/// what "longest run" MEANS, so it is an oracle for the vectorized pass rather
+/// than a second copy of it.
+///
+/// Every lane is "extend if membership says so, else reset" EXCEPT a
+/// codepoint-run lane meeting a UTF-8 continuation byte, which instead HOLDS
+/// — neither extends nor resets (§3.7c, Lemma 2c): the byte is invisible to a
+/// codepoint count, not merely non-matching. `membership` alone cannot express
+/// a three-way rule, so this is the one place the oracle reads a second fact
+/// rather than the bitset alone — everything else about ρ(d) still reduces to it.
 fn referenceCrest(doc: []const u8) crest.Vector {
     var best: crest.Vector = @splat(0);
     var cur: [crest.K]u32 = @splat(0);
     for (doc) |b| {
         const m = crest.membership[b];
+        const hold = crest.isContinuation(b);
         for (0..crest.K) |i| {
+            const is_cp = i >= 2 * crest.base_k;
             if (m & (@as(crest.Mask, 1) << @intCast(i)) != 0) {
                 cur[i] += 1;
                 best[i] = @intCast(@min(@max(cur[i], best[i]), std.math.maxInt(u16)));
-            } else cur[i] = 0;
+            } else if (!(is_cp and hold)) cur[i] = 0;
         }
     }
     return best;
@@ -158,59 +168,66 @@ test "scalar-closed members measure runs the ASCII half cannot see" {
 test "semantic schema pins class order and byte-boundary memberships" {
     const order = [_]crest.Class{ .digit, .hex, .upper, .lower, .alpha, .word, .space, .punct };
     try testing.expectEqual(crest.base_k, order.len);
-    try testing.expectEqual(crest.K, 2 * order.len);
+    try testing.expectEqual(crest.K, 3 * order.len);
     for (order, 0..) |class, i| try testing.expectEqual(i, @intFromEnum(class));
-    // The ASCII half keeps its historical lane indices; the scalar half follows.
+    // The ASCII half keeps its historical lane indices; scalar and codepoint follow.
     for (order) |class| {
         try testing.expectEqual(@intFromEnum(class), crest.lane(class, .ascii));
         try testing.expectEqual(@intFromEnum(class) + crest.base_k, crest.lane(class, .scalar));
+        try testing.expectEqual(@intFromEnum(class) + 2 * crest.base_k, crest.lane(class, .codepoint));
     }
     try testing.expectEqualStrings(
         "digit\x00hex\x00upper\x00lower\x00alpha\x00word\x00space\x00punct" ++
-            "\x00digit+u\x00hex+u\x00upper+u\x00lower+u\x00alpha+u\x00word+u\x00space+u\x00punct+u",
+            "\x00digit+u\x00hex+u\x00upper+u\x00lower+u\x00alpha+u\x00word+u\x00space+u\x00punct+u" ++
+            "\x00digit+cp\x00hex+cp\x00upper+cp\x00lower+cp\x00alpha+cp\x00word+cp\x00space+cp\x00punct+cp",
         crest.SidecarSchema.class_order,
     );
 
-    // An ASCII byte is in a scalar twin exactly when it is in the base class,
-    // so its mask is the base byte doubled; a non-ASCII byte is in NO base
-    // class and in EVERY twin. Spelled out rather than derived — deriving it
-    // would only restate `crest.zig`'s own closure rule back at itself.
-    const cases = [_]struct { byte: u8, bits: u16 }{
-        .{ .byte = '/', .bits = 0x8080 },
-        .{ .byte = '0', .bits = 0x2323 },
-        .{ .byte = '9', .bits = 0x2323 },
-        .{ .byte = ':', .bits = 0x8080 },
-        .{ .byte = 'A', .bits = 0x3636 },
-        .{ .byte = 'F', .bits = 0x3636 },
-        .{ .byte = 'G', .bits = 0x3434 },
-        .{ .byte = '_', .bits = 0x2020 },
-        .{ .byte = '`', .bits = 0x8080 },
-        .{ .byte = 'a', .bits = 0x3a3a },
-        .{ .byte = 'f', .bits = 0x3a3a },
-        .{ .byte = 'g', .bits = 0x3838 },
-        .{ .byte = '\t', .bits = 0x4040 },
-        .{ .byte = '\n', .bits = 0x4040 },
-        .{ .byte = 0x0B, .bits = 0x4040 },
-        .{ .byte = 0x0C, .bits = 0x4040 },
-        .{ .byte = '\r', .bits = 0x4040 },
-        .{ .byte = ' ', .bits = 0x4040 },
+    // An ASCII byte is in a scalar AND a codepoint twin exactly when it is in
+    // the base class, so its mask is the base byte tripled; a bare UTF-8
+    // continuation byte is in NO base class, in EVERY scalar twin, and in NO
+    // codepoint twin (Lemma 2c's refusal); a UTF-8 lead byte is in every twin
+    // of BOTH families. Spelled out rather than derived — deriving it would
+    // only restate `crest.zig`'s own closure rule back at itself. Written as
+    // (codepoint << 16) | (scalar << 8) | ascii so each 8-bit group reads as
+    // the same byte the pre-codepoint table already pinned.
+    const cases = [_]struct { byte: u8, bits: u24 }{
+        .{ .byte = '/', .bits = 0x808080 },
+        .{ .byte = '0', .bits = 0x232323 },
+        .{ .byte = '9', .bits = 0x232323 },
+        .{ .byte = ':', .bits = 0x808080 },
+        .{ .byte = 'A', .bits = 0x363636 },
+        .{ .byte = 'F', .bits = 0x363636 },
+        .{ .byte = 'G', .bits = 0x343434 },
+        .{ .byte = '_', .bits = 0x202020 },
+        .{ .byte = '`', .bits = 0x808080 },
+        .{ .byte = 'a', .bits = 0x3a3a3a },
+        .{ .byte = 'f', .bits = 0x3a3a3a },
+        .{ .byte = 'g', .bits = 0x383838 },
+        .{ .byte = '\t', .bits = 0x404040 },
+        .{ .byte = '\n', .bits = 0x404040 },
+        .{ .byte = 0x0B, .bits = 0x404040 },
+        .{ .byte = 0x0C, .bits = 0x404040 },
+        .{ .byte = '\r', .bits = 0x404040 },
+        .{ .byte = ' ', .bits = 0x404040 },
         .{ .byte = 0x7F, .bits = 0 },
-        // The alphabet boundary, from both sides: 0x80 is the first byte no
-        // ASCII class may claim and the first every twin must.
-        .{ .byte = 0x80, .bits = 0xFF00 },
-        .{ .byte = 0xC3, .bits = 0xFF00 }, // a 2-byte UTF-8 lead
-        .{ .byte = 0xA9, .bits = 0xFF00 }, // …and its continuation
-        .{ .byte = 0xFF, .bits = 0xFF00 },
+        // The alphabet boundary: 0x80 is the first byte no ASCII class may
+        // claim, the first every scalar twin must, and — being a bare
+        // continuation, not a lead — the first NO codepoint twin may.
+        .{ .byte = 0x80, .bits = 0x00FF00 },
+        .{ .byte = 0xC3, .bits = 0xFFFF00 }, // a 2-byte UTF-8 LEAD: codepoint twins claim it too
+        .{ .byte = 0xA9, .bits = 0x00FF00 }, // …its continuation does not
+        .{ .byte = 0xFF, .bits = 0xFFFF00 },
     };
-    for (cases) |case| try testing.expectEqual(case.bits, crest.membership[case.byte]);
+    for (cases) |case| try testing.expectEqual(@as(crest.Mask, case.bits), crest.membership[case.byte]);
 }
 
 test "semantic hash binds cap, interpretation, and full membership table" {
     const canonical = &crest.SidecarSchema.canonical_bytes;
     try testing.expect(std.mem.endsWith(u8, canonical, &crest.SidecarSchema.membership_le));
-    try testing.expectEqual(2 * crest.membership.len, crest.SidecarSchema.membership_le.len);
+    try testing.expectEqual(4 * crest.membership.len, crest.SidecarSchema.membership_le.len);
     try testing.expectEqual(std.math.maxInt(u16), crest.SidecarSchema.saturation_cap);
-    try testing.expectEqual(@as(u16, 3), crest.SidecarSchema.format_version);
+    try testing.expectEqual(@as(u16, 4), crest.SidecarSchema.format_version);
 
     // A captured golden, and only that: it trips the moment this schema's
     // identity moves, which is exactly when every persisted sidecar must be
@@ -219,7 +236,7 @@ test "semantic hash binds cap, interpretation, and full membership table" {
     // vector — this pin is not the place to relitigate the hash function.
     const original = crest.SidecarSchema.hash();
     try testing.expectEqualStrings(
-        "0114cecff0909f0917c976f200ba1825f79a56743321ab75bdac425b4497522d",
+        "5ad9e75b72492c0fca6692362beeb2dcd276d44e7ee86625f7bf27d5bb397efb",
         &original.hex(),
     );
 

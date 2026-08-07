@@ -441,10 +441,9 @@ before the calculus runs, so a fold whose orbit escapes ASCII (`k`→U+212A
 KELVIN SIGN, `s`→U+017F LONG S) promotes the node to `uclass` and is then priced
 by the rule above rather than by a hand-maintained special case.
 `bench/rungs/crest/bench.zig` exercises all four alphabet × case pairings against the
-real matcher. Option (b) as originally posed — indexing true codepoint runs —
-remains unimplemented and is now mostly uninteresting: it would tighten
-`\d`-style bounds on non-ASCII-heavy documents, which a code corpus does not
-have, at the cost of a second sidecar.
+real matcher. §3.7c ships option (b) — codepoint runs, not byte runs — at no
+sidecar cost, tightening every `+u` lane above without touching its soundness
+argument.
 
 ### 3.7a Grammar contract (the second footgun, found by referee, now closed)
 
@@ -510,6 +509,117 @@ carries the superclass chain `digit ⊂ hex ⊂ word` and `upper,lower ⊂ alpha
 word`, so `[0-9]{6}` forces `digit:6 hex:6 word:6` and a document is tested on
 all three at once. Under a partition each pattern would fire on one coordinate
 and the other seven would be dead weight.
+
+### 3.7c Codepoint runs without decoding (the `+u` lane's real gap, closed)
+
+§3.7's `+u` twin is a **byte**-run over `C ∪ [0x80,0xFF]`, and that byte
+membership is the tell: `[0x80,0xFF]` admits every UTF-8 continuation byte as
+well as every lead byte, with no way to tell them apart from membership alone.
+So a run of `n` non-ASCII _codepoints_ measures as a run of `Σ len(uᵢ)` bytes —
+2–4× too long — and the inflation runs the wrong way for pruning: `word+u` is
+shared escape valve across every `+u` lane (`digit+u`, `hex+u`, `space+u` all
+contain the same `[0x80,0xFF]`), so **any** stretch of 6+ non-ASCII bytes
+anywhere in a document — two CJK ideographs, one emoji plus a variation
+selector, an em dash beside an accented word — satisfies `ĝ=6` on every `+u`
+lane at once and makes the whole document unprunable, whether or not it
+contains anything resembling the target class. Measured on the 21,854-file
+corpus, that is most of the gap between `\d{6}`'s 62.5% prune rate and
+`[0-9]{6}`'s 92.7% — a Unicode-default query pays a real, avoidable tax purely
+for co-occurring with unrelated non-ASCII text.
+
+**The repair counts codepoints, not bytes, and never decodes one.** A third
+alphabet joins `ascii` and `scalar` (`crest.Alphabet.codepoint`), doubling
+nothing about the byte scan's cost model — it is one more set of lanes riding
+the same single pass — but changing what "the byte advances the run" means:
+
+> **Lemma 2c (codepoint-run soundness without decoding).** Let `C ⊆
+> Σ_ascii`, and let `U` be any set of Unicode scalars whose ASCII members all
+> lie in `C`. Define the per-byte codepoint-run rule: an ASCII byte advances
+> the run iff it lies in `C`; a UTF-8 lead byte (`[0xC0,0xFF]`) always
+> advances it; a continuation byte (`[0x80,0xBF]`) neither advances nor resets
+> it (transparent — "hold"). Then a run of `n` consecutive scalars of `U`
+> measures as a codepoint-run of **at least** `n` under this rule, and a
+> `class` atom whose byte set `B` contains any continuation byte certifies
+> **zero** on this lane rather than a wrong number.
+>
+> _Proof (the `U` case)._ Each `u ∈ U` contributes exactly one lead byte
+> (single-byte ASCII scalars are their own lead byte) and zero or more
+> continuation bytes. By UTF-8 self-synchronization every continuation byte
+> genuinely follows the lead byte of the scalar that produced it — it cannot
+> belong to a byte run the rule would otherwise reset — so "hold" is exact,
+> not merely safe: it neither drops a real continuation into the count (which
+> would overcount, the same failure mode `+u` already has) nor lets a
+> continuation break a run mid-codepoint. The lead byte counts once per
+> scalar by construction, so `n` scalars advance the counter exactly `n`
+> times: a floor that is in fact an equality for `U`, tighter than `+u`'s
+> `≥ n` bound whenever any scalar of `U` costs more than one byte. ∎
+>
+> _Proof (the refusal case)._ `crest.membership`'s codepoint-lane bits for a
+> `class` atom are the ASCII bits of `B` — never `[0x80,0xBF]` — by
+> construction (`Profile.atom`'s shared intersect: a `class` node passes its
+> byte set as both the byte-lane AND the codepoint-lane set). A byte set that
+> holds a continuation byte therefore certifies its codepoint lane against a
+> set the byte in question is not a member of, but the document-side `keep`
+> table treats every continuation byte as HOLD regardless of membership — so
+> a document made entirely of continuation bytes (`[\x80-\xFF]{6}`, read as
+> raw bytes rather than scalars) would hold a codepoint-run of length `6`
+> under naive counting despite matching no ASCII byte of `B`. `atom` refuses
+> that certificate outright (`min_cp` stays 0 for a `class` node) rather than
+> resolve the ambiguity, so the failure mode is `ĝ=0` — sound by degradation,
+> never a false floor. ∎
+
+Mechanically, the fix rides the same three comptime tables §3's scan already
+had, widened by one alphabet: `membership` (query-side ⊆-test) sets a
+codepoint-lane bit for a lead byte unconditionally and for an ASCII byte only
+when the byte itself is a class member, and clears it for every continuation
+byte; `keep` (document-side reset mask) diverges from `membership` in exactly
+the place Lemma 2c requires — a continuation byte HOLDS a codepoint lane
+open (`0xFFFF`) even though it carries no membership bit, where every other
+lane resets on a non-member; `step` is the increment those lanes take, `1`
+for every byte except a continuation byte's codepoint lanes, which take `0`.
+`crest.zig`'s recurrence, `Profile.atom`, and `Piece.join` (rejoining a
+document split at an interleave boundary) all read these tables rather than
+hand-rolling the rule a second time, so there is exactly one place UTF-8's
+self-synchronization gets to be wrong.
+
+Measured on the same corpus, isolating the `+cp` lane's contribution on top
+of the already-shipped `+u` lane (§3.7's table shows `+u` alone against the
+pre-`uclass` baseline; this one shows `+cp` stacked on `+u`):
+
+| query (`unicode=true` default) | ĝ (`+u` only)                | pruned | speedup | ĝ (`+u`, `+cp`)                             | pruned | speedup |
+| ------------------------------- | ----------------------------- | ------ | ------- | -------------------------------------------- | ------ | ------- |
+| `\d{6}`                         | `digit+u:6 hex+u:6 word+u:6`   | 62.5%  | 1.94x   | `+ digit+cp:6 hex+cp:6 word+cp:6`             | 72.7%  | 3.05x   |
+| `\d{4}`                         | `digit+u:4 hex+u:4 word+u:4`   | 40.9%  | 1.92x   | `+ digit+cp:4 hex+cp:4 word+cp:4`             | 48.3%  | 2.96x   |
+| `\s{4}`                         | `space+u:4`                   | 4.8%   | 1.03x   | `+ space+cp:4`                                | 14.6%  | 1.23x   |
+| `\w{8}` (wide, adverse)         | `word+u:8`                    | 0.0%   | 1.00x   | `+ word+cp:8`                                 | 0.0%   | 0.89x   |
+
+`\w{8}` stays at zero by design — it is the adverse case the family was never
+going to prune (the word class is nearly the whole codepoint alphabet, same
+as §3.7's honest assessment of `+u` there), included so the table cannot
+quietly drop it. The narrow classes (`digit`, and to a lesser extent `space`)
+are where a byte-inflated run was actually hiding real corpus documents from
+the sieve, and codepoint-counting recovers most of the remaining gap to the
+ASCII twin's 92.7%.
+
+`K` (the lane count `Vector`/`Mask` carry) grew from 16 to 24 for this —
+scalar and codepoint lanes both exist for every family member — which
+regressed the shipped block scan's raw throughput from 2.07 to roughly 1.0
+GiB/s on this machine: `@Vector(24, u16)` costs the same 64 B / 4 NEON
+registers as `@Vector(32, u16)` (the width the target already rounds storage
+up to), and a microbenchmark of the recurrence's exact shape measured that
+_odd_ width 8x slower than the _clean_ one for identical storage — the
+signature of a lane count the autovectorizer cannot shuffle cleanly, not of
+genuinely more work. Padding `K`'s internal working vector to the
+power-of-two width the backend already pays for (`crest.zig`'s
+`simd_lanes`, truncated back to `K` only at the public `Vector` boundary)
+recovered the ratio: the shipped scan now runs 7.9x the naive per-byte
+reference (`ways=2`, re-measured after the padding fix — `ways=4`'s register
+footprint doubled with `K`, so the interleave factor tuned for 16 lanes
+overflowed at 24 and had to be re-picked by measurement, not assumed) against
+the pre-`+cp` baseline's 1.87x on the same corpus and machine. The absolute
+GiB/s is genuinely lower — there is more state to carry per byte, which is
+the honest cost of a third alphabet — but the vectorization itself is no
+longer the bottleneck the odd lane count made it.
 
 ### 3.8 Why the _run_, not the _count_ (the weaker cousin, ruled out)
 

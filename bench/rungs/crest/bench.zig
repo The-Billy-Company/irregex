@@ -89,7 +89,10 @@ const queries = [_]Query{
 /// certifies both halves identically — so naming both would double the column
 /// to say one thing. Equal pairs collapse to the bare class name; the twin is
 /// named only where it carries a demand the ASCII half does not, which is
-/// exactly the codepoint-class case worth seeing.
+/// exactly the codepoint-class case worth seeing. The codepoint-run lane
+/// (§3.7c) is a third, independent unit — codepoints, not bytes — so it gets
+/// its own `+cp:` suffix only when it diverges from the scalar-closed count,
+/// which is precisely the CJK/emoji case the lane exists to tighten.
 fn forcedStr(buf: []u8, branches: []const crest.Vector) []const u8 {
     var end: usize = 0;
     for (branches) |gv| {
@@ -97,7 +100,8 @@ fn forcedStr(buf: []u8, branches: []const crest.Vector) []const u8 {
         for (std.enums.values(crest.Class)) |c| {
             const a = gv[crest.lane(c, .ascii)];
             const s = gv[crest.lane(c, .scalar)];
-            if (a == 0 and s == 0) continue;
+            const p = gv[crest.lane(c, .codepoint)];
+            if (a == 0 and s == 0 and p == 0) continue;
             const sep: []const u8 = if (end > 0 and buf[end - 1] != '|') " " else "";
             const part = (if (a == s)
                 std.fmt.bufPrint(buf[end..], "{s}{s}:{d}", .{ sep, @tagName(c), a })
@@ -106,6 +110,7 @@ fn forcedStr(buf: []u8, branches: []const crest.Vector) []const u8 {
             else
                 std.fmt.bufPrint(buf[end..], "{s}{s}:{d}+u:{d}", .{ sep, @tagName(c), a, s })) catch break;
             end += part.len;
+            if (p != s) end += (std.fmt.bufPrint(buf[end..], "+cp:{d}", .{p}) catch break).len;
         }
     }
     return if (end == 0) "—" else buf[0..end];
@@ -354,11 +359,13 @@ fn referenceCrest(doc: []const u8) crest.Vector {
     var cur: [K]u32 = @splat(0);
     for (doc) |b| {
         const m = crest.membership[b];
+        const hold = crest.isContinuation(b); // codepoint lanes: a continuation byte is transparent, not a reset
         inline for (0..K) |i| {
+            const is_cp = i >= 2 * crest.base_k;
             if ((m & (@as(crest.Mask, 1) << i)) != 0) {
                 cur[i] +|= 1;
                 best[i] = @max(best[i], @as(u16, @intCast(@min(cur[i], std.math.maxInt(u16)))));
-            } else cur[i] = 0;
+            } else if (!(is_cp and hold)) cur[i] = 0;
         }
     }
     return best;

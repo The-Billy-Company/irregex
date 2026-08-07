@@ -34,6 +34,18 @@
 //!     `s`→U+017F LONG S) promotes the node to `uclass`, self-declining by the
 //!     rule above instead of by a hand-maintained special case.
 //!
+//! A THIRD contract (§3.7c, Lemma 2c) prices the codepoint-run lane, which
+//! counts codepoint-like units rather than bytes and so needs its own notion
+//! of "how much does one atom spend": a `uclass` always spends exactly ONE
+//! codepoint, however many bytes its cheapest scalar costs (`min_cp` below,
+//! never `min_len`); a `class` byte-set spends one codepoint IFF it holds no
+//! UTF-8 continuation byte — a set that does (`[\x80-\xFF]{6}` in byte mode)
+//! certifies NOTHING on this lane, because the document scan the certificate
+//! must dominate treats a run of bare continuation bytes as codepoint-run
+//! ZERO, not six. `encoded`'s `cp_set` is the first-byte view this rule reads:
+//! ASCII members verbatim, plus UTF-8 LEAD bytes only (`[0xC0,0xFF]`) — never
+//! the continuation range `[0x80,0xBF]` the byte-lane `set` admits wholesale.
+//!
 //! Everything rounds DOWN: a construct the calculus cannot certify contributes
 //! nothing, so under-pruning is the only failure mode.
 
@@ -99,10 +111,15 @@ fn profile(n: *const Node) Profile {
         .anchor_buf_end,
         .word,
         => Profile.epsilon(),
-        .class => |set| Profile.atom(set, 1),
+        // A `class` node spends the same byte set at 1 codepoint as it does
+        // at 1 byte — Lemma 2c's refusal (any continuation byte in `set`
+        // kills the codepoint lanes) falls out of `atom`'s shared-membership
+        // intersect for free, since `crest.membership` already clears those
+        // lanes' bits on a continuation byte.
+        .class => |set| Profile.atom(set, 1, set, 1),
         .uclass => |ranges| blk: {
             const e = encoded(ranges);
-            break :blk Profile.atom(e.set, e.min_len);
+            break :blk Profile.atom(e.set, e.min_len, e.cp_set, 1);
         },
         .concat => |kids| Profile.concat(profile(kids[0]), profile(kids[1])),
         .alt => |kids| Profile.alt(profile(kids[0]), profile(kids[1])),
@@ -119,26 +136,44 @@ fn satAdd(a: u16, b: u16) u16 {
 }
 
 /// What a CODEPOINT class spends in the document's alphabet: the bytes its
-/// members can be encoded from, and the fewest of them any member costs.
+/// members can be encoded from, the fewest of them any member costs, and the
+/// narrower first-byte view the codepoint-run lane must read instead (§3.7c).
 ///
-/// This is the whole of the alphabet repair (§3.6). A `uclass` cannot certify
-/// an ASCII class — `\d` under `unicode=true` admits U+0660, which is no ASCII
-/// digit — but every non-ASCII scalar encodes to bytes that ALL have bit 7 set,
-/// so it can certify the scalar-closed twin, and one codepoint of it spends
-/// `min_len` ≥ 1 bytes rather than one. Both halves round down: the byte set is
-/// a superset of what the class can actually spend (surrogates encode to
-/// nothing, and 0x80..0xFF is taken whole), which can only shrink the shared
-/// mask, and `min_len` reads the lowest scalar of each range, which cannot
-/// exceed the true minimum because UTF-8 length is monotone in the codepoint.
-fn encoded(ranges: []const [2]u21) struct { set: ByteSet, min_len: u16 } {
+/// `set`/`min_len` are the whole of the alphabet repair (§3.6). A `uclass`
+/// cannot certify an ASCII class — `\d` under `unicode=true` admits U+0660,
+/// which is no ASCII digit — but every non-ASCII scalar encodes to bytes that
+/// ALL have bit 7 set, so it can certify the scalar-closed twin, and one
+/// codepoint of it spends `min_len` ≥ 1 bytes rather than one. Both halves
+/// round down: `set` is a superset of what the class can actually spend
+/// (surrogates encode to nothing, and 0x80..0xFF is taken whole), which can
+/// only shrink the shared mask, and `min_len` reads the lowest scalar of each
+/// range, which cannot exceed the true minimum because UTF-8 length is
+/// monotone in the codepoint.
+///
+/// `cp_set` differs from `set` in exactly one place: it admits UTF-8 LEAD
+/// bytes (`[0xC0,0xFF]`) where `set` admits the whole non-ASCII byte
+/// (`[0x80,0xFF]`) — because on the codepoint-run lane a lead byte is a valid
+/// "first byte" of this class's member and a bare continuation byte never is
+/// (Lemma 2c). Every `uclass` atom still spends exactly ONE codepoint of it,
+/// however many bytes `min_len` costs — the caller passes that length
+/// literally, not derived from this set.
+fn encoded(ranges: []const [2]u21) struct { set: ByteSet, min_len: u16, cp_set: ByteSet } {
     var set = ByteSet{};
+    var cp_set = ByteSet{};
     var min_len: u16 = 4; // no encoding is longer
     for (ranges) |r| {
         min_len = @min(min_len, utf8Len(r[0]));
-        if (r[0] <= 0x7F) set.setRange(@intCast(r[0]), @intCast(@min(r[1], 0x7F)));
-        if (r[1] > 0x7F) set.setRange(0x80, 0xFF);
+        if (r[0] <= 0x7F) {
+            const hi: u8 = @intCast(@min(r[1], 0x7F));
+            set.setRange(@intCast(r[0]), hi);
+            cp_set.setRange(@intCast(r[0]), hi);
+        }
+        if (r[1] > 0x7F) {
+            set.setRange(0x80, 0xFF);
+            cp_set.setRange(0xC0, 0xFF); // leads only — a continuation is never a "first byte"
+        }
     }
-    return .{ .set = set, .min_len = min_len };
+    return .{ .set = set, .min_len = min_len, .cp_set = cp_set };
 }
 
 /// UTF-8 byte length, monotone and total — `std.unicode`'s errors on the
@@ -156,57 +191,89 @@ pub const Profile = struct {
     F: Vector, // forced longest run:  F ≤ min_{w∈L} ρ(w,C)
     P: Vector, // forced leading run
     S: Vector, // forced trailing run
-    min_len: u16, // forced minimum BYTE length (saturating)
+    min_len: u16, // forced minimum BYTE length (saturating) — byte + scalar-closed lanes
+    min_cp: u16, // forced minimum CODEPOINT length (saturating) — codepoint-run lanes only
     only_c_cert: [K]bool, // ⇒ every w∈L is composed solely of class-C bytes
+
+    /// True for a codepoint-run lane — the boundary `concat` reads to pick
+    /// `min_len` (bytes) or `min_cp` (codepoints) as the unit a seam extends
+    /// by. Lane layout is `crest.Alphabet`'s declared order (ascii, scalar,
+    /// codepoint), so this is a single threshold, not a lookup.
+    fn isCodepointLane(i: usize) bool {
+        return i >= 2 * crest.base_k;
+    }
 
     /// Language {ε}: the concatenation identity, certified for every class.
     pub fn epsilon() Profile {
-        return .{ .F = @splat(0), .P = @splat(0), .S = @splat(0), .min_len = 0, .only_c_cert = @splat(true) };
+        return .{ .F = @splat(0), .P = @splat(0), .S = @splat(0), .min_len = 0, .min_cp = 0, .only_c_cert = @splat(true) };
     }
 
     /// No usable semantics: numerically harmless and never licenses a seam.
     pub fn unknown() Profile {
-        return .{ .F = @splat(0), .P = @splat(0), .S = @splat(0), .min_len = 0, .only_c_cert = @splat(false) };
+        return .{ .F = @splat(0), .P = @splat(0), .S = @splat(0), .min_len = 0, .min_cp = 0, .only_c_cert = @splat(false) };
     }
 
-    /// One mandatory atom spending `min_len` bytes, all drawn from `set`. It
-    /// certifies member C iff every byte the node can consume is in C — exact
-    /// for a `class` node, which spends one byte from its own set; sound for a
-    /// `uclass`, whose `encoded` view rounds the set up and the length down.
-    /// Intersecting the membership masks answers all K members in one pass. An
-    /// empty set (`[^\x00-\xff]`) matches nothing, so it claims nothing rather
+    /// One mandatory atom, priced twice: `byte_len` bytes drawn from
+    /// `byte_set` (the byte + scalar-closed lanes) and `cp_len` codepoints
+    /// drawn from `cp_set` (the codepoint-run lane, §3.7c). For a `class` node
+    /// the two sets and lengths coincide (it spends one byte that is also one
+    /// codepoint-worth, or — if the set holds a continuation byte — neither
+    /// certifies, Lemma 2c's refusal falling out of the shared-membership
+    /// intersect with no extra code); for a `uclass`, `byte_set`/`byte_len`
+    /// are `encoded`'s scalar-closed view and `cp_set`/`cp_len` are its
+    /// first-byte view at exactly 1 codepoint. Each set independently
+    /// intersects `crest.membership` over its own lane range, so the two
+    /// prices can certify different members without cross-contaminating one
+    /// another. An empty set matches nothing, so it claims nothing rather
     /// than everything vacuously.
     ///
-    /// A certified run is `min_len` long, not 1: `\d` forces four bytes of
-    /// `digit+u` if its cheapest member is a 4-byte codepoint, and pricing it
-    /// at 1 would throw away the very contiguity the sieve trades on.
-    pub fn atom(set: ByteSet, min_len: u16) Profile {
+    /// A certified run is `byte_len`/`cp_len` long, not 1: `\d` forces four
+    /// bytes of `digit+u` if its cheapest member is a 4-byte codepoint, and
+    /// pricing it at 1 would throw away the very contiguity the sieve trades
+    /// on — while it forces exactly ONE `digit+cp`, since one codepoint is one
+    /// codepoint regardless of its encoded width.
+    pub fn atom(byte_set: ByteSet, byte_len: u16, cp_set: ByteSet, cp_len: u16) Profile {
         var p = unknown();
-        p.min_len = min_len;
-        if (set.count() == 0) return p;
+        p.min_len = byte_len;
+        p.min_cp = cp_len;
+        fillShared(&p, byte_set, byte_len, 0, 2 * crest.base_k);
+        fillShared(&p, cp_set, cp_len, 2 * crest.base_k, K);
+        return p;
+    }
+
+    /// Certify every lane in `[lo, hi)` whose membership bit is shared across
+    /// every byte of `set`, at the given run length — `atom`'s shared work,
+    /// scoped to one lane range so the byte-priced and codepoint-priced halves
+    /// never read each other's set.
+    fn fillShared(p: *Profile, set: ByteSet, len: u16, lo: usize, hi: usize) void {
+        if (set.count() == 0) return;
         var shared: crest.Mask = std.math.maxInt(crest.Mask);
         for (0..256) |b| {
             if (shared == 0) break; // a wide set shares nothing; stop reading
             if (set.has(@intCast(b))) shared &= crest.membership[b];
         }
-        inline for (0..K) |i| {
+        for (lo..hi) |i| {
             if ((shared & (@as(crest.Mask, 1) << @intCast(i))) != 0) {
-                p.F[i] = min_len;
-                p.P[i] = min_len;
-                p.S[i] = min_len;
+                p.F[i] = len;
+                p.P[i] = len;
+                p.S[i] = len;
                 p.only_c_cert[i] = true;
             }
         }
-        return p;
     }
 
-    /// E₁·E₂: S₁+P₂ is the only seam term; certificates alone license extension.
+    /// E₁·E₂: S₁+P₂ is the only seam term; certificates alone license
+    /// extension, and each lane extends by ITS OWN unit — bytes for a byte or
+    /// scalar-closed lane, codepoints for a codepoint-run one (§3.7c) — so a
+    /// 3-byte CJK atom seams a byte lane by 3 and a codepoint lane by 1.
     pub fn concat(a: Profile, b: Profile) Profile {
-        var r: Profile = .{ .F = undefined, .P = undefined, .S = undefined, .min_len = satAdd(a.min_len, b.min_len), .only_c_cert = undefined };
+        var r: Profile = .{ .F = undefined, .P = undefined, .S = undefined, .min_len = satAdd(a.min_len, b.min_len), .min_cp = satAdd(a.min_cp, b.min_cp), .only_c_cert = undefined };
         inline for (0..K) |i| {
+            const a_unit = if (isCodepointLane(i)) a.min_cp else a.min_len;
+            const b_unit = if (isCodepointLane(i)) b.min_cp else b.min_len;
             r.F[i] = @max(@max(a.F[i], b.F[i]), satAdd(a.S[i], b.P[i]));
-            r.P[i] = if (a.only_c_cert[i]) satAdd(a.min_len, b.P[i]) else a.P[i];
-            r.S[i] = if (b.only_c_cert[i]) satAdd(b.min_len, a.S[i]) else b.S[i];
+            r.P[i] = if (a.only_c_cert[i]) satAdd(a_unit, b.P[i]) else a.P[i];
+            r.S[i] = if (b.only_c_cert[i]) satAdd(b_unit, a.S[i]) else b.S[i];
             r.only_c_cert[i] = a.only_c_cert[i] and b.only_c_cert[i];
         }
         return r;
@@ -214,7 +281,7 @@ pub const Profile = struct {
 
     /// E₁|E₂ — the adversary picks the branch minimizing each field.
     pub fn alt(a: Profile, b: Profile) Profile {
-        var r: Profile = .{ .F = undefined, .P = undefined, .S = undefined, .min_len = @min(a.min_len, b.min_len), .only_c_cert = undefined };
+        var r: Profile = .{ .F = undefined, .P = undefined, .S = undefined, .min_len = @min(a.min_len, b.min_len), .min_cp = @min(a.min_cp, b.min_cp), .only_c_cert = undefined };
         inline for (0..K) |i| {
             r.F[i] = @min(a.F[i], b.F[i]);
             r.P[i] = @min(a.P[i], b.P[i]);

@@ -39,17 +39,19 @@ comptime {
 
 pub const file_name = "crest.bin";
 
-const magic = "GISTCRS3";
+const magic = "GISTCRS4";
 const version_off = magic.len;
 const class_count_off = version_off + @sizeOf(u16);
 const element_width_off = class_count_off + 1;
 const doc_count_off = element_width_off + 1;
 const schema_hash_off = doc_count_off + @sizeOf(u32);
 const reserved_off = schema_hash_off + signet.len;
-/// v3: magic(8), version(2), K(1), width(1), doc_count(4), schema signet(32),
-/// reserved-zero padding(16). Body begins at 64 for page-map alignment, and an
-/// artifact signet trails it — `header_len` and the seal are both multiples of
-/// the record width, so the body stays `Vector`-aligned and exactly sized.
+/// v4: magic(8), version(2), K(1), width(1), doc_count(4), schema signet(32),
+/// reserved-zero padding(16). Body begins at 64 — an even, page-map-friendly
+/// offset. That is all it needs to be: `crest.Vector`'s alignment is
+/// `@alignOf(u16) = 2`, not the record width, so growing the class family
+/// (K=16 → 24 dropped `record_len` from a clean 32 to 48, no longer a divisor
+/// of 64) cannot desync the header from the body it precedes.
 pub const header_len = 64;
 const record_len = crest.K * @sizeOf(u16);
 /// One fact: this sidecar cannot be written as asked. A doc count past the

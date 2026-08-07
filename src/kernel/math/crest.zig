@@ -51,24 +51,48 @@ pub const Class = enum(u8) {
     punct,
 };
 
-/// Each class is measured over two alphabets, and the second one is why `\d`
-/// prunes at all under the engine's default `unicode=true`.
+/// Each class is measured over three alphabets. `scalar` is why `\d` prunes
+/// at all under the engine's default `unicode=true`; `codepoint` is why it
+/// prunes nearly as well as `[0-9]` does, once non-ASCII text is in the mix.
 ///
 /// A byte sieve and a codepoint matcher disagree about what a class IS, and
 /// PROOF.md §3.6 resolved that disagreement by refusing: a `uclass` certified
 /// nothing, so `\d{6}` — the ordinary spelling — sieved by nothing while
-/// `[0-9]{6}` pruned 92.8%. The repair is to measure a second family whose
+/// `[0-9]{6}` pruned 92.8%. §3.7's repair measures a second family whose
 /// members are closed under the non-ASCII bytes: `digit+u` is `[0-9]` ∪
 /// [0x80,0xFF]. Every byte of a multi-byte UTF-8 sequence has bit 7 set (Pike
 /// & Thompson's design property), so a codepoint class containing U+0660
 /// ARABIC-INDIC DIGIT ZERO still spends only bytes inside `digit+u`, and a run
-/// of n such codepoints is a run of ≥ n such bytes. The bound is looser than
-/// the ASCII one — that is the price of the byte/codepoint gap, and it is
-/// still a bound.
+/// of n such codepoints is a run of ≥ n such bytes. Sound, but loose: a
+/// 3-byte CJK character spends 3 bytes of `digit+u`, so two of them alone
+/// clear `\d{6}` on a document with no digit anywhere in it.
+///
+/// `digit+cp` (§3.7c) tightens that without decoding a single codepoint.
+/// UTF-8 continuation bytes (`0x80..0xBF`) are TRANSPARENT to this family: a
+/// run counts codepoint-like units, not bytes, so a continuation byte neither
+/// extends nor breaks it — it is invisible, the way it is to a human reading
+/// the string one character at a time. A lead byte (`>= 0xC0`) optimistically
+/// extends every member (the safe direction: it rounds the bound UP, same as
+/// `+u`'s `[0x80,0xFF]` whole-range admission). The same CJK character that
+/// cost `digit+u` 3 bytes costs `digit+cp` exactly 1 — this is the whole
+/// repair, and it needs no codepoint decoding because "was the previous byte
+/// a continuation" is answerable from the current byte alone.
 pub const Alphabet = enum(u8) {
     ascii = 0,
     scalar,
+    codepoint,
 };
+
+/// A UTF-8 continuation byte — the one byte shape that is neither a valid
+/// ASCII character nor the first byte of a scalar. `codepoint`-family lanes
+/// treat it as transparent (Lemma 2c); every other family member treats it as
+/// any other non-ASCII byte. One definition, shared by the document scan
+/// (`step`/`keep` below) and by both differential reference oracles
+/// (`crest_test.zig`, `bench/rungs/crest/bench.zig`) so the three cannot drift
+/// apart on where the boundary falls.
+pub fn isContinuation(b: u8) bool {
+    return b >= 0x80 and b <= 0xBF;
+}
 
 pub const base_k: usize = @typeInfo(Class).@"enum".fields.len;
 pub const K: usize = base_k * @typeInfo(Alphabet).@"enum".fields.len;
@@ -173,21 +197,33 @@ fn classify(b: u8) Prims {
     };
 }
 
-/// `membership[b]` bit `1 << lane(c, a)` is set ⟺ byte b belongs to family
-/// member (c, a). This table is the ONLY classifier: the document scan reads
-/// it rather than re-deriving the predicates, so there is no second definition
-/// to drift. A non-ASCII byte is in no base class and in every scalar twin —
-/// the closure rule, in its per-byte spelling.
+/// `membership[b]` bit `1 << lane(c, a)` is set ⟺ byte b, taken by ITSELF,
+/// certifies class member (c, a) — this is the QUERY-SIDE table `Profile.atom`
+/// intersects over a pattern's byte/first-byte set. A non-ASCII byte is in no
+/// ASCII class and in every scalar twin — the closure rule, in its per-byte
+/// spelling. The `codepoint` third is narrower than `scalar` on purpose: a
+/// lead byte (`>= 0xC0`) is in every codepoint lane (it is always a valid
+/// "first byte"), but a bare continuation byte is in NONE of them — Lemma 2c's
+/// refusal. Without it, a byte-set atom containing a continuation byte (e.g.
+/// `[\x80-\xFF]{6}`) would certify a forced codepoint run that a document of
+/// six lone continuation bytes — which the document scan correctly measures
+/// as codepoint-run zero, `isContinuation` holding the run at rest rather than
+/// advancing it — does not honor: a false negative. `keep` below is a
+/// DIFFERENT table for exactly that byte/lane pair, because the document scan
+/// needs continuation bytes to be transparent (hold the run), not disqualify
+/// it — the two tables agree everywhere else.
 pub const membership: [256]Mask = blk: {
     @setEvalBranchQuota(100_000);
     var m: [256]Mask = @splat(0);
     for (&m, 0..) |*slot, b| {
         const cls = classify(@intCast(b)).classes();
         const high = b >= 0x80;
+        const first = b >= 0xC0; // a valid codepoint "first byte": ASCII or a UTF-8 lead
         var set: Mask = 0;
         for (cls, 0..) |hit, c| {
-            if (hit != 0) set |= one(c) | one(base_k + c);
+            if (hit != 0) set |= one(c) | one(base_k + c) | one(2 * base_k + c);
             if (high) set |= one(base_k + c);
+            if (first) set |= one(2 * base_k + c);
         }
         slot.* = set;
     }
@@ -198,20 +234,48 @@ inline fn one(i: usize) Mask {
     return @as(Mask, 1) << @intCast(i);
 }
 
-/// `keep[b]` is `membership[b]` already in the shape the scan consumes: lane C
-/// holds all-ones iff b belongs to C, so resetting the run counters is one AND
-/// against a loaded constant.
+/// `keep[b]` is the reset mask the scan ANDs the counters with: lane C holds
+/// all-ones iff byte b must NOT reset C's run, zero iff it must.
 ///
-/// Derived from `membership`, never beside it — one classifier, two shapes. The
-/// bitset is what the query half intersects (`swell.atom`) and what the schema
-/// hashes; this is what the document half reads, 8 KiB of it, L1-resident for
-/// the whole scan.
-const keep: [256]@Vector(K, u16) = blk: {
+/// For an ASCII or scalar lane this is `membership[b]` in its consumed shape
+/// (belongs ⟺ survives) — one classifier, two shapes, as before. A codepoint
+/// lane diverges on exactly one byte shape: `membership` marks a continuation
+/// byte as NOT a certifiable "first byte" (Lemma 2c, above), but the document
+/// scan must not reset on one either — it is transparent, so the run simply
+/// holds (`step` below withholds the +1 for the same byte, and together the
+/// pair reproduce `cur` unchanged: `(cur +| 0) & 0xFFFF = cur`). `membership`
+/// stays the query-side bitset the schema hashes and `Profile.atom`
+/// intersects; this is what the document half reads, resident for the scan.
+const keep: [256]V = blk: {
     @setEvalBranchQuota(100_000);
-    var t: [256]@Vector(K, u16) = undefined;
-    for (&t, membership) |*slot, m| {
-        var lanes: [K]u16 = undefined;
-        for (&lanes, 0..) |*l, c| l.* = if ((m & one(c)) != 0) 0xFFFF else 0;
+    var t: [256]V = undefined;
+    for (&t, membership, 0..) |*slot, m, b| {
+        const hold = isContinuation(@intCast(b));
+        var lanes: [simd_lanes]u16 = @splat(0); // padding lanes: never reset-exempt, never read
+        for (lanes[0..K], 0..) |*l, c| {
+            const is_cp = c >= 2 * base_k;
+            l.* = if ((m & one(c)) != 0 or (is_cp and hold)) 0xFFFF else 0;
+        }
+        slot.* = lanes;
+    }
+    break :blk t;
+};
+
+/// `step[b]` is the per-byte increment: 1 on every lane except a codepoint
+/// lane meeting a continuation byte, which gets 0 — transparency means the run
+/// neither breaks (`keep` above) nor grows. Every other lane, and every other
+/// byte on a codepoint lane, always advances by exactly 1: this is the same
+/// `+| 1` the family always did, just now indexed by the byte that earns it
+/// instead of a single splatted constant.
+const step: [256]V = blk: {
+    @setEvalBranchQuota(100_000);
+    var t: [256]V = undefined;
+    for (&t, 0..) |*slot, b| {
+        var lanes: [simd_lanes]u16 = @splat(0); // padding lanes never advance
+        for (lanes[0..K]) |*l| l.* = 1;
+        if (isContinuation(@intCast(b))) {
+            for (2 * base_k..K) |c| lanes[c] = 0;
+        }
         slot.* = lanes;
     }
     break :blk t;
@@ -227,6 +291,7 @@ const lane_names: [K][]const u8 = blk: {
     for (std.enums.values(Class)) |c| {
         out[lane(c, .ascii)] = @tagName(c);
         out[lane(c, .scalar)] = @tagName(c) ++ "+u";
+        out[lane(c, .codepoint)] = @tagName(c) ++ "+cp";
     }
     break :blk out;
 };
@@ -235,7 +300,7 @@ const lane_names: [K][]const u8 = blk: {
 /// signet over `canonical_bytes` invalidates a cache whenever the class family
 /// or meaning of one stored u16 changes, even if its physical width stays fixed.
 pub const SidecarSchema = struct {
-    pub const format_version: u16 = 3;
+    pub const format_version: u16 = 4; // v3 -> v4: the codepoint-run alphabet, Mask widened past u16
     pub const saturation_cap: u16 = std.math.maxInt(u16);
     pub const element_interpretation = "longest consecutive input-byte run belonging to the class, per document, saturated at the numeric cap";
 
@@ -249,12 +314,14 @@ pub const SidecarSchema = struct {
 
     const domain = "irregex/crest-sidecar-semantic-schema\x00";
 
-    /// The membership table as canonical little-endian bytes: it is a u16 per
-    /// byte now that the family spans both alphabets, and the preimage must be
-    /// architecture-independent.
+    /// The membership table as canonical little-endian bytes. Three alphabets
+    /// widened `Mask` past `u16` (K=24 ⇒ `u24`), so this is `u32` per byte now
+    /// rather than `u16` — the width the preimage claims (`membership-table/
+    /// u32le-x256` below) must move in lockstep with `Mask`'s actual width or
+    /// the schema would silently mis-describe itself the next time K grows.
     pub const membership_le = blk: {
-        var out: [membership.len * 2]u8 = undefined;
-        for (membership, 0..) |m, i| out[2 * i ..][0..2].* = le16(m);
+        var out: [membership.len * 4]u8 = undefined;
+        for (membership, 0..) |m, i| out[4 * i ..][0..4].* = le32(@as(u32, m));
         break :blk out;
     };
 
@@ -268,7 +335,7 @@ pub const SidecarSchema = struct {
         "class-order/nul-separated\x00" ++ le16(class_order.len) ++ class_order ++
         "saturation-cap/u16le\x00" ++ le16(saturation_cap) ++
         "element-interpretation/utf8\x00" ++ le16(element_interpretation.len) ++ element_interpretation ++
-        "membership-table/u16le-x256\x00" ++ le16(membership_le.len) ++ membership_le).*;
+        "membership-table/u32le-x256\x00" ++ le16(membership_le.len) ++ membership_le).*;
 
     /// The schema's identity. `domain` above names WHICH schema; signet's
     /// `.schema` label names what KIND of statement this is, so the sidecar's
@@ -280,24 +347,51 @@ pub const SidecarSchema = struct {
     fn le16(comptime value: u16) [2]u8 {
         return .{ @truncate(value), @truncate(value >> 8) };
     }
+
+    fn le32(comptime value: u32) [4]u8 {
+        return .{ @truncate(value), @truncate(value >> 8), @truncate(value >> 16), @truncate(value >> 24) };
+    }
 };
 
-const V = @Vector(K, u16);
+/// The SIMD lane count the hot scan loop actually computes over — padded up
+/// to the next width the backend vectorizes at full speed, not `K` itself.
+/// `@Vector(24, u16)` already occupies the same 64 bytes / 4 NEON registers
+/// as `@Vector(32, u16)` (the target rounds storage up to a power of two
+/// regardless), but a microbenchmark of this exact recurrence shape measured
+/// the ODD width at 0.089 GiB/s against the clean one's 0.713 GiB/s — 8x
+/// slower for identical storage, the signature of a lane count the
+/// autovectorizer cannot shuffle/mask cleanly. So the extra lanes are paid
+/// for either way; `simd_lanes` just stops leaving that padding to chance.
+/// The eight (here) padding lanes carry no class — `step`/`keep` zero-fill
+/// them below and nothing ever reads them back out (`crest`/`solo` truncate
+/// to the real `K` lanes before returning `Vector`).
+const simd_lanes = std.math.ceilPowerOfTwoAssert(usize, K);
+const V = @Vector(simd_lanes, u16);
 const zeros: V = @splat(0);
 const ones: V = @splat(0xFFFF);
-const step: V = @splat(1);
+
+/// Drop the padding lanes a padded `V` carries, back to the persisted shape.
+fn truncate(v: V) Vector {
+    var out: Vector = undefined;
+    inline for (0..K) |i| out[i] = v[i];
+    return out;
+}
 
 /// How many pieces the document is cut into and scanned interleaved.
 ///
 /// THE STATE IS TWO VECTORS and it never leaves them: the counters saturate at
-/// the same cap the vector stores, so `cur` and `best` are u16 like the answer
-/// and the whole family is 32 bytes each. But the per-byte update is a
-/// saturating add feeding an AND — a loop-carried chain about three cycles
-/// deep, which one scan cannot fill. Measured, a single scan spent 4.4
-/// cycles/byte with the machine mostly idle, and cutting the op count (a
-/// preshaped `keep` table for a splat-and-compare) moved it by nothing at all,
-/// which is the signature of a latency bound. Four pieces put four chains in
-/// flight, and `cur` + `best` for four pieces is 16 of the 32 NEON registers.
+/// the same cap the vector stores, so `cur` and `best` are u16 like the answer.
+/// At the two-alphabet family's `K=16` this `V` was 32 bytes / 2 NEON
+/// registers; the codepoint-run third alphabet (§3.7c) widened `K` to 24,
+/// which — padded to `simd_lanes=32` above — is 64 bytes / 4 registers. But
+/// the per-byte update is a saturating add feeding an AND — a loop-carried
+/// chain about three cycles deep, which one scan cannot fill. `ways` pieces
+/// put `ways` chains in flight, and `cur` + `best` cost `ways * 2 * 4`
+/// registers now, twice what they cost per piece before the third alphabet —
+/// so the interleave factor that filled 32 registers at `K=16` (`ways=4`)
+/// overflows it at this width; re-measured after the padding fix below,
+/// `ways=2` is the corpus-measured optimum (≈7.9x vs the per-byte reference,
+/// against `ways=4`'s ≈6.6x and `ways=1`'s ≈5.8x).
 ///
 /// Written instead as an `inline for` over the classes updating plain arrays —
 /// which reads better — it is the same arithmetic and the register allocator
@@ -311,7 +405,7 @@ const step: V = @splat(1);
 /// the words — was measured and rejected: the classification is genuinely
 /// cheaper, but extracting a longest run costs a step per RUN, and a dense mask
 /// has a run every few bits. It measured 3.8x slower than this.
-const ways = 4;
+const ways = 2;
 
 /// Under this, the joins and the per-piece lead scan cost more than the
 /// interleave returns, so a short document takes the plain loop.
@@ -333,11 +427,19 @@ const Piece = struct {
     trail: V,
     whole: V, // all-ones on lanes the piece never broke
 
-    fn join(a: Piece, a_len: V, b: Piece, b_len: V) Piece {
+    /// No external length parameter: when a piece never breaks a lane
+    /// (`whole`), that lane's own `trail` (⟺ `lead` ⟺ `best`) already IS the
+    /// count that lane advanced across the whole piece — the (`step`,`keep`)
+    /// recurrence tracked it directly, so it holds for a byte lane (every
+    /// byte advances 1) exactly as it does for a codepoint lane (only
+    /// non-continuation bytes do). A single splatted byte-length was right for
+    /// the byte lanes only by coincidence and wrong for the codepoint ones —
+    /// this reads the true per-lane count off the piece instead of assuming it.
+    fn join(a: Piece, b: Piece) Piece {
         return .{
-            .lead = @select(u16, a.whole != zeros, a_len +| b.lead, a.lead),
+            .lead = @select(u16, a.whole != zeros, a.trail +| b.lead, a.lead),
             .best = @max(@max(a.best, b.best), a.trail +| b.lead),
-            .trail = @select(u16, b.whole != zeros, b_len +| a.trail, b.trail),
+            .trail = @select(u16, b.whole != zeros, b.trail +| a.trail, b.trail),
             .whole = a.whole & b.whole,
         };
     }
@@ -345,33 +447,32 @@ const Piece = struct {
 
 /// The crest vector ρ(d): the longest run of each family member, in one pass.
 pub fn crest(doc: []const u8) Vector {
-    if (doc.len < interleave_floor) return solo(doc).best;
+    if (doc.len < interleave_floor) return truncate(solo(doc).best);
 
     const span = doc.len / ways; // the last piece also takes the remainder
     var cur: [ways]V = @splat(zeros);
     var best: [ways]V = @splat(zeros);
     for (0..span) |j| {
         inline for (&cur, &best, 0..) |*c, *bst, w| {
-            c.* = (c.* +| step) & keep[doc[w * span + j]];
+            const b = doc[w * span + j];
+            c.* = (c.* +| step[b]) & keep[b];
             bst.* = @max(bst.*, c.*);
         }
     }
     const last = ways - 1;
     for (doc[ways * span ..]) |b| { // contiguous with the last piece
-        cur[last] = (cur[last] +| step) & keep[b];
+        cur[last] = (cur[last] +| step[b]) & keep[b];
         best[last] = @max(best[last], cur[last]);
     }
 
     var acc: Piece = undefined;
-    var acc_len: usize = 0;
     inline for (0..ways) |w| {
         const len = if (w == last) doc.len - w * span else span;
         const l = lead(doc[w * span ..][0..len]);
         const p: Piece = .{ .lead = l.run, .best = best[w], .trail = cur[w], .whole = l.alive };
-        acc = if (w == 0) p else acc.join(saturate(acc_len), p, saturate(len));
-        acc_len += len;
+        acc = if (w == 0) p else acc.join(p);
     }
-    return acc.best;
+    return truncate(acc.best);
 }
 
 /// One piece, scanned whole — the shape `crest` degenerates to for a short
@@ -381,7 +482,7 @@ fn solo(d: []const u8) Piece {
     var cur = zeros;
     var best = zeros;
     for (d) |b| {
-        cur = (cur +| step) & keep[b];
+        cur = (cur +| step[b]) & keep[b];
         best = @max(best, cur);
     }
     const l = lead(d);
@@ -407,15 +508,11 @@ fn lead(d: []const u8) struct { run: V, alive: V } {
         const stop = @min(i + 64, d.len);
         while (i < stop) : (i += 1) {
             alive &= keep[d[i]];
-            run +|= alive & step;
+            run +|= alive & step[d[i]];
         }
         if (@reduce(.Or, alive) == 0) break;
     }
     return .{ .run = run, .alive = alive };
-}
-
-fn saturate(n: usize) V {
-    return @splat(@intCast(@min(n, std.math.maxInt(u16))));
 }
 
 /// One alternative's dominance test: it falls short ⟺ some member's crest is

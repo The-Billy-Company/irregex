@@ -120,6 +120,27 @@ test "the seal catches the record rot that every layout check passes" {
     try testing.expectError(signet.Error.Corrupt, sidecar.verify(buf));
 }
 
+test "a stale K=16 sidecar (the pre-codepoint-lane format) decodes to null" {
+    // The exact migration this schema exists to survive: a table built before
+    // the codepoint-run alphabet shipped is byte-for-byte a real K=16 table —
+    // right magic shape, right alignment, its OWN schema hash for K=16 — and
+    // today's K=24 loader must refuse it outright rather than read 16 lanes
+    // where 24 belong and silently stand the sieve down on a corrupted read.
+    // `class_count_off` alone is the fact that distinguishes them; stamping
+    // it to the old value on an otherwise-valid current buffer isolates that
+    // one check from the schema-hash check `bad[schema_hash_off] ^= 1`
+    // already covers above.
+    const gpa = testing.allocator;
+    const vectors = [_]crest.Vector{crest.crest("0123abcd")};
+    const buf = try gpa.alignedAlloc(u8, .of(crest.Vector), try sidecar.encodedSize(vectors.len));
+    defer gpa.free(buf);
+    _ = try sidecar.writeInto(&vectors, buf);
+
+    try testing.expectEqual(@as(u8, 24), buf[class_count_off]);
+    buf[class_count_off] = 16;
+    try testing.expect(sidecar.decode(buf, vectors.len) == null);
+}
+
 test "checked size arithmetic rejects the first overflowing document count" {
     const record_len = crest.K * @sizeOf(u16);
     const framed = sidecar.header_len + signet.len;

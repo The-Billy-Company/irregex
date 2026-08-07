@@ -83,6 +83,15 @@ test "forced-crest: class repetition is the whole point" {
     try expectForcedIn(0, "\\w{4}", uni, .alpha, .scalar); // '_' and digits are in neither
     try expectForcedIn(5, "\\s{5}", uni, .space, .scalar);
 
+    // The codepoint-run lane (§3.7c) certifies the SAME classes as its `+u`
+    // sibling for an ASCII-only run — every byte here is also one codepoint —
+    // so the two agree exactly until non-ASCII text enters the mix (below).
+    try expectForcedIn(3, "\\d{3}", uni, .digit, .codepoint);
+    try expectForcedIn(3, "\\d{3}", uni, .hex, .codepoint);
+    try expectForcedIn(3, "\\d{3}", uni, .word, .codepoint);
+    try expectForcedIn(4, "\\w{4}", uni, .word, .codepoint);
+    try expectForcedIn(5, "\\s{5}", uni, .space, .codepoint);
+
     // The bound is in BYTES, so a class whose cheapest member is multi-byte
     // forces more of them than it has codepoints. \p{L} has no one-byte
     // member under Unicode — every ASCII letter is folded out of it? no: it
@@ -91,6 +100,40 @@ test "forced-crest: class repetition is the whole point" {
     try expectForcedIn(2, "\\p{L}{2}", uni, .word, .scalar);
     try expectForcedIn(6, "[\u{4e00}-\u{9fff}]{2}", uni, .word, .scalar);
     try expectForcedIn(8, "[\u{1f600}-\u{1f64f}]{2}", uni, .word, .scalar);
+
+    // §3.7c's whole point: the codepoint lane prices the SAME two patterns at
+    // their true codepoint count, not their encoded byte count. A 3-byte CJK
+    // character costs `word+u` 3 and `word+cp` exactly 1; a 4-byte emoji costs
+    // `word+u` 4 and `word+cp` still 1 — this is the gap that used to clear
+    // `\d{6}` on two CJK characters and no digits at all.
+    try expectForcedIn(2, "\\p{L}{2}", uni, .word, .codepoint);
+    try expectForcedIn(2, "[\u{4e00}-\u{9fff}]{2}", uni, .word, .codepoint);
+    try expectForcedIn(2, "[\u{1f600}-\u{1f64f}]{2}", uni, .word, .codepoint);
+}
+
+test "forced-crest: the codepoint-run lane refuses a set holding a continuation byte (Lemma 2c)" {
+    // `[\x80-\xFF]` in BYTE mode is a `.class` node — a raw byte set, not a
+    // codepoint population — and it contains the whole continuation range
+    // `[0x80,0xBF]`. A document of six lone continuation bytes measures
+    // codepoint-run ZERO (they are transparent, not advancing), so certifying
+    // this atom at any positive codepoint length would be a false negative.
+    // The refusal must hold on EVERY class, not just one, since the set
+    // itself — not any particular class — is what disqualifies it.
+    inline for (.{ crest.Class.word, crest.Class.digit, crest.Class.punct, crest.Class.space }) |c| {
+        try expectForcedIn(0, "[\\x80-\\xFF]{6}", ascii, c, .codepoint);
+    }
+    // The scalar-closed lane still certifies it as usual — every non-ASCII
+    // byte, continuation or lead alike, is unconditionally IN every scalar
+    // twin — unaffected by the codepoint lane's stricter first-byte rule.
+    // The point is that ONE lane refuses while its sibling does not, not
+    // that the whole atom goes unknown.
+    try expectForcedIn(6, "[\\x80-\\xFF]{6}", ascii, .word, .scalar);
+
+    // `[^x]` admits NUL, which is in no member of ANY alphabet — the
+    // intersection already empties for the byte and scalar lanes (tested
+    // above); the codepoint lane must empty the same way, in both engine modes.
+    try expectForcedIn(0, "[^x]{9}", uni, .word, .codepoint);
+    try expectForcedIn(0, "[^x]{9}", ascii, .word, .codepoint);
 }
 
 test "forced-crest: straddle across concatenation" {
@@ -137,12 +180,15 @@ test "epsilon and unknown profiles cannot be confused" {
         try testing.expect(!unknown.only_c_cert[i]);
     }
     try testing.expectEqual(@as(u16, 0), epsilon.min_len);
+    try testing.expectEqual(@as(u16, 0), epsilon.min_cp);
     // A mandatory atom spends bytes, so it can never be mistaken for ε — the
-    // distinction `concat`'s seam term leans on.
+    // distinction `concat`'s seam term leans on. The two units are genuinely
+    // independent: an atom can spend 3 bytes and still cost only 1 codepoint.
     var one = @import("../syntax/syntax.zig").ByteSet{};
     one.set('x');
-    try testing.expectEqual(@as(u16, 1), analysis.ForcedProfile.atom(one, 1).min_len);
-    try testing.expectEqual(@as(u16, 3), analysis.ForcedProfile.atom(one, 3).min_len);
+    try testing.expectEqual(@as(u16, 1), analysis.ForcedProfile.atom(one, 1, one, 1).min_len);
+    try testing.expectEqual(@as(u16, 3), analysis.ForcedProfile.atom(one, 3, one, 1).min_len);
+    try testing.expectEqual(@as(u16, 1), analysis.ForcedProfile.atom(one, 3, one, 1).min_cp);
 }
 
 test "top-level alternation is a disjunction, not a componentwise min" {
