@@ -224,33 +224,198 @@ pub fn build(io: std.Io, docs: []const []const u8, paths: []const []const u8, an
 pub fn buildAt(io: std.Io, path: []const u8, docs: []const []const u8, paths: []const []const u8, anchor_ns: i128) !void {
     std.debug.assert(docs.len == paths.len);
     if (docs.len == 0 or docs.len > std.math.maxInt(u32)) return;
+    return write(io, path, Held{ .docs = docs }, paths, anchor_ns);
+}
 
+/// Reading one body back on demand — the streamed build's half of `build`.
+/// `read` returns doc `doc`'s bytes in `buf`, and is the same shape
+/// `corpus.Census.recall` already has.
+pub const Recall = struct {
+    ctx: *anyopaque,
+    read: *const fn (ctx: *anyopaque, doc: u32, buf: []u8) []const u8,
+};
+
+/// Publish the shard for a corpus nobody is holding: bodies come back one at a
+/// time through `src`, and `lens` states how long each one is.
+///
+/// **`lens` must be what the build ACTUALLY read, not what a walk once stated.**
+/// The offset catalog is prefix sums of these numbers and is written before the
+/// bodies, so a length that disagrees with the bytes would publish a shard whose
+/// catalog points into the wrong doc — the one failure mode a content shard must
+/// never have, because every reader trusts it without re-checking. The trigram
+/// pass already read every doc and can hand over exactly these lengths
+/// (`kiln.Witness`).
+///
+/// A file that changes AGAIN between that pass and this one is caught here and
+/// declines the whole shard rather than publishing a skewed catalog. Losing the
+/// tier costs a full-scan query its fast path; a skewed one would cost it the
+/// right answer. The caller already treats this as best-effort.
+pub fn buildRecalled(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    src: Recall,
+    paths: []const []const u8,
+    lens: []const u32,
+    anchor_ns: i128,
+) !void {
+    std.debug.assert(lens.len == paths.len);
+    if (lens.len == 0 or lens.len > std.math.maxInt(u32)) return;
+
+    var widest: u32 = 1;
+    for (lens) |n| widest = @max(widest, n);
+    // At least one whole doc must fit, however big that doc is.
+    const buf = try gpa.alloc(u8, @max(window_budget, widest));
+    defer gpa.free(buf);
+    const nthr = @max(1, portal.cpuCount() catch 1);
+    const crew = try gpa.alloc(Slice, nthr);
+    defer gpa.free(crew);
+    const threads = try gpa.alloc(std.Thread, nthr);
+    defer gpa.free(threads);
+    return write(io, shardFile(), Recalled{
+        .src = src,
+        .lens = lens,
+        .buf = buf,
+        .crew = crew,
+        .threads = threads,
+    }, paths, anchor_ns);
+}
+
+/// How much of the corpus is in flight while the shard is written.
+///
+/// **This window is why a streamed shard costs what a held one does.** Writing
+/// is inherently sequential — the bodies are a concatenation in doc order — but
+/// READING them is not, and a doc at a time is 175k dependent opens on one
+/// thread where the trigram pass had already proven the same reads parallelize.
+/// Measured on llvm-project, the serial version spent 30 s re-reading what the
+/// parallel pass reads in about 6. So the window is filled by every core at
+/// once and then handed to the writer as one region: flat memory, sequential
+/// bytes, parallel I/O.
+const window_budget: usize = 64 << 20;
+
+fn write(io: std.Io, path: []const u8, bodies: anytype, paths: []const []const u8, anchor_ns: i128) !void {
     var quill = try frame.Quill.init(io, path);
     defer quill.deinit(io);
     var sink = Streamed{ .quill = &quill, .io = io };
-    try emit(&sink, docs, paths, anchor_ns);
+    try emit(&sink, bodies, paths, anchor_ns);
     try quill.seal(io);
 }
 
-/// The layout, in order, written ONCE — `sink` is anything with `put`/`putInt`,
-/// so the streaming writer and the in-memory test encoder cannot drift on the
-/// format they agree about.
-fn emit(sink: anytype, docs: []const []const u8, paths: []const []const u8, anchor_ns: i128) !void {
+/// Bodies the caller is already holding.
+const Held = struct {
+    docs: []const []const u8,
+
+    fn count(h: Held) usize {
+        return h.docs.len;
+    }
+    fn len(h: Held, doc: usize) usize {
+        return h.docs[doc].len;
+    }
+    fn emitAll(h: Held, sink: anytype) !void {
+        for (h.docs) |d| try sink.put(d);
+    }
+};
+
+/// One crew member's run of docs within the window, and where they land in it.
+const Slice = struct {
+    r: *const Recalled = undefined,
+    lo: usize = 0,
+    hi: usize = 0,
+    off: usize = 0,
+    ok: bool = true,
+
+    fn run(s: *Slice) void {
+        var at = s.off;
+        for (s.lo..s.hi) |doc| {
+            const want = s.r.lens[doc];
+            const got = s.r.src.read(s.r.src.ctx, @intCast(doc), s.r.buf[at..][0..want]);
+            // A body that no longer matches the length the catalog was built
+            // from would skew every later doc's offset — decline instead.
+            if (got.len != want) {
+                s.ok = false;
+                return;
+            }
+            at += want;
+        }
+    }
+};
+
+/// Bodies fetched back a window at a time, filled by every core and written as
+/// one region.
+const Recalled = struct {
+    src: Recall,
+    lens: []const u32,
+    buf: []u8,
+    crew: []Slice,
+    threads: []std.Thread,
+
+    fn count(r: Recalled) usize {
+        return r.lens.len;
+    }
+    fn len(r: Recalled, doc: usize) usize {
+        return r.lens[doc];
+    }
+
+    fn emitAll(r: Recalled, sink: anytype) !void {
+        var me = r;
+        var lo: usize = 0;
+        while (lo < me.lens.len) {
+            var hi = lo;
+            var span: usize = 0;
+            while (hi < me.lens.len and (hi == lo or span + me.lens[hi] <= me.buf.len)) : (hi += 1) {
+                span += me.lens[hi];
+            }
+            try me.fill(lo, hi, span);
+            try sink.put(me.buf[0..span]);
+            lo = hi;
+        }
+    }
+
+    /// Read docs `[lo, hi)` into the window, byte-balanced across the crew.
+    fn fill(r: *const Recalled, lo: usize, hi: usize, span: usize) !void {
+        const nthr = @min(r.crew.len, @max(1, hi - lo));
+        var at: usize = 0;
+        var doc = lo;
+        for (r.crew[0..nthr], 0..) |*s, t| {
+            // Each member takes docs until it holds its share of the window's
+            // bytes, so a run of tiny files and a run of large ones cost the
+            // same wall time rather than the same doc count.
+            const target = span * (t + 1) / nthr;
+            const start = doc;
+            const off = at;
+            while (doc < hi and (at < target or t == nthr - 1)) : (doc += 1) at += r.lens[doc];
+            s.* = .{ .r = r, .lo = start, .hi = doc, .off = off };
+        }
+        var spawned: usize = 0;
+        while (spawned < nthr) : (spawned += 1) {
+            r.threads[spawned] = std.Thread.spawn(.{}, Slice.run, .{&r.crew[spawned]}) catch break;
+        }
+        for (spawned..nthr) |t| Slice.run(&r.crew[t]);
+        for (r.threads[0..spawned]) |th| th.join();
+        for (r.crew[0..nthr]) |s| if (!s.ok) return error.CorpusChurned;
+    }
+};
+
+/// The layout, in order, written ONCE — `sink` is anything with `put`/`putInt`
+/// and `bodies` anything with `count`/`len`/`emitTo`, so the streaming writer,
+/// the recalled writer, and the in-memory test encoder cannot drift on the
+/// format all three agree about.
+fn emit(sink: anytype, bodies: anytype, paths: []const []const u8, anchor_ns: i128) !void {
+    const ndocs = bodies.count();
     var content_len: u64 = 0;
-    for (docs) |d| content_len += d.len;
+    for (0..ndocs) |i| content_len += bodies.len(i);
 
     try sink.put(magic);
     try sink.putInt(i64, @intCast(anchor_ns));
-    try sink.putInt(u32, @intCast(docs.len));
+    try sink.putInt(u32, @intCast(ndocs));
     try sink.putInt(u32, @intCast(frame.nulLen(paths)));
     try sink.putInt(u64, content_len);
 
     // Offset catalog: prefix sums of the body lengths (offsets[0]=0 …
     // offsets[ndocs]=content_len), so a query maps doc→slice with two reads.
     var acc: u64 = 0;
-    for (docs) |d| {
+    for (0..ndocs) |i| {
         try sink.putInt(u64, acc);
-        acc += d.len;
+        acc += bodies.len(i);
     }
     try sink.putInt(u64, acc);
 
@@ -258,7 +423,7 @@ fn emit(sink: anytype, docs: []const []const u8, paths: []const []const u8, anch
         try sink.put(p);
         try sink.put(&[_]u8{0});
     }
-    for (docs) |d| try sink.put(d);
+    try bodies.emitAll(sink);
 }
 
 /// `emit` → a `frame.Quill`. Binds the `io` the quill needs so `emit` stays a
@@ -298,7 +463,7 @@ fn encodeForTest(gpa: std.mem.Allocator, docs: []const []const u8, paths: []cons
     };
     var sink = Collected{ .gpa = gpa };
     errdefer sink.blob.deinit(gpa);
-    try emit(&sink, docs, paths, anchor_ns);
+    try emit(&sink, Held{ .docs = docs }, paths, anchor_ns);
     try signet.sealInto(gpa, &sink.blob);
     return sink.blob.toOwnedSlice(gpa);
 }

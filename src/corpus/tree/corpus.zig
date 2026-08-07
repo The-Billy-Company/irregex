@@ -595,6 +595,75 @@ pub const Corpus = struct {
     }
 };
 
+/// The corpus described rather than held: which files are members, in the same
+/// doc-id order `load` would have numbered them, and how long each one says it
+/// is. `paths` and `sizes` are parallel and index by doc id.
+///
+/// This is the corpus a build reads in doc order instead of carrying. It is the
+/// SAME membership rule and the SAME ordering as `Corpus` — `loadpar` runs one
+/// walk for both and differs only in what it keeps — so a census may be used
+/// anywhere the doc numbering matters and only the bytes are missing.
+///
+/// `sizes` is what each handle STATED, which a held snapshot never needed to
+/// distinguish from what a read returned. A file that changes size between the
+/// census and the read is described one way here and another there; its clocks
+/// then stand at or after the build anchor, so the freshness gate re-reads it
+/// live rather than trusting either figure.
+pub const Census = struct {
+    paths: [][]const u8,
+    sizes: []u32,
+    bytes: u64,
+    arena: std.heap.ArenaAllocator,
+    /// Releases `shards` (the per-worker arenas holding the path bytes).
+    owner: ?std.mem.Allocator = null,
+    shards: []std.heap.ArenaAllocator = &.{},
+
+    pub fn deinit(self: *Census) void {
+        self.arena.deinit();
+        const g = self.owner orelse return;
+        for (self.shards) |*s| s.deinit();
+        g.free(self.shards);
+    }
+
+    /// Read doc `doc`'s bytes back into `buf`, allocating nothing. This is the
+    /// census's other half: the walk decided WHICH files are docs and in what
+    /// order, and this returns one of them on demand so a build never has to
+    /// hold them all.
+    ///
+    /// **A doc that cannot be recalled is the empty document, not an error.**
+    /// The file may have been deleted, truncated, made unreadable, or turned
+    /// binary since the walk; the doc id is already spent and every parallel
+    /// array is already sized, so the only coherent answer is "no bytes". Search
+    /// then behaves exactly as it would for a file that is not there — which is
+    /// the truth — and the freshness anchor folds the file back in live, because
+    /// whatever changed it moved its clocks past the anchor stamped before the
+    /// walk.
+    ///
+    /// Thread-safe: it touches nothing but its own arguments and the kernel.
+    pub fn recall(self: *const Census, doc: u32, buf: []u8) []const u8 {
+        const fd = portal.openFile(portal.cwd(), self.paths[doc]) catch return &.{};
+        defer portal.close(fd);
+        // Never past what the caller sized for, and never past the cap the walk
+        // itself enforced — a file that grew since is read as its first
+        // `sizes[doc]` bytes rather than overrunning a buffer cut to fit it.
+        const room = buf[0..@min(buf.len, per_file_cap)];
+        var n: usize = 0;
+        while (n < room.len) {
+            const r = portal.read(fd, room[n..]) catch return &.{};
+            if (r == 0) break;
+            n += r;
+        }
+        return if (n == 0 or isBinary(room[0..n])) &.{} else room[0..n];
+    }
+};
+
+/// Classify the corpus under `roots` without materializing it. No serial twin
+/// and no fallback: a census is an accelerator for the build that wants one, so
+/// a caller that cannot get one runs the ordinary `load` path instead.
+pub fn census(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8) !Census {
+    return @import("loadpar.zig").census(gpa, io, roots);
+}
+
 /// `GIST_NO_PARALLEL_LOAD` truthy (any value but `0`/`false`/`no`/empty) forces
 /// the serial loader — the parity gate + escape hatch, mirroring the search
 /// engine's `GIST_NO_PARALLEL`.

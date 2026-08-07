@@ -81,13 +81,94 @@ const Run = struct {
     postings: u32,
 };
 
-/// A worker's slice of the corpus and the runs it fired from it. Runs are
-/// allocated from `page_allocator` rather than the caller's allocator for the
-/// reason the extractor already used it: a caller may hand us an arena, and an
-/// arena is not thread-safe.
+/// Where the builder gets a document's bytes — and the one place the two build
+/// shapes differ.
+///
+/// **`held` is a snapshot; `streamed` is a promise.** A held build read the
+/// whole corpus up front, so every byte it will ever index is already resident;
+/// that residency IS the peak it pays. A streamed build carries only the census
+/// — a path and a stated size per doc — and re-opens each file when its worker
+/// reaches it, so what stays resident is one read buffer per worker rather than
+/// the corpus.
+///
+/// **The trade is real, deliberate, and already covered.** Between the census
+/// and the read, a file can be edited, truncated, or deleted; a streamed build
+/// therefore indexes whatever is on disk at READ time, and indexes a vanished
+/// file as empty. That is not a new hazard, it is the SAME window the freshness
+/// anchor exists to close: the anchor is stamped before the walk, so every file
+/// whose mtime/ctime moved after it is folded in live at query time no matter
+/// which bytes this build happened to see. A held build narrows the window; it
+/// has never closed it, because the corpus keeps changing while the index is
+/// being written either way.
+pub const Source = union(enum) {
+    held: []const []const u8,
+    streamed: Stream,
+
+    fn count(s: Source) usize {
+        return switch (s) {
+            .held => |d| d.len,
+            .streamed => |st| st.sizes.len,
+        };
+    }
+
+    fn size(s: Source, doc: usize) usize {
+        return switch (s) {
+            .held => |d| d[doc].len,
+            .streamed => |st| st.sizes[doc],
+        };
+    }
+
+    /// Doc `doc`'s bytes, valid only until the next call with the same `buf`.
+    /// A read that fails yields the empty document — see the TOCTOU note above.
+    fn body(s: Source, doc: usize, buf: []u8) []const u8 {
+        return switch (s) {
+            .held => |d| d[doc],
+            .streamed => |st| st.read(st.ctx, @intCast(doc), buf),
+        };
+    }
+};
+
+/// A census plus the means to read from it. `read` is called from worker
+/// threads, so it must be thread-safe and must not touch a shared allocator.
+pub const Stream = struct {
+    sizes: []const u32,
+    ctx: *anyopaque,
+    read: *const fn (ctx: *anyopaque, doc: u32, buf: []u8) []const u8,
+    witness: ?Witness = null,
+};
+
+/// A second reader of the bytes this build is already holding, for the length
+/// of one doc.
+///
+/// **This exists because a streamed build's scarcest resource is a doc's bytes
+/// while they are in hand.** A held build could afford several independent
+/// passes over the corpus — the corpus was in memory, so they were free. A
+/// streamed build pays a file read for each one, so anything else that wants
+/// per-doc bytes should ride along here rather than open the file again. The
+/// crest sieve is exactly that, and so is recording the length the build
+/// ACTUALLY saw, which is the only honest input to a content shard's offset
+/// catalog when the stated sizes came from an earlier walk.
+///
+/// `saw` runs on a worker thread, once per doc, with the bytes valid only for
+/// the call. Workers own disjoint doc ranges, so writing to `out[doc]` needs no
+/// synchronization — anything else does.
+pub const Witness = struct {
+    ctx: *anyopaque,
+    saw: *const fn (ctx: *anyopaque, doc: u32, bytes: []const u8) void,
+};
+
+fn statedSize(_: void, n: u32) usize {
+    return n;
+}
+
+/// A worker's doc range and the runs it fired from it. Runs are allocated from
+/// `page_allocator` rather than the caller's allocator for the reason the
+/// extractor already used it: a caller may hand us an arena, and an arena is
+/// not thread-safe.
 const Worker = struct {
-    docs: []const []const u8,
-    base_doc: u32,
+    src: Source,
+    lo: u32,
+    hi: u32,
     cap: usize,
     runs: std.ArrayList(Run) = .empty,
     postings: usize = 0,
@@ -95,23 +176,33 @@ const Worker = struct {
 };
 
 /// Build the CSR directory + delta-varint body over `docs` (doc ids are
-/// indices). `OutOfMemory` is the only failure, and the caller degrades to the
-/// serial builder on it — a threading hiccup is never allowed to cost postings,
-/// because a candidate filter that drops postings answers false NEGATIVES.
+/// indices), whose bodies are already resident.
 pub fn fire(gpa: std.mem.Allocator, docs: []const []const u8) std.mem.Allocator.Error!Fired {
+    return fireFrom(gpa, .{ .held = docs });
+}
+
+/// Build it from any source. `OutOfMemory` is the only failure, and the caller
+/// degrades to the serial builder on it — a threading hiccup is never allowed
+/// to cost postings, because a candidate filter that drops postings answers
+/// false NEGATIVES.
+pub fn fireFrom(gpa: std.mem.Allocator, src: Source) std.mem.Allocator.Error!Fired {
+    const ndocs = src.count();
     var bytes: usize = 0;
-    for (docs) |d| bytes += d.len;
+    for (0..ndocs) |i| bytes += src.size(i);
     const ncpu = portal.cpuCount() catch 1;
-    const nthr = @min(@max(ncpu, 1), docs.len);
+    const nthr = @min(@max(ncpu, 1), ndocs);
     const cap = blockCap(nthr);
 
     const bounds = try gpa.alloc(usize, nthr + 1);
     defer gpa.free(bounds);
-    parallel.greedyBounds([]const u8, docs, {}, parallel.sliceLen, bytes, bounds);
+    switch (src) {
+        .held => |d| parallel.greedyBounds([]const u8, d, {}, parallel.sliceLen, bytes, bounds),
+        .streamed => |st| parallel.greedyBounds(u32, st.sizes, {}, statedSize, bytes, bounds),
+    }
 
     const workers = try gpa.alloc(Worker, nthr);
     defer gpa.free(workers);
-    for (workers, 0..) |*w, t| w.* = .{ .docs = docs[bounds[t]..bounds[t + 1]], .base_doc = @intCast(bounds[t]), .cap = cap };
+    for (workers, 0..) |*w, t| w.* = .{ .src = src, .lo = @intCast(bounds[t]), .hi = @intCast(bounds[t + 1]), .cap = cap };
     defer for (workers) |*w| {
         for (w.runs.items) |r| std.heap.page_allocator.free(r.bytes);
         w.runs.deinit(std.heap.page_allocator);
@@ -146,7 +237,20 @@ fn blockCap(nthr: usize) usize {
 fn extract(w: *Worker) void {
     const pa = std.heap.page_allocator;
     var longest: usize = 1;
-    for (w.docs) |d| longest = @max(longest, d.len);
+    for (w.lo..w.hi) |i| longest = @max(longest, w.src.size(i));
+
+    // A streamed worker reads each doc into one buffer sized to the largest doc
+    // it will see, and reuses it for every doc after — the whole reason a
+    // streamed build's footprint is per-WORKER instead of per-corpus. A held
+    // worker's bodies are already resident and it allocates nothing here.
+    const hold: []u8 = switch (w.src) {
+        .held => &.{},
+        .streamed => pa.alloc(u8, longest) catch {
+            w.err = true;
+            return;
+        },
+    };
+    defer pa.free(hold);
 
     const block = pa.alloc(Pair, w.cap) catch {
         w.err = true;
@@ -172,11 +276,18 @@ fn extract(w: *Worker) void {
     defer pa.free(bitmap);
     @memset(bitmap, 0);
 
+    const wit: ?Witness = switch (w.src) {
+        .held => null,
+        .streamed => |st| st.witness,
+    };
+
     var n: usize = 0; // postings held in `block`
-    var base: u32 = w.base_doc; // first doc this block carries
-    for (w.docs, 0..) |d, i| {
-        const doc: u32 = w.base_doc + @as(u32, @intCast(i));
-        const k = ngram.extractUniqueUnordered(d, bitmap, scratch);
+    var base: u32 = w.lo; // first doc this block carries
+    for (w.lo..w.hi) |i| {
+        const doc: u32 = @intCast(i);
+        const body = w.src.body(i, hold);
+        if (wit) |x| x.saw(x.ctx, doc, body);
+        const k = ngram.extractUniqueUnordered(body, bitmap, scratch);
         var done: usize = 0;
         while (done < k) {
             if (n == block.len) {

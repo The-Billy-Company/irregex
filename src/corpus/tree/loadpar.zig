@@ -163,6 +163,20 @@ const Queue = struct {
     }
 };
 
+/// What the walk KEEPS from a member it admits. Pruning, ignore chains, and the
+/// membership rule itself are identical either way — only the harvest differs,
+/// which is what lets the census claim the walk's answer rather than a lookalike
+/// of it.
+pub const Harvest = enum {
+    /// Keep the body. The corpus snapshot every in-memory consumer reads.
+    bodies,
+    /// Keep the path and the stated length, and drop the bytes. The index
+    /// build's census: it needs to know WHICH files are members and in what
+    /// order, and would rather read them again in doc order than carry the
+    /// whole corpus to get there.
+    census,
+};
+
 /// One walker: its private arena owns everything it accumulates (doc bytes,
 /// rel paths, ignore-chain nodes) and must outlive the whole walk, since a
 /// donated task can carry chain/rel pointers into a peer's arena — every
@@ -172,11 +186,18 @@ const Worker = struct {
     io: std.Io,
     ig: *const ignore.Ignore,
     arena: std.heap.ArenaAllocator,
+    harvest: Harvest = .bodies,
     docs: std.ArrayList([]const u8) = .empty,
     paths: std.ArrayList([]const u8) = .empty,
+    /// Parallel to `paths` under `.census`; empty under `.bodies`, where a
+    /// body's own length already states it.
+    sizes: std.ArrayList(u32) = .empty,
     bytes: u64 = 0,
     /// This worker hit an allocation failure; `load` fails the whole walk.
     oom: bool = false,
+    /// Reusable binary-verdict window (`sizedMember` / `censusMember`) —
+    /// private to this worker, overwritten per file, never handed out.
+    head: [corpus.binary_window]u8 = undefined,
 };
 
 fn workerMain(w: *Worker) void {
@@ -299,10 +320,20 @@ fn handleEntry(w: *Worker, a: std.mem.Allocator, dirfd: std.posix.fd_t, task: Di
         return;
     }
     if (shouldSkip(w.ig, chain, a, task.root_depth, rel, false, e.name)) return;
-    const buf = try readMemberRaw(a, dirfd, e.name) orelse return;
-    try w.docs.append(a, buf);
-    try w.paths.append(a, rel);
-    w.bytes += buf.len;
+    switch (w.harvest) {
+        .bodies => {
+            const buf = try readMemberRaw(a, dirfd, e.name, &w.head) orelse return;
+            try w.docs.append(a, buf);
+            try w.paths.append(a, rel);
+            w.bytes += buf.len;
+        },
+        .census => {
+            const size = censusMember(dirfd, e.name, &w.head) orelse return;
+            try w.sizes.append(a, size);
+            try w.paths.append(a, rel);
+            w.bytes += size;
+        },
+    }
 }
 
 /// The build's skip decision for one entry: the frozen base verdict, overridden
@@ -336,23 +367,85 @@ fn shouldSkip(ig: *const ignore.Ignore, chain: ?*const ignore.IgNode, a: std.mem
 /// that grew yields its `size`-byte prefix, one that shrank yields what it had.
 /// Either way its mtime now stands at/after the build anchor, so the freshness
 /// gate re-reads it live on the next query rather than trusting these bytes.
-fn readMemberRaw(a: std.mem.Allocator, dirfd: std.posix.fd_t, name: []const u8) Oom!?[]const u8 {
+fn readMemberRaw(a: std.mem.Allocator, dirfd: std.posix.fd_t, name: []const u8, head: []u8) Oom!?[]const u8 {
     const fd = portal.openFile(dirfd, name) catch return null;
     defer portal.close(fd);
-    const body = switch (memberSize(fd)) {
+    switch (memberSize(fd)) {
         .rejected => return null,
-        .sized => |size| blk: {
-            const buf = try a.alloc(u8, size);
-            break :blk buf[0..readFully(fd, buf)];
-        },
+        .sized => |size| return sizedMember(a, fd, size, head),
         // Stat says zero but the handle may still yield bytes — procfs-shaped
         // files are the only things that answer this way, and the serial loader
         // drains them. Parity costs a growing read for a case a source tree
         // never contains, rather than a silently-dropped member if it does.
-        .unsized => try drain(a, fd) orelse return null,
+        .unsized => {
+            const body = try drain(a, fd) orelse return null;
+            return if (body.len == 0 or corpus.isBinary(body)) null else body;
+        },
+    }
+}
+
+/// Read a member whose handle already stated its length, taking the binary
+/// verdict BEFORE any arena allocation exists to regret.
+///
+/// The bodies live in a worker arena that cannot reclaim one allocation, so a
+/// file read into it and then refused is retained for the whole build — 74 MiB
+/// of llvm-project, every byte of it dead the instant it arrived. Reading the
+/// verdict window into the worker's reusable `head` first means a rejected file
+/// costs one 8 KiB buffer that the next file overwrites.
+///
+/// The verdict is IDENTICAL to the one a whole-file read reaches:
+/// `corpus.isBinary` inspects `corpus.binary_window` bytes and ignores the rest,
+/// so the window is the whole rule and not a cheaper approximation of it. An
+/// admitted body is still one sized allocation and still one pass over the file
+/// — the head is copied into place rather than re-read.
+fn sizedMember(a: std.mem.Allocator, fd: std.posix.fd_t, size: u32, head: []u8) Oom!?[]const u8 {
+    const window = head[0..readFully(fd, head[0..@min(@as(usize, size), corpus.binary_window)])];
+    if (window.len == 0 or corpus.isBinary(window)) return null;
+    const buf = try a.alloc(u8, size);
+    @memcpy(buf[0..window.len], window);
+    return buf[0 .. window.len + readFully(fd, buf[window.len..])];
+}
+
+/// The census twin of `sizedMember`: the same open, the same verdict, the same
+/// window — and the length instead of the bytes.
+///
+/// Membership is decided identically to `readMemberRaw` BY CONSTRUCTION, not by
+/// a parallel rule kept in step: both refuse a non-regular or oversize handle
+/// through `memberSize`, and both take the binary verdict from the first
+/// `corpus.binary_window` bytes, which is the entire content `corpus.isBinary`
+/// consults. So a census and a body walk over the same tree admit the same
+/// files in the same order, and the census can be trusted to say what the
+/// corpus IS without materializing it.
+///
+/// The length reported for a sized member is the one the HANDLE stated, not the
+/// count a full read returned — nothing here reads that far. A file that shrinks
+/// between this census and the later doc-order read is therefore described one
+/// way here and another way there, and the reconciliation is the build anchor,
+/// not a retry: such a file's mtime/ctime now stand at or after it, so the T3
+/// rule refuses to serve it from the shard and the next query reads it live.
+/// This is the one property a held snapshot has that a census does not, and it
+/// costs a stale accelerator entry rather than a wrong answer.
+fn censusMember(dirfd: std.posix.fd_t, name: []const u8, head: []u8) ?u32 {
+    const fd = portal.openFile(dirfd, name) catch return null;
+    defer portal.close(fd);
+    const stated: ?u32 = switch (memberSize(fd)) {
+        .rejected => return null,
+        .sized => |size| size,
+        .unsized => null,
     };
-    if (body.len == 0 or corpus.isBinary(body)) return null;
-    return body;
+    const window = head[0..readFully(fd, head[0..corpus.binary_window])];
+    if (window.len == 0 or corpus.isBinary(window)) return null;
+    if (stated) |size| return size;
+    // Unsized (procfs-shaped): the length exists only at the end of a drain, but
+    // nothing needs the bytes — count them through the window buffer and drop
+    // each chunk, so the cap is still enforced against the real stream.
+    var total: usize = window.len;
+    while (true) {
+        const r = portal.read(fd, head) catch return null;
+        if (r == 0) return std.math.cast(u32, total);
+        total += r;
+        if (total >= corpus.per_file_cap) return null; // StreamTooLong parity
+    }
 }
 
 /// What a handle's length says about membership before any content is read.
@@ -399,6 +492,10 @@ fn drain(a: std.mem.Allocator, fd: std.posix.fd_t) Oom!?[]const u8 {
     }
 }
 
+fn mib(n: anytype) f64 {
+    return @as(f64, @floatFromInt(n)) / (1 << 20);
+}
+
 /// Root-joined path, `haystack.joinRoot` shape: a `.` root (prefix "") yields
 /// bare CWD-relative paths, an explicit root keeps its `root/...` prefix.
 fn joinRel(a: std.mem.Allocator, prefix: []const u8, name: []const u8) Oom![]const u8 {
@@ -408,7 +505,7 @@ fn joinRel(a: std.mem.Allocator, prefix: []const u8, name: []const u8) Oom![]con
 
 const testing = std.testing;
 
-test "fused parallel load has byte-identical membership to the serial walk" {
+test "fused parallel load, serial walk, and census all admit the same corpus" {
     // The whole point of `loadpar`: same corpus as `corpus.loadSerial`, faster.
     // Build a fixture exercising every membership rule — gitignore (anchored,
     // slash-less, negated), nested per-dir ignore, hidden skip, the build-dir
@@ -480,6 +577,22 @@ test "fused parallel load has byte-identical membership to the serial walk" {
         };
         try testing.expectEqualStrings(want, d);
     }
+    // The census walks the same tree and keeps no bodies, so it must admit the
+    // same members in the same doc-id order — and state each one's length as the
+    // body the load actually returned. This is the load-bearing half: the
+    // streaming build numbers docs from the census and reads bytes later, so a
+    // divergence here would index a different corpus than the snapshot build
+    // without anything else noticing. Compared elementwise, not as a set, since
+    // both stitches sort on path and the ORDER is what doc ids are.
+    var cen = try census(testing.allocator, io, roots);
+    defer cen.deinit();
+    try testing.expectEqual(par.paths.len, cen.paths.len);
+    try testing.expectEqual(par.bytes, cen.bytes);
+    for (par.paths, par.docs, cen.paths, cen.sizes) |pp, pd, cp, cs| {
+        try testing.expectEqualStrings(pp, cp);
+        try testing.expectEqual(pd.len, @as(usize, cs));
+    }
+
     // The members that must be present, and the ones that must be pruned.
     try testing.expect(expect.get(try joinPath(a, root, "a.txt")) != null);
     try testing.expect(expect.get(try joinPath(a, root, "keep.log")) != null);
@@ -503,19 +616,59 @@ fn workerCount() usize {
     return @max(@as(usize, 1), @min(cpu, 8));
 }
 
-/// Fused parallel walk+read. Returns the assembled `Corpus`; the per-worker
-/// arenas travel into it (`Corpus.shards`) so the doc/path bytes stay alive
-/// until `Corpus.deinit`. Any spawn failure degrades to running that worker's
-/// share inline, so the walk always completes.
-pub fn load(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8) !corpus.Corpus {
+/// Everything one fan-out produced: the shared arena, the joined workers, and
+/// the two tallies both stitches need. The workers are JOINED — their `q` and
+/// `ig` pointers are spent and must not be dereferenced again; what remains
+/// live is each worker's arena, which carries the rel paths (and, under
+/// `.bodies`, the doc bytes) into the assembled result.
+const Fanned = struct {
+    arena: std.heap.ArenaAllocator,
+    workers: []Worker,
+    gpa: std.mem.Allocator,
+    /// Admitted members across every worker — the doc count.
+    members: usize,
+    /// Corpus bytes: body lengths under `.bodies`, stated lengths under
+    /// `.census`.
+    bytes: u64,
+
+    /// Release everything the walk owns. For a caller that failed AFTER
+    /// `fanOut` returned; a successful stitch moves the arenas out instead.
+    fn deinit(f: *Fanned) void {
+        for (f.workers) |*w| w.arena.deinit();
+        f.gpa.free(f.workers);
+        f.arena.deinit();
+    }
+
+    /// Move the worker arenas into a `shards` array the result will own, and
+    /// retire the worker array. Infallible once the allocation lands, so a
+    /// stitch calls it last and no errdefer can double-free a moved arena.
+    fn intoShards(f: *Fanned) ![]std.heap.ArenaAllocator {
+        const out = try f.gpa.alloc(std.heap.ArenaAllocator, f.workers.len);
+        for (out, f.workers) |*s, *w| s.* = w.arena;
+        f.gpa.free(f.workers);
+        f.workers = &.{};
+        return out;
+    }
+};
+
+/// The walk both harvests share. One frozen `Ignore`, one work-stealing queue,
+/// N workers, joined — identical pruning, identical ignore chains, identical
+/// membership. Only what a worker KEEPS from an admitted file differs, which is
+/// why a census can claim the load's member set instead of approximating it.
+/// Any spawn failure degrades to running that worker's share inline, so the
+/// walk always completes.
+fn fanOut(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8, harvest: Harvest) !Fanned {
     var arena = std.heap.ArenaAllocator.init(gpa);
     errdefer arena.deinit();
     const a = arena.allocator();
 
     // One frozen base `Ignore` for the whole invocation — the same construction
     // `haystack.Walker.initWithRoots` does per root (root/ancestor tiers loaded
-    // once). Per-directory sub-ignores are folded in via the worker chains.
-    var ig = try ignore.Ignore.init(a, io, .{}, roots);
+    // once). Per-directory sub-ignores are folded in via the worker chains. It
+    // lives in the arena rather than this frame because the workers outlive the
+    // fan-out and hold a pointer to it.
+    const ig = try a.create(ignore.Ignore);
+    ig.* = try ignore.Ignore.init(a, io, .{}, roots);
 
     var q = Queue{ .gpa = gpa, .io = io };
     defer q.items.deinit(gpa);
@@ -537,10 +690,10 @@ pub fn load(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8) !corp
 
     const n = workerCount();
     const workers = try gpa.alloc(Worker, n);
-    defer gpa.free(workers);
-    for (workers) |*w| w.* = .{ .q = &q, .io = io, .ig = &ig, .arena = std.heap.ArenaAllocator.init(gpa) };
-    // The worker arenas travel into the `Corpus` on success; on any failure from
-    // here on they are this function's to release.
+    errdefer gpa.free(workers);
+    for (workers) |*w| w.* = .{ .q = &q, .io = io, .ig = ig, .arena = std.heap.ArenaAllocator.init(gpa), .harvest = harvest };
+    // The worker arenas travel into the assembled result on success; on any
+    // failure from here on they are this function's to release.
     errdefer for (workers) |*w| w.arena.deinit();
 
     try q.push(seeds.items);
@@ -560,47 +713,108 @@ pub fn load(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8) !corp
     // the load rather than hand back a corpus that silently omits files.
     for (workers) |*w| if (w.oom) return error.OutOfMemory;
 
-    // Stitch: slice HEADERS land in the main arena; the doc/path bytes stay in
-    // the worker arenas (kept alive in `Corpus.shards`). Doc ids are assigned by
-    // sorting on PATH so the build is DETERMINISTIC (the work-stealing walk
-    // finishes in nondeterministic order run-to-run; unsorted doc numbering
-    // would make the persisted index vary byte-for-byte and defeat reproducible
-    // builds / drift gates) — and path-locality tightens the posting-list delta
-    // compression, matching the serial DFS build's index size.
     var total_docs: usize = 0;
     var total_bytes: u64 = 0;
     for (workers) |*w| {
-        total_docs += w.docs.items.len;
+        total_docs += w.paths.items.len;
         total_bytes += w.bytes;
     }
+    // What the walk RESERVED against what it was asked to hold. The build's
+    // peak lives in this phase, and one "corpus load: N MiB" line cannot say
+    // whether N is the corpus or the walk's own bookkeeping — and those have
+    // entirely different fixes. The gap is listings, rel paths, slice headers,
+    // and arena node slack. It is arena CAPACITY, so the untouched tail of a
+    // freshly grown node is counted here and never becomes resident; read it
+    // against the phase's peak rather than as a resident figure.
+    if (assay.lit(.index)) {
+        var reserved: usize = 0;
+        for (workers) |*w| reserved += w.arena.queryCapacity();
+        switch (harvest) {
+            .bodies => assay.diag("loadpar: reserved {d:.1} MiB · doc bytes {d:.1} MiB · bookkeeping {d:.1} MiB\n", .{
+                mib(reserved), mib(total_bytes), mib(reserved) - mib(total_bytes),
+            }),
+            // Subtracting the doc bytes would be meaningless here — the census
+            // never held them, which is the entire claim it is making.
+            .census => assay.diag("loadpar: reserved {d:.1} MiB to describe {d:.1} MiB of corpus · no bodies held\n", .{
+                mib(reserved), mib(total_bytes),
+            }),
+        }
+    }
+    return .{ .arena = arena, .workers = workers, .gpa = gpa, .members = total_docs, .bytes = total_bytes };
+}
+
+/// Doc ids are assigned by sorting on PATH, and both stitches use THIS
+/// comparator so the census and the load number the same corpus the same way.
+/// Sorting is what makes the build deterministic: the work-stealing walk
+/// finishes in a different order run to run, and unsorted numbering would make
+/// the persisted index vary byte-for-byte and defeat reproducible builds and
+/// the drift gates. Path locality also tightens the posting-list delta
+/// compression, matching the serial DFS build's index size.
+fn pathLess(comptime Row: type) fn (void, Row, Row) bool {
+    return struct {
+        fn lt(_: void, x: Row, y: Row) bool {
+            return std.mem.lessThan(u8, x.path, y.path);
+        }
+    }.lt;
+}
+
+/// Fused parallel walk+read. Returns the assembled `Corpus`; the per-worker
+/// arenas travel into it (`Corpus.shards`) so the doc/path bytes stay alive
+/// until `Corpus.deinit`.
+pub fn load(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8) !corpus.Corpus {
+    var f = try fanOut(gpa, io, roots, .bodies);
+    errdefer f.deinit();
+    const a = f.arena.allocator();
+
+    // Slice HEADERS land in the shared arena; the doc/path bytes stay in the
+    // worker arenas, kept alive as `Corpus.shards`.
     const Pair = struct { path: []const u8, doc: []const u8 };
-    var pairs = try a.alloc(Pair, total_docs);
+    var pairs = try a.alloc(Pair, f.members);
     var k: usize = 0;
-    for (workers) |*w| for (w.paths.items, w.docs.items) |p, d| {
+    for (f.workers) |*w| for (w.paths.items, w.docs.items) |p, d| {
         pairs[k] = .{ .path = p, .doc = d };
         k += 1;
     };
-    std.mem.sortUnstable(Pair, pairs, {}, struct {
-        fn lt(_: void, x: Pair, y: Pair) bool {
-            return std.mem.lessThan(u8, x.path, y.path);
-        }
-    }.lt);
-    const docs = try a.alloc([]const u8, total_docs);
-    const doc_paths = try a.alloc([]const u8, total_docs);
+    std.mem.sortUnstable(Pair, pairs, {}, pathLess(Pair));
+    const docs = try a.alloc([]const u8, f.members);
+    const doc_paths = try a.alloc([]const u8, f.members);
     for (pairs, docs, doc_paths) |pr, *dslot, *pslot| {
         dslot.* = pr.doc;
         pslot.* = pr.path;
     }
 
-    const shards = try gpa.alloc(std.heap.ArenaAllocator, n);
-    for (shards, workers) |*s, *w| s.* = w.arena;
+    const shards = try f.intoShards();
+    return .{ .docs = docs, .paths = doc_paths, .bytes = f.bytes, .arena = f.arena, .shards = shards, .owner = gpa };
+}
 
-    return .{
-        .docs = docs,
-        .paths = doc_paths,
-        .bytes = total_bytes,
-        .arena = arena,
-        .shards = shards,
-        .owner = gpa,
+/// The same walk, classifying the corpus without materializing it: which files
+/// are members, in doc-id order, and how long each one says it is.
+///
+/// This is what lets `gist index` read the corpus in doc order later instead of
+/// carrying it. The walk still opens every candidate and still reads its
+/// verdict window — that is the membership rule, not an optimization — but an
+/// admitted file's body is never allocated, so the census retains its paths and
+/// its bookkeeping and nothing else.
+pub fn census(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8) !corpus.Census {
+    var f = try fanOut(gpa, io, roots, .census);
+    errdefer f.deinit();
+    const a = f.arena.allocator();
+
+    const Row = struct { path: []const u8, size: u32 };
+    var rows = try a.alloc(Row, f.members);
+    var k: usize = 0;
+    for (f.workers) |*w| for (w.paths.items, w.sizes.items) |p, s| {
+        rows[k] = .{ .path = p, .size = s };
+        k += 1;
     };
+    std.mem.sortUnstable(Row, rows, {}, pathLess(Row));
+    const doc_paths = try a.alloc([]const u8, f.members);
+    const sizes = try a.alloc(u32, f.members);
+    for (rows, doc_paths, sizes) |r, *pslot, *sslot| {
+        pslot.* = r.path;
+        sslot.* = r.size;
+    }
+
+    const shards = try f.intoShards();
+    return .{ .paths = doc_paths, .sizes = sizes, .bytes = f.bytes, .arena = f.arena, .shards = shards, .owner = gpa };
 }

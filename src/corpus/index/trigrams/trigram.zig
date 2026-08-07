@@ -40,6 +40,11 @@ const kiln = @import("kiln.zig");
 const ngram = @import("ngram.zig");
 const varint = @import("../postings/varint.zig");
 
+/// A corpus described rather than held — what `Index.buildStreamed` reads from.
+/// Re-exported so a caller wiring a census to a build needs this module and
+/// nothing below it.
+pub const Stream = kiln.Stream;
+
 /// A trigram packed big-endian into the low 24 bits of a u32 (re-exported from
 /// `ngram` so the index's public surface stays self-contained).
 pub const Trigram = ngram.Trigram;
@@ -60,10 +65,11 @@ fn postingLess(_: void, a: Posting, b: Posting) bool {
 /// Emit each doc's distinct trigrams into `out` as postings tagged `base_doc + i`,
 /// reusing `scratch` (≥ longest doc) and an all-zero presence `bitmap`
 /// (`ngram.bitmap_words`, left all-zero again). Returns the posting count.
-/// Per-doc trigrams land UNORDERED: both callers order postings globally
-/// afterwards (serial: the whole-corpus `postingLess` sort; parallel: the
-/// stable 24-bit counting scatter), so the old per-doc sort was dead work —
-/// this is the O(bytes) extraction that halves the build's CPU bill.
+/// Per-doc trigrams land UNORDERED: the serial route orders them globally
+/// afterwards with the whole-corpus `postingLess` sort, so a per-doc sort would
+/// be dead work — this is the O(bytes) extraction that halves the build's CPU
+/// bill. The block builder does not come through here: `kiln.zig` extracts into
+/// its own bounded window, which it must be able to cut mid-doc.
 fn emitPostings(docs: []const []const u8, base_doc: u32, bitmap: []u64, scratch: []Trigram, out: []Posting) usize {
     var w: usize = 0;
     for (docs, 0..) |d, i| {
@@ -152,6 +158,33 @@ pub const Index = struct {
         var grouped = try groupSerial(allocator, docs, upper);
         defer grouped.deinit();
         return compact(allocator, @intCast(docs.len), grouped);
+    }
+
+    /// Build over a corpus that is DESCRIBED rather than held: `stream` states
+    /// each doc's length and reads its bytes on demand.
+    ///
+    /// The bytes are identical to `build`'s over the same documents — the block
+    /// builder never saw the corpus as one array to begin with, it saw a doc
+    /// range and asked for one doc at a time, so where those bytes come from is
+    /// not a fact the index format can observe.
+    ///
+    /// **There is no serial fallback here, on purpose.** `build` can degrade
+    /// because its caller already paid for the whole corpus in memory; a
+    /// streamed caller has not, and quietly materializing it to recover would
+    /// spend the exact peak the stream exists to avoid. So a failure is
+    /// returned, and the caller decides whether to fall open to the held path
+    /// or to fail.
+    pub fn buildStreamed(allocator: std.mem.Allocator, stream: kiln.Stream) QueryError!Index {
+        const f = try kiln.fireFrom(allocator, .{ .streamed = stream });
+        return .{
+            .dir_tri = f.dir_tri,
+            .dir_off = f.dir_off,
+            .dir_count = f.dir_count,
+            .body = f.body,
+            .doc_count = @intCast(stream.sizes.len),
+            .posting_count = f.posting_count,
+            .allocator = allocator,
+        };
     }
 
     /// `GIST_NO_KILN=1` forces the serial builder. Present so the two routes can
