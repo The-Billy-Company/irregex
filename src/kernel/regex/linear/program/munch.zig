@@ -439,18 +439,23 @@ fn reach(d: *const Munch.Dfa, haystack: []const u8, at: usize, permitted: u64) ?
 
     const last = haystack.len - 1;
     var i = at;
-    while (i <= last) : (i += 1) {
-        // The final table resolves `$`, and is correct only on the true last
-        // byte of the text — the caller's slice, exactly as for every other
-        // walk in this package.
-        const tbl = if (i < last) d.trans_in else d.trans_fin;
-        s = tbl[s + d.class[haystack[i]]];
+    while (i < last) : (i += 1) {
+        s = d.trans_in[s + d.class[haystack[i]]];
         if (@import("builtin").is_test) steps += 1;
-        if (s == d.dead) break;
+        if (s == d.dead) return best;
         if (accepted(d, s, permitted, i + 1)) |end| best = end;
         // Nothing the caller asked about survives here, so the rest of the
         // haystack cannot produce a reportable accept. `best` is already final.
-        if (d.reachableFrom(s) & permitted == 0) break;
+        if (d.reachableFrom(s) & permitted == 0) return best;
+    }
+    // The final table resolves `$`, and is correct only on the true last byte
+    // of the text — the caller's slice, exactly as for every other walk in
+    // this package. Peeled out of the loop so the interior pays no per-byte
+    // table select on a branch it takes exactly once.
+    s = d.trans_fin[s + d.class[haystack[last]]];
+    if (@import("builtin").is_test) steps += 1;
+    if (s != d.dead) {
+        if (accepted(d, s, permitted, last + 1)) |end| best = end;
     }
     return best;
 }
@@ -470,15 +475,17 @@ fn first(d: *const Munch.Dfa, haystack: []const u8, at: usize, permitted: u64) ?
 
     const last = haystack.len - 1;
     var i = at;
-    while (i <= last) : (i += 1) {
-        const tbl = if (i < last) d.trans_in else d.trans_fin;
-        s = tbl[s + d.class[haystack[i]]];
+    while (i < last) : (i += 1) {
+        s = d.trans_in[s + d.class[haystack[i]]];
         if (@import("builtin").is_test) steps += 1;
         if (s == d.dead) return null;
         if (accepted(d, s, permitted, i + 1)) |end| return end;
         if (d.reachableFrom(s) & permitted == 0) return null;
     }
-    return null;
+    s = d.trans_fin[s + d.class[haystack[last]]];
+    if (@import("builtin").is_test) steps += 1;
+    if (s == d.dead) return null;
+    return accepted(d, s, permitted, last + 1);
 }
 
 inline fn accepted(d: *const Munch.Dfa, s: u32, permitted: u64, at: usize) ?End {

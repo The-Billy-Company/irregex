@@ -203,24 +203,6 @@ fn sortMatchFirst(gpa: std.mem.Allocator, ncls: u16, t: Tables, sh: *Shape) std.
     return nmatch;
 }
 
-/// Collapse the sorted match prefix into one entry per distinct pattern set.
-/// `pats` is the permuted mask array restricted to the match states, already
-/// grouped by `sortMatchFirst`; `nc` premultiplies each run bound the same way
-/// every other state value in the automaton is premultiplied, so the runs are
-/// comparable against a live `s` with no arithmetic at lookup time.
-fn buildRuns(gpa: std.mem.Allocator, pats: []const u64, nc: u32) std.mem.Allocator.Error![]Dfa.PatRun {
-    var runs: std.ArrayList(Dfa.PatRun) = .empty;
-    errdefer runs.deinit(gpa);
-    var i: usize = 0;
-    while (i < pats.len) {
-        var j = i + 1;
-        while (j < pats.len and pats[j] == pats[i]) j += 1;
-        try runs.append(gpa, .{ .hi = @as(u32, @intCast(j)) * nc, .mask = pats[i] });
-        i = j;
-    }
-    return runs.toOwnedSlice(gpa);
-}
-
 /// Which patterns have an accept state reachable from each state — the mask a
 /// filtered walk stops on, id-indexed like `is_match` and left that way.
 ///
@@ -414,11 +396,11 @@ pub fn freeze(
     // overflowing the multiply.
     const nc: u32 = ncls;
 
-    // Attribution runs, read off the now-grouped match prefix. Built before the
-    // tables are premultiplied only because it needs `nmatch` as an id count; the
-    // bounds it stores are premultiplied on the way in, like everything else.
-    const pat_runs: []const Dfa.PatRun = if (t.pats) |p| try buildRuns(gpa, p[0..nmatch], nc) else &.{};
-    errdefer if (pat_runs.len != 0) gpa.free(pat_runs);
+    // Attribution, read off the now-grouped match prefix. Copied out dense —
+    // one mask per match state, id-indexed like `reach` — before the tables
+    // are premultiplied, because it needs `nmatch` as an id count.
+    const pats: []const u64 = if (t.pats) |p| try gpa.dupe(u64, p[0..nmatch]) else &.{};
+    errdefer if (pats.len != 0) gpa.free(pats);
 
     // Which patterns survive from each state, for the walks that permit only
     // some of them. Id-indexed and built here for the same reason the runs are:
@@ -458,7 +440,7 @@ pub fn freeze(
         .trans_in = try t.interior.toOwnedSlice(gpa),
         .trans_fin = try t.final.toOwnedSlice(gpa),
         .match_hi = nmatch * nc,
-        .pat_runs = pat_runs,
+        .pats = pats,
         .reach = reach,
         .start = sh.start * nc,
         .empty_match = sh.empty_match,

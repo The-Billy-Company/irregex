@@ -83,17 +83,18 @@ pub const Dfa = struct {
     /// for the single-pattern automata that are every ordinary compile, where
     /// `match_hi` already answers the only question there is.
     ///
-    /// `freeze.zig` sorts match states by accepted-pattern set, so equal sets are
-    /// contiguous and the whole attribution table collapses to a handful of
-    /// (bound, mask) pairs — 3 to 18 across the measured slates, against an
-    /// id-indexed `u64` per state. rust-`regex` reaches the same place with a
-    /// `(offset, len)` pair per match state plus a flat `pattern_ids` array, and
-    /// recovers the index with `(id - min_match) >> stride2`, which is why its
-    /// dense DFA pads every row to a power-of-two stride. Runs need no index at
-    /// all, so we keep the tight stride and the small table both.
-    pat_runs: []const PatRun = &.{},
+    /// Id-indexed over the match prefix (`s / ncls`, valid below `match_hi`),
+    /// one `u64` per match state, so `patternsAt` is a single load. It used to
+    /// be a handful of (bound, mask) runs walked linearly, on the theory that
+    /// attribution runs once per reported end — but `munch`'s filtered walks
+    /// ask it at every *accepting byte*, and an identifier accepts at all of
+    /// them, so the runs were a per-byte loop in the hottest loop a lexer has.
+    /// The dense row is at most `nmatch × 8` bytes beside a `reach` table that
+    /// already carries `nstates × 8`; the run form survives only as the wire
+    /// encoding (`PatRun`), where its compactness still buys something.
+    pats: []const u64 = &.{},
     /// Which patterns still have an accept reachable from each state — the
-    /// forward-looking twin of `pat_runs`, which says only what a state accepts
+    /// forward-looking twin of `pats`, which says only what a state accepts
     /// *here*. Id-indexed (not premultiplied); empty for an unattributed
     /// automaton, where there is no subset of patterns to ask about.
     ///
@@ -146,7 +147,10 @@ pub const Dfa = struct {
 
     /// One contiguous block of match states accepting the same pattern set:
     /// every premultiplied offset below `hi` (and at or above the previous run's)
-    /// accepts exactly `mask`.
+    /// accepts exactly `mask`. The wire encoding of `pats` — `freeze.zig` sorts
+    /// match states by accepted-pattern set, so equal sets are contiguous and
+    /// the table serializes as a handful of pairs; a reader inflates them back
+    /// to the dense row.
     pub const PatRun = struct { hi: u32, mask: u64 };
 
     /// The same automaton with the byte-class column folded INTO the tables: one
@@ -259,12 +263,14 @@ pub const Dfa = struct {
 
     pub fn deinit(self: *Dfa) void {
         const a = self.allocator;
+        // Derived rather than frozen, so it is owned even when the tables are
+        // borrowed: a reader inflating a serialized automaton builds it fresh.
+        if (self.pats.len != 0) a.free(self.pats);
         // The handle is still ours to release; the tables under it are not.
         if (self.borrowed) return a.destroy(self);
         a.free(self.trans_in);
         a.free(self.trans_fin);
         if (self.trans_in_w.len != 0) a.free(self.trans_in_w);
-        if (self.pat_runs.len != 0) a.free(self.pat_runs);
         if (self.reach.len != 0) a.free(self.reach);
         if (self.wide) |w| {
             a.free(w.trans_in);
@@ -277,14 +283,12 @@ pub const Dfa = struct {
     /// pattern `i`, zero for a non-match state. The single-pattern answer is the
     /// match flag itself, so an ordinary automaton pays one compare and no load.
     ///
-    /// Off the byte-at-a-time path by construction: the scan loop still tests
-    /// `isMatch`, and this runs once per REPORTED end rather than once per byte.
-    /// A linear walk therefore beats a binary search at these lengths — the runs
-    /// are few, contiguous, and land in one cache line.
+    /// On the byte-at-a-time path: `munch`'s filtered walks ask this at every
+    /// accepting byte, and an identifier accepts at all of them, which is why
+    /// the answer is one dense load and not a search of any shape.
     pub inline fn patternsAt(self: *const Dfa, s: u32) u64 {
-        if (self.pat_runs.len == 0) return @intFromBool(s < self.match_hi);
-        for (self.pat_runs) |r| if (s < r.hi) return r.mask;
-        return 0;
+        if (self.pats.len == 0) return @intFromBool(s < self.match_hi);
+        return if (s < self.match_hi) self.pats[s / self.ncls] else 0;
     }
 
     /// Which patterns can still reach an accept from the premultiplied state
