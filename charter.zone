@@ -8,11 +8,12 @@
 //
 // Post-split scope (the ecosystem cut of 2026-07-29, amended 2026-07-30):
 // this package is the LIBRARY — syntax, engines, corpus, cold pipeline, warm
-// resident core, the FM-index + shelf, and the analytic api. The
-// compression-kinship tiers (and the cento quoter over this package's
-// FM-index) live in `relate`; the daemon transport, CLI faces, and C ABI
-// live in `gist`; the composed face lives in `blast`. Each carries its own
-// contract/*.zone.
+// resident core, the FM-index + shelf, the analytic api, and its own C ABI
+// (`libirgx`: the `ffi` zone below plus `include/irgx.h`), which is the
+// substrate the siblings' ABIs return. The compression-kinship tiers (and the
+// cento quoter over this package's FM-index) live in `relate`; the daemon
+// transport and the `gist` CLI face live in `gist`; the composed face lives in
+// `blast`. Each carries its own `charter.zone`.
 
 package irregex {
     // root.zig is the module's public face: it re-exports every tier (and the
@@ -148,8 +149,10 @@ zones {
     // the resident core itself plus the answer shapes and reconcile fold.
     session     exec/session/**
 
-    // The analytic plane's Zig-side API, driving the session from above.
-    // (The C-ABI plane over it lives in `gist`.)
+    // The analytic plane's Zig-side API, driving the session from above. The
+    // C-ABI plane over it is `ffi/tree.zig`, one tier up — it lived in `gist`
+    // until the warm engine's C face came home, which is why the keep below
+    // names a guest.
     api         surface/api.zig surface/api_test.zig
 
     // The C-ABI plane: the substrate every package's ABI returns (status,
@@ -189,11 +192,17 @@ use irregex by ffi
 // and a file's directory sibling (Zig's `render.zig` → `render_test.zig` test
 // aggregation is not an architectural crossing).
 
-// The hosted analytic API is entered from outside the package (gist's FFI
-// plane, through the module boundary) and by root's aggregators. An engine
-// reaching back up to it would invert the stack the tier block already
-// forbids; naming it here says who the surface is *for*.
-keep surface/api.zig to root.zig
+// The hosted analytic API is entered by root's aggregators, by an FFI plane
+// LOWERING it to C, and from outside the package (gist's own plane, through
+// the module boundary). An engine reaching back up to it would invert the
+// stack the tier block already forbids; naming the guests says who the surface
+// is *for*. `surface/ffi/tree.zig` is the second kind: `ffi` is declared above
+// `api` in the tier block, so it is reading DOWN the page, and it is the whole
+// reason `api.Engine` is published — the C face for the warm engine used to be
+// minted one repo over and has come home. It cannot take the module-boundary
+// route gist does, because it is reachable from `root.zig` and the library
+// module has no self-import to resolve `@import("irregex")` through.
+keep surface/api.zig to root.zig surface/ffi/tree.zig
 
 // Tests are consumers of the architecture, never load-bearing in it. root.zig
 // is the aggregator `zig build test` enters through; a production file

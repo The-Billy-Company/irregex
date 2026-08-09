@@ -111,7 +111,7 @@ fields = [
 
 [row_schemas.similar]
 id = 3
-detail = "one kinship neighbor — `relate similar`, and the twin tier of `irregex blast`"
+detail = "one kinship neighbor — `relate similar`, and the twin tier of `blast blast`"
 fields = [
   { name = "path", type = "text" },
   { name = "distance", type = "f64" },
@@ -121,7 +121,7 @@ fields = [
 
 [row_schemas.dup_pair]
 id = 4
-detail = "one near-duplicate pair — `relate dups`"
+detail = "one near-duplicate pair — `relate echoes --as copies`"
 fields = [
   { name = "a", type = "text" },
   { name = "b", type = "text" },
@@ -131,7 +131,7 @@ fields = [
 
 [row_schemas.cluster]
 id = 5
-detail = "one fork family — `relate clusters`; graded by the family's loosest edge"
+detail = "one fork family — `relate echoes --as copies --shape families`; graded by the family's loosest edge"
 fields = [
   { name = "paths", type = "texts" },
   { name = "max_distance", type = "f64" },
@@ -164,7 +164,7 @@ fields = [
 
 [row_schemas.family]
 id = 8
-detail = "one repetition family — `relate fragments` / composed `irregex family`: unit × channel, members as regions"
+detail = "one repetition family — `relate echoes --shape families` (narrowed with `--matching`): unit × channel, members as regions"
 fields = [
   { name = "rank", type = "i64" },
   { name = "unit", type = "enum:unit" },
@@ -200,7 +200,7 @@ fields = [
 
 [row_schemas.pick]
 id = 11
-detail = "one member of an anti-redundant reading set — `relate pack` / composed `irregex context`. `marginal_bits` is novelty BEYOND the picks before it, so rows are only meaningful in order; `patterns` is populated by the composed verb (which exact intents admitted this file) and empty for the bare pack"
+detail = "one member of an anti-redundant reading set — `relate pack`, narrowed with `--matching`. `marginal_bits` is novelty BEYOND the picks before it, so rows are only meaningful in order; `patterns` is populated by the composed verb (which exact intents admitted this file) and empty for the bare pack"
 fields = [
   { name = "rank", type = "i64" },
   { name = "path", type = "text" },
@@ -233,7 +233,7 @@ fields = [
 
 [row_schemas.attribution]
 id = 14
-detail = "one provenance phrase re-verified against a source's CURRENT bytes — composed `irregex provenance`. `verified = false` means the shelf remembers it but the live file no longer holds it"
+detail = "one provenance phrase re-verified against a source's CURRENT bytes — composed `blast provenance`. `verified = false` means the shelf remembers it but the live file no longer holds it"
 fields = [
   { name = "text", type = "text" },
   { name = "occurrences", type = "i64" },
@@ -298,7 +298,7 @@ fields = [
 
 [row_schemas.blast]
 id = 21
-detail = "the whole live blast radius of one symbol — composed `irregex blast`. Exactly one row per query; every tier nests. `omitted` is what `--budget` trimmed, so a truncated answer says so instead of looking complete"
+detail = "the whole live blast radius of one symbol — composed `blast blast`. Exactly one row per query; every tier nests. `omitted` is what `--budget` trimmed, so a truncated answer says so instead of looking complete"
 fields = [
   { name = "symbol", type = "text" },
   { name = "kind", type = "text" },
@@ -361,10 +361,12 @@ fields = [
 # adding a new shape costs one [row_schemas] table and one generated arm per
 # language. No binding hand-writes a struct for a verb again.
 #
-# The engine handle is the existing `gist_engine` — the analytic ops load the
-# INDEX corpus (and fold the atlas/shelf) lazily on first use, so one open
-# serves both planes and a host pays for the analytic corpus only if it asks an
-# analytic question. Cancellation is the same `gist_cancel` token.
+# The engine handle is this package's `irgx_engine` (from `irgx_engine_open`) —
+# the analytic ops load the INDEX corpus (and fold the atlas/shelf) lazily on
+# first use, so one open serves both planes and a host pays for the analytic
+# corpus only if it asks an analytic question. Cancellation is the same
+# `irgx_cancel` token. `gist_run`, `relate_run`, and `blast_run` all take that
+# one engine and all hand back one `irgx_rows` cursor.
 #
 # No symbol here changes signature, so `gist_abi_version()` stays 2 — but the
 # plane did SPLIT: `gist_run` answers only `rank` now, and the four analytic

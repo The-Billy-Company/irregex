@@ -91,7 +91,7 @@ bulkstat = { why = "the batched stat walk the freshness anchor is folded from" }
 
 inner = { why = "the product seam: what gist, relate and blast reach that is not curated vocabulary. Versions with them, promises nothing to anyone else" }
 
-# ── what 1.0.0 exported and this tree does not ──
+# ── what the last release exported and this tree does not ──
 #
 # A breaking change, declared. The tier tables above say what the surface IS;
 # this says how it CHANGED, which is the question semver actually asks and the
@@ -116,46 +116,11 @@ inner = { why = "the product seam: what gist, relate and blast reach that is not
 # the same change.
 [removed]
 
-# The seventeen `regex_*` spellings. Each flattened a grouping the engine's own
-# entry file already had, so the replacement is the door rather than an alias.
-regex_syntax = { why = "the engine is one door now", now = "regex.syntax" }
-regex_ast = { why = "the engine is one door now", now = "regex.ast" }
-regex_dfa = { why = "the engine is one door now", now = "regex.dfa" }
-regex_determinize = { why = "the engine is one door now", now = "regex.determinize" }
-regex_dwell = { why = "the engine is one door now", now = "regex.dwell" }
-regex_reduce = { why = "the engine is one door now", now = "regex.reduce" }
-regex_sieve = { why = "the engine is one door now", now = "regex.sieve" }
-regex_parabix = { why = "the engine is one door now", now = "regex.parabix" }
-regex_rungs = { why = "the engine is one door now", now = "regex.rungs" }
-regex_price = { why = "the engine is one door now", now = "regex.price" }
-regex_analysis = { why = "the engine is one door now", now = "regex.analysis" }
-regex_compose = { why = "the engine is one door now", now = "regex.compose" }
-regex_chorus = { why = "hoisted to the root as a type, since a slate is a thing a consumer names", now = "Chorus" }
-captures = { why = "the match seam belongs behind the engine door", now = "regex.captures" }
-matcher = { why = "named the file, not the thing; it is the engine-neutral match ladder", now = "regex.ladder" }
-
-# The byte tier. Four of its ten files were reachable at the root and six were
-# not, which is a strange way to ship an Aho-Corasick; `scan` is all of it.
-simd = { why = "the byte tier is one door now", now = "scan.simd" }
-verify = { why = "the byte tier is one door now", now = "scan.verify" }
-anchor = { why = "the byte tier is one door now", now = "scan.anchor" }
-calibrate = { why = "the byte tier is one door now", now = "scan.calibrate" }
-
-# The persisted artifacts, grouped by what each one eliminates.
-ngram = { why = "grouped under the artifacts door", now = "index.ngram" }
-trigram = { why = "grouped under the artifacts door", now = "index.trigram" }
-persist = { why = "grouped under the artifacts door", now = "index.persist" }
-sliver = { why = "grouped under the artifacts door", now = "index.sliver" }
-codicil = { why = "grouped under the artifacts door", now = "index.codicil" }
-crest_sidecar = { why = "grouped under the artifacts door", now = "index.crest" }
-signet = { why = "grouped under the artifacts door", now = "index.signet" }
-home = { why = "grouped under the artifacts door", now = "index.home" }
-
-# The product-free floor, and two namespaces named after something other than
-# what they hold.
-crest = { why = "the sieve calculus is arithmetic, not an artifact", now = "math.crest" }
-parallel = { why = "the sharding geometry is part of the math floor", now = "math.parallel" }
-ward = { why = "reader/writer leases; the name also collided with the structure language", now = "math.lease" }
-emit_json = { why = "the two emitters are one door", now = "emit.json" }
-commands = { why = "named six library tiers after the CLI that reached them first", now = "scope" }
-irregex = { why = "a namespace named after the package it was already inside, so every use read irregex.irregex.patterns", now = "slate" }
+# Empty, and that is the block working. 2.0.0 shipped the thirty-three removals
+# this table declared, so the newest tag no longer exports them either and every
+# row went stale by the mechanism the header describes. The migration notes they
+# carried (`regex_dfa` → `regex.dfa`, and the rest) belong to that release's
+# changelog now, which is where someone upgrading across the major reads them;
+# carrying them here as well would be a second copy that only the gate reads.
+#
+# The next break writes its rows here, on the day it happens.

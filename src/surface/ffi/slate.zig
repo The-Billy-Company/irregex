@@ -42,12 +42,18 @@ const contract = @import("contract.zig");
 const fault = @import("../../fault.zig");
 const slate = @import("../../kernel/slate/slate.zig");
 const pattern_plane = @import("pattern.zig");
+const request = @import("request.zig");
 const qy = @import("../../kernel/query/query.zig");
 const rx = @import("../../kernel/regex/regex.zig");
 const verdict = @import("../../exec/cold/argv/verdict.zig");
 
 const Status = contract.Status;
 const gpa = std.heap.c_allocator;
+
+/// The request and its lowering are the pattern plane's — one `irgx_input`
+/// judged one way for every face that takes it.
+const Input = request.Input;
+const Ask = request.Ask;
 
 /// One pattern of a slate: the bytes, and the same flag word `irgx_compile`
 /// takes.
@@ -278,10 +284,46 @@ pub fn len(handle: *const Slate) usize {
 /// Does ANY pattern match `text[0..len]`? `.match` yes, `.ok` no.
 pub fn isMatch(handle: *Slate, text: ?[*]const u8, text_len: usize) Status {
     contract.beginCall();
-    const body = view(text, text_len) orelse return .invalid;
+    return any(handle, request.askOf(text, text_len, 0, text_len, 0, null));
+}
+
+/// `isMatch` asked with the full request. See `bytesOf` for the two things a
+/// set cannot be asked and why they are refused rather than approximated.
+pub fn isMatchAsk(handle: *Slate, in: ?*const Input) Status {
+    contract.beginCall();
+    return any(handle, request.ask(in));
+}
+
+fn any(handle: *Slate, want: ?Ask) Status {
+    const req = want orelse return .invalid;
+    if (req.stopped()) return .stale;
+    const body = bytesOf(req) catch |e| return contract.report(.{ .code = faultOf(e) });
     const hit = handle.set.bufAnyMatch(body, handle.scratch, gpa) catch |e|
         return contract.report(.{ .code = faultOf(e) });
     return if (hit) .match else .ok;
+}
+
+/// The bytes a set request is about, or the reason this plane cannot answer it.
+///
+/// **A set reads a buffer end to end.** `PatternSet` takes bytes and nothing
+/// else — no start offset, no ceiling, no anchor — and that is a property of
+/// what the question means here, not a gap in the binding: `which` reports the
+/// patterns that OCCUR in the text, so there is no leftmost match to constrain
+/// the start of. The two refusals below therefore stay refusals at any build.
+///
+/// Emulating either by slicing is the one repair that must not be made. A slice
+/// moves the haystack edges, so `$`, `\b`, `\z` and every look-around start
+/// answering about the slice — a different question wearing this one's name,
+/// which is exactly why the pattern plane's live bound faults on the PCRE arm
+/// instead. Same rule, same fault, one plane over.
+///
+/// `mode_earliest` is absent because it is inert here for the same reason it is
+/// on the boolean pattern verbs: which pattern occurs does not depend on which
+/// of its occurrences is reported.
+fn bytesOf(req: Ask) error{ Unsupported, BoundUnsupported }![]const u8 {
+    if (req.anchored) return error.Unsupported;
+    if (req.win.from != 0 or !req.win.unbounded()) return error.BoundUnsupported;
+    return req.win.hay;
 }
 
 /// Every pattern matching `text[0..len]`, ascending, into `out[0..cap]`.
@@ -294,31 +336,31 @@ pub fn isMatch(handle: *Slate, text: ?[*]const u8, text_len: usize) Status {
 /// `.match` when at least one pattern matched, `.ok` when none did.
 pub fn which(handle: *Slate, text: ?[*]const u8, text_len: usize, out: ?[*]u32, cap: usize, written: ?*usize) Status {
     contract.beginCall();
-    const count = written orelse return .invalid;
-    count.* = 0;
-    const body = view(text, text_len) orelse return .invalid;
-    if (cap != 0 and out == null) return .invalid;
-
-    const any = handle.set.bufMask(body, handle.scratch, gpa, handle.mask) catch |e|
-        return contract.report(.{ .code = faultOf(e) });
-    if (!any) return .ok;
-
-    var found: usize = 0;
-    for (0..handle.set.len()) |i| {
-        if (!slate.patterns.maskHas(handle.mask, i)) continue;
-        if (found < cap) out.?[found] = @intCast(i);
-        found += 1;
-    }
-    count.* = found;
-    return .match;
+    return attributed(handle, request.askOf(text, text_len, 0, text_len, 0, null), out, cap, written);
 }
 
-/// The one place a `(pointer, length)` pair becomes a slice. Null with a
-/// non-zero length is a caller error; null with zero length is the empty text,
-/// which every verb has an answer for.
-fn view(text: ?[*]const u8, text_len: usize) ?[]const u8 {
-    if (text) |p| return p[0..text_len];
-    return if (text_len == 0) &.{} else null;
+/// `which` asked with the full request. Same two refusals as `isMatchAsk`.
+pub fn whichAsk(handle: *Slate, in: ?*const Input, out: ?[*]u32, cap: usize, written: ?*usize) Status {
+    contract.beginCall();
+    return attributed(handle, request.ask(in), out, cap, written);
+}
+
+fn attributed(handle: *Slate, want: ?Ask, out: ?[*]u32, cap: usize, written: ?*usize) Status {
+    // Opened before the request is judged, so a host that passed a `written`
+    // slot always finds a number in it.
+    var sink = contract.Sink(u32).open(out, cap, written) orelse return .invalid;
+    const req = want orelse return .invalid;
+    if (req.stopped()) return .stale;
+    const body = bytesOf(req) catch |e| return contract.report(.{ .code = faultOf(e) });
+
+    const hit = handle.set.bufMask(body, handle.scratch, gpa, handle.mask) catch |e|
+        return contract.report(.{ .code = faultOf(e) });
+    if (!hit) return sink.close();
+
+    for (0..handle.set.len()) |i| {
+        if (slate.patterns.maskHas(handle.mask, i)) sink.push(@intCast(i));
+    }
+    return sink.close();
 }
 
 /// Narrow a kernel error onto the fault vocabulary this ABI publishes. The scan

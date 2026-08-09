@@ -35,17 +35,42 @@
 //!     the session ABI does.
 
 const std = @import("std");
+const answer = @import("../../exec/session/answer/answer.zig");
 const contract = @import("contract.zig");
 const fault = @import("../../fault.zig");
 const mark = @import("../../mark.zig");
 const qy = @import("../../kernel/query/query.zig");
 const rows = @import("rows.zig");
 const rx = @import("../../kernel/regex/regex.zig");
+const request = @import("request.zig");
 const verdict = @import("../../exec/cold/argv/verdict.zig");
 
 const Status = contract.Status;
 const Window = mark.Window;
 const gpa = std.heap.c_allocator;
+
+/// The cooperative stop any thread may trip, as the search planes see it.
+///
+/// The engine core's own type (`answer.CancelToken`, which the hosted API also
+/// names) rather than a second flag: a host holds ONE token across a warm corpus
+/// query and a regex-over-text search, so the two planes must be reading the
+/// same bool. Borrowed `const` here because a search only ever *reads* it —
+/// tripping one is `irgx_cancel_request`'s job and belongs to whoever else is
+/// holding it.
+pub const CancelToken = request.CancelToken;
+
+/// The request vocabulary, which three planes share and none of them owns — see
+/// `request.zig` for why it is not housed in any single plane. Re-exported under
+/// the names the C surface publishes, so `irgx_pattern_*` has one address to bind.
+pub const Input = request.Input;
+pub const Ask = request.Ask;
+pub const ask = request.ask;
+pub const askOf = request.askOf;
+pub const mode_anchored = request.mode_anchored;
+pub const mode_earliest = request.mode_earliest;
+pub const input_modes = request.input_modes;
+pub const to_end = request.to_end;
+pub const pattern_any = request.pattern_any;
 
 /// Narrow a `glean` error onto the fault vocabulary this ABI publishes.
 ///
@@ -58,14 +83,6 @@ const gpa = std.heap.c_allocator;
 /// nothing here has to invent a status on a host's behalf.
 fn faultOf(e: anyerror) fault.Fault {
     return @errorCast(e);
-}
-
-/// The one place a `(pointer, length)` pair becomes a slice. Null with a
-/// non-zero length is a caller error; null with zero length is the empty text,
-/// which is a question every verb has an answer for.
-fn view(text: ?[*]const u8, len: usize) ?[]const u8 {
-    if (text) |p| return p[0..len];
-    return if (len == 0) &.{} else null;
 }
 
 /// Answer a refused pattern with the one thing a host can act on: whether a
@@ -166,7 +183,7 @@ pub const Regex = struct {
 pub fn compile(pattern: ?[*]const u8, len: usize, flags: u32, out: ?**Regex) Status {
     contract.beginCall();
     const slot = out orelse return .invalid;
-    const bytes = view(pattern, len) orelse return .invalid;
+    const bytes = contract.view(pattern, len) orelse return .invalid;
     if (flags & ~contract.pattern_flags != 0) return .invalid;
 
     const fixed = flags & contract.flag_fixed != 0;
@@ -272,9 +289,102 @@ pub fn free(re: *Regex) void {
 /// answer.
 pub fn isMatch(re: *Regex, text: ?[*]const u8, len: usize) Status {
     contract.beginCall();
-    const body = view(text, len) orelse return .invalid;
-    const hit = re.inner.isMatch(body) catch |e| return contract.report(.{ .code = faultOf(e) });
+    return holds(re, askOf(text, len, 0, len, 0, null));
+}
+
+/// The one boolean walk. `.stale` for a search the host stopped — see
+/// `isMatchAsk` for why a cancellation is a declinature here and not a fault.
+fn holds(re: *Regex, want: ?Ask) Status {
+    const req = want orelse return .invalid;
+    if (req.stopped()) return .stale;
+    const hit = matched(re, req) catch |e| return contract.report(.{ .code = faultOf(e) });
     return if (hit) .match else .ok;
+}
+
+/// Whether the request has an answer at all — the one place the boolean grain
+/// picks its kernel.
+///
+/// `mode_earliest` is absent from this function on purpose, and it is not being
+/// dropped: existence does not depend on WHICH match is reported, so the
+/// earliest and the leftmost-first search agree on every yes and every no. A
+/// mode the answer cannot depend on is inert rather than an error, exactly as a
+/// ceiling the chosen engine does not spend is.
+fn matched(re: *Regex, req: Ask) !bool {
+    // The anchored boolean is the one question the halting walk answers outright:
+    // a match either begins where the search stands or the automaton dies saying
+    // it cannot, and neither needs a span located to be decided.
+    if (req.anchored) return re.inner.isMatchAt(req.win);
+    // An unbounded window from zero IS the whole-text question, so it asks the
+    // whole-text verb — the only one with a boolean fast path (a lazy DFA or a
+    // fused class run, taken solely where the engine proves it exact). Keyed on
+    // the window rather than on which verb the host called, so `is_match_in`
+    // over the whole text now gets the fast path too; the test below pins the
+    // two spellings to one answer over the table where they could differ.
+    if (req.win.from == 0 and req.win.unbounded()) return re.inner.isMatch(req.win.hay);
+    return re.inner.isMatchIn(req.win);
+}
+
+/// The one span walk. `cap` is a window over the answer and `*written` is the
+/// true total, which `contract.Sink` owns so every batch verb here publishes it
+/// the same way.
+fn gather(re: *Regex, want: ?Ask, out: ?[*]Span, cap: usize, written: ?*usize) Status {
+    // Opened before the request is judged, so a host that passed a `written`
+    // slot always finds a number in it — the same order the shipped verb kept.
+    var sink = contract.Sink(Span).open(out, cap, written) orelse return .invalid;
+    const req = want orelse return .invalid;
+    if (req.stopped()) return .stale;
+
+    // Both modes are the walk's, so both are set here and neither is a second
+    // sequence written at this seam. `earliest` faults with `Unsupported` for a
+    // pattern with no halting machine behind it (`earliest` below is the
+    // capability, asked once); it is never answered leftmost-first under an
+    // earliest label.
+    var cur = re.inner.walk(req.win, .{ .anchored = req.anchored, .earliest = req.earliest }) catch |e|
+        return contract.report(.{ .code = faultOf(e) });
+    defer cur.deinit();
+    // One walk serves both halves of the contract: the window is filled while
+    // the tally keeps running past it, so the true count costs no second search
+    // and nothing is materialized that the host did not ask for.
+    while (cur.next()) |sp| {
+        // A match boundary is the checkpoint this grain has. A stop discards the
+        // partial answer rather than publishing it as a total, because a count
+        // that is neither the window's nor the text's is the one number no host
+        // can act on.
+        if (req.stopped()) return .stale;
+        sink.push(.{ .start = @intCast(sp.start), .end = @intCast(sp.end) });
+    }
+    // An earliest walk whose halting machine quit part-way through: the spans
+    // collected are real, but they are not the whole answer and nothing here can
+    // finish it. Refused with the count left at zero, exactly as a walk that never
+    // started — a partial total is the one number a host cannot act on, and the
+    // leftmost remainder would be a different sequence.
+    if (cur.undecided) return contract.report(.{ .code = error.Unsupported });
+    return sink.close();
+}
+
+/// `isMatch` asked with the full request — anchored, earliest, cancellable,
+/// bounded, in any combination.
+///
+/// **A stopped search is `.stale`, not a fault.** It is the one search-time
+/// declinature this plane has: the tier stepped aside because the caller told it
+/// to, so there is nothing to confess and `irgx_last_fault` stays silent, and
+/// the fallback the status names is the host's own — ask again without the
+/// token. That the taxonomy has no `Canceled` member is why this is a
+/// declinature rather than a named fault, and the choice is deliberate either
+/// way: a cancellation the caller requested is not a failure to report back to
+/// them.
+pub fn isMatchAsk(re: *Regex, in: ?*const Input) Status {
+    contract.beginCall();
+    return holds(re, ask(in));
+}
+
+/// `findAll` asked with the full request — anchored, earliest, cancellable,
+/// bounded, in any combination. `mode_earliest` faults with `Unsupported` for a
+/// pattern with no halting machine (ask `earliest` once after compiling);
+/// everything else the struct can say is honored.
+pub fn findAllAsk(re: *Regex, in: ?*const Input, out: ?[*]Span, cap: usize, written: ?*usize) Status {
+    contract.beginCall();
+    return gather(re, ask(in), out, cap, written);
 }
 
 /// **What the window plane is for, stated once.**
@@ -296,7 +406,7 @@ pub fn isMatch(re: *Regex, text: ?[*]const u8, len: usize) Status {
 ///     subject ends there, which moves the anchors. A pattern on the PCRE arm
 ///     (`IRGX_PCRE`, or a linear declinature escalated) therefore faults with
 ///     `BoundUnsupported` rather than quietly answering the sliced question. Ask
-///     `irgx_pattern_windows` once after compiling instead of per search.
+///     this verb once after compiling instead of per search.
 ///   * **An inert bound asks nothing of the engine.** `to == len` is the
 ///     unbounded case and works on both arms, so a `from`-only windowed search
 ///     never has to check the capability at all.
@@ -304,29 +414,41 @@ pub fn isMatch(re: *Regex, text: ?[*]const u8, len: usize) Status {
 /// Group spans take a start bound (`captures`'s `from`) and no ceiling: the
 /// capture VM has no `to` yet, and a half-honored bound would be worse than an
 /// absent one. Said here rather than discovered, because the asymmetry is real.
-fn windowOf(text: ?[*]const u8, len: usize, from: usize, to: usize) ?Window {
-    const body = view(text, len) orelse return null;
-    // Refused rather than clamped. A host that computed `to` past the end, or
-    // crossed its bounds, has a bug that a silent `@min` would hide until the
-    // answer was quietly wrong somewhere else.
-    if (from > to or to > len) return null;
-    return .{ .hay = body, .from = from, .to = to };
-}
-
-/// Whether the pattern's engine can honor a live `to` bound: `.match` yes,
-/// `.ok` no. A static property of the compiled pattern, so a host asks once and
-/// caches it — and the reason the windowed verbs can fault at all.
+///
+/// The verb itself: whether the pattern's engine can honor a live `to` bound,
+/// `.match` yes and `.ok` no. A static property of the compiled pattern, so a
+/// host asks once and caches it — and the reason the windowed verbs can fault.
 pub fn windows(re: *Regex) Status {
     contract.beginCall();
     return if (re.inner.engineOf().windows()) .match else .ok;
 }
 
-/// `isMatch` bounded to `[from, to]`. See `windowOf` for the window contract.
+/// Whether this pattern can be asked for EARLIEST spans, `.match` yes and `.ok`
+/// no — `windows`' sibling, and asked the same way: once after compiling, not per
+/// search.
+///
+/// `IRGX_MODE_EARLIEST` reports the match that ends first rather than the one that
+/// starts first, which takes a machine that can halt at an acceptance. Two
+/// compiles have none, both structurally: the PCRE2 arm (`IRGX_PCRE`, or a linear
+/// declinature escalated), whose program is not inspectable and whose match is a
+/// backtracking search; and a pattern carrying a positional assertion (`^ $ \A \z
+/// \b \B`), where a determinized state's meaning depends on the gap it was entered
+/// at and a search starting part-way into a buffer cannot fix those gaps. For
+/// those, a span request with `IRGX_MODE_EARLIEST` faults with `Unsupported` rather
+/// than answering leftmost-first under an earliest label.
+///
+/// The mode stays inert on the boolean verbs either way — existence does not
+/// depend on which match is reported — so a host only needs this before asking for
+/// spans.
+pub fn earliest(re: *Regex) Status {
+    contract.beginCall();
+    return if (re.inner.halts()) .match else .ok;
+}
+
+/// `isMatch` bounded to `[from, to]`. See `windows` for the window contract.
 pub fn isMatchIn(re: *Regex, text: ?[*]const u8, len: usize, from: usize, to: usize) Status {
     contract.beginCall();
-    const win = windowOf(text, len, from, to) orelse return .invalid;
-    const hit = re.inner.isMatchIn(win) catch |e| return contract.report(.{ .code = faultOf(e) });
-    return if (hit) .match else .ok;
+    return holds(re, askOf(text, len, from, to, 0, null));
 }
 
 /// Fill `out[0..cap]` with the matches in `text[0..len]`, writing the count to
@@ -360,28 +482,12 @@ pub fn findAll(re: *Regex, text: ?[*]const u8, len: usize, out: ?[*]Span, cap: u
     return findAllIn(re, text, len, 0, len, out, cap, written);
 }
 
-/// `findAll` bounded to `[from, to]`. See `windowOf` for the window contract:
+/// `findAll` bounded to `[from, to]`. See `Input` for the window contract:
 /// matches must fit inside the region, assertions still read the whole text, and
 /// a live bound faults on an engine that cannot express one.
 pub fn findAllIn(re: *Regex, text: ?[*]const u8, len: usize, from: usize, to: usize, out: ?[*]Span, cap: usize, written: ?*usize) Status {
     contract.beginCall();
-    const count = written orelse return .invalid;
-    count.* = 0;
-    const win = windowOf(text, len, from, to) orelse return .invalid;
-    if (cap != 0 and out == null) return .invalid;
-
-    var cur = re.inner.matchesIn(win) catch |e| return contract.report(.{ .code = faultOf(e) });
-    defer cur.deinit();
-    // One walk serves both halves of the contract: the window is filled while
-    // the tally keeps running past it, so the true count costs no second search
-    // and nothing is materialized that the host did not ask for.
-    var n: usize = 0;
-    while (cur.next()) |sp| : (n += 1)
-        if (n < cap) {
-            out.?[n] = .{ .start = @intCast(sp.start), .end = @intCast(sp.end) };
-        };
-    count.* = n;
-    return if (n == 0) .ok else .match;
+    return gather(re, askOf(text, len, from, to, 0, null), out, cap, written);
 }
 
 /// How many capture groups the pattern declares, excluding group 0. Forces the
@@ -446,7 +552,7 @@ pub fn captures(re: *Regex, text: ?[*]const u8, len: usize, from: usize, out: ?[
     contract.beginCall();
     const count = written orelse return .invalid;
     count.* = 0;
-    const body = view(text, len) orelse return .invalid;
+    const body = contract.view(text, len) orelse return .invalid;
     if (from > len) return .invalid;
     if (cap != 0 and out == null) return .invalid;
 
@@ -774,6 +880,284 @@ test "a bound that does not describe the text is refused, not clamped" {
     try t.expectEqual(Status.invalid, findAllIn(re, null, 3, 0, 3, null, 0, &n));
     // And a null text of length zero is still the empty text, not an error.
     try t.expectEqual(Status.ok, isMatchIn(re, null, 0, 0, 0));
+}
+
+/// A request over the whole text, spelled the way a host that memsets and
+/// stamps would get it. `to_end` rather than `len` on purpose: that is the
+/// spelling the header tells a host to use, so the tests exercise it.
+fn asking(text: []const u8, mode: u32) Input {
+    return .{
+        .struct_size = @sizeOf(Input),
+        .mode = mode,
+        .text = text.ptr,
+        .len = text.len,
+        .from = 0,
+        .to = to_end,
+        .cancel = null,
+        .pattern = pattern_any,
+        .reserved = 0,
+    };
+}
+
+fn askedSpans(re: *Regex, in: *const Input) ![]Span {
+    var buf: [16]Span = undefined;
+    var n: usize = 0;
+    _ = findAllAsk(re, in, &buf, buf.len, &n);
+    return t.allocator.dupe(Span, buf[0..@min(n, buf.len)]);
+}
+
+test "a zeroed request is the search this ABI has always done" {
+    // The compatibility claim the whole struct rests on: a host that memsets,
+    // stamps `struct_size`, and spells `IRGX_TO_END` gets byte-for-byte what
+    // the shipped verbs give. Asserted against those verbs rather than a table,
+    // because the table is what would rot.
+    const re = try open("x*", 0);
+    defer free(re);
+    const in = asking("abc", 0);
+
+    try t.expectEqual(isMatch(re, "abc", 3), isMatchAsk(re, &in));
+    const shipped = try spansOf(re, "abc");
+    defer t.allocator.free(shipped);
+    const asked = try askedSpans(re, &in);
+    defer t.allocator.free(asked);
+    try t.expectEqualSlices(Span, shipped, asked);
+
+    // And the one field whose zero would have been a trap. `to == 0` is the
+    // EMPTY window — the reason `IRGX_TO_END` is spelled at all — so a nullable
+    // pattern finds exactly the one empty match that fits in it.
+    var empty = in;
+    empty.to = 0;
+    const none = try askedSpans(re, &empty);
+    defer t.allocator.free(none);
+    try t.expectEqualSlices(Span, &.{.{ .start = 0, .end = 0 }}, none);
+}
+
+test "the request is fail-closed on a size, a mode, and a word it does not know" {
+    const re = try open("a", 0);
+    defer free(re);
+    var n: usize = 999;
+
+    const good = asking("abc", 0);
+    try t.expectEqual(Status.match, isMatchAsk(re, &good));
+
+    // A size this build does not recognize is refused, never read as a prefix
+    // it thinks it recognizes — including a LARGER one, which is the case a
+    // best-effort reader would happily answer while ignoring a field the host
+    // believed was being honored.
+    for ([_]u32{ 0, @sizeOf(Input) - 1, @sizeOf(Input) + 8 }) |size| {
+        var wrong = good;
+        wrong.struct_size = size;
+        try t.expectEqual(Status.invalid, isMatchAsk(re, &wrong));
+        try t.expectEqual(Status.invalid, findAllAsk(re, &wrong, null, 0, &n));
+    }
+
+    // An undeclared mode bit, a `reserved` written into, and a pattern ordinal
+    // this handle cannot be: each a statement the build cannot honor, so each
+    // refused rather than masked off.
+    var stray = good;
+    stray.mode = input_modes | (1 << 7);
+    try t.expectEqual(Status.invalid, isMatchAsk(re, &stray));
+    var used = good;
+    used.reserved = 1;
+    try t.expectEqual(Status.invalid, isMatchAsk(re, &used));
+    var other = good;
+    other.pattern = 3;
+    try t.expectEqual(Status.invalid, isMatchAsk(re, &other));
+    // A single-pattern handle always answers as pattern 0, so both spellings of
+    // "any pattern may answer" are the same request.
+    var zero = good;
+    zero.pattern = 0;
+    try t.expectEqual(Status.match, isMatchAsk(re, &zero));
+
+    try t.expectEqual(Status.invalid, isMatchAsk(re, null));
+    try t.expectEqual(Status.invalid, findAllAsk(re, null, null, 0, &n));
+}
+
+test "anchored constrains where the search begins, not what the pattern asserts" {
+    const re = try open("b", 0);
+    defer free(re);
+
+    var at0 = asking("abc", mode_anchored);
+    // Leftmost would find the `b` at 1. Anchored at 0 there is nothing here.
+    try t.expectEqual(Status.ok, isMatchAsk(re, &at0));
+    at0.mode = 0;
+    try t.expectEqual(Status.match, isMatchAsk(re, &at0));
+
+    var at1 = asking("abc", mode_anchored);
+    at1.from = 1;
+    try t.expectEqual(Status.match, isMatchAsk(re, &at1));
+
+    // And the difference from `\A`-rewriting, which is the whole point. `\B` is
+    // false at the start of a text and true between two word bytes: anchoring
+    // the search at 1 must leave it reading the real text, where position 1 sits
+    // between `a` and `b`. A pattern rewritten to `\A\Bb`, or a search handed
+    // the slice `"bc"`, would both answer no.
+    const inner = try open("\\Bb", 0);
+    defer free(inner);
+    var probe = asking("abc", mode_anchored);
+    probe.from = 1;
+    try t.expectEqual(Status.match, isMatchAsk(inner, &probe));
+}
+
+test "an anchored walk is contiguous, and stops where the run does" {
+    // What ANCHORED means across a walk rather than a single search: every span
+    // must start where the previous one ended, so the first gap ends it. The
+    // unbounded walk over the same text is the control.
+    const re = try open("a", 0);
+    defer free(re);
+
+    const loose = try spansOf(re, "aaba");
+    defer t.allocator.free(loose);
+    try t.expectEqualSlices(Span, &.{
+        .{ .start = 0, .end = 1 },
+        .{ .start = 1, .end = 2 },
+        .{ .start = 3, .end = 4 },
+    }, loose);
+
+    const in = asking("aaba", mode_anchored);
+    const run = try askedSpans(re, &in);
+    defer t.allocator.free(run);
+    try t.expectEqualSlices(Span, &.{
+        .{ .start = 0, .end = 1 },
+        .{ .start = 1, .end = 2 },
+    }, run);
+}
+
+test "earliest is inert for a yes-or-no and reports the match that ends first" {
+    const re = try open("ab*", 0);
+    defer free(re);
+    const in = asking("abbb", mode_earliest);
+
+    // Existence does not depend on WHICH match is reported, so the mode cannot
+    // change this answer and is not an error.
+    try t.expectEqual(Status.match, isMatchAsk(re, &in));
+
+    // And now the span. `ab*` over `abbb` is ONE leftmost match `(0,4)` and one
+    // earliest match `(0,1)` — the `b`s are reachable, not required, so the
+    // first acceptance is after the `a`. No filter over `(0,4)` produces
+    // `(0,1)`, which is why this needed a machine rather than a predicate.
+    try t.expectEqual(Status.match, earliest(re));
+    const first = try askedSpans(re, &in);
+    defer t.allocator.free(first);
+    try t.expectEqualSlices(Span, &.{.{ .start = 0, .end = 1 }}, first);
+
+    // The control, at the same seam with the bit cleared.
+    const plain = asking("abbb", 0);
+    const loose = try askedSpans(re, &plain);
+    defer t.allocator.free(loose);
+    try t.expectEqualSlices(Span, &.{.{ .start = 0, .end = 4 }}, loose);
+}
+
+test "an earliest span is refused for a pattern with no machine to halt" {
+    const sc = fault.scope();
+    defer sc.end();
+
+    // A positional assertion is the structural refusal (see `earliest`): a
+    // determinized state's meaning would depend on the gap it was entered at.
+    const re = try open("^a+", 0);
+    defer free(re);
+    try t.expectEqual(Status.ok, earliest(re));
+
+    const in = asking("aaa", mode_earliest);
+    // Still inert on the boolean verb, whatever the pattern is.
+    try t.expectEqual(Status.match, isMatchAsk(re, &in));
+
+    // The span IS the answer here, so it refuses rather than handing back the
+    // leftmost-first span under an earliest label. `Unsupported` and not
+    // `BoundUnsupported`: the bound is fine, the question is the one this
+    // compile cannot answer.
+    var n: usize = 999;
+    try t.expectEqual(Status.invalid, findAllAsk(re, &in, null, 0, &n));
+    try t.expectEqual(fault.Fault.Unsupported, fault.last().?.code);
+    // A refusal still leaves the host's count slot readable, and zeroed.
+    try t.expectEqual(@as(usize, 0), n);
+}
+
+test "earliest and anchored compose, and the sequence is contiguous" {
+    // Both bits at once is the tokenizer's earliest walk: each span begins where
+    // the last ended AND ends at the first acceptance. `a+` over `aaa` is one
+    // leftmost span, three earliest ones, and the anchored earliest run is the
+    // same three because the run has no gap.
+    const re = try open("a+", 0);
+    defer free(re);
+    const three: []const Span = &.{
+        .{ .start = 0, .end = 1 },
+        .{ .start = 1, .end = 2 },
+        .{ .start = 2, .end = 3 },
+    };
+
+    const plain = asking("aaa", 0);
+    const loose = try askedSpans(re, &plain);
+    defer t.allocator.free(loose);
+    try t.expectEqualSlices(Span, &.{.{ .start = 0, .end = 3 }}, loose);
+
+    const first = asking("aaa", mode_earliest);
+    const soon = try askedSpans(re, &first);
+    defer t.allocator.free(soon);
+    try t.expectEqualSlices(Span, three, soon);
+
+    const pinned = asking("aaa", mode_earliest | mode_anchored);
+    const both = try askedSpans(re, &pinned);
+    defer t.allocator.free(both);
+    try t.expectEqualSlices(Span, three, both);
+
+    // And the gap still ends an anchored run, earliest or not: `aab` stops after
+    // the two `a`s rather than re-seeding.
+    const halted = asking("aab", mode_earliest | mode_anchored);
+    const gap = try askedSpans(re, &halted);
+    defer t.allocator.free(gap);
+    try t.expectEqualSlices(Span, three[0..2], gap);
+}
+
+test "a stopped search is a declinature, and leaves no fault behind" {
+    const sc = fault.scope();
+    defer sc.end();
+
+    const re = try open("a", 0);
+    defer free(re);
+    var token: CancelToken = .{};
+
+    var in = asking("aaa", 0);
+    in.cancel = &token;
+    // Not yet stopped: the token is a capability, not a state.
+    try t.expectEqual(Status.match, isMatchAsk(re, &in));
+
+    token.cancel();
+    try t.expectEqual(Status.match, isMatch(re, "aaa", 3));
+    try t.expectEqual(Status.stale, isMatchAsk(re, &in));
+    var n: usize = 999;
+    try t.expectEqual(Status.stale, findAllAsk(re, &in, null, 0, &n));
+    // `.stale` is returned directly, never reported: the tier stepped aside
+    // because the caller asked it to, so there is nothing to confess.
+    try t.expectEqual(@as(?fault.Detail, null), fault.last());
+
+    token.reset();
+    try t.expectEqual(Status.match, isMatchAsk(re, &in));
+}
+
+test "is_match and is_match_in are one answer over the whole text" {
+    // The rerouting's sharp edge. Both spellings now pick the boolean kernel off
+    // the WINDOW rather than off the verb name, so `is_match_in` over an inert
+    // window reaches the same fast path `is_match` always had. These are the
+    // shapes where a second kernel would show: anchors at the ends, an empty
+    // match, and a trailing newline.
+    const spellings = [_][]const u8{ "^b", "c$", "x*", "\\bb\\b", "a.c", "\\z" };
+    const texts = [_][]const u8{ "", "abc", "a\nb", "abc\n", "\n", "b" };
+    for (spellings) |p| {
+        const re = try open(p, 0);
+        defer free(re);
+        for (texts) |text| {
+            const whole = isMatch(re, text.ptr, text.len);
+            const inert = isMatchIn(re, text.ptr, text.len, 0, text.len);
+            var in = asking(text, 0);
+            in.text = if (text.len == 0) null else text.ptr;
+            t.expectEqual(whole, inert) catch |e| {
+                std.debug.print("pattern={s} text={s} whole={} inert={}\n", .{ p, text, whole, inert });
+                return e;
+            };
+            try t.expectEqual(whole, isMatchAsk(re, &in));
+        }
+    }
 }
 
 test "the word rule is lowered into both arms, so captures cannot disagree" {

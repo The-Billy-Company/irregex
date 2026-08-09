@@ -10,28 +10,37 @@
 //! either — against THEM the win is that an index here may only elide reads and
 //! never overrule live bytes, so a stale index costs speed rather than
 //! correctness (`corpus/fresh/`, which measures where both of them answer a
-//! mutated tree wrongly). See `research/gist/PRIOR_ART.md`.
+//! mutated tree wrongly). See the gist package's `research/gist/PRIOR_ART.md`.
 //!
-//! Search, index lifecycle, and result handling are Zig-native and surfaced by
-//! the `gist` CLI. This package's own C ABI (`include/irgx.h`, shims in
-//! `surface/ffi/exports.zig`) is deliberately the SMALL half: a pattern over a
-//! buffer the host already holds — compile, `is_match`, `find_all`,
-//! `captures` — plus the status/fault substrate every package's ABI returns.
-//! No corpus, no session, no index; a host that wants those links `libgist`.
-//! Every entry returns a status instead of `die()`ing, so a bad pattern can
-//! never terminate an embedding host, and every verb is a shim over the
-//! machinery the CLI runs (`kernel/query/query.zig`, the `Caps` arms) — which
-//! is what makes an in-process answer the same answer `gist --json` prints.
+//! Search, index lifecycle, and result handling are Zig-native, and the `gist`
+//! CLI in the sibling package is what surfaces them to a user. This package's
+//! own C ABI (`include/irgx.h`, shims in `surface/ffi/exports.zig`) carries a
+//! pattern over a buffer the host already holds — compile, `is_match`,
+//! `find_all`, `captures` — the status/fault substrate every package's ABI
+//! returns, and the warm corpus planes the siblings share (engine · tree · walk
+//! · sieve · codex). What it does NOT carry is the resident session or the
+//! analytic producers; a host that wants those links `libgist`, `librelate`, or
+//! `libblast`. Every entry returns a status instead of `die()`ing, so a bad
+//! pattern can never terminate an embedding host, and every verb is a shim over
+//! the machinery the CLI runs (`kernel/query/query.zig`, the `Caps` arms) —
+//! which is what makes an in-process answer the same answer `gist --json`
+//! prints.
 //!
-//! Package shape: two engines over a shared floor, grouped by concern and
-//! re-exported here (three layers under `src/`):
+//! Package shape: one engine over a shared floor, grouped by concern and
+//! re-exported here (five layers under `src/`):
 //!
-//!   kernel/   — pure compute, no argv/walk/emit: match · rank · kinship · batch ·
-//!               compose · primitives
-//!   corpus/   — the body of text + persisted forms: tree/ walk · scope/ · index/
-//!               (trigrams · postings · codex · atlas · crest · …)
-//!   surface/  — transports + faces: exec/{cold,session} · ffi · face/{gist,relate,irregex}
-//!               · cli/ (shared flag/emit vocabulary)
+//!   assay/    — the instrumentation floor: time · count · diagnostic channel
+//!   kernel/   — pure compute, no argv/walk/emit: math · regex · scan · codex ·
+//!               anatomy · query · rank · slate
+//!   corpus/   — the body of text + persisted forms: tree/ · scope/ · read/ ·
+//!               fresh/ · index/ (trigrams · postings · crest · shelf · …)
+//!   exec/     — transports: cold/ (argv in, bytes out) · session/ (the warm
+//!               resident daemon)
+//!   surface/  — cli/ (shared primer vocabulary) · ffi/ (the `libirgx` root)
+//!
+//! The product faces live in the sibling packages, not here: `gist` (indexed
+//! pattern search), `relate` (compression-as-search kinship), and `blast` (the
+//! composed face).
 
 const std = @import("std");
 
@@ -275,9 +284,9 @@ pub const session = struct {
     pub const watch = @import("exec/session/watch/watch.zig");
 };
 
-// The in-process C-ABI session (surface/ffi) and its export shims live in
-// the `gist` package, which owns the session-shaped ABI. This library's
-// C ABI is the future match-shaped surface.
+// The session-shaped ABI (`gist_open` / `gist_run` and its pull cursor) lives in
+// the `gist` package, which owns that transport. What this library exports from
+// `surface/ffi` is the match-shaped surface plus the warm corpus planes.
 
 // `commands` retired here. It was a CLI-shaped alias namespace over library
 // tiers — `commands.scope.glob` was the math floor's glob matcher and
@@ -322,10 +331,39 @@ pub const ffi = struct {
     /// rule rather than the automaton's states — which is what keeps there being
     /// one grammar (`charter.zone`'s seal over `kernel/regex`).
     pub const munch = @import("surface/ffi/munch.zig");
+    /// The request every search verb takes, and the one lowering that judges it.
+    /// Its own module because three planes ask with it and none of them owns it —
+    /// read it beside `answer`: what a host writes, and what a host reads.
+    pub const request = @import("surface/ffi/request.zig");
     /// The other half every package's ABI shares: a materialized run of rows
     /// plus the position a host reads it from. Each library exports its own
     /// `…_run` and returns THIS, so three questions cost one cursor protocol.
     pub const answer = @import("surface/ffi/answer.zig");
+    /// What the pattern promises about the bytes it can match, so a host can
+    /// build its own prefilter or index probe instead of needing this engine to
+    /// be fast enough. Every answer carries whether it is exact — a set that may
+    /// eliminate a file — or merely a hint.
+    pub const literals = @import("surface/ffi/literals.zig");
+    /// Many literals in one pass, with attribution: which needle occurred and
+    /// where. The question a wordlist asks, which an alternation answers badly
+    /// because it reports a match rather than which arm matched.
+    pub const needles = @import("surface/ffi/needles.zig");
+    /// Byte offset to line: the number, the line's bytes, and a context window
+    /// that clamps at both ends of the file. The arithmetic every grep-shaped
+    /// host rebuilds, and that this package currently spells seven times.
+    pub const lines = @import("surface/ffi/lines.zig");
+    /// Searching a tree, rather than a buffer a host already holds. The verb
+    /// `irgx_engine_open` has been waiting for.
+    pub const tree = @import("surface/ffi/tree.zig");
+    /// Which files a search may read, and in what order: gitignore precedence,
+    /// the type registry, hidden and binary policy, the genus partition.
+    pub const walk = @import("surface/ffi/walk.zig");
+    /// Narrowing before reading — the trigram index and the crest sieve, the two
+    /// mechanisms that make a corpus cheaper than its size.
+    pub const sieve = @import("surface/ffi/sieve.zig");
+    /// The self-index: count, locate and restore over a byte string the
+    /// structure no longer stores.
+    pub const codex = @import("surface/ffi/codex.zig");
 };
 
 // ── the product seam ──
@@ -416,8 +454,9 @@ pub const pcre2_version_string = "10.47";
 // and re-created it at the root, where a reader meets it first. A major version
 // is the mechanism for that trade, so this is one.
 
-// The session export shims and the analytic-plane exports belong to the `gist`
-// package; what lives here is the substrate underneath all of them (`ffi`).
+// The session export shims and the analytic-plane producers belong to the
+// sibling packages; what lives here (`ffi`) is the substrate underneath all of
+// them, this package's own match verbs, and the shared corpus planes.
 
 test {
     // `refAllDecls` pulls each `pub` tier re-export above into `zig build test`,
@@ -432,6 +471,14 @@ test {
     _ = @import("surface/ffi/pattern.zig"); // the regex-over-text plane: argument guards, the lazy capture arm, -F/-w/smart-case at the seam
     _ = @import("surface/ffi/slate.zig"); // the many-patterns plane: parity with the pattern plane, pattern copying, per-pattern refusal
     _ = @import("surface/ffi/munch.zig"); // the anchored-longest plane: the lexer rule at the seam, partial refusal, the permitted set in caller ordinals
+    _ = @import("surface/ffi/request.zig"); // the request three planes share: fail-closed lowering, the to_end sentinel, one bound rule
+    _ = @import("surface/ffi/literals.zig"); // what a pattern promises about its bytes: exact vs hint, and where a literal may sit
+    _ = @import("surface/ffi/needles.zig"); // many literals, one pass, attributed — the wordlist question an alternation answers badly
+    _ = @import("surface/ffi/lines.zig"); // offset to line: number, bytes, clamped context window
+    _ = @import("surface/ffi/tree.zig"); // the tree search verb: a warm engine a C host can finally ask
+    _ = @import("surface/ffi/walk.zig"); // corpus eligibility: what a search is allowed to read
+    _ = @import("surface/ffi/sieve.zig"); // narrowing before reading: trigram index + crest sieve
+    _ = @import("surface/ffi/codex.zig"); // the self-index: count/locate/restore without the text
     _ = @import("kernel/anatomy/lexspan.zig"); // the shared comment/code/string lexer: `inner` is one level deep, so its tests need naming here
     _ = @import("assay/assay.zig"); // instrumentation floor: Span/Duration/Anchor, Tally(Schema), the diagnostic channel
     _ = @import("surface/api_test.zig"); // hosted API facade: Engine/Cursor/CancelToken over a live warm tree

@@ -55,12 +55,24 @@ pub const Status = enum(i32) {
     /// transport. Both stay total rather than trusted: what the fold loses,
     /// `irgx_last_fault`'s `name` restores per incident.
     ///
-    /// Exhaustive on purpose — a twentieth fault member is a compile error here
-    /// instead of a silent `else` prong that would report a new failure as a
-    /// clean run.
+    /// Exhaustive on purpose — the NEXT fault member, whatever its ordinal, is a
+    /// compile error here instead of a silent `else` prong that would report a new
+    /// failure as a clean run.
     pub fn ofFault(f: fault.Fault) Status {
         return switch (f) {
-            error.OutOfMemory, error.TimedOut, error.Exhausted => .out_of_memory,
+            // `BudgetExceeded` folds here with its domain rather than earning a
+            // status of its own. A new status code is an ABI widening every
+            // binding must learn, and this fold is the mechanism this seam was
+            // built around: what it loses, `irgx_last_fault`'s `name` restores.
+            // WHICH ceiling fired does not cross here at all — see the note at
+            // `engine.budgetVerdict`. It is deliberately not an `at`/`at_space`
+            // pair: every coordinate space names a ruler for a byte OFFSET, and a
+            // ceiling ordinal is not an offset into anything.
+            error.OutOfMemory,
+            error.TimedOut,
+            error.Exhausted,
+            error.BudgetExceeded,
+            => .out_of_memory,
             error.BadPattern,
             error.Unsupported,
             error.BoundUnsupported,
@@ -310,6 +322,107 @@ pub fn beginCall() void {
     fault.clear();
 }
 
+/// Borrow a `(pointer, length)` pair as a slice, or refuse it.
+///
+/// The C ABI's only way to say "no text" is a null pointer, and its only way to
+/// say "empty text" is a zero length — but a host that computes both from the
+/// same expression can hand over null WITH a length, which is a bug in the
+/// caller and not an empty string. So null-with-length is `null` here, which
+/// every call site turns into `.invalid`; null-with-zero is the empty slice,
+/// because a pattern legitimately matches against nothing.
+///
+/// Lives here rather than in each plane because the three shipped planes had
+/// three byte-identical copies, and the `dup-helper` ratchet stands at zero: a
+/// fourth would fail a gate no single plane owns.
+pub fn view(ptr: ?[*]const u8, len: usize) ?[]const u8 {
+    if (ptr) |p| return p[0..len];
+    return if (len == 0) &.{} else null;
+}
+
+/// The count-versus-capacity window every batch verb publishes.
+///
+/// The contract these all share is that `*written` is the **true total** and
+/// `cap` is merely how much of it the host gave us room for — so a host can ask
+/// with `cap = 0` purely to be told the size, then allocate once and ask again.
+/// Writing that by hand is four lines of guard and an `if (n < cap)` inside the
+/// producer loop, repeated per verb; getting it subtly wrong (capping the count
+/// as well as the write) is the silent version, where a host's second call
+/// allocates exactly enough room for the truncated answer it already had.
+///
+/// `open` returns null for the one shape that is a caller bug — no `written`
+/// slot, or a null buffer with a non-zero `cap`. `cap = 0` with a null buffer is
+/// the legal counting probe.
+pub fn Sink(comptime T: type) type {
+    return struct {
+        room: []T,
+        n: usize = 0,
+        total: *usize,
+
+        const Self = @This();
+
+        pub fn open(out: ?[*]T, cap: usize, written: ?*usize) ?Self {
+            const total = written orelse return null;
+            total.* = 0;
+            if (cap == 0) return .{ .room = &.{}, .total = total };
+            return .{ .room = (out orelse return null)[0..cap], .total = total };
+        }
+
+        /// Count it always; store it only if the host left room.
+        pub fn push(self: *Self, v: T) void {
+            if (self.n < self.room.len) self.room[self.n] = v;
+            self.n += 1;
+        }
+
+        /// Publish the true total and cross as the batch verbs do: `.ok` for an
+        /// empty answer, `.match` for a non-empty one.
+        pub fn close(self: *Self) Status {
+            self.total.* = self.n;
+            return if (self.n == 0) .ok else .match;
+        }
+    };
+}
+
+test "view separates no-text from empty-text" {
+    const t = std.testing;
+    try t.expectEqualStrings("", view(null, 0).?);
+    // A null pointer carrying a length is the caller's arithmetic bug, and the
+    // one case that must not read back as an innocent empty string.
+    try t.expect(view(null, 7) == null);
+    const hay = "abc";
+    try t.expectEqualStrings("abc", view(hay.ptr, hay.len).?);
+    // A live pointer with zero length is still empty, not refused.
+    try t.expectEqualStrings("", view(hay.ptr, 0).?);
+}
+
+test "a sink counts past the capacity it writes into" {
+    const t = std.testing;
+    var seen: usize = 0;
+    var room: [2]u32 = .{ 0, 0 };
+
+    var sink = Sink(u32).open(&room, room.len, &seen).?;
+    for ([_]u32{ 10, 11, 12, 13 }) |v| sink.push(v);
+    try t.expectEqual(Status.match, sink.close());
+    // The whole point: four found, two stored, and the host is told four.
+    try t.expectEqual(@as(usize, 4), seen);
+    try t.expectEqual([2]u32{ 10, 11 }, room);
+
+    // The counting probe — no buffer at all, and a real total.
+    var probe = Sink(u32).open(null, 0, &seen).?;
+    probe.push(1);
+    probe.push(2);
+    try t.expectEqual(Status.match, probe.close());
+    try t.expectEqual(@as(usize, 2), seen);
+
+    // An empty answer crosses as a result, not a match.
+    var none = Sink(u32).open(&room, room.len, &seen).?;
+    try t.expectEqual(Status.ok, none.close());
+    try t.expectEqual(@as(usize, 0), seen);
+
+    // Caller bugs: no total slot, and room promised but not given.
+    try t.expect(Sink(u32).open(&room, room.len, null) == null);
+    try t.expect(Sink(u32).open(null, 4, &seen) == null);
+}
+
 test "each status keeps the channel the contract assigns it" {
     const t = std.testing;
     try t.expectEqual(Disposition.result, Status.ok.disposition());
@@ -328,7 +441,7 @@ test "every fault crosses the seam as a fault — never a result, never a declin
         error.VersionMismatch, error.GenerationMismatch, error.Oversized,        error.BadPattern,
         error.Unsupported,     error.TooManyPatterns,    error.PowersetCapHit,   error.NeedleTooShort,
         error.OutOfMemory,     error.TimedOut,           error.Exhausted,        error.ConnClosed,
-        error.UnexpectedFrame, error.StreamTooLong,      error.BoundUnsupported,
+        error.UnexpectedFrame, error.StreamTooLong,      error.BoundUnsupported, error.BudgetExceeded,
     };
     // Pinned to the taxonomy's own size, so a new member cannot slip past this
     // loop by simply not being listed (the switch in `ofFault` catches it too).

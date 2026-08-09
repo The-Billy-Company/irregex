@@ -10,13 +10,17 @@
 //! where the `.a`/`.dylib` named after them is, which is the whole premise of
 //! four libraries rather than one.
 //!
-//! What crosses here is two planes: the SUBSTRATE every package's ABI shares
+//! What crosses here is three planes: the SUBSTRATE every package's ABI shares
 //! (the status vocabulary, the per-thread fault pull, the ABI/engine versions),
-//! and this package's OWN verbs — a pattern over a buffer. Neither knows
-//! anything about a corpus; that is `libgist`.
+//! this package's OWN verbs — a pattern over a buffer — and the warm CORPUS
+//! planes the siblings all reach for. What stays out is the resident session and
+//! the analytic producers (`gist_run` / `relate_run` / `blast_run`), which
+//! belong to the library named after each.
 //!
 //! Header: `include/irgx.h`, which is the normative statement of these
-//! signatures. Bodies: `contract.zig` (substrate) and `pattern.zig` (verbs).
+//! signatures. Bodies: `contract.zig` (substrate), `pattern.zig` (verbs), and
+//! the per-plane siblings beside them (`corpus` · `tree` · `walk` · `sieve` ·
+//! `codex` · `lines` · `literals` · `needles` · `munch` · `slate` · `rows`).
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -24,14 +28,21 @@ const irregex = @import("irregex");
 
 const answer = irregex.ffi.answer;
 const api = irregex.api;
+const codex = irregex.ffi.codex;
 const contract = irregex.ffi.contract;
 /// A sibling in THIS module rather than a member of the library's `ffi` group:
 /// it lowers the `api` veneer, which only a consumer of the library may reach.
 const corpus = @import("corpus.zig");
+const lines = irregex.ffi.lines;
+const literals = irregex.ffi.literals;
 const munch = irregex.ffi.munch;
+const needles = irregex.ffi.needles;
 const pattern = irregex.ffi.pattern;
 const rows = irregex.ffi.rows;
+const sieve = irregex.ffi.sieve;
 const slate = irregex.ffi.slate;
+const tree = irregex.ffi.tree;
+const walk = irregex.ffi.walk;
 
 /// `std.Io.Threaded`'s vtable makes every method reachable the moment one is
 /// instantiated, and `netWriteFile` is `@panic("TODO ...")`-stubbed on every
@@ -126,6 +137,22 @@ export fn irgx_find_all(re: *pattern.Regex, text: ?[*]const u8, len: usize, out:
 /// `$`, `\b` and every lookahead.
 export fn irgx_pattern_windows(re: *pattern.Regex) i32 {
     return @intFromEnum(pattern.windows(re));
+}
+
+/// Whether this pattern can report EARLIEST-mode spans: 1 yes, 0 no. A static
+/// property of the compiled pattern, like `irgx_pattern_windows` — ask once, not
+/// per search.
+///
+/// Answering 0 is a refusal, not a slower path: a span request under
+/// `IRGX_MODE_EARLIEST` then faults with `Unsupported` rather than quietly
+/// returning the leftmost-first match under an earliest label. PCRE2 declines
+/// (no inspectable program), and so does any assertion-bearing pattern, whose
+/// determinized states depend on the gap they were entered at — which a walk
+/// starting mid-buffer cannot reconstruct. The mode is inert on the boolean
+/// verbs either way, since existence does not depend on which match is reported,
+/// so a host only needs this before asking for spans.
+export fn irgx_pattern_earliest(re: *pattern.Regex) i32 {
+    return @intFromEnum(pattern.earliest(re));
 }
 
 /// `irgx_is_match` over the window `[from, to]` of `text[0..len]`: a match must
@@ -346,6 +373,427 @@ export fn irgx_schema_count() u32 {
 /// and outlive every call.
 export fn irgx_schema_get(id: u32, out: ?*rows.Schema) i32 {
     return @intFromEnum(rows.schemaGet(id, out));
+}
+
+// ── lines ────────────────────────────────────────────────────────────────────
+// The line grid every grep-shaped host rebuilds by hand, and the one place the
+// off-by-one lives. A span is a byte offset; a user reads rows.
+
+/// How many lines `text[0..len]` holds. An unterminated tail counts as a line,
+/// because a host printing `n` rows must print that one too.
+export fn irgx_lines_count(text: ?[*]const u8, len: usize, out: ?*u64) i32 {
+    return @intFromEnum(lines.count(text, len, out));
+}
+
+/// The band of lines around byte `at`: up to `before` rows preceding it, the row
+/// holding it, and up to `after` following. `*center` receives the band-relative
+/// index of the row holding `at`, which is the number a caret needs and cannot
+/// derive from `*written` alone (a band clipped at the text's start has fewer
+/// preceding rows than asked for). `at == len` is legal and lands on the tail.
+export fn irgx_lines_context(
+    text: ?[*]const u8,
+    len: usize,
+    at: usize,
+    before: usize,
+    after: usize,
+    out: ?[*]lines.Line,
+    cap: usize,
+    written: ?*usize,
+    center: ?*usize,
+) i32 {
+    return @intFromEnum(lines.context(text, len, at, before, after, out, cap, written, center));
+}
+
+/// The whole grid, one `irgx_line` per row. Each row carries `content_end` and
+/// `term_end` separately, so a host can render without the terminator and slice
+/// with it, and never has to guess whether the file ended in `\n` or `\r\n`.
+export fn irgx_lines_split(text: ?[*]const u8, len: usize, out: ?[*]lines.Line, cap: usize, written: ?*usize) i32 {
+    return @intFromEnum(lines.split(text, len, out, cap, written));
+}
+
+// ── literals + the Unicode tables ───────────────────────────────────────────
+// What a pattern PROMISES about the bytes any match must contain — the input an
+// indexer needs to build a prefilter — plus the tables the engine decides with,
+// so a host is not left reimplementing case folding against a different Unicode
+// version than the one matching it.
+
+/// Extract what `re` promises about its matches. The handle borrows nothing from
+/// `re` after this returns, so the two are freed independently.
+export fn irgx_literals_open(re: ?*pattern.Regex, out: ?**literals.Literals) i32 {
+    return @intFromEnum(literals.open(re, out));
+}
+
+/// Release a handle from `irgx_literals_open`.
+export fn irgx_literals_free(lits: *literals.Literals) void {
+    literals.free(lits);
+}
+
+/// The facts about the extraction as a whole: which sets are populated, how each
+/// is graded, and the pattern's structural signature. Read this BEFORE a set —
+/// it is what says whether the set you are about to read is a guarantee or a
+/// guess, and a prefilter built on the wrong one drops real matches.
+export fn irgx_literals_promise(lits: *const literals.Literals, out: ?*literals.Promise) i32 {
+    return @intFromEnum(literals.promise(lits, out));
+}
+
+/// One set of literals by `place` (prefix / suffix / required / …), with its
+/// grade written to `*verdict`. The `irgx_text` rows borrow the handle's arena
+/// and die with `irgx_literals_free`; copy anything outliving it.
+export fn irgx_literals_set(
+    lits: *const literals.Literals,
+    place: u32,
+    verdict: ?*u32,
+    out: ?[*]rows.Text,
+    cap: usize,
+    written: ?*usize,
+) i32 {
+    return @intFromEnum(literals.set(lits, place, verdict, out, cap, written));
+}
+
+/// Every codepoint that case-folds together with `cp`, including `cp` itself —
+/// the orbit, not a pair, because `k`, `K` and KELVIN SIGN are one class. This
+/// is the table `-i` folds with, so a host building its own index folds
+/// identically instead of approximately.
+export fn irgx_fold_orbit(cp: u32, out: ?[*]u32, cap: usize, written: ?*usize) i32 {
+    return @intFromEnum(literals.foldOrbit(cp, out, cap, written));
+}
+
+/// The inclusive codepoint ranges of the Unicode property `name[0..len]`
+/// (`Letter`, `Greek`, `Nd`, …), ascending and non-overlapping. An unknown name
+/// faults with `BadPattern` rather than answering empty, because an empty class
+/// and a misspelled one must not look alike.
+export fn irgx_property_ranges(
+    name: ?[*]const u8,
+    len: usize,
+    out: ?[*]literals.Range,
+    cap: usize,
+    written: ?*usize,
+) i32 {
+    return @intFromEnum(literals.propertyRanges(name, len, out, cap, written));
+}
+
+/// Whether `cp` is in the property `name[0..len]`: 1 yes, 0 no, negative for an
+/// unknown property. The membership test without materializing the ranges.
+export fn irgx_property_has(name: ?[*]const u8, len: usize, cp: u32) i32 {
+    return @intFromEnum(literals.propertyHas(name, len, cp));
+}
+
+/// The Unicode version these tables were generated from, static and
+/// NUL-terminated. A host whose own tables disagree is a host whose prefilter
+/// and this engine disagree about what a letter is.
+export fn irgx_unicode_version(out: ?*rows.Text) i32 {
+    return @intFromEnum(literals.unicodeVersion(out));
+}
+
+// ── needles ──────────────────────────────────────────────────────────────────
+// Many literals, one pass, with attribution. The question a regex alternation
+// answers slowly and a wordlist scanner answers quickly.
+
+/// Compile `list[0..count]` into one multi-literal scanner. `*refused` receives
+/// how many needles the machine declined to seat, so a partial set is visible
+/// rather than silently smaller than what was handed in.
+export fn irgx_needles_compile(
+    list: ?[*]const needles.Needle,
+    count: usize,
+    flags: u32,
+    refused: ?*usize,
+    out: ?**needles.Needles,
+) i32 {
+    return @intFromEnum(needles.compile(list, count, flags, refused, out));
+}
+
+/// Release a handle from `irgx_needles_compile`.
+export fn irgx_needles_free(handle: *needles.Needles) void {
+    needles.free(handle);
+}
+
+/// How many needles the set holds — the exact `cap` `irgx_needles_which` never
+/// needs to retry at.
+export fn irgx_needles_len(handle: *const needles.Needles) usize {
+    return needles.len(handle);
+}
+
+/// What this set is and which machine answers about it. A pure reader: it starts
+/// no work, so it cannot disturb the fault a previous call left for the host.
+export fn irgx_needles_describe(handle: *const needles.Needles, out: ?*needles.Shape) i32 {
+    return @intFromEnum(needles.describe(handle, out));
+}
+
+/// Whether any needle occurs in `text[0..len]`: 1 yes, 0 no, negative on error.
+/// The cheapest question — it stops at the first hit and attributes nothing.
+export fn irgx_needles_is_match(handle: *needles.Needles, text: ?[*]const u8, len: usize) i32 {
+    return @intFromEnum(needles.isMatch(handle, text, len));
+}
+
+/// WHICH needles occur in `text[0..len]`, as ascending indices into the compiled
+/// list — presence per needle, not one row per occurrence. Size `cap` from
+/// `irgx_needles_len` and this never retries.
+export fn irgx_needles_which(handle: *needles.Needles, text: ?[*]const u8, len: usize, out: ?[*]u32, cap: usize, written: ?*usize) i32 {
+    return @intFromEnum(needles.which(handle, text, len, out, cap, written));
+}
+
+/// Every occurrence, each carrying its needle index and its span — the
+/// attributed walk. `*written` is the count the TEXT holds, so a short `cap`
+/// sizes its retry rather than truncating silently.
+export fn irgx_needles_find_all(handle: *needles.Needles, text: ?[*]const u8, len: usize, out: ?[*]needles.Occurrence, cap: usize, written: ?*usize) i32 {
+    return @intFromEnum(needles.findAll(handle, text, len, out, cap, written));
+}
+
+// ── tree: searching a tree rather than a buffer the host already holds ──
+
+/// Run one search over the engine's corpus and hand back a cursor to pull from.
+/// A handle comes back on `.ok` TOO — including `.ok` with no records — so the
+/// host owes `irgx_matches_close` on every non-negative return.
+export fn irgx_tree_search(engine: *api.Engine, req: ?*const tree.Request, out: ?**api.Cursor) i32 {
+    return @intFromEnum(tree.search(engine, req, out));
+}
+
+/// Pull one record. `.match` for a record, `.ok` for a drained stream (`out`
+/// untouched) — the one-record spelling of `irgx_matches_next_batch`.
+export fn irgx_matches_next(cursor: *api.Cursor, out: ?*tree.Match) i32 {
+    return @intFromEnum(tree.next(cursor, out));
+}
+
+/// Pull up to `cap` records in one crossing and write how many landed. That
+/// count is what this call CONSUMED, never a total that exists.
+export fn irgx_matches_next_batch(cursor: *api.Cursor, out: ?[*]tree.Match, cap: usize, written: ?*usize) i32 {
+    return @intFromEnum(tree.nextBatch(cursor, out, cap, written));
+}
+
+/// How many records the stream holds, without advancing it — the total the
+/// batch verb's `*written` deliberately cannot answer.
+export fn irgx_matches_count(cursor: *const api.Cursor) usize {
+    return tree.count(cursor);
+}
+
+/// Release the cursor and every byte its records borrowed.
+export fn irgx_matches_close(cursor: *api.Cursor) void {
+    tree.close(cursor);
+}
+
+// ── walk: which files a search is even allowed to read ──
+
+/// The ceilings this build enforces on a walk, so a host can size its request
+/// against the truth rather than against a constant it copied.
+export fn irgx_walk_limits(out: ?*walk.Limits) i32 {
+    return @intFromEnum(walk.limits(out));
+}
+
+/// Materialize the eligible set for `spec` — gitignore precedence, type
+/// registry, hidden and binary policy, all of it — into a walk to iterate.
+export fn irgx_walk_open(spec: ?*const walk.Spec, out: ?**walk.Walk) i32 {
+    return @intFromEnum(walk.open(spec, out));
+}
+
+/// How many entries the walk holds. A read of materialized state, so it hands
+/// back the number rather than a status to unwrap.
+export fn irgx_walk_count(w: *const walk.Walk) usize {
+    return walk.count(w);
+}
+
+/// How many directories the walk could not read but was told to tolerate — the
+/// number that separates "nothing matched" from "we never looked there".
+export fn irgx_walk_gapped(w: *const walk.Walk) u32 {
+    return walk.gapped(w);
+}
+
+/// Pull one eligible entry; `.ok` once the walk is drained.
+export fn irgx_walk_next(w: *walk.Walk, out: ?*walk.Entry) i32 {
+    return @intFromEnum(walk.next(w, out));
+}
+
+/// Pull up to `cap` entries in one crossing, writing how many landed.
+export fn irgx_walk_next_batch(w: *walk.Walk, out: ?[*]walk.Entry, cap: usize, written: ?*usize) i32 {
+    return @intFromEnum(walk.nextBatch(w, out, cap, written));
+}
+
+/// Restart iteration from the first entry. The set was already materialized, so
+/// this re-reads nothing from the filesystem.
+export fn irgx_walk_rewind(w: *walk.Walk) void {
+    walk.rewind(w);
+}
+
+/// Whether this exact path is in the eligible set — the membership question,
+/// asked without iterating to find out.
+export fn irgx_walk_holds(w: *const walk.Walk, path: ?[*]const u8, path_len: usize) i32 {
+    return @intFromEnum(walk.holds(w, path, path_len));
+}
+
+/// Release the walk and every byte it lent out.
+export fn irgx_walk_close(w: *walk.Walk) void {
+    walk.close(w);
+}
+
+/// Whether `bytes[0..len]` reads as binary under the same window the corpus
+/// walk itself applies — the predicate, decoupled from the walk.
+export fn irgx_walk_binary(bytes: ?[*]const u8, len: usize) i32 {
+    return @intFromEnum(walk.binary(bytes, len));
+}
+
+/// What a path is FOR — code, docs or data — the total, disjoint partition the
+/// `--docs`/`--code`/`--data` corpus split is built on.
+export fn irgx_walk_genus(path: ?[*]const u8, len: usize, out: ?*walk.Genus) i32 {
+    return @intFromEnum(walk.genusOf(path, len, out));
+}
+
+// ── sieve: narrowing before reading, so most files are never opened ──
+
+/// Open the persisted narrowing artifacts in `dir` — the trigram index and the
+/// crest sieve. A foreign tree's artifacts open inert rather than wrong.
+export fn irgx_sieve_open(dir: ?[*]const u8, dir_len: usize, out: ?**sieve.Sieve) i32 {
+    return @intFromEnum(sieve.open(dir, dir_len, out));
+}
+
+/// Release the sieve and every byte it lent out.
+export fn irgx_sieve_close(s: *sieve.Sieve) void {
+    sieve.close(s);
+}
+
+/// What this artifact set actually contains — document, path and posting
+/// counts, and which of the two narrowing tiers are present at all.
+export fn irgx_sieve_describe(s: *const sieve.Sieve, out: ?*sieve.Facts) i32 {
+    return @intFromEnum(sieve.facts(s, out));
+}
+
+/// The path a document id names. Bytes borrowed from the sieve, valid until
+/// `irgx_sieve_close`.
+export fn irgx_sieve_doc_path(s: *const sieve.Sieve, doc: u32, out: ?*rows.Text) i32 {
+    return @intFromEnum(sieve.docPath(s, doc, out));
+}
+
+/// The i-th root the artifacts were built over — how a host recognizes an index
+/// built for a different tree.
+export fn irgx_sieve_root(s: *const sieve.Sieve, i: u32, out: ?*rows.Text) i32 {
+    return @intFromEnum(sieve.root(s, i, out));
+}
+
+/// The documents that could contain this literal, as ascending ids. A SUPERSET:
+/// the sieve rules files out, it never rules one in.
+export fn irgx_sieve_literal(s: *sieve.Sieve, needle: ?[*]const u8, len: usize, out: ?[*]u32, cap: usize, written: ?*usize) i32 {
+    return @intFromEnum(sieve.literal(s, needle, len, out, cap, written));
+}
+
+/// The same question for a union of literals — the union computed inside the
+/// index rather than by N crossings the host merges itself.
+export fn irgx_sieve_alternation(s: *sieve.Sieve, needles_ptr: ?[*]const rows.Text, n: usize, out: ?[*]u32, cap: usize, written: ?*usize) i32 {
+    return @intFromEnum(sieve.alternation(s, needles_ptr, n, out, cap, written));
+}
+
+/// The documents a compiled pattern's whole narrowing calculus admits — the
+/// superset to read, in id order.
+export fn irgx_sieve_candidates(s: *sieve.Sieve, w: *const sieve.Winnow, out: ?[*]u32, cap: usize, written: ?*usize) i32 {
+    return @intFromEnum(sieve.candidates(s, w, out, cap, written));
+}
+
+/// The candidates, ordered by what is cheapest to read rather than by id — the
+/// same set, sequenced for the machine that has to open the files.
+export fn irgx_sieve_reading_list(s: *sieve.Sieve, w: *const sieve.Winnow, out: ?[*]u32, cap: usize, written: ?*usize) i32 {
+    return @intFromEnum(sieve.readingList(s, w, out, cap, written));
+}
+
+/// Whether the artifacts still describe the tree, and the wall-clock anchor the
+/// answer is measured against.
+export fn irgx_sieve_freshness(s: *const sieve.Sieve, out: ?*sieve.Freshness) i32 {
+    return @intFromEnum(sieve.freshness(s, out));
+}
+
+/// HOW MANY documents changed since the anchor — the magnitude `freshness`
+/// reduces to a state, for a host deciding whether a rebuild is worth it.
+export fn irgx_sieve_stale_count(s: *const sieve.Sieve, out: ?*usize) i32 {
+    return @intFromEnum(sieve.staleCount(s, out));
+}
+
+/// Derive a pattern's narrowing plan once, to spend across many sieve queries.
+export fn irgx_winnow_of(re: ?*pattern.Regex, out: ?**sieve.Winnow) i32 {
+    return @intFromEnum(sieve.winnowOf(re, out));
+}
+
+/// Release the plan.
+export fn irgx_winnow_free(w: *sieve.Winnow) void {
+    sieve.winnowFree(w);
+}
+
+/// What the plan is made of — clauses, atoms, literals — and whether it can
+/// narrow at all. `idle` is the honest answer that this pattern rules nothing out.
+export fn irgx_winnow_describe(w: *const sieve.Winnow, out: ?*sieve.WinnowFacts) i32 {
+    return @intFromEnum(sieve.winnowFacts(w, out));
+}
+
+// ── codex: the self-index — count, locate and restore without the text ──
+
+/// The longest text this build can index, so a host refuses before it allocates.
+export fn irgx_codex_max_text_len() usize {
+    return codex.maxTextLen();
+}
+
+/// Build a self-index over `text[0..len]`. The result answers about the text
+/// without keeping it, which is the whole point of the structure.
+export fn irgx_codex_build(text: ?[*]const u8, len: usize, opts: ?*const codex.Options, out: ?**codex.Codex) i32 {
+    return @intFromEnum(codex.build(text, len, opts, out));
+}
+
+/// Load a previously `irgx_codex_save`d index. A blob this build cannot read
+/// fails closed rather than opening as a best-effort prefix.
+export fn irgx_codex_load(bytes: ?[*]const u8, len: usize, out: ?**codex.Codex) i32 {
+    return @intFromEnum(codex.load(bytes, len, out));
+}
+
+/// Release the index.
+export fn irgx_codex_free(cx: *codex.Codex) void {
+    codex.free(cx);
+}
+
+/// The length of the text the index stands for — asked of the index, since the
+/// text itself need not exist any more.
+export fn irgx_codex_len(cx: *const codex.Codex) usize {
+    return codex.length(cx);
+}
+
+/// What the index cost and what it can still do — sample rate, and the byte
+/// budget each layer holds.
+export fn irgx_codex_measure(cx: *const codex.Codex, out: ?*codex.Stats) i32 {
+    return @intFromEnum(codex.measure(cx, out));
+}
+
+/// How many times `pattern` occurs, in time proportional to the PATTERN — the
+/// occurrences are never enumerated to count them.
+export fn irgx_codex_count(cx: *const codex.Codex, pattern_ptr: ?[*]const u8, len: usize, out: ?*usize) i32 {
+    return @intFromEnum(codex.count(cx, pattern_ptr, len, out));
+}
+
+/// WHERE it occurs, as text offsets. `.stale` when the index was built without
+/// the locate layer — a declinature, not an empty answer.
+export fn irgx_codex_locate(cx: *const codex.Codex, pattern_ptr: ?[*]const u8, len: usize, out: ?[*]usize, cap: usize, written: ?*usize) i32 {
+    return @intFromEnum(codex.locate(cx, pattern_ptr, len, out, cap, written));
+}
+
+/// The text offset one index row stands for — the single-row spelling of
+/// `irgx_codex_locate`, for a host walking rows it already has.
+export fn irgx_codex_position(cx: *const codex.Codex, row: usize, out: ?*usize) i32 {
+    return @intFromEnum(codex.position(cx, row, out));
+}
+
+/// The whole row range: the interval before any character has narrowed it.
+export fn irgx_codex_rows_whole(cx: *const codex.Codex, out: ?*codex.Rows) i32 {
+    return @intFromEnum(codex.rowsWhole(cx, out));
+}
+
+/// Narrow a row range by one byte, extending the pattern leftward — the
+/// backward-search step, exposed so a host can drive its own search.
+export fn irgx_codex_rows_extend(cx: *const codex.Codex, rows_io: ?*codex.Rows, byte: u8) i32 {
+    return @intFromEnum(codex.rowsExtend(cx, rows_io, byte));
+}
+
+/// Reconstruct the text from `at` onward — the index is the text, so nothing
+/// else needed to be kept.
+export fn irgx_codex_extract(cx: *codex.Codex, at: usize, out: ?[*]u8, cap: usize, written: ?*usize) i32 {
+    return @intFromEnum(codex.extract(cx, at, out, cap, written));
+}
+
+/// Serialize the index. `*written` is the size the index NEEDS, so a short
+/// `cap` sizes its retry rather than truncating silently.
+export fn irgx_codex_save(cx: *codex.Codex, out: ?[*]u8, cap: usize, written: ?*usize) i32 {
+    return @intFromEnum(codex.save(cx, out, cap, written));
 }
 
 test {

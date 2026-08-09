@@ -56,9 +56,15 @@ const std = @import("std");
 const contract = @import("contract.zig");
 const fault = @import("../../fault.zig");
 const rx = @import("../../kernel/regex/regex.zig");
+const request = @import("request.zig");
 
 const Status = contract.Status;
 const gpa = std.heap.c_allocator;
+
+/// The request and its lowering are the pattern plane's — one `irgx_input`
+/// judged one way for every face that takes it.
+const Input = request.Input;
+const Ask = request.Ask;
 
 /// One terminal of a lexer slate: the bytes, and nothing else.
 ///
@@ -356,13 +362,62 @@ pub fn scan(
     cap: usize,
 ) Status {
     contract.beginCall();
+    if (pick != pick_longest and pick != pick_shortest) return .invalid;
+    // `at` is the request's `from`, and the whole text is its ceiling: this
+    // spelling has never had a bound, so it must not acquire one here.
+    const want = request.askOf(text, text_len, at, text_len, if (pick == pick_shortest) request.mode_earliest else 0, null);
+    return take(handle, want, allow, nallow, tok, out, cap);
+}
+
+/// `scan` asked with the full request.
+///
+/// The mode word replaces `pick`: `IRGX_MODE_EARLIEST` is the shortest match,
+/// which is this plane's one native earliest search — a `Munch` is an anchored
+/// automaton, so its first accepting position is a thing it reaches on the way
+/// rather than a filter over a leftmost answer. `IRGX_MODE_ANCHORED` is
+/// accepted and inert for the same reason: every scan here already is one, so
+/// asking for it is asking for what you have, and a zeroed struct that did not
+/// ask still gets it.
+///
+/// `from` is `at`. A live `to` is refused — see `take`.
+pub fn scanAsk(
+    handle: *Munch,
+    in: ?*const Input,
+    allow: ?[*]const u32,
+    nallow: usize,
+    tok: ?*Token,
+    out: ?[*]u32,
+    cap: usize,
+) Status {
+    contract.beginCall();
+    return take(handle, request.ask(in), allow, nallow, tok, out, cap);
+}
+
+/// The one scan. `.stale` for a request the host stopped, and a live ceiling is
+/// the one thing in `irgx_input` this plane cannot honor: `longestAmong` reads
+/// forward from `at` to wherever the automaton dies, and the only way to stop
+/// it earlier is to hand it a shorter buffer — which moves the end of the text
+/// and changes what a terminal like `[^\n]*` means. Refused with the same
+/// `BoundUnsupported` the pattern plane raises on the arm that cannot express a
+/// bound, rather than answered against a different haystack.
+fn take(
+    handle: *Munch,
+    want: ?Ask,
+    allow: ?[*]const u32,
+    nallow: usize,
+    tok: ?*Token,
+    out: ?[*]u32,
+    cap: usize,
+) Status {
     const found = tok orelse return .invalid;
     found.* = .{ .len = 0, .count = 0 };
-    const body = view(text, text_len) orelse return .invalid;
-    if (at > text_len) return .invalid;
-    if (cap != 0 and out == null) return .invalid;
-    if (pick != pick_longest and pick != pick_shortest) return .invalid;
+    // `Token` carries its own count, so this sink is opened onto that field —
+    // the same true-total-versus-window contract every batch verb here keeps.
+    var sink = contract.Sink(u32).open(out, cap, &found.count) orelse return .invalid;
+    const req = want orelse return .invalid;
     if (allow == null and nallow != 0) return .invalid;
+    if (!req.win.unbounded()) return contract.report(.{ .code = error.BoundUnsupported });
+    if (req.stopped()) return .stale;
 
     // A restriction that permits nothing is a question with a knowable answer,
     // not an argument error: a lexer state can legitimately reach a point where
@@ -375,17 +430,17 @@ pub fn scan(
         handle.allow.admitAll();
     }
 
-    const match = switch (pick) {
-        pick_shortest => handle.inner.shortestAmong(body, at, &handle.allow),
-        else => handle.inner.longestAmong(body, at, &handle.allow),
-    } orelse return .ok;
+    const body = req.win.hay;
+    const at = req.win.from;
+    const match = if (req.earliest)
+        handle.inner.shortestAmong(body, at, &handle.allow)
+    else
+        handle.inner.longestAmong(body, at, &handle.allow);
+    const got = match orelse return .ok;
 
-    found.len = match.len;
-    found.count = match.patterns.len;
-    for (match.patterns, 0..) |ordinal, i| {
-        if (i >= cap) break;
-        out.?[i] = ordinal;
-    }
+    found.len = got.len;
+    for (got.patterns) |ordinal| sink.push(ordinal);
+    _ = sink.close();
     return .match;
 }
 
@@ -435,14 +490,6 @@ fn options(flags: u32) rx.Munch.Options {
 
 /// The haystack is a buffer, always — see `options` for why this is not a knob.
 const buffer_model = true;
-
-/// The one place a `(pointer, length)` pair becomes a slice. Null with a
-/// non-zero length is a caller error; null with zero length is the empty text,
-/// which every verb has an answer for.
-fn view(text: ?[*]const u8, text_len: usize) ?[]const u8 {
-    if (text) |p| return p[0..text_len];
-    return if (text_len == 0) &.{} else null;
-}
 
 /// Narrow a kernel error onto the fault vocabulary this ABI publishes.
 /// Determinization can fail by exhaustion or by a pattern the parser rejects,
