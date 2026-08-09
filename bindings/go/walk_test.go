@@ -399,6 +399,47 @@ func TestAMissingRootIsAnErrorRatherThanAnEmptyWalk(t *testing.T) {
 	}
 }
 
+// The two brace ceilings are published so a host can size a user's glob before
+// sending it. That is only worth doing if the published number is the enforced
+// one, so each is driven to its own boundary rather than compared to a constant:
+// exactly at the cap opens, one past it refuses. The two axes are independent -
+// `{a}{a}{a}…` has a product of ONE, so it clears the first ceiling however long
+// it grows, which is the entire reason both numbers exist.
+func TestThePublishedBraceCeilingsAreTheOnesEnforced(t *testing.T) {
+	root := corpus(t, map[string]string{"keep.a": "x"})
+	lim := irgx.WalkLimits()
+	if lim.BraceCap <= 0 || lim.BraceGroupCap <= 0 {
+		t.Fatalf("WalkLimits() brace ceilings = %d/%d, want both positive",
+			lim.BraceCap, lim.BraceGroupCap)
+	}
+
+	branches := func(n int) string {
+		return "*.{" + strings.Repeat("e,", n-1) + "e}"
+	}
+	for _, c := range []struct {
+		name string
+		glob string
+		open bool
+	}{
+		{"branches at the cap", branches(lim.BraceCap), true},
+		{"branches one past it", branches(lim.BraceCap + 1), false},
+		{"groups at the cap", strings.Repeat("{a}", lim.BraceGroupCap), true},
+		{"groups one past it", strings.Repeat("{a}", lim.BraceGroupCap+1), false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			w, err := irgx.OpenWalk(irgx.WalkSpec{
+				Terms: []irgx.Term{irgx.RootOf(root), irgx.GlobOf(c.glob)},
+			})
+			if err == nil {
+				w.Close()
+			}
+			if opened := err == nil; opened != c.open {
+				t.Errorf("OpenWalk opened = %v, want %v (err %v)", opened, c.open, err)
+			}
+		})
+	}
+}
+
 // An unknown type name is a refusal too - `--type qqq` is a typo, and admitting
 // every file or none of them are both worse answers than saying so.
 func TestAnUnknownTypeNameIsRefused(t *testing.T) {

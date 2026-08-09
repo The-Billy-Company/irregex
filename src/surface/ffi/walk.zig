@@ -112,11 +112,13 @@ const gpa = std.heap.c_allocator;
 
 // ── what the tier decides, published so a host stops guessing ────────────────
 
-/// The three content constants and the registry's size — the numbers a host
-/// would otherwise hardcode from a README and then hold wrongly forever.
+/// The content constants, the registry's size, and the two brace ceilings — the
+/// numbers a host would otherwise hardcode from a README and then hold wrongly
+/// forever.
 ///
 /// `struct_size`-guarded like every other struct here, because the honest way to
-/// add a fourth constant later is to append a field.
+/// add another constant later is to append a field, which is exactly how the
+/// brace pair arrived.
 pub const Limits = extern struct {
     struct_size: u32,
     /// How far into a file the binary verdict looks. A NUL anywhere in this many
@@ -132,6 +134,15 @@ pub const Limits = extern struct {
     /// carries its aliases). Both comptime facts about THIS build.
     type_rows: u32,
     type_names: u32,
+    /// Most globs one braced term may expand to. `{a,b}{c,d}…` MULTIPLIES, so a
+    /// term a host accepted from a stranger can name millions; past this the
+    /// walk refuses with `budget_exceeded` rather than allocating them.
+    brace_cap: u32,
+    /// How many groups one braced term may carry — a second ceiling because
+    /// `{a}{a}{a}…` has a product of ONE and so passes `brace_cap` while still
+    /// recursing once per group. A host sizing only against the first would
+    /// build a term this one refuses.
+    brace_group_cap: u32,
 };
 
 /// Publish the constants. `.invalid` for a null slot; never fails otherwise.
@@ -148,6 +159,8 @@ pub fn limits(out: ?*Limits) Status {
             for (types.type_table) |row| n += row.names.len;
             break :blk n;
         },
+        .brace_cap = glob.brace_cap,
+        .brace_group_cap = glob.brace_group_cap,
     };
     return .ok;
 }

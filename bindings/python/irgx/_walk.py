@@ -118,6 +118,8 @@ class Limit(ctypes.Structure):
         ("file_cap", _U64),
         ("type_rows", _U32),
         ("type_names", _U32),
+        ("brace_cap", _U32),
+        ("brace_group_cap", _U32),
     )
 
 
@@ -177,6 +179,13 @@ class Ceilings(NamedTuple):
     """The most files one walk may materialize."""
     type_rows: int
     type_names: int
+    brace_cap: int
+    """Most globs one ``{a,b}`` term may expand to — the PRODUCT, which is what
+    a hostile pattern multiplies. Past it the open is refused, not allocated."""
+    brace_group_cap: int
+    """Most groups one such term may carry. A second ceiling because
+    ``{a}{a}{a}…`` has a product of one and so clears :attr:`brace_cap` while
+    still recursing per group; validating against only the first is not enough."""
 
 
 class File(NamedTuple):
@@ -337,7 +346,14 @@ def limits() -> Ceilings:
     """The ceilings this build enforces."""
     out = sized(Limit)
     check(lib.irgx_walk_limits(ctypes.byref(out)), "could not read the walk limits")
-    return Ceilings(out.binary_window, out.file_cap, out.type_rows, out.type_names)
+    return Ceilings(
+        out.binary_window,
+        out.file_cap,
+        out.type_rows,
+        out.type_names,
+        out.brace_cap,
+        out.brace_group_cap,
+    )
 
 
 def binary(data: bytes) -> bool:

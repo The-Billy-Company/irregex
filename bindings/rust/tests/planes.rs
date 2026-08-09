@@ -687,6 +687,32 @@ fn the_limits_struct_is_accepted_and_filled() {
     assert!(limits.file_cap() > 0);
     assert!(limits.type_rows() > 0);
     assert!(limits.type_names() >= limits.type_rows());
+    assert!(limits.brace_cap() > 0 && limits.brace_group_cap() > 0);
+}
+
+#[test]
+fn the_published_brace_ceilings_are_the_ones_enforced() {
+    // Published so a host can size a user's glob before sending it, which is only
+    // worth doing if the number IS the enforced one. So each is driven to its own
+    // boundary rather than compared against a constant: at the cap opens, one past
+    // refuses. The axes are independent — `{a}{a}{a}…` multiplies out to one glob
+    // however long it grows, so it clears the product ceiling entirely, which is
+    // the whole reason there are two numbers to read.
+    let dir = plant();
+    let root = dir.path();
+    let limits = Walk::limits().unwrap();
+
+    let branches = |n: usize| format!("*.{{{}e}}", "e,".repeat(n - 1));
+    let cases = [
+        (branches(limits.brace_cap()), true),
+        (branches(limits.brace_cap() + 1), false),
+        ("{a}".repeat(limits.brace_group_cap()), true),
+        ("{a}".repeat(limits.brace_group_cap() + 1), false),
+    ];
+    for (glob, opens) in &cases {
+        let got = Walk::open(&Spec::new().root(root).glob(glob)).is_ok();
+        assert_eq!(got, *opens, "a {}-byte glob opened = {got}", glob.len());
+    }
 }
 
 #[test]

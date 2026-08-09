@@ -245,6 +245,13 @@ type Limits struct {
 	// TypeRows is how many rows the type registry holds; TypeNames is how many
 	// distinct names it answers to (an alias is a name without a row).
 	TypeRows, TypeNames int
+	// BraceCap and BraceGroupCap are the two ceilings a `{a,b}` glob term is
+	// expanded under; exceeding either refuses the open rather than allocating.
+	// They bound different things and a host validating a user's glob needs
+	// both: BraceCap bounds the PRODUCT, which `{a}{a}{a}...` slips past at a
+	// product of one while still recursing once per group, and BraceGroupCap
+	// bounds that.
+	BraceCap, BraceGroupCap int
 }
 
 // WalkLimits reports the ceilings this build enforces.
@@ -258,10 +265,12 @@ func WalkLimits() Limits {
 		panic(newError(st, &fault, "read the walk limits"))
 	}
 	return Limits{
-		BinaryWindow: int(raw.binary_window),
-		FileCap:      uint64(raw.file_cap),
-		TypeRows:     int(raw.type_rows),
-		TypeNames:    int(raw.type_names),
+		BinaryWindow:  int(raw.binary_window),
+		FileCap:       uint64(raw.file_cap),
+		TypeRows:      int(raw.type_rows),
+		TypeNames:     int(raw.type_names),
+		BraceCap:      int(raw.brace_cap),
+		BraceGroupCap: int(raw.brace_group_cap),
 	}
 }
 

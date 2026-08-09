@@ -181,6 +181,8 @@ pub struct Limits {
     file_cap: u64,
     type_rows: u32,
     type_names: u32,
+    brace_cap: u32,
+    brace_group_cap: u32,
 }
 
 impl Default for Limits {
@@ -191,6 +193,8 @@ impl Default for Limits {
             file_cap: 0,
             type_rows: 0,
             type_names: 0,
+            brace_cap: 0,
+            brace_group_cap: 0,
         }
     }
 }
@@ -219,6 +223,25 @@ impl Limits {
     #[must_use]
     pub fn type_names(&self) -> usize {
         self.type_names as usize
+    }
+
+    /// Most globs one `{a,b}` term may expand to. This bounds the PRODUCT, which
+    /// is what a hostile pattern multiplies; past it [`Walk::open`] refuses
+    /// rather than allocating, as [`Error::OutOfMemory`] whose `detail` reads
+    /// `BudgetExceeded` — the spec was well-formed and the remedy is a smaller
+    /// glob, not more memory.
+    #[must_use]
+    pub fn brace_cap(&self) -> usize {
+        self.brace_cap as usize
+    }
+
+    /// Most groups one such term may carry — a second ceiling, because
+    /// `{a}{a}{a}…` has a product of one and so clears [`Limits::brace_cap`]
+    /// while still recursing once per group. A host checking only the first will
+    /// still build a term the open refuses.
+    #[must_use]
+    pub fn brace_group_cap(&self) -> usize {
+        self.brace_group_cap as usize
     }
 }
 

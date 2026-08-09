@@ -221,6 +221,7 @@ def test_the_walk_ceilings_and_the_content_probes_answer(tmp_path: Path) -> None
     # its own buffers to the same numbers instead of guessing them.
     assert ceilings.binary_window > 0 and ceilings.file_cap > ceilings.binary_window
     assert ceilings.type_names >= ceilings.type_rows > 0
+    assert ceilings.brace_cap > 0 and ceilings.brace_group_cap > 0
     assert irgx.is_binary(b"text\nmore text\n") is False
     assert irgx.is_binary(b"\x00\x01binary") is True
     # Three genera, total and disjoint, partitioning the corpus by what a file is
@@ -232,6 +233,33 @@ def test_the_walk_ceilings_and_the_content_probes_answer(tmp_path: Path) -> None
     assert irgx.genus(tmp_path / "LICENSE") is irgx.Genus.DOCS
     assert irgx.genus(tmp_path / "x.toml") is irgx.Genus.DATA
     assert irgx.genus(tmp_path / "x.unheard-of") is irgx.Genus.CODE
+
+
+def test_the_published_brace_ceilings_are_the_ones_the_walk_enforces(
+    tmp_path: Path,
+) -> None:
+    # A published ceiling is only worth reading if it is the number actually
+    # enforced. Asserting it equals a constant would prove nothing the constant
+    # doesn't already say, so each is driven to its own boundary: exactly at the
+    # cap must open, one past it must refuse. A host sizing a user's glob against
+    # these numbers is doing precisely this arithmetic.
+    (tmp_path / "keep.a").write_text("x")
+    cap, groups = irgx.walk_limits().brace_cap, irgx.walk_limits().brace_group_cap
+
+    # The PRODUCT axis: one group of N branches expands to exactly N globs.
+    at = "*.{" + ",".join(f"e{i}" for i in range(cap)) + "}"
+    with irgx.walk(tmp_path, globs=[at]) as w:
+        assert not list(w)  # admitted and expanded; nothing on disk matches
+    with pytest.raises(MemoryError, match="BudgetExceeded"):
+        irgx.walk(tmp_path, globs=["*.{" + ",".join(f"e{i}" for i in range(cap + 1)) + "}"])
+
+    # The GROUP axis, which the product cannot see: `{a}{a}{a}…` multiplies out
+    # to one glob however long it gets, so a term refused here passes the first
+    # ceiling with room to spare. That is the whole reason both are published.
+    with irgx.walk(tmp_path, globs=["{a}" * groups]) as w:
+        assert not list(w)
+    with pytest.raises(MemoryError, match="BudgetExceeded"):
+        irgx.walk(tmp_path, globs=["{a}" * (groups + 1)])
 
 
 # ── tree ─────────────────────────────────────────────────────────────────────

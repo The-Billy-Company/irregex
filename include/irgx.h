@@ -1256,6 +1256,14 @@ typedef struct {
   uint64_t file_cap;      /* most files one walk may materialize       */
   uint32_t type_rows;     /* rows the type registry holds              */
   uint32_t type_names;    /* distinct type names it answers to         */
+  /* The two brace ceilings a `{a,b}` term is expanded under. Exceeding either
+   * is IRGX_OOM carrying `BudgetExceeded` -- refused, never allocated. They are
+   * separate axes and a host needs both: `brace_cap` bounds the PRODUCT, which
+   * `{a}{a}{a}...` slips past at a product of one while still recursing once
+   * per group, and `brace_group_cap` bounds that. A host that validates a
+   * user's glob against only the first will still build a term this refuses. */
+  uint32_t brace_cap;       /* most globs one braced term may name       */
+  uint32_t brace_group_cap; /* most groups one braced term may carry     */
 } irgx_limits;
 
 /* What a term MEANS. A root is a place to walk from; the rest narrow. */
@@ -1347,7 +1355,9 @@ int32_t irgx_walk_limits(irgx_limits *out);
  * two things the status folds together: real allocation failure, and a brace
  * expansion that hit its ceiling. `irgx_last_fault()->name` tells them apart
  * (`OutOfMemory` vs `BudgetExceeded`) -- the second means the spec was fine
- * and the remedy is a smaller glob, not more memory.
+ * and the remedy is a smaller glob, not more memory. `irgx_walk_limits()`
+ * publishes the two ceilings, so a host can size a glob before sending it
+ * rather than discovering them by refusal.
  *
  * So: test the SIGN, not the value. `if (st < 0)` is the failure branch; the
  * reflex `if (st != IRGX_OK)` leaks the handle of every non-empty walk, which
