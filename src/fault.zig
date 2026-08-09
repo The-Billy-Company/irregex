@@ -88,7 +88,15 @@ pub const Pattern = error{ BadPattern, Unsupported, BoundUnsupported, TooManyPat
 /// pipe), which is the same fact about the same machine and wants the same
 /// prong, not a `ForkFailed`/`WakePipeFailed` pair naming the call site instead
 /// of the condition.
-pub const Resource = error{ OutOfMemory, TimedOut, Exhausted };
+///
+/// `BudgetExceeded` is the CALLER's own ceiling being reached rather than the
+/// machine's — one member and not three, because a step budget, a recursion
+/// depth and a heap ceiling are one fact (the limit this host asked for was hit)
+/// and which of them rode the detail. It is always a fault and never a
+/// declinature: `Decline`'s invariant is that every member names a slower tier
+/// that will answer, and there is no slower tier for a caller who asked to be
+/// stopped — the remedy is a bigger ceiling, which only the caller can grant.
+pub const Resource = error{ OutOfMemory, TimedOut, Exhausted, BudgetExceeded };
 
 /// The resident-session UDS protocol failed mid-frame. It does not cross the C
 /// seam — the FFI is in-process and has no daemon transport — and the daemon
@@ -335,9 +343,11 @@ fn errnoNote(comptime phrase: []const u8, comptime e: std.posix.E) []const u8 {
 test "the five domains merge without collapsing a member" {
     // The load-bearing row: Zig unifies error names globally, so two domains
     // that reached for the same spelling would merge SILENTLY and become
-    // indistinguishable at every handler. 5 + 6 + 6 + 3 + 3 = 23 is the proof
-    // that no two did.
-    try std.testing.expectEqual(@as(usize, 23), @typeInfo(Fault).error_set.?.len);
+    // indistinguishable at every handler. 5 + 6 + 6 + 4 + 3 = 24 is the proof
+    // that no two did. The fourth term is `Resource`, which grew a member when
+    // caller-supplied ceilings arrived: this count is a census, so widening the
+    // taxonomy is meant to land here in the same change that widens it.
+    try std.testing.expectEqual(@as(usize, 24), @typeInfo(Fault).error_set.?.len);
 }
 
 test "pathNote answers each corpus member with ripgrep's own phrasing" {

@@ -107,6 +107,53 @@ pub const Window = struct {
     }
 };
 
+/// The ceilings a caller may put on one search, each in the currency the engine
+/// that honors it actually spends.
+///
+/// These exist because the engine already HAS ceilings and the caller cannot see
+/// them: PCRE2 runs under a hardcoded ten-million step budget and a ten-thousand
+/// frame depth, and the determinizer declines at its powerset cap. Those numbers
+/// are right for a search a person is waiting on and wrong for the two cases a
+/// library gets used in — a server handing the pattern to a stranger, where the
+/// defaults are far too generous to be a safety property, and a batch job that
+/// would rather spend a minute than be declined. Neither host can express itself
+/// today, so this is the vocabulary for both.
+///
+/// **`null` is not "no limit"** — it is "whatever this engine already does",
+/// which is how a host asks for nothing and still gets the defaults. `0` is not
+/// a spelling of null; a caller that means "refuse everything" can say so.
+///
+/// A ceiling is deliberately per-engine, and NOT normalized into one abstract
+/// "effort" number. A step of backtracking and a minted DFA state are not
+/// convertible, and a single fake unit would have to lie about one of them to
+/// report the other. So each field says which engine spends it, and a field the
+/// chosen engine does not spend is **inert rather than an error**: the linear
+/// engine cannot exceed a step budget because it cannot backtrack, and reporting
+/// `Unsupported` for a host that defensively set one would punish exactly the
+/// caution this type exists to allow.
+pub const Limits = struct {
+    /// Match steps before the search gives up — PCRE2's backtracking budget.
+    /// Inert on the linear engine, which is linear in the haystack by
+    /// construction and so has no step count to exceed.
+    steps: ?u64 = null,
+
+    /// Frames of recursion the match may descend — PCRE2's depth budget, and the
+    /// one that stands between a nested quantifier and the stack. Inert on the
+    /// linear engine.
+    depth: ?u32 = null,
+
+    /// Bytes of heap one match may hold. Honored by PCRE2, which today sets no
+    /// heap ceiling at all, so a pathological subject can grow its frame vector
+    /// until the allocator refuses — the gap this field closes.
+    heap_bytes: ?usize = null,
+
+    /// DFA states the determinizer may mint before it declines. Inert on PCRE2,
+    /// which builds no automaton. Lowering it trades recall of the fast path for
+    /// a bounded footprint: the engine falls back rather than failing, because
+    /// this cap is the one ceiling here whose overrun already has a safe answer.
+    states: ?u32 = null,
+};
+
 /// Which pattern of a slate an answer is about.
 ///
 /// A distinct type rather than a bare `u32` because the engines are full of

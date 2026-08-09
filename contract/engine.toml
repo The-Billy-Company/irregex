@@ -170,7 +170,7 @@ match = { code = 1, c = "IRGX_MATCH", disposition = "result", detail = "ran clea
 stale = { code = -1, c = "IRGX_STALE", disposition = "declinature", detail = "the warm in-process tier declines — the pattern is outside the linear engine, or freshness is unprovable. NOT a failure: the caller answers cold and gets the identical result, so a binding must not surface it as an error value" }
 out_of_memory = { code = -2, c = "IRGX_OOM", disposition = "fault", domains = [
   "resource",
-], detail = "allocation failed (fault domain `resource`)" }
+], detail = "the machine or the budget ran out (fault domain `resource`) — the whole domain folds here, so the name is the commonest member rather than the only one. An allocation failed, an OS handle was refused, a deadline passed, or the CALLER's own ceiling from `irgx_options` was reached. A host that needs the distinction reads `name` from `irgx_last_fault`: `BudgetExceeded` is the retryable one, since a bigger ceiling is a thing only the caller can grant" }
 open_failed = { code = -3, c = "IRGX_OPEN_FAILED", disposition = "fault", domains = [
   "corpus",
   "persist",
@@ -235,7 +235,8 @@ resource = { members = [
   "OutOfMemory",
   "TimedOut",
   "Exhausted",
-], detail = "the machine or the budget ran out; `OutOfMemory` is the one held to a single canonical exit in the command plane, and `Exhausted` is its non-heap sibling for an OS handle the kernel refused (a fork, a pipe) — one fact per condition, not one per call site" }
+  "BudgetExceeded",
+], detail = "the machine or the budget ran out; `OutOfMemory` is the one held to a single canonical exit in the command plane, and `Exhausted` is its non-heap sibling for an OS handle the kernel refused (a fork, a pipe) — one fact per condition, not one per call site. `BudgetExceeded` is the caller's OWN ceiling being reached, which is why it is one member and not three: a step budget, a recursion depth and a heap ceiling are one fact — the limit this host asked for was hit — and which of them rides the detail rather than forking the taxonomy, exactly as this domain's rule says. It is a FAULT and never a declinature: `stale` promises a slower tier can answer, and there is no slower tier for a caller who asked to be stopped — the remedy is a bigger ceiling, which only the caller can grant. Distinct from `OutOfMemory` (the machine's limit, not the caller's) and from `PowersetCapHit` (a build-time automaton cap whose overrun has a safe fallback, so it lives in [pattern] where a fallback still answers)" }
 wire = { members = [
   "ConnClosed",
   "UnexpectedFrame",
