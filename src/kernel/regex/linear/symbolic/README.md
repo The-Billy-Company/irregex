@@ -22,7 +22,10 @@ this engine's own, and is what keeps the scan loop byte-shaped.
    every predicate's ranges yields the **minterms** — the coarsest partition of
    the codepoint space no predicate splits, in `O(B log B)` interval endpoints
    rather than pairwise intersection's exponential blowup. `\w+X` has three
-   (`X`, `\w` minus `X`, everything else).
+   (`X`, `\w` minus `X`, everything else). The sweep itself is not regex
+   knowledge and does not live here: it is `../../../math/minterm.zig`, so a
+   consumer that is not this engine can reach it without reaching through
+   `regex.zig` for a grammar it does not want.
 2. **`program.zig` — Thompson construction over codepoints.** The same lowering
    `../../compile/` performs, except a class is one predicate id rather than a
    byte sub-automaton. Word boundaries, buffer anchors, and a raw byte class
@@ -47,8 +50,9 @@ states or classes than the byte construction's own reduced table.
 
 Each file earns its place in the pipeline:
 
-- **`alphabet.zig`** interns scalar-range predicates and computes the minterm
-  partition they induce; membership is a bitmask per predicate.
+- **`alphabet.zig`** names this engine's three decisions over the shared minterm
+  floor — `u21`, a space stopping at `0x10FFFF`, 512 predicates — and adapts an
+  AST `ByteSet` into a scalar set; membership is a bitmask per predicate.
 - **`program.zig`** builds the Thompson NFA over codepoints — consume-with-
   predicate, split, `^`/`$`, match — and refuses everything this alphabet
   can't say.

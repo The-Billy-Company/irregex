@@ -59,7 +59,7 @@ pub fn eligible(ast: *const syn.Node) bool {
 pub fn build(gpa: std.mem.Allocator, ast: *syn.Node, anchored: bool, stats: *Stats) std.mem.Allocator.Error!Outcome {
     var prog = program.lower(gpa, ast) catch |e| return switch (e) {
         error.OutOfMemory => error.OutOfMemory,
-        error.TooManyPredicates => .{ .declined = .too_large },
+        error.Oversized => .{ .declined = .too_large },
         else => .{ .declined = .unsupported },
     };
     defer prog.deinit();

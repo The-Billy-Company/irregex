@@ -176,7 +176,7 @@ const Det = struct {
         while (it.next()) |st| {
             d.visits += 1;
             const cn = d.prog.states[st].consume;
-            if (alpha.accepts(cn.pred, m)) d.pushIf(cn.out);
+            if (alpha.contains(cn.pred, m)) d.pushIf(cn.out);
         }
         var matched = d.close(false, at_end);
         if (d.seeds) |sd| {

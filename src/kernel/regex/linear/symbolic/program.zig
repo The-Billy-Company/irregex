@@ -22,7 +22,9 @@ const alphabet = @import("alphabet.zig");
 
 const Node = syn.Node;
 
-/// Why a pattern cannot be lowered to a codepoint program.
+/// Why a pattern cannot be lowered to a codepoint program: three shapes the
+/// codepoint alphabet cannot express, plus the alphabet's own two ceilings on how
+/// many predicates and minterms a pattern may induce before it is pathological.
 /// File-private control flow (the fault-channel taxonomy): converted to `.declined` at the
 /// symbolic module boundary — not members of the declared fault taxonomy.
 const Reject = error{
@@ -32,9 +34,7 @@ const Reject = error{
     BufferAnchor,
     /// A `class` node with a member ≥ 0x80: a raw byte predicate, not a scalar.
     HighByteClass,
-    /// More distinct predicates than the minterm signature holds.
-    TooManyPredicates,
-};
+} || alphabet.Error;
 
 const Error = Reject || std.mem.Allocator.Error;
 
@@ -58,7 +58,7 @@ pub const Program = struct {
 
     pub fn deinit(p: *Program) void {
         p.gpa.free(p.states);
-        p.alpha.deinit();
+        p.alpha.deinit(p.gpa);
     }
 };
 
@@ -98,7 +98,7 @@ const Compiler = struct {
             .class => |set| {
                 var b: u16 = 0x80;
                 while (b <= 0xFF) : (b += 1) if (set.has(@intCast(b))) return Reject.HighByteClass;
-                return c.push(.{ .consume = .{ .pred = try c.alpha.internByteSet(&set), .out = next } });
+                return c.push(.{ .consume = .{ .pred = try alphabet.internByteSet(&c.alpha, &set), .out = next } });
             },
             .uclass => |ranges| return c.push(.{ .consume = .{ .pred = try c.alpha.intern(ranges), .out = next } }),
             .capture => |g| return c.node(g.child, next),
@@ -134,7 +134,7 @@ pub fn lower(gpa: std.mem.Allocator, ast: *Node) Error!Program {
 
     const match_idx = try c.push(.match);
     const start = try c.node(ast, match_idx);
-    var alpha = try c.alpha.finish();
-    errdefer alpha.deinit();
+    const alpha = try c.alpha.finish();
+    errdefer alpha.deinit(gpa);
     return .{ .gpa = gpa, .states = try c.states.toOwnedSlice(gpa), .start = start, .alpha = alpha };
 }
