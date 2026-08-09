@@ -26,11 +26,13 @@ const Matcher = matcher.Matcher;
 
 /// Reusable per-search scratch, by grain, guarded for concurrent callers.
 ///
-/// The two grains are the engine's own (`Matcher.Sim` for the boolean paths,
-/// `Matcher.SpanSim` for the span paths) and are kept apart for the reason the
-/// engine keeps them apart: the boolean path never allocates the per-state
-/// start-offset maps, so pooling them together would hand every `isMatch` the
-/// span grain's memory.
+/// The three grains are the engine's own (`Matcher.Sim` for the boolean paths,
+/// `Matcher.SpanSim` for the span paths, `Matcher.Probe` for the halting walks the
+/// anchored and earliest modes ask) and are kept apart for the reason the engine
+/// keeps them apart: the boolean path never allocates the per-state start-offset
+/// maps, so pooling them together would hand every `isMatch` the span grain's
+/// memory. The probe goes further and holds nothing at all until a mode asks it
+/// something, so the grain is free for every caller who never opens one.
 pub const Pool = struct {
     gpa: std.mem.Allocator,
     /// The math floor's spin latch (`math.lease.Latch`) rather than a blocking
@@ -41,10 +43,12 @@ pub const Pool = struct {
     lock: lease.Latch = .{},
     idle_boolean: std.ArrayList(*Matcher.Sim) = .empty,
     idle_spans: std.ArrayList(*Matcher.SpanSim) = .empty,
+    idle_probes: std.ArrayList(*Matcher.Probe) = .empty,
 
-    /// The two loans, named so a caller (and a cursor) can hold one in a field.
+    /// The three loans, named so a caller (and a cursor) can hold one in a field.
     pub const Boolean = Loan(Matcher.Sim, "idle_boolean");
     pub const Spans = Loan(Matcher.SpanSim, "idle_spans");
+    pub const Probes = Loan(Matcher.Probe, "idle_probes");
 
     pub fn init(gpa: std.mem.Allocator) Pool {
         return .{ .gpa = gpa };
@@ -59,8 +63,13 @@ pub const Pool = struct {
             s.deinit();
             self.gpa.destroy(s);
         }
+        for (self.idle_probes.items) |s| {
+            s.deinit();
+            self.gpa.destroy(s);
+        }
         self.idle_boolean.deinit(self.gpa);
         self.idle_spans.deinit(self.gpa);
+        self.idle_probes.deinit(self.gpa);
         self.* = undefined;
     }
 
@@ -74,12 +83,20 @@ pub const Pool = struct {
         return .{ .pool = self, .sim = try self.take(Matcher.SpanSim, "idle_spans", of) };
     }
 
+    /// Halting-walk scratch for `of`, returned to the pool by `release`. Cheap to
+    /// take and cheap to hold: the automata behind it are built by the first mode
+    /// that needs one, and then reused for as long as this scratch is shelved
+    /// here — which is what keeps a determinization off the per-search path.
+    pub fn probes(self: *Pool, of: *const Matcher) !Probes {
+        return .{ .pool = self, .sim = try self.take(Matcher.Probe, "idle_probes", of) };
+    }
+
     /// How many of each grain are currently shelved — the pool's whole
     /// observable state, and what a test asserts reuse with.
-    pub fn idle(self: *Pool) struct { boolean: usize, spans: usize } {
+    pub fn idle(self: *Pool) struct { boolean: usize, spans: usize, probes: usize } {
         self.lock.lock();
         defer self.lock.unlock();
-        return .{ .boolean = self.idle_boolean.items.len, .spans = self.idle_spans.items.len };
+        return .{ .boolean = self.idle_boolean.items.len, .spans = self.idle_spans.items.len, .probes = self.idle_probes.items.len };
     }
 
     fn take(self: *Pool, comptime S: type, comptime shelf: []const u8, of: *const Matcher) !*S {

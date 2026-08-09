@@ -4,9 +4,9 @@ Every other tier here is named for what it *is* — the syntax, the ast, the lin
 
 ## Files
 
-- **`pattern.zig`** defines `Pattern`, the handle: `compile`, `isMatch`, `find`/`findIn`, `matches`/`matchesIn`, `count`, `groups`, `replace*`, `split*`. It owns its scratch, compiles the capture arm lazily, reaches both backends, and hands the engine back through `engineOf` for a planner.
-- **`pool.zig`** decides who owns the memory a search reuses. It shelves `Matcher.Sim`/`Matcher.SpanSim` behind `math.lease.Latch` so no consumer signature says `Sim`, and holds no pointer to its matcher, which is the reason a `Pattern` is a plain movable value.
-- **`cursor.zig`** defines `Cursor`, successive non-overlapping matches carrying the empty-match rule a library caller expects — the one ripgrep deliberately does not use.
+- **`pattern.zig`** defines `Pattern`, the handle: `compile`, `isMatch`, `find`/`findIn`, `matches`/`matchesIn`, `findAt`/`isMatchAt`/`matchesAt`, `earliest`/`earliestIn`, `walk`, `count`, `groups`, `replace*`, `split*`. It owns its scratch, compiles the capture arm lazily, reaches both backends, and hands the engine back through `engineOf` for a planner.
+- **`pool.zig`** decides who owns the memory a search reuses. It shelves `Matcher.Sim`/`Matcher.SpanSim`/`Matcher.Probe` behind `math.lease.Latch` so no consumer signature says `Sim`, and holds no pointer to its matcher, which is the reason a `Pattern` is a plain movable value.
+- **`cursor.zig`** defines `Cursor`, successive non-overlapping matches carrying the empty-match rule a library caller expects — the one ripgrep deliberately does not use. Its `Mode` is where the two questions leftmost-first cannot answer enter: **anchored** (each match begins where the last ended) and **earliest** (the match that ends first). Both consult a halting walk from `../linear/dfa/onset.zig`; anchored also stands without one, earliest does not and refuses instead.
 - **`groups.zig`** defines `Groups`, what a capture caught, by ordinal or by name, as a view over the engine's flat `[]isize` slot vector. It owns nothing and copies nothing.
 - **`rewrite.zig`** implements `replace`, `replaceWith`, and `split`, all one walk over a `Cursor` with different bookkeeping.
 
@@ -40,6 +40,7 @@ This is a fork in the reporting rule, not a duplicated loop: the C ABI does not 
 - **A `$1` template grammar for replacement.** It would need its own parser, its own escaping rule, and its own error channel to express something the host language already says better. `replaceWith` takes a callback that is handed the match and writes what it likes, and costs no grammar.
 - **A fused capture engine.** The primary engine stays capture-free — a byte-class DFA cannot track groups — so `Pattern` compiles the capture arm only when a group is actually asked for. Matching never pays for a VM nobody wanted.
 - **An approximated bound.** PCRE2's subject has one length, so honoring a window bound there would mean shortening the subject, which also moves `$`, `\z`, `\b`, and every lookahead. `matchesIn`/`findIn` raise `BoundUnsupported` rather than quietly answer a different question.
+- **An earliest span filtered out of the leftmost one.** There is no such filter: leftmost-first picks a match by where it starts and extends it by priority, so `a+` over `aaa` is one span there and three here, and the second sequence has spans the first never reported. A compile with no halting machine — the PCRE2 arm, or a pattern carrying a positional assertion — raises `Unsupported` from `earliest`/`walk`, and `Pattern.halts` says so before the ask.
 
 ## When To Edit
 

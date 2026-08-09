@@ -10,6 +10,7 @@ const glean = @import("glean.zig");
 
 const Pattern = glean.Pattern;
 const Window = @import("../../../mark.zig").Window;
+const Span = @import("../../../mark.zig").Span;
 const t = std.testing;
 
 /// Every span a pattern finds in a haystack, rendered `start:end` — one string
@@ -91,6 +92,212 @@ test "a bound the backend cannot express is refused, never approximated" {
     try t.expectError(error.BoundUnsupported, p.findIn(.{ .hay = "abc", .from = 0, .to = 2 }));
     // The inert bound asks nothing of the engine, so it still answers.
     try t.expect((try p.findIn(.{ .hay = "abc", .from = 0, .to = 3 })) != null);
+}
+
+test "an anchored find requires the match to begin where the search does" {
+    // `findAt` is not `findIn` with a narrower window and not `\A`-rewriting:
+    // it constrains the START, and the assertions keep reading the whole
+    // haystack. `\Bb` is the case that separates the three — `\B` is false at
+    // the text's start and true between two word bytes, so anchoring at 1 must
+    // still see the `a` behind it.
+    var p = try Pattern.compile(t.allocator, "b");
+    defer p.deinit();
+    const hay = "abc";
+    // Leftmost finds the `b` at 1; anchored at 0 there is nothing here.
+    try t.expectEqual(@as(usize, 1), (try p.findIn(.{ .hay = hay, .from = 0, .to = hay.len })).?.start);
+    try t.expectEqual(@as(?Span, null), try p.findAt(.{ .hay = hay, .from = 0, .to = hay.len }));
+    try t.expectEqual(@as(usize, 1), (try p.findAt(.{ .hay = hay, .from = 1, .to = hay.len })).?.start);
+
+    var inner = try Pattern.compile(t.allocator, "\\Bb");
+    defer inner.deinit();
+    try t.expect((try inner.findAt(.{ .hay = hay, .from = 1, .to = hay.len })) != null);
+}
+
+test "an anchored walk is contiguous, and ends at the first gap" {
+    // What anchoring means across a walk: each match must begin where the last
+    // one ended, so the run stops rather than re-seeding past the `b`. The
+    // unbounded walk over the same text is the control, and the difference is
+    // exactly the span the gap hides.
+    var p = try Pattern.compile(t.allocator, "a");
+    defer p.deinit();
+    const hay = "aaba";
+    const loose = try walk(t.allocator, &p, hay);
+    defer t.allocator.free(loose);
+    try t.expectEqualStrings("0:1 1:2 3:4 ", loose);
+
+    var cur = try p.matchesAt(.{ .hay = hay, .from = 0, .to = hay.len });
+    defer cur.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(t.allocator);
+    while (cur.next()) |m| try out.print(t.allocator, "{d}:{d} ", .{ m.start, m.end });
+    try t.expectEqualStrings("0:1 1:2 ", out.items);
+
+    // The advance rule is the walk's, not the anchor's: a zero-width match still
+    // steps one BYTE, so the resume point moves even though the match consumed
+    // nothing. An anchored walk over a nullable pattern therefore terminates
+    // rather than pinning itself to `from` forever — and it keeps every empty
+    // match, because each one does begin where its own search did.
+    var nil = try Pattern.compile(t.allocator, "x*");
+    defer nil.deinit();
+    var spin = try nil.matchesAt(.{ .hay = "ab", .from = 0, .to = 2 });
+    defer spin.deinit();
+    var seen: usize = 0;
+    while (spin.next()) |_| seen += 1;
+    try t.expectEqual(@as(usize, 3), seen);
+}
+
+/// Every span of a walk under `mode`, rendered like `walk`'s.
+fn under(gpa: std.mem.Allocator, p: *Pattern, hay: []const u8, mode: glean.Cursor.Mode) ![]u8 {
+    var cur = try p.walk(Window.whole(hay, 0), mode);
+    defer cur.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+    while (cur.next()) |m| try out.print(gpa, "{d}:{d} ", .{ m.start, m.end });
+    return out.toOwnedSlice(gpa);
+}
+
+test "an earliest walk reports the match that ENDS first, which no filter recovers" {
+    // The definition, and the reason it needed a machine: leftmost-first picks a
+    // match by where it STARTS and then extends it by priority, so `a+` over
+    // "aaa" is the single span (0,3). Earliest picks by where a match ENDS, so
+    // the same text holds three: (0,1) (1,2) (2,3). Neither sequence is a subset
+    // of the other and no predicate over the first yields the second — the second
+    // has spans the first never reported.
+    //
+    // These are the answers `regex-automata`'s earliest search and
+    // `RE2::PartialMatch` give, derived here from what the pattern admits: `a+`
+    // accepts after one `a`, so an acceptance exists at every offset one past an
+    // `a`, and each is the earliest end from where the previous match left off.
+    var plus = try Pattern.compile(t.allocator, "a+");
+    defer plus.deinit();
+    try t.expect(plus.halts());
+
+    const loose = try under(t.allocator, &plus, "aaa", .{});
+    defer t.allocator.free(loose);
+    try t.expectEqualStrings("0:3 ", loose);
+
+    const soon = try under(t.allocator, &plus, "aaa", .{ .earliest = true });
+    defer t.allocator.free(soon);
+    try t.expectEqualStrings("0:1 1:2 2:3 ", soon);
+    try t.expectEqual(@as(?Span, .{ .start = 0, .end = 1 }), try plus.earliest("aaa"));
+
+    // A nullable pattern is the sharp version of the same fact: greedy leftmost
+    // takes the whole run, while the earliest acceptance is the empty match where
+    // the walk stands — before a byte is read. The zero-width advance rule is
+    // untouched, so the walk still steps one byte past each of them.
+    var star = try Pattern.compile(t.allocator, "a*");
+    defer star.deinit();
+    const greedy = try under(t.allocator, &star, "aa", .{});
+    defer t.allocator.free(greedy);
+    try t.expectEqualStrings("0:2 2:2 ", greedy);
+    const empty = try under(t.allocator, &star, "aa", .{ .earliest = true });
+    defer t.allocator.free(empty);
+    try t.expectEqualStrings("0:0 1:1 2:2 ", empty);
+}
+
+test "earliest is the earliest END, then the leftmost start reaching it" {
+    // The tie-break, and the case that separates earliest from "shortest". `ab|b`
+    // over "ab": the first acceptance anywhere is at offset 2, and TWO matches end
+    // there — (0,2) via `ab` and (1,2) via `b`. Earliest reports (0,2), because
+    // among the matches that end first the leftmost start wins; a shortest-match
+    // search would report (1,2), and a leftmost-first search over the whole text
+    // reports (0,2) for a different reason.
+    var p = try Pattern.compile(t.allocator, "ab|b");
+    defer p.deinit();
+    const got = try under(t.allocator, &p, "ab", .{ .earliest = true });
+    defer t.allocator.free(got);
+    try t.expectEqualStrings("0:2 ", got);
+
+    // And the start is genuinely searched for rather than assumed to be where the
+    // walk stands: `b+` from 0 over "aab" ends earliest at 3, and the span that
+    // reaches it starts at 2.
+    var run = try Pattern.compile(t.allocator, "b+");
+    defer run.deinit();
+    const late = try under(t.allocator, &run, "aab", .{ .earliest = true });
+    defer t.allocator.free(late);
+    try t.expectEqualStrings("2:3 ", late);
+}
+
+test "an earliest ask is refused, not relabelled, when nothing can halt" {
+    // Two compiles have no machine that can halt at an acceptance, both
+    // structurally (see `Matcher.halts`): a positional assertion, whose
+    // determinized states depend on the gap they were entered at, and the PCRE2
+    // arm, which has no inspectable program. Refusing is the only answer that is
+    // not the leftmost sequence under an earliest label.
+    var anchor = try Pattern.compile(t.allocator, "^a+");
+    defer anchor.deinit();
+    try t.expect(!anchor.halts());
+    try t.expectError(error.Unsupported, anchor.earliest("aaa"));
+    // The same pattern without the assertion is answerable, so the refusal is
+    // about the assertion rather than about the shape of the pattern.
+    var bare = try Pattern.compile(t.allocator, "a+");
+    defer bare.deinit();
+    try t.expect(bare.halts());
+
+    var pcre = Pattern.compileOpts(t.allocator, "a+", .{ .pcre = true }) catch |e| switch (e) {
+        error.BadPattern => return error.SkipZigTest, // a build without PCRE2
+        else => return e,
+    };
+    defer pcre.deinit();
+    try t.expect(!pcre.halts());
+    try t.expectError(error.Unsupported, pcre.earliest("aaa"));
+}
+
+test "the anchored sequence is identical whether or not a machine decided it" {
+    // The rewiring's whole claim: the halting machine changes what an anchored
+    // walk PAYS and nothing about what it reports. A pattern carrying an
+    // assertion has no machine, so it takes the leftmost-plus-filter path this
+    // lane inherited; an assertion-free one takes the machine. Both must agree
+    // with the definition — every match begins where the last ended, and the run
+    // stops at the first gap — so the two paths are held to one rule here.
+    const rows = [_]struct { pat: []const u8, hay: []const u8, want: []const u8 }{
+        .{ .pat = "a", .hay = "aaba", .want = "0:1 1:2 " },
+        .{ .pat = "a|b", .hay = "abxa", .want = "0:1 1:2 " },
+        .{ .pat = "\\w", .hay = "ab cd", .want = "0:1 1:2 " },
+        .{ .pat = "a+", .hay = "aaab", .want = "0:3 " },
+        .{ .pat = "x*", .hay = "ab", .want = "0:0 1:1 2:2 " },
+        .{ .pat = "b", .hay = "abc", .want = "" }, // nothing begins at 0
+    };
+    for (rows) |row| {
+        var p = try Pattern.compile(t.allocator, row.pat);
+        defer p.deinit();
+        try t.expect(p.halts()); // the machine path
+        const got = try under(t.allocator, &p, row.hay, .{ .anchored = true });
+        defer t.allocator.free(got);
+        try t.expectEqualStrings(row.want, got);
+
+        // The same walk with `\B?` welded on: a no-op on what matches (it is
+        // vacuously true wherever these patterns start) that makes the pattern
+        // assertion-bearing, so the probe declines and the inherited path answers.
+        const guarded = try std.fmt.allocPrint(t.allocator, "(?:\\B|\\b){s}", .{row.pat});
+        defer t.allocator.free(guarded);
+        var q = try Pattern.compile(t.allocator, guarded);
+        defer q.deinit();
+        try t.expect(!q.halts()); // the inherited leftmost-plus-filter path
+        const same = try under(t.allocator, &q, row.hay, .{ .anchored = true });
+        defer t.allocator.free(same);
+        try t.expectEqualStrings(row.want, same);
+    }
+}
+
+test "an anchored boolean decides without locating a span" {
+    // `isMatchAt` is `findAt` with the span dropped, except that the halting walk
+    // answers it outright — so the two must never disagree, including where the
+    // match is zero-width and where the window is bounded.
+    const rows = [_]struct { pat: []const u8, hay: []const u8, at: usize }{
+        .{ .pat = "b", .hay = "abc", .at = 0 },
+        .{ .pat = "b", .hay = "abc", .at = 1 },
+        .{ .pat = "a+", .hay = "aaa", .at = 3 },
+        .{ .pat = "x*", .hay = "ab", .at = 2 },
+        .{ .pat = "\\bfn", .hay = "a fn", .at = 2 },
+        .{ .pat = "c$", .hay = "abc", .at = 2 },
+    };
+    for (rows) |row| {
+        var p = try Pattern.compile(t.allocator, row.pat);
+        defer p.deinit();
+        const win: Window = .{ .hay = row.hay, .from = row.at, .to = row.hay.len };
+        try t.expectEqual((try p.findAt(win)) != null, try p.isMatchAt(win));
+    }
 }
 
 test "the pool reuses one scratch across many searches" {
@@ -257,6 +464,69 @@ test "the cheap verb and the expensive one never disagree, over a generated slat
     // The generator is not so hostile that nothing compiles, or the loop above
     // asserted nothing at all.
     try t.expect(compiled > 100);
+}
+
+test "the halting machine changed what anchored COSTS, not what it reports" {
+    // The rewiring's guarantee, held over a generated slate rather than a table
+    // of cases someone thought of. The inherited algorithm is written out here in
+    // full — leftmost, then discard unless it began where the search did — and it
+    // is the oracle: it is what this seam answered before a machine was wired in,
+    // so any divergence is a regression by definition rather than by taste.
+    //
+    // Generated because the interesting inputs are the ones nobody writes down:
+    // a nullable pattern under an anchor, a pattern whose leftmost match starts
+    // one byte late, an alternation whose branches disagree about where they
+    // begin. Deterministic PRNG, the file's own fuzz idiom.
+    const gpa = t.allocator;
+    const meta = "abc.*+?()[]^$|\\-\t \n";
+    const haystacks = [_][]const u8{ "", "abc", "a\nb", "aabbab", "aAbBcC 123", "the quick brown fox" };
+    var prng = std.Random.DefaultPrng.init(0x0F_1A_57);
+    const r = prng.random();
+    var pbuf: [12]u8 = undefined;
+    var machined: usize = 0;
+    var inherited: usize = 0;
+
+    for (0..1500) |_| {
+        const plen = r.uintLessThan(usize, pbuf.len + 1);
+        for (pbuf[0..plen]) |*c| c.* = meta[r.uintLessThan(usize, meta.len)];
+        var p = Pattern.compile(gpa, pbuf[0..plen]) catch continue;
+        defer p.deinit();
+        if (p.halts()) machined += 1 else inherited += 1;
+
+        for (haystacks) |hay| {
+            const win: Window = .{ .hay = hay, .from = 0, .to = hay.len };
+
+            // The oracle walk, inlined so nothing shared can drift with it.
+            var want: std.ArrayList(u8) = .empty;
+            defer want.deinit(gpa);
+            var at: usize = 0;
+            while (at <= hay.len) {
+                const got = (try p.findIn(.{ .hay = hay, .from = at, .to = hay.len })) orelse break;
+                if (got.start != at) break;
+                try want.print(gpa, "{d}:{d} ", .{ got.start, got.end });
+                at = if (got.start == got.end) got.end + 1 else got.end;
+            }
+
+            const got = try under(gpa, &p, hay, .{ .anchored = true });
+            defer gpa.free(got);
+            t.expectEqualStrings(want.items, got) catch |e| {
+                std.debug.print("anchored walk diverged from the inherited algorithm: pat={f} hay={f} halts={}\n", .{
+                    std.zig.fmtString(pbuf[0..plen]), std.zig.fmtString(hay), p.halts(),
+                });
+                return e;
+            };
+
+            // And the single find, which is the walk's first step by construction
+            // — asserted anyway, because "by construction" is a claim about code
+            // that a caller cannot check.
+            const first = try p.findAt(win);
+            try t.expectEqual(first != null, try p.isMatchAt(win));
+            if (first) |sp| try t.expect(sp.start == 0);
+        }
+    }
+    // Both paths were actually exercised — a slate that only ever took one of
+    // them would assert half of what this test claims.
+    try t.expect(machined > 100 and inherited > 100);
 }
 
 /// `walk`, for a pattern the caller does not otherwise need a handle to: the

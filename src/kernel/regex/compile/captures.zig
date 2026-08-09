@@ -14,6 +14,7 @@
 const std = @import("std");
 const syn = @import("../syntax/syntax.zig");
 const compile_mod = @import("compile.zig");
+const lower = @import("../linear/program/lower.zig");
 const word = @import("../syntax/word.zig");
 const ByteSet = syn.ByteSet;
 const Node = syn.Node;
@@ -96,6 +97,37 @@ pub const Caps = union(enum) {
         dotall: bool = false,
         word: bool = false,
         crlf: bool = false,
+
+        /// This selection as the linear lowerer's options — the ONE owner of the
+        /// mapping, because every derived analysis has to parse under exactly the
+        /// options the matcher was built under.
+        ///
+        /// That is not a tidiness argument. A cover or a literal set derived under
+        /// a different `caseless` or `line_anchors` than the engine can require a
+        /// trigram no real match contains, or promise a prefix no real match has —
+        /// and both fail as a MISSING result rather than a wrong one, which is the
+        /// failure mode nothing downstream can notice. It had already forked three
+        /// ways (`glean.Options.linear`, the literals plane, the sieve plane), each
+        /// copy correct on the day it was written and none of them coupled.
+        ///
+        /// `multiline` is forced rather than read. Down in `lower.zig` it does not
+        /// mean `^`; it is the statement *the haystack is a buffer rather than one
+        /// line*, and every `Selection` in existence is minted by
+        /// `glean.Options.selection` for a `Pattern`, which is handed whole buffers
+        /// by definition. `(?m)` is the separate question, so it rides
+        /// `line_anchors` and cannot be inherited by accident — a `Pattern`
+        /// compiled per-line finds NO matches for `\s+` over `"a\nb\n"`, not fewer.
+        pub fn lowerOptions(self: Selection) lower.Options {
+            return .{
+                .caseless = self.caseless,
+                .unicode = self.unicode,
+                .multiline = true,
+                .line_anchors = self.multiline,
+                .dotall = self.dotall,
+                .word = self.word,
+                .crlf = self.crlf,
+            };
+        }
     };
 
     /// Compile `pattern` into whichever arm it belongs to — the ecosystem's ONE

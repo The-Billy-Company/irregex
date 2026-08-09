@@ -224,6 +224,202 @@ test "ast/oracle: no fact over-claims against an independently recognized langua
     }
 }
 
+// ── the flank sets: exhaustiveness against the same oracle ───────────────────
+//
+// `flank.zig`'s claim is strictly stronger than a fact about one string: every
+// match must start with SOME member of the set, so the only honest way to hold
+// it is to enumerate a language and check every string in it. That is what the
+// recognizer above is for, and it is why these tests quantify over strings
+// rather than naming expected sets.
+
+const Side = enum { front, back };
+
+fn coveredBy(set: []const []const u8, s: []const u8, side: Side) bool {
+    for (set) |lit| {
+        const hit = switch (side) {
+            .front => std.mem.startsWith(u8, s, lit),
+            .back => std.mem.endsWith(u8, s, lit),
+        };
+        if (hit) return true;
+    }
+    return false;
+}
+
+const Flank = struct { node: *const Node, sets: ast.Flanks };
+
+fn checkFlanks(p: Flank, s: []const u8) !void {
+    if (!wholeMatch(p.node, s)) return;
+    if (p.sets.leading) |set| try std.testing.expect(coveredBy(set, s, .front));
+    if (p.sets.trailing) |set| try std.testing.expect(coveredBy(set, s, .back));
+}
+
+/// The claims that hold of an ANSWER regardless of the pattern: it is
+/// non-trivial, it is deduplicated, no member is made redundant by a shorter
+/// one, it fits the published cap, and it is never weaker than the single
+/// mandatory run it replaced at the seam.
+fn wellFormed(set: []const []const u8, run: []const u8, side: Side) !void {
+    try std.testing.expect(set.len > 0 and set.len <= ast.max_flank_members);
+    try std.testing.expect(ana.weakest(set) >= run.len);
+    for (set, 0..) |lit, i| {
+        // An empty member admits every position: exhaustive, and worthless.
+        try std.testing.expect(lit.len != 0);
+        for (set[i + 1 ..]) |other| try std.testing.expect(!std.mem.eql(u8, lit, other));
+        for (set) |other| {
+            if (other.len >= lit.len) continue;
+            const covers = switch (side) {
+                .front => std.mem.startsWith(u8, lit, other),
+                .back => std.mem.endsWith(u8, lit, other),
+            };
+            try std.testing.expect(!covers);
+        }
+    }
+}
+
+test "ast/oracle: every match begins and ends with a member of the flank sets" {
+    // The soundness property this analysis exists for, quantified over a whole
+    // enumerated language. Leading with the alternations, because a set is the
+    // only form in which those have a prefix answer at all.
+    const patterns = [_][]const u8{
+        "a|b",          "ab|ba",        "abc|abd",  "a(b|c)",      "(a|b)c",
+        "(a|b)(c|a)",   "(ab|a)c",      "a(b|bc)a", "(a|ab)(b|c)", "c(a|b){2}",
+        "a",            "ab",           "a+",       "a?b",         "ab*",
+        "a*b",          "(ab)+",        "(a|b)+",   "(a|b)*c",     "[ab]c",
+        "[ab][bc]",     "^ab",          "ab$",      "^a|^b",       "\\ba\\b",
+        "a{2}",         "a{2,3}",       "a{0,2}b",  "aa*a",        "a?a?a?",
+        "((ab)|(ba))c", "(a|b|c)(a|b)", ".a",       "a.",          "(a|)b",
+    };
+    var buf: [4]u8 = undefined;
+    for (patterns) |pat| {
+        var pr = try parse(pat);
+        defer pr.deinit();
+        // Both forms, because the analysis must be sound over whatever graph it
+        // is handed — the identities rewrite the very nodes it reads.
+        for ([_]bool{ false, true }) |canonical| {
+            var a = try ast.analyze(std.testing.allocator, pr.alloc(), pr.node, .{ .canonicalize = canonical });
+            defer a.deinit();
+            const sets = try a.flanks(pr.alloc());
+            const f = a.root();
+
+            // A nullable pattern matches the empty string, whose only prefix is
+            // the empty one — so an exhaustive set would have to hold "", and a
+            // set holding "" admits every position. Both sides withhold instead.
+            if (f.nullable) {
+                try std.testing.expect(sets.leading == null and sets.trailing == null);
+            }
+            if (sets.leading) |set| try wellFormed(set, f.lit.prefix, .front);
+            if (sets.trailing) |set| try wellFormed(set, f.lit.suffix, .back);
+
+            const probe: Flank = .{ .node = pr.node, .sets = sets };
+            eachString("abc", 4, &buf, 0, probe, checkFlanks) catch |e| {
+                std.debug.print("flank set unsound for `{s}` (canonicalize={})\n", .{ pat, canonical });
+                return e;
+            };
+        }
+    }
+}
+
+test "ast/flank: an alternation gets the set a single run could not hold" {
+    // The gap, and the reason the file exists: `LitInfo` carries one run per
+    // node and two branches share no common run, so the run form reports nothing
+    // where two anchored probes would have settled the question.
+    var pr = try parse("foo|bar");
+    defer pr.deinit();
+    var a = try analyzed(&pr);
+    defer a.deinit();
+
+    try std.testing.expectEqualStrings("", a.root().lit.prefix);
+    const sets = try a.flanks(pr.alloc());
+    try std.testing.expectEqualDeep(@as([]const []const u8, &.{ "foo", "bar" }), sets.leading.?);
+    try std.testing.expectEqualDeep(@as([]const []const u8, &.{ "foo", "bar" }), sets.trailing.?);
+}
+
+test "ast/flank: a redundant member is absorbed, not probed twice" {
+    // Anything starting with `foobar` starts with `foo`, so the longer member
+    // buys a host nothing and costs it a probe. Shortening and dropping-when-
+    // covered are the only two weakenings exhaustiveness survives.
+    var pr = try parse("foo|foobar");
+    defer pr.deinit();
+    var a = try analyzed(&pr);
+    defer a.deinit();
+    const sets = try a.flanks(pr.alloc());
+    try std.testing.expectEqualDeep(@as([]const []const u8, &.{"foo"}), sets.leading.?);
+    // The suffixes are genuinely different, so both survive.
+    try std.testing.expectEqual(@as(usize, 2), sets.trailing.?.len);
+}
+
+test "ast/flank: what cannot be enumerated is withheld, and the run still speaks" {
+    const cases = [_]struct { pat: []const u8, leading: ?[]const []const u8 }{
+        // An unbounded closure in front: the second operand's contribution has
+        // no known offset, so nothing about the start is provable.
+        .{ .pat = "a*function", .leading = null },
+        // Two enumerable classes cross into every string the pair can match.
+        .{ .pat = "[ab][cd]", .leading = &.{ "ac", "ad", "bc", "bd" } },
+        // 255 bytes wide: past the member cap with nothing weaker to fall back
+        // to, since the left operand's own set is the one that was refused.
+        .{ .pat = ".x", .leading = null },
+        // The mandatory run survives a declined cross and is handed back as a
+        // singleton, which is what keeps the set form no weaker than the run.
+        .{ .pat = "fo+", .leading = &.{"fo"} },
+        .{ .pat = "^func", .leading = &.{"func"} },
+    };
+    for (cases) |c| {
+        var pr = try parse(c.pat);
+        defer pr.deinit();
+        var a = try analyzed(&pr);
+        defer a.deinit();
+        const sets = try a.flanks(pr.alloc());
+        if (c.leading) |want| {
+            try std.testing.expectEqualDeep(want, sets.leading.?);
+        } else {
+            try std.testing.expect(sets.leading == null);
+        }
+    }
+
+    // Twenty-six squared is past the member cap, so the pair cannot be
+    // enumerated — and the LEFT class alone still opens every match, which is a
+    // weaker exhaustive claim and therefore still an answer. Degrading beats
+    // refusing, and both beat truncating a set that promised to be exhaustive.
+    var pr = try parse("[a-z][a-z]");
+    defer pr.deinit();
+    var a = try analyzed(&pr);
+    defer a.deinit();
+    const sets = try a.flanks(pr.alloc());
+    try std.testing.expectEqual(@as(usize, 26), sets.leading.?.len);
+    for (sets.leading.?) |lit| try std.testing.expectEqual(@as(usize, 1), lit.len);
+}
+
+test "ast/flank: a squared repetition keeps the run its members cannot reach" {
+    // A nested bound is a handful of nodes holding a sixteen-hundred-byte
+    // literal, and one member may not exceed `flank.max_bytes` — so the cross is
+    // declined partway up and the sharpening step hands back the run, which is
+    // strictly more selective than any member the cross did build.
+    var pr = try parse("(a{40}){40}");
+    defer pr.deinit();
+    var a = try analyzed(&pr);
+    defer a.deinit();
+    const sets = try a.flanks(pr.alloc());
+    try std.testing.expectEqual(@as(usize, 1600), a.root().lit.prefix.len);
+    try std.testing.expectEqual(@as(usize, 1), sets.leading.?.len);
+    try std.testing.expectEqualStrings(a.root().lit.prefix, sets.leading.?[0]);
+    try std.testing.expectEqualStrings(a.root().lit.suffix, sets.trailing.?[0]);
+}
+
+test "ast/flank: a non-ASCII class enumerates the bytes a match really consumes" {
+    // A `uclass` is what the engine lowers to UTF-8, so its members must be the
+    // encoded forms — a codepoint-valued set would have a host probing for bytes
+    // no haystack holds.
+    var pr = try parseU("[«»]x");
+    defer pr.deinit();
+    var a = try analyzed(&pr);
+    defer a.deinit();
+    const sets = try a.flanks(pr.alloc());
+    for (sets.leading.?) |lit| {
+        try std.testing.expect(std.unicode.utf8ValidateSlice(lit));
+        try std.testing.expectEqual(@as(usize, 3), lit.len); // 2-byte scalar + 'x'
+    }
+    try std.testing.expectEqual(@as(usize, 2), sets.leading.?.len);
+}
+
 // ── agreement: the facts against the walkers they replace ────────────────────
 
 test "ast/agreement: literal facts match analysis.literalInfo" {

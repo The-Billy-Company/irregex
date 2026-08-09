@@ -195,7 +195,11 @@ fn catLit(arena: std.mem.Allocator, x: analysis.LitInfo, y: analysis.LitInfo) Pa
 /// Concatenation that does not allocate to say what one side already says.
 /// Zero-width nodes and single-byte classes make an empty operand the common
 /// case, and the result is only ever read, never appended to.
-fn join(arena: std.mem.Allocator, a: []const u8, b: []const u8) ParseError![]const u8 {
+///
+/// Public because `flank.zig` joins the same literals over the same DAG, one
+/// member at a time instead of one run at a time, and two spellings of "append
+/// a literal without paying for an empty operand" would be the same code twice.
+pub fn join(arena: std.mem.Allocator, a: []const u8, b: []const u8) ParseError![]const u8 {
     if (a.len == 0) return b;
     if (b.len == 0) return a;
     return std.mem.concat(arena, u8, &.{ a, b });

@@ -49,6 +49,15 @@ pub const Reach = rewrite.Reach;
 /// question (see `Matcher.windows`).
 pub const BoundError = error{BoundUnsupported};
 
+/// A question this pattern's engine has no machine for. Raised by the earliest
+/// verbs alone, and only for a pattern whose compile has no halting walk behind
+/// it (`Pattern.halts`): the PCRE arm, or a program carrying a positional
+/// assertion. It is a fault rather than a declinature for the reason
+/// `BoundUnsupported` is — there is no slower tier that answers it, since a
+/// leftmost search does not compute an earliest match at any price — and refusing
+/// beats handing back the leftmost span under an earliest label.
+pub const EarliestError = error{Unsupported};
+
 /// What a pattern means. The six knobs a caller actually sets, mapped onto each
 /// backend's own option record.
 ///
@@ -93,22 +102,10 @@ pub const Options = struct {
     multiline: bool = false,
 
     /// The haystack is a buffer, always — see `multiline` above for why this is
-    /// not a knob.
-    const buffer_model = true;
-
+    /// not a knob, and `Caps.Selection.lowerOptions`, which forces it for every
+    /// reader rather than only for this one.
     fn linear(self: Options) lower.Options {
-        return .{
-            .caseless = self.caseless,
-            .unicode = self.unicode,
-            .multiline = buffer_model,
-            // Not inherited from `multiline` (whose `null` default would make
-            // it true): the buffer model is forced here, and letting `^` follow
-            // it would silently turn on `(?m)` for every caller.
-            .line_anchors = self.multiline,
-            .dotall = self.dotall,
-            .word = self.word,
-            .crlf = self.crlf,
-        };
+        return self.selection().lowerOptions();
     }
 
     /// `word` belongs here as much as in `linear()`. Neither backend takes it as
@@ -270,8 +267,92 @@ pub const Pattern = struct {
     /// backend cannot express a live bound — checked once, here, so `Cursor.next`
     /// never has to answer for it.
     pub fn matchesIn(self: *Pattern, win: Window) !Cursor {
+        return self.walk(win, .{});
+    }
+
+    /// The match that begins exactly at `win.from`, or null — the anchored
+    /// single find (`Cursor.Mode.anchored` for what "anchored" means here, and why
+    /// it is not `\A`).
+    ///
+    /// It is the first step of `matchesAt` rather than its own search, which is
+    /// the only way the two can be guaranteed to agree about where a run begins —
+    /// and it is where the halting walk earns its keep: the answer to "does
+    /// anything begin here" no longer costs a leftmost hunt across the positions
+    /// this verb was never allowed to report from.
+    pub fn findAt(self: *Pattern, win: Window) !?Span {
+        var cur = try self.matchesAt(win);
+        defer cur.deinit();
+        return cur.next();
+    }
+
+    /// Whether a match begins exactly at `win.from` — `findAt` with the span
+    /// dropped, except that it usually never extracts one.
+    ///
+    /// The halting walk answers this outright: an acceptance means a match begins
+    /// here, and a dead automaton means none does, so nothing has to be located to
+    /// decide it. Falls back to `findAt` for a pattern with no halting machine,
+    /// which is the same answer at the old price.
+    pub fn isMatchAt(self: *Pattern, win: Window) !bool {
         if (!win.unbounded() and !self.engine.windows()) return BoundError.BoundUnsupported;
-        return Cursor.init(&self.engine, try self.scratch.spans(&self.engine), win);
+        const loan = try self.scratch.probes(&self.engine);
+        defer loan.release();
+        return switch (loan.sim.onset(win, true)) {
+            .at => true,
+            .none => false,
+            .decline => (try self.findAt(win)) != null,
+        };
+    }
+
+    /// Every match inside `win`, each beginning where the previous one ended —
+    /// the contiguous walk a tokenizer wants, stopping at the first position
+    /// nothing starts at. See `Cursor.Mode.anchored`.
+    pub fn matchesAt(self: *Pattern, win: Window) !Cursor {
+        return self.walk(win, .{ .anchored = true });
+    }
+
+    /// The EARLIEST match in `hay` — the one that ends first, which is not the
+    /// leftmost one and cannot be filtered out of it. See `Cursor.Mode.earliest`.
+    pub fn earliest(self: *Pattern, hay: []const u8) !?Span {
+        return self.earliestIn(Window.whole(hay, 0));
+    }
+
+    /// The earliest match inside `win`. `Unsupported` when this pattern has no
+    /// halting machine (`halts`), because there is no leftmost answer to fall back
+    /// on that would still be an earliest one.
+    pub fn earliestIn(self: *Pattern, win: Window) !?Span {
+        var cur = try self.walk(win, .{ .earliest = true });
+        defer cur.deinit();
+        return cur.next();
+    }
+
+    /// Can this pattern be asked an earliest question at all? A static property of
+    /// the compile — a `Pattern` on the PCRE arm, or one carrying a positional
+    /// assertion, has no machine that can halt at an acceptance (see
+    /// `Matcher.halts`). Ask once after compiling rather than per search, exactly
+    /// as with `Matcher.windows`.
+    pub fn halts(self: *const Pattern) bool {
+        return self.engine.halts();
+    }
+
+    /// Every match inside `win` under `mode` — the one walk all three named
+    /// spellings above are, and the entry a caller holding request bits wants
+    /// rather than a switch over pairs of verbs.
+    ///
+    /// `BoundUnsupported` when the backend cannot express a live bound;
+    /// `Unsupported` when `mode.earliest` asks a pattern with no halting machine.
+    /// Both are checked once, here, so `Cursor.next` never has to answer for
+    /// either.
+    pub fn walk(self: *Pattern, win: Window, mode: Cursor.Mode) !Cursor {
+        if (!win.unbounded() and !self.engine.windows()) return BoundError.BoundUnsupported;
+        // Refused here rather than mid-walk, for the same reason a bound is: a
+        // cursor that cannot answer the question it was opened for should never
+        // exist, and `Cursor.next` has no channel to say so through.
+        if (mode.earliest and !self.halts()) return EarliestError.Unsupported;
+        // Borrowed only by a mode that asks it something. An ordinary walk never
+        // opens one, so the leftmost sequence keeps exactly the cost it had.
+        const probe: ?Pool.Probes = if (mode.anchored or mode.earliest) try self.scratch.probes(&self.engine) else null;
+        errdefer if (probe) |p| p.release();
+        return Cursor.init(&self.engine, try self.scratch.spans(&self.engine), win, mode, probe);
     }
 
     /// How many non-overlapping matches `hay` holds.

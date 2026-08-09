@@ -24,6 +24,11 @@ pub const Pattern = @import("pattern.zig").Pattern;
 pub const Options = @import("pattern.zig").Options;
 pub const BoundError = @import("pattern.zig").BoundError;
 
+/// What an earliest ask can fail with — a compile with no machine that can halt
+/// at an acceptance (`Pattern.halts`), which is refused rather than answered
+/// leftmost-first under an earliest label.
+pub const EarliestError = @import("pattern.zig").EarliestError;
+
 /// Borrowed per-search scratch, for a caller driving many patterns or many
 /// threads and wanting one shelf between them. A `Pattern` already owns one; you
 /// need this only when you are building the layer above.

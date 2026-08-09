@@ -45,7 +45,9 @@ waives the ceiling.
 
 - **`powerset.zig`** is the *eager* policy. It walks to fixpoint under the bounds, then hands the finished tables to [`../automata/freeze.zig`](../automata), which applies the layout passes only a complete automaton admits. The symbolic road hands over the same thing, so neither transcribes them.
 
-- **`lazy.zig`** is the *on-demand* policy: an immutable `Lazy` (classes, anchoring, its own start dwell) plus a per-thread mutable `Cache` that determinizes a state the first time a haystack walks into it, and quits to the Pike VM rather than thrash.
+- **`lazy.zig`** is the *on-demand* policy: an immutable `Lazy` (classes, anchoring, its own start dwell) plus a per-thread mutable `Cache` that determinizes a state the first time a haystack walks into it, and quits to the Pike VM rather than thrash. It also carries the **halting** walk — `Cache.onset`, which returns the first position something accepted at instead of a match, because an acceptance is a fact about the automaton and a match is a fact about priority.
+
+- **`onset.zig`** is the policy over that halting walk, and the answer to two questions the leftmost-first ladder cannot ask: *what ends first* (earliest) and *does a match begin exactly here* (anchored). Both need a determinized walk that stops at its first acceptance, and they need **different automata** for it — unanchored, whose re-seed makes the first acceptance the earliest end of any match; anchored, whose single seed makes it proof that a match began where the walk did. `subset.zig` built both from the day it was written; nothing above it could ask for the second. A `Probe` is per-thread scratch that builds each on the first ask that needs it and declines when the compile has no program to determinize.
 
 - **`dfa_test.zig`** carries DFA unit cases and differential fuzz against the Pike VM, plus the two tests that hold the mirror: cell-exactness against the classed tables, and `docMatch` fuzzed with the mirror present and then withheld.
 

@@ -36,6 +36,18 @@ pub const Policy = struct {
 
 pub const Decline = enum(u8) { none, unicode_word, memory_pressure, regeneration_costly, allocation_failure };
 
+/// Where a halting walk first accepted — the answer both request modes are made
+/// of, and the reason it is not spelled `?usize`: three outcomes, one of which
+/// an optional would have to overload.
+///
+/// `.at` is a match END and nothing more. A determinized walk is a recognizer,
+/// so it knows the position where *some* match finished, never which one — which
+/// is exactly why an earliest SPAN still costs a bounded leftmost pass behind
+/// this answer, and why the anchored ask, whose start is given, needs no pass at
+/// all. `.decline` is the memo quitting (this file's standing answer), never a
+/// statement about the haystack.
+pub const Onset = union(enum) { none, at: usize, decline };
+
 /// Copyable per-thread admission census.
 pub const Stats = struct {
     allocated_bytes: usize,
@@ -321,6 +333,56 @@ pub const Cache = struct {
             if (c.isMatch(s)) return true;
         }
         return false;
+    }
+
+    /// The FIRST position in `hay[from..to]` at which the automaton accepts.
+    ///
+    /// Every other entry here answers *whether* a haystack matches and is free
+    /// to run to the end deciding it. This one stops the instant the automaton
+    /// accepts, and that halt is the entire point: it is the only thing a
+    /// recognizer can say that a leftmost-first search cannot, and both request
+    /// modes are readings of it.
+    ///
+    /// **Which reading is `Lazy.anchored`'s to choose, not this body's.**
+    /// Unanchored, the start is re-seeded at every gap, so the state after
+    /// consuming `hay[from..i]` is "some match began at or after `from` and ended
+    /// at `i`" — the first acceptance is therefore the EARLIEST END any match in
+    /// the region has. Anchored, the seed is paid once and never renewed, so an
+    /// acceptance means a match BEGINS at `from`, and the dead state means none
+    /// ever will: the walk stops at `min(first accept, death)`, which is the work
+    /// an anchored ask previously did by searching leftmost across dead text and
+    /// discarding whatever it found.
+    ///
+    /// **Assertion-free programs only** — `onset.zig` is the sole caller and gates
+    /// on it. That is what licenses the two simplifications over `match`: there is
+    /// no word context to select a table on, and the `final` table (whose closure
+    /// resolves `$` at the text's end) is state-for-state the interior one, so
+    /// this walk never needs to know where the haystack ENDS. `to` is then a pure
+    /// ceiling rather than a moved edge, which is what `Window` promises and what
+    /// a shortened slice could not deliver.
+    pub fn onset(c: *Cache, hay: []const u8, from: usize, to: usize) Onset {
+        std.debug.assert(!c.lazy.word_ctx); // an assertion-free program has none
+        if (!c.prepare()) return .decline;
+        const cls = &c.lazy.cls.class;
+        const start = c.start_id;
+        // Null for the anchored automaton by construction (`dwell.ofStart`), so
+        // the skip below belongs to the re-seeding walk alone — where a byte that
+        // keeps the start state in itself provably begins no match.
+        const exits: ?*const prefilter.Prefilter = if (c.lazy.start_dwell) |*pf| pf else null;
+        var s = start;
+        if (c.isMatch(s)) return .{ .at = from }; // nullable: accepts before a byte is read
+        var i = from;
+        while (i < to) : (i += 1) {
+            if (s == start) if (exits) |pf| {
+                const j = pf.nextStart(hay[0..to], i) orelse return .none;
+                if (j >= to) return .none;
+                i = j;
+            };
+            s = c.next(s, cls[hay[i]], .interior) orelse return .decline;
+            if (c.isMatch(s)) return .{ .at = i + 1 };
+            if (c.lazy.anchored and c.isDead(s)) return .none; // no re-seed ⇒ nothing begins here
+        }
+        return .none;
     }
 
     /// Look-ahead table selection for ASCII word context; Unicode gaps quit.

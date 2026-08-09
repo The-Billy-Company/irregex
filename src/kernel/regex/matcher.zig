@@ -14,12 +14,21 @@
 //!
 //! The linear arm forwards verbatim to `Regex`, so the default path is
 //! byte-for-byte unchanged; the `pcre` arm forwards to `Pcre`. Callers build a
-//! `Matcher` from one compiled engine and thread its `Sim`/`SpanSim` scratch
-//! (whose tag always matches the matcher's) into the primitives.
+//! `Matcher` from one compiled engine and thread its `Sim`/`SpanSim`/`Probe`
+//! scratch (whose tag always matches the matcher's) into the primitives.
+//!
+//! **One entry here is not a span at all.** Every primitive above is
+//! leftmost-first, because that is what a match IS to every consumer of a span.
+//! `Probe.onset` is the halting question underneath them — *where does the first
+//! acceptance lie* — which the leftmost answer cannot be filtered into (see
+//! `linear/dfa/onset.zig`). It is the seam's only entry that reports a position
+//! rather than a match, and the only one whose declinature is about the compiled
+//! program rather than about the bound.
 
 const std = @import("std");
 const core = @import("linear/program/core.zig");
 const pcre2 = @import("pcre2/backend.zig");
+const onset_mod = @import("linear/dfa/onset.zig");
 
 pub const Regex = core.Regex;
 pub const Pcre = pcre2.Pcre;
@@ -44,6 +53,10 @@ pub const Matcher = union(Backend) {
     /// A bounded search's answer, with room for the one thing an optional can't
     /// say: that this engine cannot express the bound (see `matchWindow`).
     pub const Verdict = union(enum) { none, found: Span, decline };
+
+    /// A halting walk's answer: the first position something accepted at, or
+    /// nothing, or no machine here (see `Probe.onset`).
+    pub const Onset = onset_mod.Onset;
 
     pub fn deinit(self: *Matcher) void {
         switch (self.*) {
@@ -148,8 +161,72 @@ pub const Matcher = union(Backend) {
     /// Per-query span-extraction scratch (the `-o`/`--json`/`-w`/`--column` path).
     pub const SpanSim = Scratch(Regex.SpanSim, Pcre.SpanSim);
 
-    /// Both scratch grains are the same union shape over per-engine scratch
-    /// types; one comptime factory owns the init/deinit dispatch for each.
+    /// Per-query scratch for the HALTING walks — the third grain, and the only
+    /// one that is not a union over the two engines, because only one of them has
+    /// a program to determinize.
+    ///
+    /// It is scratch for the same reason the other two are: it owns a mutable
+    /// determinization memo that no two threads may share. It allocates nothing
+    /// until a mode actually asks something of it, so a `Pattern` that is never
+    /// asked an anchored or earliest question pays only this struct.
+    pub const Probe = struct {
+        inner: onset_mod.Probe,
+
+        pub fn init(allocator: std.mem.Allocator, m: *const Matcher) !Probe {
+            return .{ .inner = onset_mod.Probe.init(allocator, haltable(m)) };
+        }
+
+        pub fn deinit(self: *Probe) void {
+            self.inner.deinit();
+        }
+
+        /// The first position inside `w` at which a match ENDS — or, `anchored`,
+        /// the first at which a match that BEGAN at `w.from` ends, with `.none`
+        /// meaning none ever does.
+        ///
+        /// This is the entry the two request modes reach, and what each of them
+        /// does with the answer is the caller's (see `glean/cursor.zig`): an
+        /// anchored ask needs only which of the three arms it is, an earliest span
+        /// needs one bounded leftmost pass under the position, and an ask that is
+        /// both is answered outright.
+        ///
+        /// `w.to` is clamped to the haystack here rather than asserted, because a
+        /// `Window`'s bound is documented as inert past the end and every span
+        /// entry already treats it that way.
+        pub fn onset(self: *Probe, w: Window, anchored: bool) Onset {
+            return self.inner.onset(w.hay, w.from, @min(w.to, w.hay.len), anchored);
+        }
+    };
+
+    /// Does a halting walk exist for this pattern? A static property of the
+    /// compile, so a caller asks once — and the one capability an earliest span
+    /// has no fallback for.
+    pub fn halts(self: *const Matcher) bool {
+        return haltable(self) != null;
+    }
+
+    /// The program a halting walk may determinize, or null.
+    ///
+    /// Two refusals, both structural. **PCRE2** has no inspectable program at all
+    /// — its own match is a backtracking search whose earliest form is not
+    /// exposed. **A positional assertion** (`^ $ \A \z \b \B`) makes a
+    /// determinized state's meaning depend on the gap it was entered at, and a
+    /// halting walk that starts partway into a buffer cannot fix those gaps: its
+    /// start closure would have to know the word-ness of the byte before `from`
+    /// and whether `from` is a line head, neither of which the automaton's own
+    /// start state carries. `assert_free` is exactly the class where a walk's
+    /// answer depends on the bytes it consumed and nothing else — which is also
+    /// the class the buffer-model DFA tier already serves, so nothing is being
+    /// narrowed here that the engine served before.
+    fn haltable(m: *const Matcher) ?onset_mod.Probe.Program {
+        if (m.* != .linear) return null;
+        const re = &m.linear;
+        if (!re.assert_free) return null;
+        return .{ .states = re.states, .start = re.start };
+    }
+
+    /// Both boolean/span scratch grains are the same union shape over per-engine
+    /// scratch types; one comptime factory owns the init/deinit dispatch for each.
     fn Scratch(comptime L: type, comptime P: type) type {
         return union(Backend) {
             linear: L,

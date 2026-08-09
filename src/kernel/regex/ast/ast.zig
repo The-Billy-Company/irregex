@@ -25,6 +25,10 @@
 //!     synthesized attribute at once — id order is topological by construction,
 //!     so a bottom-up analysis is a `for` loop with no recursion, no visited
 //!     set, and exactly one visit per distinct node.
+//!   * [`flank.zig`](flank.zig) sweeps it again for the one attribute a scalar
+//!     accumulator cannot hold: the exhaustive prefix and suffix SETS, where
+//!     `facts` proves a single run per side. Separate because it allocates per
+//!     node and only the literal plane asks for it — `Ast.flanks` is the door.
 //!
 //! This is an ANALYSIS structure. `compile/` still lowers the parser's own tree,
 //! because the interning re-associates and only the parser's bracketing decides
@@ -39,6 +43,7 @@ const analysis = @import("../analysis/analysis.zig");
 const intern_mod = @import("intern.zig");
 const facts_mod = @import("facts.zig");
 const algebra_mod = @import("algebra.zig");
+const flank_mod = @import("flank.zig");
 
 pub const Id = dagmod.Id;
 pub const Stats = dagmod.Stats;
@@ -48,6 +53,8 @@ pub const Interned = intern_mod.Interned;
 pub const intern = intern_mod.intern;
 pub const Facts = facts_mod.Facts;
 pub const unbounded = facts_mod.unbounded;
+pub const Flanks = flank_mod.Flanks;
+pub const max_flank_members = flank_mod.max_members;
 
 /// How much work to spend before the sweep.
 pub const Options = struct {
@@ -155,6 +162,31 @@ pub const Ast = struct {
             slot.* = if (best.len > 0) try arena.dupe([]const u8, &.{best}) else nested;
         }
         return memo[self.interned.root.index()];
+    }
+
+    /// The literal SETS every match must begin and end with, or `null` per side
+    /// where neither is provable — `facts.lit.prefix`/`.suffix` widened from one
+    /// run to an exhaustive set, which is the form an anchored probe needs and
+    /// the form `foo|bar` has an answer in at all.
+    ///
+    /// Exhaustive means every match starts (ends) with SOME member, so a host may
+    /// run one anchored probe per member and conclude nothing matched when all of
+    /// them miss. It does NOT mean match-equivalence — a member's presence still
+    /// proves nothing, exactly as the run form's did. `flank.zig` holds the
+    /// algebra and the proof; this is the barrel's door to it.
+    ///
+    /// Never weaker than the run: each side is `flank.sharpen`ed against the
+    /// sweep's own mandatory run, so a shape where the set analysis declines (or
+    /// caps) still answers with what `lit` proved.
+    ///
+    /// `arena` owns the returned slices and every byte reachable from them.
+    pub fn flanks(self: *const Ast, arena: std.mem.Allocator) syn.ParseError!Flanks {
+        const found = try flank_mod.flanks(arena, &self.interned.graph, self.interned.root);
+        const lit = self.root().lit;
+        return .{
+            .leading = try flank_mod.sharpen(arena, found.leading, lit.prefix),
+            .trailing = try flank_mod.sharpen(arena, found.trailing, lit.suffix),
+        };
     }
 };
 
