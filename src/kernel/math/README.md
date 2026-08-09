@@ -450,9 +450,9 @@ name is an error, not a wrapped index.
  `n log n` engine, and the "process the smaller half" argument that is the whole
  reason it is not quadratic.
  - [Valmari & Lehtinen, *Efficient Minimization of DFAs with Partial
- Transition Functions*](https://doi.org/10.4230/LIPIcs.STACS.2008.1328) (STACS
- 2008) – the refinable-partition structure `refine` uses, where splitting costs
- what moved rather than what the block held, and the partial-transition
+ Transition Functions*](https://doi.org/10.4230/LIPIcs.STACS.2008.1328)
+ (STACS 2008) – the refinable-partition structure `refine` uses, where splitting
+ costs what moved rather than what the block held, and the partial-transition
  treatment the implicit sink is.
  - [van Noord & Gerdemann, *Finite State Transducers with Predicates and
  Identities*](https://doi.org/10.1023/A:1011491702637) (Grammars 4(3), 2001) –

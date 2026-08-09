@@ -10,8 +10,8 @@ against 2 bits, three orders of magnitude, plus a pointer chase per hop.
 
 The whole file rests on one observation: a parenthesis string is a ±1 walk, and
 the excess after k parens is `2·rank1(k) - k`, which `rrr.Plain` already
-answers in O(1). Every tree question is then the same question about that walk
-- "the nearest position, forward or back, holding this target excess". The
+answers in O(1). Every tree question is then the same question about that
+walk - "the nearest position, forward or back, holding this target excess". The
 matching close is the next position at the same excess; the parent is the
 previous position one below; the LCA of a and b is the previous position one
 below the minimum excess over `[a, b]`. So there is one primitive in two
@@ -23,9 +23,9 @@ Making that walk sublinear is the range min-max tree (Sadakane & Navarro, SODA
 2010): a segment tree over 512-bit blocks storing the min and max excess each
 block reaches. A block whose `[min, max]` excludes the target cannot contain it
 and is skipped whole; a block that might contain it is scanned a byte at a time
-through a 256-entry table of per-byte (sum, min, max). That is O(b/8 + log(n/b))
-- about 64 table lookups worst case plus a shallow descent - against the O(n)
-a naive rescan of the bit string costs. `rank`/`excess`/`depth`/`preorder` stay
+through a 256-entry table of per-byte (sum, min, max). That is
+O(b/8 + log(n/b)) - about 64 table lookups worst case plus a shallow descent -
+against the O(n) a naive rescan of the bit string costs. `rank`/`excess`/`depth`/`preorder` stay
 O(1) on the rank sample; `select` is O(log n) by binary search over it.
 
 Measured on random shapes from 1e3 to 1e7 nodes (M-series, ReleaseFast, 1e6
