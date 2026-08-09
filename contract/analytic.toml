@@ -152,7 +152,7 @@ fields = [
 
 [row_schemas.concept]
 id = 7
-detail = "one repeated concept — `relate concepts`: a group of regions that say the same thing"
+detail = "one repeated concept — `relate echoes --as shapes --shape families --unit function`: a group of regions that say the same thing"
 fields = [
   { name = "members", type = "rows:region" },
   { name = "repeated_lines", type = "i64" },
