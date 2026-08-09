@@ -101,13 +101,13 @@ No argv, no walk, no emit. Import arrows only point down the ward page.
   `regex/glean/`; sealed through `regex.zig`. Ambition: beat rust-regex.
 - [`query/`](kernel/query) is the shared compiled query every transport
   compiles through.
-- [`rank/`](kernel/rank) fuses results and derives per-language definition
-  signals (`gist --rank`).
+- [`rank/`](kernel/rank) fuses results and derives cross-language definition
+  signals (`gist --rank`, and the signals relate and blast read too).
 - [`slate/`](kernel/slate) runs many patterns in one walk: `patterns` ·
   `muster` · `trawl` · `loom`.
-- [`anatomy/`](kernel/anatomy) is source anatomy: comment spans, identifier
-  tokens, structural leans — the last resident of this tier after its unit
-  anatomy moved to `relate`.
+- [`anatomy/`](kernel/anatomy) is source anatomy: the parser-free comment/code/
+  string span lexer and the line index — what stayed after the unit anatomy
+  and its tokens, spans and leans moved to `relate`.
 - `relate/src/kernel/kinship/` is compression-as-similarity: `metric/` ·
   `cluster/` · `recall/`.
 - `relate/src/kernel/codex/` is the Ziv–Merhav cento quoter over this

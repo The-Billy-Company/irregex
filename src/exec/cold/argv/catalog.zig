@@ -3,7 +3,7 @@
 //! `flag_catalog` is a table, not code: one row per flag, naming its spellings,
 //! its parse effect, and its compatibility claim. Two consumers read it and
 //! neither may disagree with the other — `grammar.zig` builds the short/long
-//! dispatch maps from it, and `face/gist/schema/` renders `gist --schema` from
+//! dispatch maps from it, and gist's `verbs/schema.zig` renders `gist --schema` from
 //! it. A flag cannot therefore be accepted by the parser while the machine-
 //! readable manifest calls it unsupported, or vice versa; that drift used to be
 //! a prose-versus-behavior bug waiting to happen.

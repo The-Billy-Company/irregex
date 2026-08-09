@@ -23,13 +23,13 @@ carries its own `charter.zone`.
   sealed through `regex.zig`. Ambition: beat rust-regex.
 - [`query/`](query) is the shared compiled query every transport compiles
   through.
-- [`rank/`](rank) fuses results and derives per-language definition signals
-  (`gist --rank`).
+- [`rank/`](rank) fuses results and derives cross-language definition signals
+  (`gist --rank`, and the signals relate and blast read too).
 - [`slate/`](slate) runs many patterns in one walk — `patterns` · `muster`
   · `trawl` · `loom`.
-- [`anatomy/`](anatomy) is source anatomy: comment spans, identifier
-  tokens, structural leans — the last resident of this tier after its unit
-  anatomy (functions, regions) moved to `relate`.
+- [`anatomy/`](anatomy) is source anatomy: the parser-free comment/code/string
+  span lexer and the line index — what stayed after the unit anatomy
+  (functions, regions) and its tokens, spans and leans moved to `relate`.
 - `relate/src/kernel/kinship/` is compression-as-similarity: `metric/` ·
   `cluster/` · `recall/`.
 - `relate/src/kernel/codex/` is the Ziv–Merhav cento quoter over this

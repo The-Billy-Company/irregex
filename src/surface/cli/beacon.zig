@@ -650,7 +650,7 @@ pub fn tears(shown: []const u8) bool {
 // ─────────────────────── the row-shaped faces' one call ───────────────────────
 //
 // gist's emitter builds a `Waypoint` per file and reuses it across thousands of
-// matching lines. relate and irregex print tens of rows, each naming a
+// matching lines. relate and blast print tens of rows, each naming a
 // different file, so they take the direct route below: one frame per row, no
 // memo, and a plain borrow of the caller's bytes when the run emits no links.
 

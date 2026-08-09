@@ -89,7 +89,7 @@ const emitStats = stats.emitStats;
 // rg's canonical file order to `quarry/order.zig`, fd 0 to `quarry/stream.zig`,
 // the pattern-derived gates to `writ/`, and per-file rendering to
 // `emit/render.zig`. What stays here is the invocation state machine — plus the
-// names this path publishes, since it is the tier's face (`gist.commands.search`)
+// names this path publishes, since it is the tier's face (`irregex.engine.search`)
 // and callers import through it: `resident.zig` and the FFI open path reach the
 // walk selector this way, the warm session orders its FFI match stream by
 // `pathLess`, and the daemon client probes fd 0 with `readableStdin` to decide

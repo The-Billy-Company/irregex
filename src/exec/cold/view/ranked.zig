@@ -2,7 +2,7 @@
 //! ripgrep can't express.
 //!
 //! `gist <pattern>` (and `gist rg`) answer WHERE a pattern appears, ripgrep-
-//! identically (`run.zig`). `--rank` answers WHICH of those hits matters most:
+//! identically (the `engine/` tier). `--rank` answers WHICH of those hits matters most:
 //! over the bytes the caller's walk already gathered it extracts a few per-file
 //! ranking features, fuses them with the weighted RRF kernel in `rank/rank.zig`,
 //! and prints the top-K as `path:line [kind] ×count line` — a symbol's
@@ -42,7 +42,7 @@ pub const LiveFile = struct { path: []const u8, bytes: []const u8 };
 /// gathered set — a `Doc` cannot exist for a file this slice does not hold.
 const Source = []const LiveFile;
 
-/// Slash COUNT (not walker depth — `run.zig`'s `pathDepth` is slashes+1):
+/// Slash COUNT (not walker depth — the walker's own depth is slashes+1):
 /// a shallow-path prior for the ranked view, u16 to pack the score row.
 fn pathDepth(path: []const u8) u16 {
     var d: u16 = 0;

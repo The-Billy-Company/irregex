@@ -27,7 +27,7 @@
 //!
 //!   * hash-TABLE keys and the ranking view's mirror fingerprint —
 //!     `std.hash.Wyhash` in the path→doc lookups, the DFA state-set maps, and
-//!     `kernel/rank/mirror.zig`. Each wants speed, is never persisted, and
+//!     `kernel/rank/replica.zig`. Each wants speed, is never persisted, and
 //!     survives a collision by construction: a slot re-probes and compares the
 //!     key, and a mirror claim is guarded by an exact length compare and only
 //!     ever reorders an answer it cannot change.

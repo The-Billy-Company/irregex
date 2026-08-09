@@ -1,8 +1,8 @@
 //! assay/brand — the program identity this engine answers as.
 //!
 //! This kernel is embeddable, and more than one program already rides it:
-//! `gist`, `relate`, and `irregex` are three binaries over one library, and an
-//! embedder may stand a fourth up under its own name. Three facts separate a
+//! `gist`, `relate`, and `blast` are three binaries in three sibling repos over
+//! this one library, and an embedder may stand a fourth up under its own name. Three facts separate a
 //! program from the engine inside it — the name that opens a diagnostic line,
 //! the namespace its environment knobs live in, and the directory its artifacts
 //! are written to — and every one of them used to be the literal string `gist`,

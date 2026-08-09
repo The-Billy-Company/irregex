@@ -1,6 +1,6 @@
 //! gist `rg` — the match + presentation layer (split from `run.zig`).
 //!
-//! `run.zig` owns the walk (gather files, apply type/glob scope, stdin); this
+//! `quarry/walk.zig` owns the walk (gather files, apply type/glob scope, stdin); this
 //! module owns everything downstream of "here is one file's bytes". It is the
 //! **facade** over the `output/` folder: the `Emitter` struct — the per-file
 //! state every rg output mode shares (match base, body end, literal gate,

@@ -35,7 +35,7 @@ Deliberately **not sealed** — three peer entry points, not one deep module.
   concatenation of the whole corpus, and assembling it in memory just to seal
   it would have cost the build a second copy of every file it had just read.
 
-Consumers are the shelf (`../shelf/`), the atlas, the frag, phantom, content,
+Consumers are the shelf (`../shelf/`), relate's atlas and frag, phantom, content,
 and the trigram pair loader. Magic bytes and versions stay per-format;
 integrity does not — every artifact seals with sibling `signet.zig`.
 

@@ -10,7 +10,7 @@ walk, in what shape, and how to stream the result.
 - **`serial.zig`** is the certified rg-compat control plane and the tier's
   public face — mode dispatch, walk/read fallbacks, stdin / JSON / stats
   branches, exit semantics, and the re-exports callers still import
-  through. Re-exported as `gist.commands.search`.
+  through. Re-exported as `irregex.engine.search`.
 - **[`swarm/`](swarm)** is the fused work-stealing walk+read+match, taken
   when the flag set allows; ineligible combinations fall through to serial
   unchanged. Seven modules behind two functions (`eligible`, `run`).

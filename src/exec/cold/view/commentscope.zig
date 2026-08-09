@@ -6,7 +6,7 @@
 //! comment awareness and their byte-parity certificate stands untouched.
 //!
 //! Mechanism: reuse the already-compiled `Matcher` and the shared span lexer
-//! (`kernel/compose/lexspan.zig`). For each file, `commentMask` maps which bytes
+//! (`kernel/anatomy/lexspan.zig`). For each file, `commentMask` maps which bytes
 //! fall inside a comment; each line's first qualifying match span is classified
 //! by that mask — `--in-comments` keeps spans that begin inside a comment,
 //! `--in-code` keeps spans outside every comment. The exact engine still

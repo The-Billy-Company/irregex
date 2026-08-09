@@ -26,7 +26,7 @@
 //!                       precedence rule that can only settle after argv ends
 //!   * [`verdict.zig`](verdict.zig)     — what a flag's value may be, and the exit-2
 //!                       it earns when it isn't that
-//!   * [`answer.zig`](answer.zig)       — the `Mode` a run resolves to and its
+//!   * [`shape.zig`](shape.zig)        — the `Mode` a run resolves to and its
 //!                       last-wins precedence over the presentation flags
 //!   * [`preference.zig`](preference.zig) — personal preferences (machine-local,
 //!                       TTY-gated, catalog-validated)
@@ -65,7 +65,7 @@ const oom = @import("../../../surface/cli/outcome.zig").oom;
 /// no-match hint reasons about smart-case exactly as the parser did.
 pub const hasUpper = verdict.hasUpper;
 
-// The declarative flag contract `face/gist/schema/` renders into `--schema`.
+// The declarative flag contract gist's `verbs/schema.zig` renders into `--schema`.
 pub const Compatibility = catalog.Compatibility;
 pub const FlagSpec = catalog.FlagSpec;
 pub const flag_catalog = catalog.flag_catalog;

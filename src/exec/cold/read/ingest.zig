@@ -37,7 +37,7 @@ const assay = @import("../../../assay/assay.zig");
 const flate = std.compress.flate;
 const zstd = std.compress.zstd;
 const xz = std.compress.xz;
-/// The transform configuration for one run, assembled once by `run.zig` from the
+/// The transform configuration for one run, assembled once by `engine/serial.zig` from the
 /// parsed `Opts` (plus the shared preprocessor-failure latch and the `io` handle
 /// the external subprocess path needs). Copyable by value — every field is a
 /// slice, scalar, or the small `io` vtable pair.

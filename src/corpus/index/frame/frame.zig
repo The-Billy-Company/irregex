@@ -9,7 +9,7 @@
 //! `ownedNulTable` to read), the shared `onDisk` deletion gate every folded
 //! view checks at emit, the shared `loadQuiet` fail-open artifact loader, and
 //! the `tree.root` binding that says which tree the whole directory describes.
-//! Consumers: the codex shelf (`../shelf/`), the kinship atlas (`../atlas/`),
+//! Consumers: the codex shelf (`../shelf/`), relate's kinship atlas,
 //! and the trigram pair loader (`../trigrams/persist.zig`). Framing only —
 //! magic bytes and versions stay with each format, where its own shape is
 //! described. Integrity does NOT: every artifact here seals with the one

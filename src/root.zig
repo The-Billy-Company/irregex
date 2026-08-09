@@ -35,7 +35,7 @@
 //!   corpus/   — the body of text + persisted forms: tree/ · scope/ · read/ ·
 //!               fresh/ · index/ (trigrams · postings · crest · shelf · …)
 //!   exec/     — transports: cold/ (argv in, bytes out) · session/ (the warm
-//!               resident daemon)
+//!               resident core the daemon calls into; the daemon itself is gist's)
 //!   surface/  — cli/ (shared primer vocabulary) · ffi/ (the `libirgx` root)
 //!
 //! The product faces live in the sibling packages, not here: `gist` (indexed
@@ -272,9 +272,10 @@ pub const engine = struct {
     pub const search = @import("exec/cold/engine/serial.zig");
 };
 
-// ── resident search session: the warm in-memory engine +
-// its Unix-socket transport, sharing the kernels above but returning errors
-// instead of `die()`ing so a bad request can't take down the daemon. ──
+// ── resident search session: the warm in-memory engine the daemon serves from
+// — its sockets, spawn and serve loop are gist's — sharing the kernels above but
+// returning errors instead of `die()`ing so a bad request can't take down the
+// daemon that hosts it. ──
 pub const session = struct {
     pub const resident = @import("exec/session/warm/resident.zig");
     pub const corpus = @import("exec/session/warm/mirror.zig");

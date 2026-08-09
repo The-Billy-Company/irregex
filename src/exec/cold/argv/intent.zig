@@ -25,7 +25,7 @@ const encoding = @import("../../../corpus/read/encoding.zig");
 const emit_color = @import("../emit/color.zig");
 const verdict = @import("verdict.zig");
 
-/// The resolved answer shape — see `answer.zig`. Re-exported so `Opts.mode`
+/// The resolved answer shape — see `shape.zig`. Re-exported so `Opts.mode`
 /// and the flag surface stay readable from one import.
 pub const Mode = answer.Mode;
 
@@ -167,11 +167,11 @@ pub const Filter = struct {
 /// `default` is gist's linear-time RE2/Pike engine — no backtracking, no
 /// lookaround/backreferences, safe over an adversarial tree. `pcre2` is the
 /// opt-in vendored PCRE2 JIT backend (`kernel/regex/pcre2/backend.zig`) for the constructs
-/// the linear engine can't express. `auto` is ripgrep's hybrid: `run.zig` compiles
+/// the linear engine can't express. `auto` is ripgrep's hybrid: `writ/arm.zig` compiles
 /// the linear engine first (its speed + trigram AST) and only escalates to PCRE2
 /// for a pattern the linear engine declines (lookaround / backreferences). Both
-/// backends are live and trigram-prefiltered; the choice is resolved and executed
-/// in `run.zig`.
+/// backends are live and trigram-prefiltered; the choice is resolved in
+/// `writ/arm.zig` and executed by the engine tier.
 pub const Engine = enum { default, pcre2, auto };
 
 /// `--sort`/`--sortr`/`--sort-files` ordering key. `none` (the default) leaves
@@ -223,7 +223,7 @@ pub const Opts = struct {
     // `--files`, `--type-list`, or the default). Every mode flag resolves
     // through `answer.Mode.update`, so precedence is that enum's law and this
     // is the whole representation — there is no state in which two modes are
-    // both chosen, because there is one field. See `answer.zig`.
+    // both chosen, because there is one field. See `shape.zig`.
     mode: Mode = .standard,
     // --include-zero / --no-include-zero (rg default OFF, last-wins): in a count
     // mode, emit a `path:0` line for every searched file with no match instead of
@@ -250,7 +250,7 @@ pub const Opts = struct {
     max_cols: usize = 0,
     // Was --max-columns/-M given on the argv? Distinguishes an explicit `-M0`
     // (opt out of any cap) from the unset default, so the TTY-only long-line
-    // guard (`run.zig`) applies only when the user expressed no preference.
+    // guard (the emit tier) applies only when the user expressed no preference.
     max_cols_set: bool = false,
     max_cols_preview: bool = false, // --max-columns-preview
     passthru: bool = false, // --passthru (print every line)
@@ -280,7 +280,7 @@ pub const Opts = struct {
     // Match-backend selection (-P/--pcre2, --engine, --auto-hybrid-regex).
     // `default` = the linear RE2/Pike engine; `pcre2` routes to the vendored
     // PCRE2 JIT backend; `auto` compiles linear and escalates to PCRE2 only for a
-    // pattern the linear engine declines (run.zig resolves + executes the choice).
+    // pattern the linear engine declines (`writ/arm.zig` resolves the choice).
     engine: Engine = .default,
     pcre_unicode: bool = true, // --pcre2-unicode / --no-pcre2-unicode (PCRE2 Unicode mode)
     replace: ?[]const u8 = null, // -r/--replace
@@ -359,7 +359,7 @@ pub const Opts = struct {
     // (what the bench harness sets to keep rg byte-parity exact).
     uncap: bool = false,
     // --in-comments / --in-code: gist-native match SCOPING built on the shared
-    // comment/code span lexer (kernel/compose/lexspan.zig). `--in-comments`
+    // comment/code span lexer (kernel/anatomy/lexspan.zig). `--in-comments`
     // keeps only matches whose span begins inside a `//`/`#`/`/* */` comment
     // (doc mentions, TODOs, stale-invariant surface); `--in-code` keeps only
     // matches OUTSIDE any comment. Mutually exclusive. They select an early
