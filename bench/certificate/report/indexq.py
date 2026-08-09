@@ -417,7 +417,8 @@ def render(
     return "\n".join(lines) + "\n", failures
 
 
-#: The layer's receipt in `bench/certify/artifact/`, for the roster in layers.py.
+#: The layer's receipt in `bench/certificate/artifact/`, for the roster in
+#: `guard/charter.py`.
 SIDECAR = "indexq.csv"
 
 

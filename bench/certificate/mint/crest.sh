@@ -43,7 +43,7 @@ die() {
 }
 note() { echo "certify_crest: $*"; }
 
-[[ -s "${CERT}" ]] || die "missing ${CERT} — run Layer A first (bench/certify/certify.sh)"
+[[ -s "${CERT}" ]] || die "missing ${CERT} — run Layer A first (\`zig build certify\` in the gist package, which mints it)"
 
 # The standalone proof owns its complete raw evidence package under
 # .local/crest-evidence; copy the aggregate into the certificate bundle.
@@ -70,7 +70,7 @@ python3 "${HERE}/../report/crest.py" \
   --csv "${CREST_CSV}" \
   --machine "${machine}" \
   --zig "${zig}" \
-  || die "certify_crest_report.py failed"
+  || die "Layer E splice failed"
 
 grep -qF "## Layer E — crest sieve" "${CERT}" || die "Layer E section missing after splice"
 note "Layer E (crest sieve) spliced into ${CERT}"
