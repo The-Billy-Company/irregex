@@ -99,6 +99,41 @@ ride `rrr.Plain` at all. That is a separate structure, not a flag on this one.
   version (Navarro & Sadakane, ACM TALG 10(3), 2014) adds the dynamic variant
   we did not build; §5 of it is the reference if someone picks that up.
 
+## How it is proven
+
+Each structure gets a standalone `_test.zig` independent of the FM-index that
+composes them — `codex_test.zig` exercises all three together at index scale,
+but a bug confined to one seam should fail here first, closer to its cause:
+
+- **`sais_test.zig`** – the seam this package actually owns (libsais' sort has
+  its own upstream proof): the sentinel invariant (`sa[0] == text.len`, and
+  `sa[1..]` a permutation of `[0, text.len)`) on adversarial small texts, the
+  `Oversized` guard firing before any allocation past `max_text_len`, and a
+  from-scratch comparison-sort oracle independent of `codex_test.zig`'s own.
+- **`rrr_test.zig`** – `Plain`, `Rrr`, and the `Bits` seam between them,
+  differential-tested against a naive prefix-popcount oracle across a bit-
+  pattern battery (all-zero, all-one, alternating, uniform random, BWT-shaped
+  runs, near-extreme-class scatter) swept across the block/superblock
+  boundary; `fromWords`/`fromParts` persistence round-trips reload byte-
+  identical answers from a duplicated buffer; and both reject a truncated or
+  padded stream, and a stored popcount exceeding its block's own bit width,
+  before `rank`/`get` can read past the data.
+- **`wavelet_test.zig`** – `Huff.build` checked against a from-scratch
+  priority-queue Huffman oracle for total coded length, then the produced
+  table checked to be genuinely prefix-free and Kraft-complete rather than
+  merely cheap; `fromLengths` round-tripped byte-for-byte against every
+  `Huff.build` case and separately fed the corrupt length tables the Kraft
+  check exists to catch. `Tree` is differential-tested against a literal
+  per-symbol scan across alphabet sizes, both `Encoding`s, and a sequence long
+  enough to force the root level's sharded `weave` path
+  (`parallel.build_min_bytes`).
+- **`parens_test.zig`** – every navigation op (`findClose`/`findOpen`/
+  `enclose`/`lca`/`depth`/subtree size) against a naive O(n) stack walk that
+  knows nothing about excess, blocks, or the min-max tree, over shapes chosen
+  for what that tree can get wrong: sub-block sequences, multi-block spans, a
+  deep-left chain, a flat comb, a star, and matches straddling a block
+  boundary exactly.
+
 Edit here for new succinct structure math: a different suffix-sort seam, a
 rank/select variant, anything that is arithmetic over bits rather than an
 opinion about a corpus. The FM-index composition that wires SA-IS, RRR, and the

@@ -467,6 +467,10 @@ test {
     _ = @import("kernel/math/crest_test.zig"); // crest sieve, document half: ρ(d) scan + dominance decision + sidecar schema
     _ = @import("kernel/math/semiring_test.zig"); // the four semirings against their axioms; closure/shortest-distance vs Bellman–Ford, BFS, and a topological DP
     _ = @import("kernel/math/succinct/parens_test.zig"); // balanced parentheses: every navigation op vs a naive stack walk over random shapes
+    _ = @import("kernel/math/succinct/rrr_test.zig"); // Plain/Rrr/Bits: rank1/get vs a prefix-popcount oracle, persistence round-trip, fail-closed corruption
+    _ = @import("kernel/math/succinct/wavelet_test.zig"); // canonical Huffman vs a priority-queue oracle + Kraft completeness; wavelet Tree vs a literal scan, incl. the sharded weave
+    _ = @import("kernel/math/succinct/sais_test.zig"); // suffix array seam: sentinel invariant, Oversized guard, comparison-sort oracle
+    _ = @import("kernel/math/mix_test.zig"); // splitmix64 finalizer: determinism, bijectivity, avalanche; SliceCtx vs a linear-scan interning oracle
     _ = @import("kernel/math/refine_test.zig"); // partition refinement: Moore ≡ Hopcroft ≡ textbook pairwise marking, plus stability/coarseness and the escalation
     _ = @import("kernel/math/dafsa_test.zig"); // string sets: exact language incl. near misses, rank/spell bijection, and size ≡ a trie quotiented by refine
     _ = @import("kernel/math/minterm_test.zig"); // minterm partition: same block iff the same sets contain it — stability and coarseness in one biconditional, at two instantiations

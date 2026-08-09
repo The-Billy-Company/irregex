@@ -596,6 +596,30 @@ itself.
  count. The language is checked against near misses — prefixes, extensions,
  one-byte mutations — because a set that says yes to everything also says yes to
  every key.
+ - **`mix_test.zig`** – `finalize` checked for determinism and bijectivity (each
+ pass is invertible mod 2⁶⁴, so no two distinct u64s can ever collide) plus
+ avalanche spread on fixed and sequential low-entropy inputs; `SliceCtx`
+ checked against a linear-scan interning oracle at every width it is deployed
+ at (u8, u32, u64), including two independent allocations holding identical
+ content resolving to one id.
+ - **`succinct/rrr_test.zig`** – `Plain` and `Rrr` differential-tested against
+ a running prefix-popcount scan across the word/block/superblock boundary
+ sweep, on all-zero, all-one, alternating, random, and BWT-shaped run
+ patterns; `fromWords`/`fromParts` round-tripped from a duplicated buffer and
+ checked to fail closed on a truncated or padded stream, or a block whose
+ stored class exceeds its own bit width.
+ - **`succinct/wavelet_test.zig`** – `Huff.build` checked against a
+ from-scratch priority-queue Huffman oracle for optimal total coded length
+ (the merge-weight identity, so the oracle needs no depths), then the
+ produced table checked genuinely prefix-free and Kraft-complete;
+ `fromLengths` round-tripped and separately fed the over/under-subscribed
+ tables the Kraft check exists to catch; `Tree` differential-tested against a
+ literal per-symbol scan up to `max_sigma` under a skewed histogram, including
+ the sharded `weave` path past `parallel.build_min_bytes`.
+ - **`succinct/sais_test.zig`** – the sentinel invariant (`sa[0] ==
+ text.len`, `sa[1..]` a permutation of `[0, text.len)`) on adversarial small
+ texts, the `Oversized` guard fired before any allocation, and a from-scratch
+ comparison-sort oracle independent of `codex_test.zig`'s own.
 
 `forest`, `misread` and `parallel` keep their tests inline, because each property
 reads beside the code it constrains: transitive joins collapsing to one
