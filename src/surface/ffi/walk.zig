@@ -102,6 +102,7 @@ const genus_mod = @import("../../corpus/scope/genus.zig");
 const glob = @import("../../kernel/math/glob.zig");
 const ignore = @import("../../corpus/tree/ignore.zig");
 const intent = @import("../../exec/cold/argv/intent.zig");
+const path_mod = @import("../../corpus/scope/paths.zig");
 const quarry = @import("../../exec/cold/quarry/walk.zig");
 const rows = @import("rows.zig");
 const types = @import("../../corpus/scope/types.zig");
@@ -602,7 +603,13 @@ fn plan(a: std.mem.Allocator, spec: *const Spec) glob.BraceError!?Plan {
         const text = contract.view(term.text, term.text_len) orelse return null;
         if (text.len == 0) return null;
         switch (term.kind) {
-            term_root => try roots.append(a, text),
+            // Quarry normalizes walker-produced suffixes, but a root is
+            // caller-produced and otherwise survives verbatim. On Windows that
+            // made one displayed path mix `\` in the root with `/` below it,
+            // contradicting the walk plane's one-separator contract and making
+            // `holds` deny a path returned by iteration. Normalize the one
+            // foreign spelling where it enters.
+            term_root => try roots.append(a, try path_mod.slashed(a, text)),
             term_ignore_file => try ignore_files.append(a, text),
             term_glob, term_glob_not, term_iglob => {
                 // A leading `!` is the same exclude a command line spells that
