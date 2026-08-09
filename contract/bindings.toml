@@ -32,18 +32,31 @@
 # copy declares the whole ABI by construction, so counting it as coverage passes
 # every gap. This gate reads only code that could actually call the symbol.
 #
-# `archives` is the second lane, and only Go has one: the module commits a static
-# archive per platform because Go has no `build.rs` and a consumer with no Zig
-# toolchain still has to be able to `go get` and build. Those are build output
-# under version control, and the only thing keeping them level with the engine was
-# a README sentence — which failed the day the munch plane landed, leaving the
-# default `go test` path failing at the linker while the source-built path was
-# green. Rust and Python compile or dlopen the engine, so they cannot go stale
-# this way and declare nothing here.
+# `archives` is the second lane: a binding that SHIPS the engine rather than
+# linking whatever is on the machine. Go commits a static archive per platform
+# because it has no `build.rs` and a consumer with no Zig toolchain still has to
+# be able to `go get` and build. Those are build output under version control,
+# and the only thing keeping them level with the engine was a README sentence —
+# which failed the day the munch plane landed, leaving the default `go test` path
+# failing at the linker while the source-built path was green.
+#
+# **Rust carries them too, and this comment used to deny it.** `bindings/rust/`
+# vendors six `vendor/<target>/libirgx.a`, and its `build.rs` PREFERS them over
+# building from source, for the same reason Go does — needing a Zig toolchain to
+# `cargo add` a regex crate is a tax. So Rust went stale in exactly the way this
+# text said it could not: the same munch plane, the same undefined symbols at the
+# linker, on the default `cargo test` path, unnoticed for as long as the gate was
+# told not to look. Declaring the glob is the whole fix; `stale_archives()` globs.
+#
+# Python is the only binding that genuinely cannot go stale this way — it dlopens
+# whatever engine is installed and ships no copy of it.
+#
+# `rebuild` is required beside `archives`, because a gate that reports a stale
+# archive without naming the command that refreshes it has told you half of it.
 [bindings]
-go = { sources = "bindings/go", suffix = ".go", archives = "bindings/go/libirgx_*.a", why = "cgo — the symbol appears as `C.irgx_…`" }
+go = { sources = "bindings/go", suffix = ".go", archives = "bindings/go/libirgx_*.a", rebuild = "python3 bindings/go/scripts/vendor_libraries.py", why = "cgo — the symbol appears as `C.irgx_…`" }
 python = { sources = "bindings/python/irgx", suffix = ".py", why = "ctypes — the symbol appears as an attribute or a name string" }
-rust = { sources = "bindings/rust/src", suffix = ".rs", why = "`extern \"C\"` — the symbol appears as a declaration" }
+rust = { sources = "bindings/rust/src", suffix = ".rs", archives = "bindings/rust/vendor/*/libirgx.a", rebuild = "python3 bindings/rust/scripts/vendor_libraries.py", why = "`extern \"C\"` — the symbol appears as a declaration" }
 
 # ── waivers: a symbol a binding deliberately does not bind ──
 #

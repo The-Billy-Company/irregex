@@ -30,14 +30,16 @@ not a gap. The failure this catches is the other thing: a symbol no code in the
 binding could call at all, however unsafe it was willing to be.
 
 There is a second lane, for a binding that ships the engine rather than linking
-one. The Go module commits a static archive per platform, because Go has no
-`build.rs` and a consumer with no Zig has to be able to `go get` and build; those
-archives are build output under version control, and the only thing asking them to
-keep up with the engine was a sentence in a README. It did not work: the archives
-went a release behind the day the munch plane landed, and the default `go test`
-path — the one CI and every consumer takes — failed at the linker while the
-source-built path was green. Same species as the Rust `build.rs` watching a
-directory whose mtime never moved. So a declared archive is read for the ABI names
+one. Go and Rust both commit a static archive per platform — Go because it has no
+`build.rs`, Rust because its `build.rs` prefers a vendored archive over a source
+build, and both because a consumer with no Zig toolchain still has to be able to
+`go get` or `cargo add` and build. Those archives are build output under version
+control, and the only thing asking them to keep up with the engine was a sentence
+in a README. It did not work, twice: they went a release behind the day the munch
+plane landed, and the default `go test` and `cargo test` paths — the ones CI and
+every consumer take — failed at the linker while the source-built path was green.
+Rust's went unnoticed far longer, because this gate was told Rust had no archives
+to read. So a declared archive is read for the ABI names
 it actually carries, by scanning its bytes: the symbol table spells them in ASCII
 in ELF, Mach-O and COFF alike, which keeps this a stdlib check rather than an
 `nm` that would have to exist and understand three object formats.
@@ -88,7 +90,14 @@ CGO_PREAMBLE = re.compile(r"/\*(.*?)\*/\s*import\s+\"C\"", re.S)
 # it needs no per-binding spelling: an archive is not a host reaching for a symbol,
 # it is the engine, and the engine either has the plane compiled into it or is
 # older than the tree that ships it.
-SHIPPED = re.compile(rb"\birgx_\w+")
+# The leading `_?` is Mach-O's underscore convention, and leaving it out made this
+# lane lie in both directions. `_` is a word character, so `\b` never matches
+# between it and the `i` that follows: on a darwin archive every symbol is spelled
+# `_irgx_foo` in the table and NONE of them were seen there. Most were found
+# anyway, elsewhere in the file's bytes — which is worse than missing them all,
+# because it produced a plausible 98-of-100 and named two real, present, global
+# symbols as absent. ELF and COFF carry no prefix, so `_?` costs them nothing.
+SHIPPED = re.compile(rb"\b_?(irgx_\w+)")
 
 
 def code(src: str, suffix: str) -> str:
@@ -115,8 +124,13 @@ def declared(header: str) -> set[str]:
 
 
 def carried(blob: bytes) -> set[str]:
-    """Every `irgx_*` name a committed object archive spells in its own bytes."""
-    return {m.group().decode() for m in SHIPPED.finditer(blob)}
+    """Every `irgx_*` name a committed object archive spells in its own bytes.
+
+    Reported under the C name, so a Mach-O `_irgx_foo` and an ELF `irgx_foo` are
+    the one symbol they are, and the caller never has to know which format it is
+    holding.
+    """
+    return {m.group(1).decode() for m in SHIPPED.finditer(blob)}
 
 
 def contract_faults(contract: dict) -> list[str]:
@@ -141,6 +155,14 @@ def contract_faults(contract: dict) -> list[str]:
                 f"[bindings] {name}: `archives` glob {glob!r} matches no file — "
                 f"a lane that reads nothing passes everything"
             )
+        # Reporting a stale archive without the command that refreshes it leaves
+        # the reader to guess, and the guess used to be wired into this file as
+        # Go's script — which was the wrong answer for every other binding.
+        if glob and not str(row.get("rebuild", "")).strip():
+            faults.append(
+                f"[bindings] {name}: declares `archives` and no `rebuild` — "
+                f"a staleness this gate cannot tell you how to fix"
+            )
     waived = contract.get("waived", {})
     if not isinstance(waived, dict):
         return [*faults, "[waived] is not a table"]
@@ -160,15 +182,26 @@ def contract_faults(contract: dict) -> list[str]:
     return faults
 
 
-def stale_archives(abi: set[str], shipped: dict[str, dict[str, set[str]]]) -> list[str]:
+def stale_archives(
+    abi: set[str],
+    shipped: dict[str, dict[str, set[str]]],
+    contract: dict | None = None,
+) -> list[str]:
     """Any committed archive that is older than the ABI it ships.
 
     Reported per archive rather than per symbol: the whole file is one build, so a
     hundred missing names are one fact and one command fixes them. Naming the
     first few is enough to recognize which plane is absent.
+
+    The command comes from the binding's own `rebuild`, never from here. Every
+    binding that ships an engine has its own vendoring script, and this message
+    naming Go's was wrong the moment a second binding was looked at.
     """
+    rows = (contract or {}).get("bindings", {})
     drift = []
     for binding in sorted(shipped):
+        fix = str(rows.get(binding, {}).get("rebuild", "")).strip()
+        how = f"; rebuild it with `{fix}`" if fix else ""
         for name in sorted(shipped[binding]):
             missing = sorted(abi - shipped[binding][name])
             if not missing:
@@ -177,8 +210,8 @@ def stale_archives(abi: set[str], shipped: dict[str, dict[str, set[str]]]) -> li
             more = f" (+{len(missing) - 4} more)" if len(missing) > 4 else ""
             drift.append(
                 f"{binding}: the committed `{name}` is missing {len(missing)} ABI "
-                f"symbol(s) — {shown}{more}. It is build output that went behind the "
-                f"engine; rebuild it (Go: `python3 scripts/vendor_libraries.py`)"
+                f"symbol(s) — {shown}{more}. It is build output that went behind "
+                f"the engine{how}"
             )
     return drift
 
@@ -226,7 +259,7 @@ def audit(
             f"delete the [waived.{binding}] row"
             for name in gone
         ]
-    return drift + stale_archives(abi, shipped or {})
+    return drift + stale_archives(abi, shipped or {}, contract)
 
 
 def sources_of(row: dict) -> list[str]:
@@ -239,11 +272,17 @@ def sources_of(row: dict) -> list[str]:
 
 
 def archives_of(row: dict) -> dict[str, set[str]]:
-    """What each archive a binding commits actually carries, keyed by filename."""
+    """What each archive a binding commits actually carries, keyed by path.
+
+    By PATH, not by filename: Go names its six for their platforms, but Rust puts
+    six identically-named `libirgx.a` under `vendor/<target>/`, so a filename key
+    collapses them to one and silently stops reading the other five. A path also
+    says which target is stale, which is the thing you need to know next.
+    """
     glob = str(row.get("archives", "")).strip()
     if not glob:
         return {}
-    return {p.name: carried(p.read_bytes()) for p in sorted(REPO.glob(glob))}
+    return {str(p.relative_to(REPO)): carried(p.read_bytes()) for p in sorted(REPO.glob(glob))}
 
 
 def main() -> int:

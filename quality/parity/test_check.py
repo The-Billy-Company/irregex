@@ -11,7 +11,16 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from check import audit, contract_faults, declared, exported, mentioned  # noqa: E402
+import check  # noqa: E402
+from check import (  # noqa: E402
+    archives_of,
+    audit,
+    carried,
+    contract_faults,
+    declared,
+    exported,
+    mentioned,
+)
 
 # A header that declares everything, so header drift never confounds a
 # binding-coverage assertion. The one test that is about the header says so.
@@ -21,7 +30,16 @@ WHOLE = "int32_t irgx_compile(); int32_t irgx_munch_scan(); void irgx_cancel_fre
 def contract(bindings=("go", "rust"), waived=None):
     return {
         "bindings": {
-            b: {"sources": f"bindings/{b}", "suffix": ".x", "why": "because"} for b in bindings
+            b: {
+                "sources": f"bindings/{b}",
+                "suffix": ".x",
+                "why": "because",
+                # Each binding that ships an engine names its OWN refresh command.
+                # Spelled per binding here because that is the thing being tested:
+                # this message used to hardcode Go's script for everyone.
+                "rebuild": f"python3 bindings/{b}/scripts/vendor_libraries.py",
+            }
+            for b in bindings
         },
         "waived": {b: dict(rows) for b, rows in (waived or {}).items()},
     }
@@ -189,7 +207,10 @@ class ShippedArchiveTest(unittest.TestCase):
         self.assertEqual(len(drift), 1)
         self.assertIn("libirgx_darwin_arm64.a", drift[0])
         self.assertIn("irgx_munch_scan", drift[0])
-        self.assertIn("vendor_libraries.py", drift[0])
+        # The refresh command is the binding's own, read off its contract row. It
+        # was wired into the reporter as Go's script, which was silently the wrong
+        # instruction for every binding that was not Go.
+        self.assertIn("python3 bindings/go/scripts/vendor_libraries.py", drift[0])
 
     def test_the_binding_being_correct_does_not_excuse_a_stale_archive(self) -> None:
         # The two lanes are independent, which is the whole point: Go's sources
@@ -254,12 +275,58 @@ class ShippedArchiveTest(unittest.TestCase):
         self.assertIn("missing 9 ABI symbol(s)", drift[0])
         self.assertIn("+5 more", drift[0])
 
+    def test_a_mach_o_symbol_is_the_same_symbol_as_an_elf_one(self) -> None:
+        # This one shipped, and it lied in the shape that is hardest to catch.
+        # Mach-O writes every symbol as `_irgx_foo`; `_` is a word character, so
+        # the old `\birgx_\w+` could not match after it and read NOTHING out of a
+        # darwin symbol table. It still returned 98 of 100, from `irgx_*` spellings
+        # elsewhere in the file — a plausible number naming two present, global,
+        # aliased symbols as absent, on the platform everyone here develops on.
+        self.assertEqual(carried(b"\x00_irgx_rows_close\x00"), {"irgx_rows_close"})
+        self.assertEqual(carried(b"\x00irgx_rows_close\x00"), {"irgx_rows_close"})
+        # And the prefix is not an excuse to match anything nearby: a filename is
+        # not a symbol, and a symbol that merely ENDS in one is a different symbol.
+        self.assertEqual(carried(b"libirgx_darwin_amd64.a"), set())
+        self.assertEqual(carried(b"myprefix_irgx_rows_close"), set())
+
+    def test_identically_named_archives_under_different_targets_stay_distinct(self) -> None:
+        # Go names its six for their platforms, so keying on the filename worked
+        # by luck. Rust puts six `libirgx.a` under `vendor/<target>/`, and that key
+        # collapsed all six into one entry — the last one sorted answering for the
+        # whole set. Five unread archives, reported as current.
+        import tempfile
+
+        with tempfile.TemporaryDirectory(dir=check.REPO) as raw:
+            root = Path(raw)
+            for target, body in (("old", b"irgx_a"), ("new", b"irgx_a irgx_b")):
+                (root / target).mkdir()
+                (root / target / "libirgx.a").write_bytes(body)
+            glob = f"{root.relative_to(check.REPO)}/*/libirgx.a"
+            read = archives_of({"archives": glob})
+        self.assertEqual(len(read), 2, "two archives on disk must be two entries")
+        self.assertEqual({len(v) for v in read.values()}, {1, 2})
+        # And the key says WHICH target, because that is the next thing you need.
+        self.assertTrue(all("old" in k or "new" in k for k in read))
+
     def test_an_archives_glob_matching_nothing_is_a_contract_fault(self) -> None:
         # The lane's own false pass: rename the archives and a silent glob reads
         # none of them and approves everything.
         c = contract(bindings=("go",))
         c["bindings"]["go"]["archives"] = "bindings/go/libirgx_nope_*.a"
         self.assertTrue(any("matches no file" in f for f in contract_faults(c)))
+
+    def test_archives_without_a_rebuild_command_is_a_contract_fault(self) -> None:
+        # Half a report is what this prevents. The command used to be wired into
+        # the reporter, so declaring a second binding's archives silently told its
+        # users to run the first binding's script.
+        c = contract(bindings=("go",))
+        c["bindings"]["go"]["archives"] = "bindings/go/libirgx_*.a"
+        del c["bindings"]["go"]["rebuild"]
+        self.assertTrue(any("no `rebuild`" in f for f in contract_faults(c)))
+        # A binding that ships no archive owes no command.
+        bare = contract(bindings=("python",))
+        del bare["bindings"]["python"]["rebuild"]
+        self.assertEqual(contract_faults(bare), [])
 
     def test_a_scan_of_bytes_holding_no_symbols_finds_none(self) -> None:
         # The negative control the fixtures above assume: the reader answers from
