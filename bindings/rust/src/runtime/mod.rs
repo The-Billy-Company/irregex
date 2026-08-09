@@ -21,6 +21,7 @@
 //! declaration** ([`Error::Decode`]) is corruption, not a miss.
 
 pub mod answer;
+mod cancel;
 pub mod cell;
 pub mod decode;
 pub mod handshake;
@@ -45,6 +46,7 @@ use std::fmt;
 use std::os::raw::c_void;
 
 pub use answer::{Batch, BatchIter, RowIter, Rows, Stats, Tier};
+pub use cancel::CancelToken;
 pub use cell::{OwnedRow, OwnedValue, RowSeq, Texts, Value};
 pub use decode::Row;
 
@@ -86,6 +88,12 @@ pub enum Error {
     /// A row contradicted its own declaration — an unknown schema id, a value
     /// tag disagreeing with the contract, or text that is not UTF-8.
     Decode(String),
+    /// This process has no in-process analytic plane, or its engine predates the
+    /// cancellation trio, so there is no query a token could stop. Distinct from
+    /// [`Error::Failed`] because it is a statement about the build rather than a
+    /// fault: every verb still answers, through the subprocess tier, and a host
+    /// that does not need to interrupt one can ignore this entirely.
+    Uncancellable,
     /// The child process could not be spawned or its pipes could not be read.
     Io(std::io::Error),
 }
@@ -106,6 +114,11 @@ impl fmt::Display for Error {
             Self::Unrepresentable(m) => write!(f, "option not representable in-process: {m}"),
             Self::SchemaDrift(m) => write!(f, "analytic schema drift: {m}"),
             Self::Decode(m) => write!(f, "analytic row does not match its schema: {m}"),
+            Self::Uncancellable => write!(
+                f,
+                "this process has no in-process analytic plane to cancel; \
+                 every verb still answers through the subprocess tier"
+            ),
             Self::Io(e) => write!(f, "gist io error: {e}"),
         }
     }

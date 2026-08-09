@@ -1,0 +1,73 @@
+# irregex — the horizontal half of the ABI promise.
+#
+# `contract/exports.toml` judges one thing against one contract: does the Zig
+# root hand out what it said it would. That is a VERTICAL check, and every gate
+# in this package was one. Which is precisely how the bindings drifted apart:
+# each was independently correct against the header, and no gate ever compared
+# them to EACH OTHER.
+#
+# What that cost, measured the day this file was written:
+#
+#   go      lacked the entire windowed-search plane (`irgx_is_match_in`,
+#           `irgx_find_all_in`, `irgx_pattern_windows`) plus `irgx_group_index`
+#           and `irgx_slate_len` — five capabilities a Go caller simply did not
+#           have, with nothing anywhere saying so.
+#   rust    declared the opaque `irgx_cancel` type, threaded a `*mut irgx_cancel`
+#           through its request struct, and never bound the three functions that
+#           make one — so the field was structurally always null. A cancellation
+#           surface that looks present and cannot work.
+#   python  was complete, which is the only reason the gap was invisible: there
+#           was always one binding that could do the thing.
+#
+# None of it was decided. So the rule here is horizontal and blunt: every symbol
+# `src/surface/ffi/exports.zig` exports is bound in EVERY binding, or waived for
+# that binding with a reason. A waiver is a design decision on the record; a gap
+# without one is the drift above, and fails.
+#
+# `why` is load-bearing for the same reason it is in `exports.toml`: if a waiver
+# cannot say what the host does instead, it is not a decision, it is the bug.
+
+# Where each binding's own sources live, and what its language files are called.
+# Deliberately NOT the vendored `irgx.h` each binding ships beside them: a header
+# copy declares the whole ABI by construction, so counting it as coverage passes
+# every gap. This gate reads only code that could actually call the symbol.
+#
+# `archives` is the second lane, and only Go has one: the module commits a static
+# archive per platform because Go has no `build.rs` and a consumer with no Zig
+# toolchain still has to be able to `go get` and build. Those are build output
+# under version control, and the only thing keeping them level with the engine was
+# a README sentence — which failed the day the munch plane landed, leaving the
+# default `go test` path failing at the linker while the source-built path was
+# green. Rust and Python compile or dlopen the engine, so they cannot go stale
+# this way and declare nothing here.
+[bindings]
+go = { sources = "bindings/go", suffix = ".go", archives = "bindings/go/libirgx_*.a", why = "cgo — the symbol appears as `C.irgx_…`" }
+python = { sources = "bindings/python/irgx", suffix = ".py", why = "ctypes — the symbol appears as an attribute or a name string" }
+rust = { sources = "bindings/rust/src", suffix = ".rs", why = "`extern \"C\"` — the symbol appears as a declaration" }
+
+# ── waivers: a symbol a binding deliberately does not bind ──
+#
+# Per binding, because the reason is per binding. Every row is a decision that
+# a reviewer can disagree with, which is the point.
+
+[waived.go]
+irgx_rows_next = { why = "Go pulls analytic rows through `irgx_rows_next_batch` only, one cgo crossing per batch instead of per row. The single-row verb is strictly slower here and answers the same question; binding it would add a second path to keep correct for no capability." }
+# The two below are the same decision Rust reached, for the same reason, arrived at
+# independently — which is the outcome a horizontal gate is for. Two hosts asked
+# what the ABI call would tell them, both already held the answer, and now the
+# agreement is on the record instead of being two silent gaps that happened to
+# coincide.
+irgx_slate_len = { why = "`Set.Len()` is `len(s.exprs)` — the Set keeps the patterns it was built from, so its length is a field. The ABI's use for the number is sizing the `which` buffer, which is sized from that field. Contrast `irgx_munch_len`, which IS bound: a munch's length is how many terminals it SEATED, which only the engine knows once a refusal has happened." }
+irgx_group_index = { why = "`Regexp.SubexpIndex` reads a `map[string]int` built from the name table at compile time, so name-to-number is a lookup in memory the Regexp already holds. `irgx_group_name` — the direction nothing else can answer — is bound." }
+
+[waived.python]
+
+# These three were already deliberate, and already argued — in comments inside
+# `bindings/rust/src/sys.rs`, where no gate could see them and a reader had to
+# already be in the file to find them. Lifting them here is the point: a decision
+# a reviewer can compare against the other two bindings' answers to the same
+# question.
+[waived.rust]
+irgx_find_all = { why = "the windowed `irgx_find_all_in` is this verb with an inert bound, and the crate needs the bound anyway for `find_at`. Declaring both would leave two spellings of one call for a reader to reconcile." }
+irgx_slate_len = { why = "a `RegexSet` holds the patterns it was built from, so its own length is a field rather than a call. The ABI's only use for the number is sizing the `which` buffer, which the crate sizes from that field. Contrast `irgx_munch_len`, which IS bound: a munch's length is how many patterns it SEATED, a number only the engine knows once a refusal has happened." }
+irgx_group_index = { why = "the crate reads the whole group-name table at compile time, so resolving a name to a number is a lookup in memory it already holds. `irgx_group_name` — the direction that cannot be got any other way — is bound." }

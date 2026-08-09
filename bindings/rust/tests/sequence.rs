@@ -180,6 +180,155 @@ fn a_late_start_does_not_move_the_haystacks_edges() {
     );
 }
 
+/// Every window of every text, for the patterns where slicing is a sound oracle.
+///
+/// A window confines the match while leaving every assertion reading the whole
+/// text — so for a pattern that asserts nothing, there is nothing left for the
+/// two readings to disagree about, and `is_match(&text[start..end])` is exactly
+/// the question. That makes the `regex` crate an oracle for a verb it does not
+/// ship, over the entire grid, for precisely the patterns whose answer does not
+/// depend on the distinction. The patterns whose answer DOES depend on it are
+/// the next two tests, and they cannot use this oracle by construction.
+#[test]
+fn a_window_confines_the_match_and_slicing_oracles_the_assertion_free_half() {
+    for pattern in ["a", "x*", "", "a?", "bc", r"\w+", "b|abc", "a+b", "[^x]"] {
+        for text in ["", "a", "abc", "aBaBa", "héllo", "ab\ncd", "a\n"] {
+            let (mine, crates) = (
+                Regex::new(pattern).unwrap(),
+                regex::Regex::new(pattern).unwrap(),
+            );
+            let bounds: Vec<usize> = (0..=text.len())
+                .filter(|at| text.is_char_boundary(*at))
+                .collect();
+            for &start in &bounds {
+                for &end in bounds.iter().filter(|end| **end >= start) {
+                    assert_eq!(
+                        mine.is_match_within(text, start, end),
+                        crates.is_match(&text[start..end]),
+                        "is_match_within({pattern:?}, {text:?}, {start}, {end})"
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// The distinction the previous test is built to exclude, stated on its own.
+///
+/// Each case is one where confining the match and cutting the text give opposite
+/// answers, which is what makes the verb irreducible to either a late start or a
+/// slice: the assertion is still reading bytes the window does not contain.
+#[test]
+fn an_assertion_reads_the_whole_text_no_matter_where_the_window_is() {
+    for (pattern, text, start, end) in [
+        // `$` and `\z` are still the real end, so a window that stops short of
+        // it satisfies neither — where the slice "ab" would satisfy both.
+        ("b$", "abc", 0, 2),
+        (r"b\z", "abc", 0, 2),
+        // `^` is still the real start, symmetrically.
+        ("^b", "abc", 1, 3),
+        // And `\b` still resolves against the byte outside the window: there is
+        // no boundary inside "abc" at offset 1, though the slice "b" has two.
+        (r"\bb\b", "abc", 1, 2),
+    ] {
+        let (mine, crates) = (
+            Regex::new(pattern).unwrap(),
+            regex::Regex::new(pattern).unwrap(),
+        );
+        assert!(
+            !mine.is_match_within(text, start, end),
+            "{pattern:?} should not match within {text:?}[{start}..{end}]"
+        );
+        assert!(
+            crates.is_match(&text[start..end]),
+            "the slice is the contrast, so {pattern:?} must match {:?}",
+            &text[start..end]
+        );
+    }
+}
+
+/// Fitting is existence, not the leftmost match measured against the ceiling.
+#[test]
+fn a_window_admits_a_shorter_match_the_unwindowed_verb_would_never_report() {
+    let word = Regex::new(r"\w+").unwrap();
+    // The match this verb reports over the whole text overruns the window...
+    assert_eq!(word.find("abcd").map(|at| at.range()), Some(0..4));
+    // ...and the window still matches, on the strength of a match it never
+    // reports, because a greedy pattern is asked to fit rather than to shrink.
+    assert!(word.is_match_within("abcd", 0, 2));
+    // Down to the smallest one that fits, and no further.
+    assert!(word.is_match_within("abcd", 0, 1));
+    assert!(!word.is_match_within("abcd", 0, 0));
+}
+
+/// Two invariants that hold for every pattern, including the ones no slice can
+/// oracle: an inert ceiling is the unwindowed verb, and widening never loses.
+#[test]
+fn the_inert_ceiling_is_the_unwindowed_verb_and_widening_only_adds() {
+    for pattern in [
+        "^b", r"\bbc", r"\Bc", "b$", r"b\b", r"c\z", "a", "x*", "", r"\w+", ".",
+    ] {
+        for text in ["", "a", "abc", "aBaBa", "héllo", "ab\ncd", "a\n"] {
+            let re = Regex::new(pattern).unwrap();
+            let bounds: Vec<usize> = (0..=text.len())
+                .filter(|at| text.is_char_boundary(*at))
+                .collect();
+            for &start in &bounds {
+                assert_eq!(
+                    re.is_match_within(text, start, text.len()),
+                    re.is_match_at(text, start),
+                    "an inert ceiling changed the answer: {pattern:?}, {text:?}, {start}"
+                );
+                for pair in bounds
+                    .iter()
+                    .filter(|end| **end >= start)
+                    .collect::<Vec<_>>()
+                    .windows(2)
+                {
+                    let (&narrow, &wide) = (pair[0], pair[1]);
+                    assert!(
+                        !re.is_match_within(text, start, narrow)
+                            || re.is_match_within(text, start, wide),
+                        "widening lost a match: {pattern:?}, {text:?}, \
+                         [{start},{narrow}] matched but [{start},{wide}] did not"
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// A window whose end precedes its start is the caller's bug, and is named as
+/// that rather than folded into the ABI's one `INVALID` for every bad bound.
+#[test]
+fn a_backwards_window_is_refused_by_name() {
+    let re = Regex::new("a").unwrap();
+    assert!(matches!(
+        re.try_is_match_within("abc", 2, 1),
+        Err(irgx::Error::BadWindow { start: 2, end: 1 })
+    ));
+    // A bound inside a codepoint is still the boundary error, not this one.
+    assert!(matches!(
+        re.try_is_match_within("héllo", 0, 2),
+        Err(irgx::Error::NotCharBoundary { offset: 2 })
+    ));
+    // It carries no status, because the engine never saw the call.
+    let refused = re.try_is_match_within("abc", 2, 1).unwrap_err();
+    assert!(refused.status().is_none());
+}
+
+/// Whether a pattern can be windowed is a property of the engine that compiled
+/// it, and the linear engine — every pattern in this crate's default arm — can.
+#[test]
+fn the_linear_engine_windows() {
+    for pattern in ["a", "^b", "b$", r"\w+", r"c\z", ""] {
+        assert!(
+            Regex::new(pattern).unwrap().windows(),
+            "{pattern:?} should window"
+        );
+    }
+}
+
 /// An offset that names no position is refused rather than silently rounded.
 #[test]
 fn a_start_that_is_not_a_character_boundary_is_an_error() {

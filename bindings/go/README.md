@@ -154,6 +154,68 @@ if errors.As(err, &refused) {
 A `*Set` is safe for concurrent use by multiple goroutines, by the same pool the
 `Regexp` uses.
 
+## Lexing: `Munch`
+
+A `Set` answers *which of these match somewhere in this text*. A tokenizer needs
+the other question - *starting exactly at this byte, what is the longest thing,
+and which terminal was it* - which no verb here or in `regexp` had:
+
+```go
+var lex = irgx.MustCompileMunch("if", `[a-z]+`, `[0-9]+`, `\s+`)
+
+for at := 0; at < len(src); {
+	tok, ok := lex.Scan(src, at)
+	if !ok {
+		return fmt.Errorf("nothing lexes at byte %d", at)
+	}
+	emit(src[at:at+tok.Length], tok.Patterns)
+	at += tok.Length
+}
+```
+
+`tok.Patterns` is plural on purpose. `if` is the keyword *and* an identifier and
+both reach length 2; which one wins is your lexer's business - declaration order,
+usually - so the engine names every terminal that tied and resolves nothing.
+Choosing one here would make keyword recognition impossible to build on top.
+
+It is one walk over the text, not one per terminal, because every pattern is
+determinized together. That is also why the flags are the slate's rather than a
+terminal's - there is nowhere to put "terminal 3 folds case". `CompileOpts` carries
+`IgnoreCase` and `DotAll`; `MultiLine` is refused, since it asks for the
+line-anchor reading and an anchored scan cannot observe the difference either way.
+
+**A refusal is partial**, unlike a `Set`'s all-or-nothing admission. A slate of a
+hundred and fifty terminals where one is outside the linear grammar is a working
+lexer, so the rest are seated, `Len()` reports how many, and `Declined()` returns a
+`Refusal` per terminal that was not. `Why` distinguishes a budget from a wall:
+`WhyStates` means a bigger build would take it, `WhyBufferAnchor` that none ever
+will - a scan is already anchored where you pointed, so `\A` is redundant and `\z`
+unsatisfiable, and the fix is deleting it rather than raising a bound. Only a slate
+that seated *nothing* is an error, there being no handle to read reasons from.
+
+`ScanShortest` is the other reading of the same cursor, skipping the empty one so a
+nullable terminal cannot answer zero everywhere. `ScanAmong` restricts a single
+call to a subset of terminals without a second compile, which is how
+context-sensitive lexing works. `ScanBytes` and its siblings take `[]byte`.
+
+## Windowed search
+
+`MatchStringIn(text, from, to)` confines a match to `text[from:to]` while leaving
+every assertion reading all of `text` - so `$`, `\z` and `\b` answer about the real
+edges wherever the window was drawn. That is why it is not slicing:
+`MatchString(text[from:to])` asks a different question, one where `$` has moved to
+the cut and the bytes outside have stopped existing. `b$` does not match `"abc"`
+within `[0, 2)`, and does match the slice `"ab"`.
+
+It asks about *fitting*, not about truncating the leftmost match, so `\w+` fits in
+`"abcd"[0:2]` on the strength of `"ab"` even though `FindStringIndex` reports
+`[0 4]`. `FindAllStringIndexIn` walks the window and reports offsets into the whole
+text. Both take `[]byte` as `MatchIn` and `FindAllIndexIn`, a bad window panics the
+way a slice expression does, and `Windows()` reports whether the pattern's engine
+can do this at all - the linear one treats the bound as a ceiling on its walk, and
+PCRE2 structurally cannot, since its subject has one length and stopping short
+would move the anchors it was asked about.
+
 ## Differences from `regexp`
 
 **Nullable patterns iterate exactly like `regexp`'s.** The engine's own match

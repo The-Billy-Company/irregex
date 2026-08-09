@@ -84,6 +84,20 @@ a different question, and a wrong one — `^b` does not match `"abc"` from 1, bu
 it does match the slice `"bc"`. The offset must be a character boundary; the
 `try_` siblings return `Error::NotCharBoundary` instead of panicking.
 
+`is_match_within(text, start, end)` moves the other edge, and only as a **ceiling
+on the match**: the whole text is still what every assertion reads, so `$`, `\z`
+and `\b` answer about the real edges wherever the window was drawn. Slicing is
+again the different question — `b$` does not match `"abc"` within `[0, 2)`, and
+does match the slice `"ab"`. It also asks about *fitting* rather than truncating
+the leftmost match, so `\w+` fits in `"abcd"[0..2]` on the strength of `"ab"`
+though the match `find` would report overruns. `windows()` says whether this
+pattern's engine can do it at all — the linear one treats the bound as a ceiling
+on its walk, and PCRE2 structurally cannot, since its subject has one length and
+stopping short would move the very anchors it was asked about, so a `pcre` pattern
+answers `false` and faults rather than quietly answering the sliced question.
+`Error::BadWindow` names an end before its start, rather than passing it down to
+the code the ABI also uses for an out-of-range bound.
+
 A `Match` has `start()`, `end()`, `range()`, `as_str()`, `as_bytes()`, `len()`
 and `is_empty()`. A `Captures` has `get(n)`, `name("n")`, `iter()`, `len()`,
 `expand()`, and `Index` by number and by name. A replacement can be a `&str`
@@ -131,6 +145,53 @@ be worth searching.
 Admission is all or nothing: the first pattern the engine will not take refuses
 the whole set, and the error names *that pattern* rather than saying one of them
 failed.
+
+## Lexing: `Munch`
+
+A set answers *which of these match somewhere*. A tokenizer needs the other
+question — *starting exactly here, what is the longest thing, and which terminal
+was it* — and that is `Munch`:
+
+```rust
+use irgx::Munch;
+
+let lex = Munch::new(["if", r"[a-z]+", r"[0-9]+", r"\s+"])?;
+
+let token = lex.token("if x", 0).unwrap();
+token.len();       // 2
+token.patterns();  // [0, 1] — the keyword AND the identifier
+token.range(0);    // 0..2
+```
+
+The tie is the design, not a shortcoming. `if` is both terminals and both reach
+length 2; which one wins is your lexer's business — declaration order, usually —
+so the engine names every terminal that tied and resolves nothing. Picking one
+here would make keyword recognition impossible to build on top.
+
+One walk, not one per terminal. Every pattern is determinized together, which is
+also why the flags are the *slate's* rather than a terminal's: there is nowhere to
+put "terminal 3 folds case". `MunchBuilder` carries `ignore_case`, `unicode` and
+`dot_matches_new_line`, spelled as `RegexBuilder` spells them. There is no
+`multi_line` on it at all — it asks for the line-anchor reading, which an anchored
+scan cannot observe either way, so it is unrepresentable here rather than accepted
+and quietly ignored.
+
+**A refusal is partial**, unlike a set's. A slate of a hundred and fifty terminals
+where one is outside the linear grammar is a working lexer, so the rest are seated
+and `declined()` reports each `Refusal` with a `Why`; `len()` is how many patterns
+you handed it and `admitted()` how many the engine seated, as the engine counts
+them rather than as a subtraction this crate performs. Only a slate that seated
+*nothing* is an error, there being no handle to read reasons from. `Why` separates
+a budget from a wall: `States` means a bigger build would take this terminal,
+`BufferAnchor` that none ever will — an anchored scan already starts where you
+pointed, so `\A` is redundant and `\z` unsatisfiable, and the fix is to delete it
+rather than to raise a bound.
+
+`token_among` restricts one call to a subset without a second compile, which is how
+context-sensitive lexing works, and `shortest_among` is the other reading of the
+same offset. Underneath all four is `scan_into`, which fills a `Vec<u32>` you own
+and returns the length, so a lexing loop allocates nothing per token —
+`admitted()` is the one capacity at which the engine can never come up short.
 
 ## Flags
 
@@ -291,12 +352,17 @@ than the default.
 **`fixed`, `word` and `smart_case` exist.** They are the options a command-line
 searcher has had for decades and they have no `regex` equivalent.
 
-**No `Regex::shortest_match` or byte-slice `Regex`.** The C ABI has no anchored
-verb, and faking one on top of an unanchored scan is exactly where a binding
-goes subtly wrong. Anchors are in the grammar: use `\A` and `\z`. Note the
-spelling of the end anchor; it is `\z`, as in `regex` and RE2, not `\Z`.
-`RegexSet::matches_at` is absent for the same reason - the bounded search the
-single-pattern `find_at` rides on has no slate counterpart yet.
+**No `Regex::shortest_match` or byte-slice `Regex`.** Anchors are in the grammar:
+use `\A` and `\z`. Note the spelling of the end anchor; it is `\z`, as in `regex`
+and RE2, not `\Z`. `RegexSet::matches_at` is absent too — the bounded search the
+single-pattern `find_at` rides on has no slate counterpart.
+
+The anchored *question* does have an answer now, and it is a different type rather
+than a verb bolted onto this one: [`Munch`](#lexing-munch) is anchored
+longest-match over N patterns, with `shortest_among` for the other reading. Which
+is the honest shape of it — a shortest-match verb on `Regex` would be an anchored
+answer wearing an unanchored API, and faking that on top of a scan is exactly
+where a binding goes subtly wrong.
 
 **`find_iter` is eager.** The engine reports the whole match sequence in one
 call, and that call is the authority on what a sequence *is*, so the crate asks

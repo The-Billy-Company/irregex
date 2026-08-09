@@ -309,6 +309,14 @@ pub type EngineOpenFn = unsafe extern "C" fn(
     out: *mut *mut irgx_engine,
 ) -> c_int;
 pub type EngineCloseFn = unsafe extern "C" fn(engine: *mut irgx_engine);
+// The cancellation trio. Resolved rather than declared for the same reason as
+// the rest of this plane — and needed at all because `AnalyticRunFn` has taken a
+// `*mut irgx_cancel` since it landed, which this crate could only ever fill with
+// null. A `relate echoes --shape distinct` sweep is a documented 27 seconds; that
+// is precisely the call a host wants to be able to give up on.
+pub type CancelNewFn = unsafe extern "C" fn(out: *mut *mut irgx_cancel) -> c_int;
+pub type CancelRequestFn = unsafe extern "C" fn(cancel: *mut irgx_cancel);
+pub type CancelFreeFn = unsafe extern "C" fn(cancel: *mut irgx_cancel);
 
 // ── run-time symbol resolution ─────────────────────────────────────────────
 

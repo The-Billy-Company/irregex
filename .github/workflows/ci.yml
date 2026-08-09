@@ -353,6 +353,15 @@ jobs:
         run: uv run --no-project --python 3.12 python quality/surface/check.py
       - name: export gate proofs
         run: uv run --no-project --python 3.12 python quality/surface/test_check.py
+      # The horizontal half. Every gate above judges one artifact against one
+      # contract; this is the only one that compares the bindings to each other,
+      # which is how three independently-correct bindings drifted to different
+      # ABI coverage. A [waived] row with a reason is the fix for a deliberate
+      # omission - never deleting a binding's row to go green.
+      - name: binding parity
+        run: uv run --no-project --python 3.12 python quality/parity/check.py
+      - name: binding parity proofs
+        run: uv run --no-project --python 3.12 python quality/parity/test_check.py
 
   topology:
     # `charter.zone` declares this package's import topology - the zone

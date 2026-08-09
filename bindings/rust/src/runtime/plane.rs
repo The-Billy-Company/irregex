@@ -19,6 +19,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use super::answer::{Native, Rows};
+use super::cancel::{self, CancelToken};
 use super::{Error, Query, Result, handshake, sys};
 
 // ── the probed plane ───────────────────────────────────────────────────────
@@ -43,6 +44,9 @@ pub(super) struct Vtable {
     /// The last-fault pull. Optional: it enriches a failure message, it is
     /// never load-bearing for correctness.
     last_fault: Option<sys::LastFaultFn>,
+    /// The cancellation trio. Optional on the same grounds as `last_fault` — an
+    /// engine that predates it still serves every query, just uninterruptibly.
+    cancel: Option<cancel::Vtable>,
 }
 
 enum State {
@@ -104,7 +108,19 @@ fn probe() -> State {
         engine_open,
         engine_close,
         last_fault: resolve::<sys::LastFaultFn>(c"irgx_last_fault"),
+        cancel: cancel::Vtable::resolve(sys::symbol),
     })
+}
+
+/// The cancellation trio this process resolved, if it has one.
+///
+/// Exposed to [`super::cancel`] rather than the reverse so the vtable stays the
+/// one place symbols are probed.
+pub(super) fn cancellation() -> Option<cancel::Vtable> {
+    match state() {
+        State::Ready(vt) => vt.cancel,
+        State::Absent | State::Drifted(_) => None,
+    }
 }
 
 /// The symbol that opens the engine every producer is handed. Named here so
@@ -298,6 +314,20 @@ fn producer(vt: &Vtable, op: u32) -> Option<sys::AnalyticRunFn> {
 /// [`Error::SchemaDrift`] when the loaded library's row tables disagree with
 /// this build, or [`Error::Failed`] for a genuine native fault.
 pub fn run(query: &impl Query) -> Result<Option<Rows>> {
+    run_until(query, None)
+}
+
+/// [`run`], abandonable through `token`.
+///
+/// A cancelled query comes back as the same `Ok(None)` declinature an absent
+/// producer does, which is the useful shape: the caller's fall-through to the
+/// subprocess tier already exists, so a host that cancelled because *this* call
+/// was too slow is not then handed an error it has to classify. A host that
+/// wants the giving-up to be final cancels and does not retry.
+///
+/// # Errors
+/// As [`run`].
+pub fn run_until(query: &impl Query, token: Option<&CancelToken>) -> Result<Option<Rows>> {
     let vt = match state() {
         State::Absent => return Ok(None),
         State::Drifted(why) => return Err(Error::SchemaDrift(why.clone())),
@@ -328,7 +358,9 @@ pub fn run(query: &impl Query) -> Result<Option<Rows>> {
             engine.ptr,
             query.op(),
             wire.as_ptr(),
-            std::ptr::null_mut(),
+            // Null is still the right value for an uncancellable call — the ABI
+            // reads it as "nobody will ask", not as a missing argument.
+            token.map_or(std::ptr::null_mut(), CancelToken::raw),
             &raw mut out,
         )
     };
@@ -503,6 +535,9 @@ mod routing {
                 f
             },
             last_fault: None,
+            // Routing does not consult it, and a token is the one entry whose
+            // absence is a documented state rather than a defect.
+            cancel: None,
         }
     }
 

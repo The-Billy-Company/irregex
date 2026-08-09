@@ -130,6 +130,35 @@ impl Regex {
             .map(|(_, at)| *at)
     }
 
+    /// Whether this pattern can be searched inside a window — a region a match
+    /// must fit inside, while every assertion in it still reads the whole text.
+    ///
+    /// A property of the pattern, not of the call, because it is really a
+    /// property of the engine that compiled it. The linear engine windows: the
+    /// end bound is a ceiling on its walk, and nothing about that ceiling
+    /// changed what its assertions were reading. PCRE2 cannot, structurally —
+    /// its subject has one length, so stopping at the bound would mean claiming
+    /// the subject ends there, which moves the very anchors it was asked about.
+    /// So a pattern that needed the PCRE arm (lookaround, backreferences)
+    /// answers `false` here and [`Regex::try_is_match_within`] faults for it
+    /// rather than quietly answering a different question.
+    ///
+    /// The unwindowed verbs — [`is_match`](Regex::is_match),
+    /// [`find`](Regex::find), [`is_match_at`](Regex::is_match_at) — are
+    /// unaffected either way: a `start` bound was never a ceiling.
+    #[must_use]
+    pub fn windows(&self) -> bool {
+        // A pool lease can fail on an engine fault, and a capability question is
+        // the wrong place to surface one: false is the safe reading, since it
+        // only ever withholds the windowed verbs.
+        self.pool.lease().is_ok_and(|lease| {
+            // SAFETY: a leased handle is live and exclusively ours for the
+            // lease, which is all this call reads — it touches no text.
+            let windows = unsafe { sys::irgx_pattern_windows(lease.raw()) };
+            windows == 1
+        })
+    }
+
     // ── the search surface ───────────────────────────────────────────────
 
     /// Whether `text` holds a match anywhere.
@@ -263,6 +292,67 @@ impl Regex {
         let status = unsafe {
             sys::irgx_is_match_in(lease.raw(), body.as_ptr(), body.len(), start, body.len())
         };
+        if status < 0 {
+            return Err(fault(status, |status, detail| Error::Search {
+                status,
+                detail,
+            }));
+        }
+        Ok(status == sys::MATCH)
+    }
+
+    /// Whether some match of this pattern fits entirely inside `text[start..end]`.
+    ///
+    /// `end` is a ceiling on the match, not a new end of the text: every
+    /// assertion still reads all of `text`, so `$`, `\z` and `\b` answer about
+    /// the real edges no matter where the window was drawn. That is the whole
+    /// reason the verb exists, and it is why slicing is not it —
+    /// `Regex::is_match(&text[start..end])` asks a different question, one where
+    /// `$` has moved to the cut and the bytes outside the window have stopped
+    /// existing. Neither of those is expressible in terms of the other.
+    ///
+    /// Fitting is existence, not truncation of the leftmost match: `\w+` over
+    /// `"abcd"` within `[0, 2)` matches, on the strength of `"ab"`, even though
+    /// the match the unwindowed verb would report is `"abcd"` and overruns.
+    ///
+    /// ```
+    /// # use irgx::Regex;
+    /// let dollar = Regex::new("b$").unwrap();
+    /// // `$` is still the end of "abc", so nothing in the window satisfies it —
+    /// // where searching the slice "ab" would have said yes.
+    /// assert!(!dollar.is_match_within("abc", 0, 2));
+    /// assert!(dollar.is_match("ab"));
+    /// ```
+    ///
+    /// # Panics
+    ///
+    /// On an engine fault, if either bound is not a character boundary of `text`,
+    /// or if `end < start`. See [`Regex::try_is_match_within`].
+    #[must_use]
+    pub fn is_match_within(&self, text: &str, start: usize, end: usize) -> bool {
+        expect(self.try_is_match_within(text, start, end))
+    }
+
+    /// [`Regex::is_match_within`], reporting a fault instead of panicking.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::NotCharBoundary`] for a bound that names no position in `text`,
+    /// [`Error::BadWindow`] when the bounds cross, and [`Error::Search`] when the
+    /// pattern's engine cannot window at all — ask [`Regex::windows`] first to
+    /// learn that before the call rather than after it.
+    pub fn try_is_match_within(&self, text: &str, start: usize, end: usize) -> Result<bool, Error> {
+        self.reachable(text, start)?;
+        self.reachable(text, end)?;
+        if end < start {
+            return Err(Error::BadWindow { start, end });
+        }
+        let lease = self.pool.lease()?;
+        let body = text.as_bytes();
+        // SAFETY: as `scan`, plus `from <= to <= len` — both bounds are positions
+        // in `body` by `reachable`, and their order is established just above.
+        let status =
+            unsafe { sys::irgx_is_match_in(lease.raw(), body.as_ptr(), body.len(), start, end) };
         if status < 0 {
             return Err(fault(status, |status, detail| Error::Search {
                 status,
