@@ -28,6 +28,7 @@ const contract = irregex.ffi.contract;
 /// A sibling in THIS module rather than a member of the library's `ffi` group:
 /// it lowers the `api` veneer, which only a consumer of the library may reach.
 const corpus = @import("corpus.zig");
+const munch = irregex.ffi.munch;
 const pattern = irregex.ffi.pattern;
 const rows = irregex.ffi.rows;
 const slate = irregex.ffi.slate;
@@ -208,6 +209,61 @@ export fn irgx_slate_is_match(handle: *slate.Slate, text: ?[*]const u8, len: usi
 /// `cap` held them. 1 when at least one did, 0 when none did, negative on error.
 export fn irgx_slate_which(handle: *slate.Slate, text: ?[*]const u8, len: usize, out: ?[*]u32, cap: usize, written: ?*usize) i32 {
     return @intFromEnum(slate.which(handle, text, len, out, cap, written));
+}
+
+// ── the munch plane (many patterns, anchored, longest wins) ───────────────────
+// The slate above answers "which of these occur in this text" — a search. These
+// five answer the question a tokenizer has instead: starting at exactly this
+// offset, which of them reaches furthest. Same patterns, opposite direction, and
+// the reason it is a plane rather than a `next_state` export is that the
+// maximal-munch RULE is what crosses, not the automaton's table — a host
+// stepping states would be a second opinion about what a pattern means.
+
+/// Compile `patterns[0..count]` as one anchored slate under `flags` (a subset of
+/// the pattern plane's: `IRGX_IGNORE_CASE`, `IRGX_NO_UNICODE`, `IRGX_MULTILINE`,
+/// `IRGX_DOTALL`). 0 on success; `IRGX_STALE` when nothing at all could be
+/// determinized; negative on error. A *partial* refusal is success — read it
+/// with `irgx_munch_declined`.
+export fn irgx_munch_compile(patterns: ?[*]const munch.Pattern, count: usize, flags: u32, out: ?**munch.Munch) i32 {
+    return @intFromEnum(munch.compile(patterns, count, flags, out));
+}
+
+/// Release a handle from `irgx_munch_compile`.
+export fn irgx_munch_free(handle: *munch.Munch) void {
+    munch.free(handle);
+}
+
+/// How many patterns the slate can name at once — the `cap` at which
+/// `irgx_munch_scan`'s winner buffer can never come up short.
+export fn irgx_munch_len(handle: *const munch.Munch) usize {
+    return munch.len(handle);
+}
+
+/// Every pattern the slate could not take, ascending, into `out[0..cap]`, with
+/// `*written` set to how many declined whether or not `cap` held them. 1 when at
+/// least one did, 0 when the slate took everything, negative on error.
+export fn irgx_munch_declined(handle: *const munch.Munch, out: ?[*]munch.Refusal, cap: usize, written: ?*usize) i32 {
+    return @intFromEnum(munch.declined(handle, out, cap, written));
+}
+
+/// The longest (`IRGX_MUNCH_LONGEST`) or shortest (`IRGX_MUNCH_SHORTEST`) match
+/// beginning at exactly `at`, among the patterns `allow[0..nallow]` permits (null
+/// permits every one), writing the winning length and count to `*tok` and the
+/// winning pattern ids to `out[0..cap]`. 1 when something accepted, 0 when
+/// nothing starts here, negative on error.
+export fn irgx_munch_scan(
+    handle: *munch.Munch,
+    text: ?[*]const u8,
+    len: usize,
+    at: usize,
+    allow: ?[*]const u32,
+    nallow: usize,
+    pick: u32,
+    tok: ?*munch.Token,
+    out: ?[*]u32,
+    cap: usize,
+) i32 {
+    return @intFromEnum(munch.scan(handle, text, len, at, allow, nallow, pick, tok, out, cap));
 }
 
 // ── the shared warm corpus ───────────────────────────────────────────────────

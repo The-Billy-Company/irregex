@@ -186,6 +186,35 @@ pub enum Error {
         /// The engine's per-incident fault name, when it left one.
         detail: Option<String>,
     },
+    /// A [`Munch`](crate::Munch) whose every pattern the engine declined, so
+    /// there is no automaton behind it and no scan it could answer.
+    ///
+    /// The only refusal that plane has, and it exists because a *partial* one is
+    /// not an error there: a lexer with one undeterminizable terminal keeps the
+    /// other hundred and fifty and reads what it lost from
+    /// [`Munch::declined`](crate::Munch::declined). Losing all of them leaves
+    /// nothing to read, so it crosses as this instead.
+    ///
+    /// Compiling *no* patterns is not this — an empty slate is a legal slate
+    /// that matches nothing, as an empty [`RegexSet`](crate::RegexSet) is.
+    NothingLexable {
+        /// How many patterns were offered, every one of which was declined.
+        offered: usize,
+    },
+    /// A search window whose end is before its start.
+    ///
+    /// Refused here rather than passed down because the ABI answers a crossed
+    /// pair with the same `IRGX_INVALID` it uses for an out-of-range one, so the
+    /// caller would not learn which of the two mistakes it made. It carries no
+    /// [`Status`] for the same reason it is a distinct variant: the engine never
+    /// saw the call, and reporting a code it did not return would be inventing a
+    /// verdict.
+    BadWindow {
+        /// Where the window was asked to begin.
+        start: usize,
+        /// Where it was asked to end — less than `start`, which is the defect.
+        end: usize,
+    },
 }
 
 impl Error {
@@ -271,6 +300,17 @@ impl fmt::Display for Error {
             Self::Inconsistent { message } => {
                 write!(f, "internal disagreement in the engine: {message}")
             },
+            Self::NothingLexable { offered } => write!(
+                f,
+                "none of the {offered} patterns offered could be determinized as an anchored \
+                 automaton, so the munch has nothing to scan with. Compiling them one at a time \
+                 with Regex::new says which, and why."
+            ),
+            Self::BadWindow { start, end } => write!(
+                f,
+                "the search window ends at byte {end}, before it starts at {start}. \
+                 Bounds are not clamped, because a miscomputed one is worth hearing about."
+            ),
         }
     }
 }

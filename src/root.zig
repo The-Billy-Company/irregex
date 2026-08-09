@@ -316,6 +316,12 @@ pub const ffi = struct {
     /// text, exactly as `pattern`'s is, so the two never disagree about whether
     /// a pattern matches a string.
     pub const slate = @import("surface/ffi/slate.zig");
+    /// The same N patterns asked the question a tokenizer has instead of the one
+    /// a search has: starting at exactly this offset, which of them reaches
+    /// furthest. `Munch` over the ABI, so a non-Zig host gets the maximal-munch
+    /// rule rather than the automaton's states — which is what keeps there being
+    /// one grammar (`charter.zone`'s seal over `kernel/regex`).
+    pub const munch = @import("surface/ffi/munch.zig");
     /// The other half every package's ABI shares: a materialized run of rows
     /// plus the position a host reads it from. Each library exports its own
     /// `…_run` and returns THIS, so three questions cost one cursor protocol.
@@ -425,6 +431,7 @@ test {
     _ = @import("surface/ffi/answer.zig"); // the shared row cursor: one walk, batching from the same position, fail-closed arguments
     _ = @import("surface/ffi/pattern.zig"); // the regex-over-text plane: argument guards, the lazy capture arm, -F/-w/smart-case at the seam
     _ = @import("surface/ffi/slate.zig"); // the many-patterns plane: parity with the pattern plane, pattern copying, per-pattern refusal
+    _ = @import("surface/ffi/munch.zig"); // the anchored-longest plane: the lexer rule at the seam, partial refusal, the permitted set in caller ordinals
     _ = @import("kernel/anatomy/lexspan.zig"); // the shared comment/code/string lexer: `inner` is one level deep, so its tests need naming here
     _ = @import("assay/assay.zig"); // instrumentation floor: Span/Duration/Anchor, Tally(Schema), the diagnostic channel
     _ = @import("surface/api_test.zig"); // hosted API facade: Engine/Cursor/CancelToken over a live warm tree

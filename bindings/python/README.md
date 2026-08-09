@@ -130,6 +130,51 @@ for m in irgx.finditer(r"\w+", text):
 ASCII text takes a fast path where the two are identical, so you pay nothing
 for the guarantee when it costs nothing.
 
+## Lexing: `compile_munch`
+
+`compile_set` answers *which of these patterns match somewhere in this text*. A
+tokenizer needs the other question — *starting exactly here, what is the longest
+thing, and which terminal was it* — and `re` has no verb for it either:
+
+```python
+lex = irgx.compile_munch(["if", r"[a-z]+", r"[0-9]+", r"\s+"])
+
+scan = lex.over("if x")
+token = scan.token(0)
+token.length  # 2
+token.patterns  # (0, 1) - the keyword AND the identifier
+```
+
+The pair is the design, not a shortcoming. `if` is both terminals and both reach
+length 2; which one wins is your lexer's business — declaration order, usually — so
+the engine names every terminal that tied and resolves nothing. Choosing one here
+would make keyword recognition impossible to build on top.
+
+`over(text)` is the loop's friend: it encodes the subject **once** and answers every
+cursor against that, so a whole-file tokenization pays one encode rather than one
+per token. Offsets are in the subject's own units throughout, as everywhere else
+here — characters for `str`, bytes for `bytes` — so `token.length` is a number you
+can slice with. `lex.token(text, at)` is the one-shot form.
+
+It is one walk, not one per terminal, because every pattern is determinized
+together. That is also why the flags belong to the slate rather than a terminal:
+there is nowhere to put "terminal 3 folds case". `ignore_case` and `dotall` are
+carried; `multiline` is refused, since it asks for the line-anchor reading and an
+anchored scan cannot observe the difference either way.
+
+**A refusal is partial.** A slate of a hundred and fifty terminals where one is
+outside the linear grammar is a working lexer, so the rest are seated and
+`lex.declined` reports a `Refusal` per terminal that was not, each with a `Why`.
+`Why` separates a budget from a wall: `STATES` means a bigger build would take the
+terminal, `BUFFER_ANCHOR` that none ever will — a scan already starts where you
+pointed, which leaves `\A` redundant and `\z` unsatisfiable, so the fix is deleting
+it rather than raising a bound. Only a slate that seated *nothing* raises.
+
+`shortest=True` is the other reading of the same cursor, skipping the empty one so
+a nullable terminal cannot answer zero everywhere, and `allow=` restricts a single
+call to a subset without a second compile — which is how context-sensitive lexing
+works.
+
 ## A `Pattern` Is Safe to Share Across Threads
 
 Put a compiled pattern at module scope and use it from a thread pool. That is

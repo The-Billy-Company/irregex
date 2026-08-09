@@ -37,6 +37,18 @@ OOM = -2
 OPEN_FAILED = -3
 INVALID = -4
 
+# Why a munch could not seat a terminal. STATES and BUFFER_ANCHOR are a budget
+# and a wall, which is the distinction worth carrying: the first says a bigger
+# build would take the pattern, the second that none ever will.
+MUNCH_SYNTAX = 0
+MUNCH_STATES = 1
+MUNCH_WORD_CONTEXT = 2
+MUNCH_BUFFER_ANCHOR = 3
+
+# Which reading of the cursor a scan asks for.
+MUNCH_LONGEST = 0
+MUNCH_SHORTEST = 1
+
 # Which ruler `irgx_fault.at` is measured in. AT_NONE is 0 because byte 0 is
 # a real offset, so absence cannot be spelled by `at` itself.
 AT_NONE = 0
@@ -139,6 +151,35 @@ class SlatePattern(ctypes.Structure):
         ("len", ctypes.c_size_t),
         ("flags", ctypes.c_uint32),
     )
+
+
+class MunchPattern(ctypes.Structure):
+    """``irgx_munch_pattern``: one terminal of a lexer slate, and nothing else.
+
+    No per-pattern flag word, unlike :class:`SlatePattern`, and the difference is
+    forced rather than chosen: a munch determinizes every pattern *together*
+    under one set of options, so "terminal 3 is case-insensitive" is not a thing
+    the resulting machine can be.
+    """
+
+    _fields_ = (("pattern", ctypes.c_char_p), ("len", ctypes.c_size_t))
+
+
+class MunchRefusal(ctypes.Structure):
+    """``irgx_munch_refusal``: one terminal the slate could not take, and why."""
+
+    _fields_ = (("pattern", ctypes.c_uint32), ("why", ctypes.c_uint32))
+
+
+class MunchToken(ctypes.Structure):
+    """``irgx_munch_token``: how far a scan reached, and how many patterns got there.
+
+    ``count`` is how many reached ``len`` whether or not the winner buffer held
+    them - :func:`irgx_find_all`'s contract - but here the short-buffer retry is
+    always avoidable, because the count can never exceed ``irgx_munch_len``.
+    """
+
+    _fields_ = (("len", ctypes.c_size_t), ("count", ctypes.c_size_t))
 
 
 class Text(ctypes.Structure):
@@ -253,6 +294,34 @@ _SIGNATURES = (
         "irgx_slate_which",
         ctypes.c_int32,
         (_VOID, _U8P, _SIZE, ctypes.POINTER(ctypes.c_uint32), _SIZE, ctypes.POINTER(_SIZE)),
+    ),
+    (
+        "irgx_munch_compile",
+        ctypes.c_int32,
+        (ctypes.POINTER(MunchPattern), _SIZE, ctypes.c_uint32, ctypes.POINTER(_VOID)),
+    ),
+    ("irgx_munch_free", None, (_VOID,)),
+    ("irgx_munch_len", _SIZE, (_VOID,)),
+    (
+        "irgx_munch_declined",
+        ctypes.c_int32,
+        (_VOID, ctypes.POINTER(MunchRefusal), _SIZE, ctypes.POINTER(_SIZE)),
+    ),
+    (
+        "irgx_munch_scan",
+        ctypes.c_int32,
+        (
+            _VOID,
+            _U8P,
+            _SIZE,
+            _SIZE,
+            ctypes.POINTER(ctypes.c_uint32),
+            _SIZE,
+            ctypes.c_uint32,
+            ctypes.POINTER(MunchToken),
+            ctypes.POINTER(ctypes.c_uint32),
+            _SIZE,
+        ),
     ),
 )
 

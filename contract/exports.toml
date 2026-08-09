@@ -55,7 +55,7 @@ fresh = { why = "the freshness law: build anchor, change journal, sweep — why 
 
 # ── surfaces ──
 api = { why = "the hosted Zig API: Engine, SearchQuery, Cursor, CancelToken over the warm engine" }
-ffi = { why = "the C-ABI substrate every package in the ecosystem returns, plus this one's pattern-over-a-buffer plane" }
+ffi = { why = "the C-ABI substrate every package in the ecosystem returns, plus this one's three question planes over a buffer — one pattern, a slate, and the anchored longest-match a lexer runs on" }
 assay = { why = "the instrumentation floor: typed spans, comptime-checked tallies, the one diagnostic channel" }
 Brand = { why = "who the program riding this engine is — the name it signs a diagnostic with" }
 Outcome = { why = "the rg 0/1/2 exit contract, both precedences" }

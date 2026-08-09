@@ -432,6 +432,185 @@ int32_t irgx_slate_is_match(irgx_slate *slate, const uint8_t *text, size_t len);
 int32_t irgx_slate_which(irgx_slate *slate, const uint8_t *text, size_t len,
                          uint32_t *out, size_t cap, size_t *written);
 
+/* ── the munch plane ─────────────────────────────────────────────────────────
+ *
+ * Every plane above answers a SEARCH question: it scans forward looking for a
+ * place a pattern would fit. A tokenizer needs the opposite one, and it is the
+ * missing primitive between "does this regex match" and "lex this file":
+ * starting at EXACTLY this offset, which pattern reaches furthest?
+ *
+ * Two entries carry it:
+ *
+ *   irgx_munch_compile - N patterns into as many anchored automata as they
+ *                        need, with PARTIAL refusal. One terminal outside the
+ *                        linear syntax must not cost the other hundred and
+ *                        fifty, so a declining group is halved and retried, and
+ *                        what could not be taken is read back with
+ *                        irgx_munch_declined.
+ *   irgx_munch_scan    - the longest (or shortest) match beginning at your
+ *                        offset, among the patterns you currently permit,
+ *                        naming every pattern that reached the winning length.
+ *
+ * WHY THIS AND NOT AN AUTOMATON. The obvious alternative is to export the DFA -
+ * next_state, is_match_state, an accelerator - and let a host build maximal
+ * munch itself. This library will not, because a host stepping states is a
+ * second opinion about what a pattern means, and one engine that disagrees with
+ * itself is worse than one that is missing a verb. (The seal over the regex
+ * kernel exists because a second, smaller parser inside this tree once
+ * disagreed about the zero-width \< and \> boundaries and silently pruned two
+ * thirds of a matching corpus.) So the RULE crosses this ABI, not the table.
+ *
+ * TIES ARE YOURS. Longest is only half of a lexer's rule; the tie-break
+ * (declared precedence, literal beats regex, first-declared-wins) is a property
+ * of your grammar rather than of the automaton. A scan therefore reports EVERY
+ * pattern that reached the winning length, ascending, and has no opinion about
+ * which deserves it.
+ *
+ * A handle is SINGLE-THREADED, like the two planes above: it owns the winner
+ * buffer and the permission set every scan rewrites. */
+
+/* A compiled anchored slate. Opaque. */
+typedef struct irgx_munch irgx_munch;
+
+/* One terminal of a lexer slate: the bytes, and nothing else. Layout is
+ * append-only, so a later field is a compatible extension.
+ *
+ * There is no per-pattern flag word, which is the one place this differs from
+ * irgx_slate_pattern -- and the difference is forced rather than chosen. A munch
+ * determinizes every pattern TOGETHER, under one set of options, so "pattern 3
+ * is case-insensitive" is not a thing the machine can be. Options are the
+ * slate's, passed once to irgx_munch_compile. */
+typedef struct {
+  const uint8_t *pattern;
+  size_t len;
+} irgx_munch_pattern;
+
+/* One pattern the slate could not take, and why. The reason is carried rather
+ * than inferred because the four have different owners and different repairs.
+ *
+ * IRGX_MUNCH_STATES and IRGX_MUNCH_BUFFER_ANCHOR are a budget and a wall, and a
+ * caller acts on the difference: the first says a bigger build would take this
+ * pattern, the second says none ever will. */
+typedef struct {
+  uint32_t pattern;
+  uint32_t why;
+} irgx_munch_refusal;
+
+#define IRGX_MUNCH_SYNTAX 0u        /* the parser rejected the pattern      */
+#define IRGX_MUNCH_STATES 1u        /* this build's max_states bound        */
+#define IRGX_MUNCH_WORD_CONTEXT 2u  /* \b, with no left context to resolve  */
+#define IRGX_MUNCH_BUFFER_ANCHOR 3u /* \A or \z -- no budget admits it      */
+
+/* What a scan found: how far it reached, and how many patterns got there.
+ *
+ * len 0 is a RESULT, not an absence -- a pattern like a* accepts the empty
+ * string. The status tells them apart: IRGX_MATCH means something accepted,
+ * IRGX_OK means nothing starts here. A lexer that would spin forever advancing
+ * on a zero-length token can therefore see it and say so.
+ *
+ * count is how many patterns reached len whether or not cap held them --
+ * irgx_find_all's contract, so a short buffer sizes its own retry. Unlike there,
+ * the retry is always avoidable: the count can never exceed irgx_munch_len. */
+typedef struct {
+  size_t len;
+  size_t count;
+} irgx_munch_token;
+
+#define IRGX_MUNCH_LONGEST 0u  /* maximal munch: >>= over >               */
+#define IRGX_MUNCH_SHORTEST 1u /* the shortest non-empty reading instead  */
+
+/* Compile patterns[0..count] as one anchored slate under `flags`.
+ *
+ * IRGX_OK with a handle whenever at least one pattern was taken. A PARTIAL
+ * refusal is success, read with irgx_munch_declined -- a slate of a hundred and
+ * fifty terminals where one declined is a working lexer, and erroring on it
+ * would make your fallback path the common path. This is the one place munch and
+ * slate differ on policy, and it is why they are two planes: a classifier that
+ * silently dropped a pattern would misreport which patterns matched, while a
+ * lexer that refused to build over one bad terminal would simply not lex.
+ *
+ * IRGX_STALE -- a declinature, not a fault -- when NOTHING could be taken. There
+ * is no handle to read reasons from in that case; ask a different engine.
+ *
+ * `flags` is a SUBSET of the pattern plane's: IRGX_IGNORE_CASE, IRGX_NO_UNICODE
+ * and IRGX_DOTALL are honored, and the other five are REFUSED (IRGX_INVALID)
+ * rather than ignored, because honoring one here would be a lie you cannot see:
+ *
+ *   IRGX_PCRE       - the PCRE2 arm has no anchored-longest-over-N automaton at
+ *                     all, so there is nothing to be longest among.
+ *   IRGX_WORD       - \b resolves against the bytes straddling a gap, and the
+ *                     byte before your offset is not in the text this automaton
+ *                     was determinized over.
+ *   IRGX_SMART_CASE - smart case is a question about ONE pattern's text, and
+ *                     these options are the whole slate's.
+ *   IRGX_FIXED      - a literal is expressible as a pattern; a flag that
+ *                     rewrote every terminal slate-wide is not what a lexer
+ *                     with a mix of literals and regexes wants.
+ *   IRGX_MULTILINE  - an anchored automaton has no answer to the (?m) question
+ *                     either way. It starts where you pointed, so ^ holds at
+ *                     every scan offset with or without the flag, and a
+ *                     longest-match walk never learns where the buffer ended,
+ *                     so $ and \z are reachable from neither. \A still means
+ *                     the buffer's start and is false at a nonzero offset.
+ *
+ * Note IRGX_DOTALL is honored HERE and refused by irgx_slate_compile. The three
+ * planes carry three different masks because they can honor different things; do
+ * not assume one from another.
+ *
+ * The pattern bytes are read during determinization and NOT retained, so they
+ * need not outlive this call. count 0 is an empty slate -- a working handle that
+ * matches nothing, as it is for irgx_slate_compile -- and patterns may be NULL
+ * when count is 0. */
+int32_t irgx_munch_compile(const irgx_munch_pattern *patterns, size_t count,
+                           uint32_t flags, irgx_munch **out);
+
+/* Release a handle from irgx_munch_compile. Leaves the fault slot alone. */
+void irgx_munch_free(irgx_munch *munch);
+
+/* How many patterns the slate can name at once -- the exact cap at which
+ * irgx_munch_scan's winner buffer can never come up short.
+ *
+ * The ADMITTED count, not the compile-list count you already know: a declined
+ * pattern can never win, so it can never be written, and sizing for it would be
+ * sizing for an impossibility. */
+size_t irgx_munch_len(const irgx_munch *munch);
+
+/* Write every pattern the slate could not take into out[0..cap], ascending, and
+ * their count into *written. IRGX_MATCH when at least one declined, IRGX_OK when
+ * the slate took everything, negative on error.
+ *
+ * A separate verb rather than an out-parameter on compile, because taking
+ * everything is the normal case and the diagnosis is only wanted when it isn't. */
+int32_t irgx_munch_declined(const irgx_munch *munch, irgx_munch_refusal *out,
+                            size_t cap, size_t *written);
+
+/* The match beginning at EXACTLY `at`: the longest one under IRGX_MUNCH_LONGEST,
+ * the shortest non-empty one under IRGX_MUNCH_SHORTEST. Writes the winning
+ * length and count to *tok and the winning pattern ids, ascending, to
+ * out[0..cap]. IRGX_MATCH when something accepted, IRGX_OK when nothing starts
+ * here, negative on error.
+ *
+ * allow[0..nallow] is which patterns you will accept HERE, in your own pattern
+ * ordinals; NULL (with nallow 0) permits every one. Admitting an ordinal the
+ * slate declined is a documented no-op, so a host with a fallback for its blind
+ * terminals need not also remember which they were.
+ *
+ * The restriction is part of the WALK, and that is load-bearing rather than an
+ * optimization: one long illegal match hides every short legal one behind it, so
+ * filtering the answer afterward returns nothing where the correct answer is a
+ * shorter token. This is lex's start conditions, tree-sitter's valid-symbol set,
+ * and Lezer's contextual tokenizer, and it costs one AND per reported end and
+ * nothing per byte. A restriction permitting NOTHING is a real question with a
+ * knowable answer (IRGX_OK), not an argument error: a lexer state can legitimately
+ * reach a point where no terminal is legal.
+ *
+ * at == len is legal, and asks the only question left at the end of the input:
+ * does anything accept the empty string. at > len is IRGX_INVALID. */
+int32_t irgx_munch_scan(irgx_munch *munch, const uint8_t *text, size_t len,
+                        size_t at, const uint32_t *allow, size_t nallow,
+                        uint32_t pick, irgx_munch_token *tok, uint32_t *out,
+                        size_t cap);
+
 /* ── the row protocol ────────────────────────────────────────────── */
 
 /* This is the shape every analytic answer comes back in, no matter which

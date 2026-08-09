@@ -93,6 +93,45 @@ static int32_t go_slate_which(irgx_slate *s, const uint8_t *text, size_t len,
   capture(st, f);
   return st;
 }
+
+static int32_t go_is_match_in(irgx_regex *re, const uint8_t *text, size_t len,
+                              size_t from, size_t to, irgx_fault *f) {
+  int32_t st = irgx_is_match_in(re, text, len, from, to);
+  capture(st, f);
+  return st;
+}
+
+static int32_t go_find_all_in(irgx_regex *re, const uint8_t *text, size_t len,
+                              size_t from, size_t to, irgx_span *out,
+                              size_t cap, size_t *written, irgx_fault *f) {
+  int32_t st = irgx_find_all_in(re, text, len, from, to, out, cap, written);
+  capture(st, f);
+  return st;
+}
+
+static int32_t go_munch_compile(const irgx_munch_pattern *pats, size_t count,
+                                uint32_t flags, irgx_munch **out,
+                                irgx_fault *f) {
+  int32_t st = irgx_munch_compile(pats, count, flags, out);
+  capture(st, f);
+  return st;
+}
+
+static int32_t go_munch_declined(const irgx_munch *m, irgx_munch_refusal *out,
+                                 size_t cap, size_t *written, irgx_fault *f) {
+  int32_t st = irgx_munch_declined(m, out, cap, written);
+  capture(st, f);
+  return st;
+}
+
+static int32_t go_munch_scan(irgx_munch *m, const uint8_t *text, size_t len,
+                             size_t at, const uint32_t *allow, size_t nallow,
+                             uint32_t pick, irgx_munch_token *tok,
+                             uint32_t *out, size_t cap, irgx_fault *f) {
+  int32_t st = irgx_munch_scan(m, text, len, at, allow, nallow, pick, tok, out, cap);
+  capture(st, f);
+  return st;
+}
 */
 import "C"
 
@@ -661,4 +700,219 @@ func (s *slate) which(text string, count int) []int {
 		out[i] = int(ids[i])
 	}
 	return out
+}
+
+// windows reports whether this pattern's engine can honor a live `to` bound.
+//
+// A property of the pattern rather than of the call, because it is really a
+// property of the arm that compiled it: the linear engine treats the bound as a
+// ceiling on its walk, and PCRE2 structurally cannot, since its subject has one
+// length and stopping there would move every anchor.
+func (re *Regexp) windows() bool {
+	h := re.acquire()
+	defer re.release(h)
+	return C.irgx_pattern_windows(h.ptr) == 1
+}
+
+// matchIn is [Regexp.matchOn] with a ceiling: is there a match of this pattern
+// lying entirely inside text[from:to].
+func (re *Regexp) matchIn(text string, from, to int) bool {
+	h := re.acquire()
+	defer re.release(h)
+	var fault C.irgx_fault
+	st := C.go_is_match_in(h.ptr, bytePtr(text), C.size_t(len(text)),
+		C.size_t(from), C.size_t(to), &fault)
+	runtime.KeepAlive(text)
+	if st < 0 {
+		panic(newError(st, &fault, "search with "+strconv.Quote(re.expr)))
+	}
+	return st == C.IRGX_MATCH
+}
+
+// spansIn is [Regexp.rawSpans] confined to text[from:to], thinned by the same
+// Go convention so a windowed walk and an unwindowed one report the same
+// sequence over the region they agree about.
+func (re *Regexp) spansIn(text string, from, to, limit int) [][2]int {
+	if limit == 0 {
+		return nil
+	}
+	h := re.acquire()
+	defer re.release(h)
+	// A nullable pattern's sequence can be changed by the thinning, so it pays
+	// for the whole answer before the limit applies - findSpans's reasoning,
+	// which holds here for the same reason.
+	want := limit
+	if re.nullable {
+		want = -1
+	}
+	spans := re.fillSpansIn(h, text, from, to, want)
+	if re.nullable {
+		return truncate(goSequence(spans, text), limit)
+	}
+	return spans
+}
+
+// fillSpansIn runs the windowed find_all, growing once if the first window came
+// up short. Sized as rawSpans sizes it: find_all_in reports how many matches the
+// REGION holds rather than how many fit, so one short pass measures its retry.
+func (re *Regexp) fillSpansIn(h *handle, text string, from, to, limit int) [][2]int {
+	buf := make([]C.irgx_span, window(firstWindow, to-from+1, limit))
+	if len(buf) == 0 {
+		// A zero-width window still has the one position in it to ask about,
+		// and &buf[0] is not addressable when the slice is empty.
+		buf = make([]C.irgx_span, 1)
+	}
+	total := re.oneFindIn(h, text, from, to, buf)
+	want := window(total, to-from+1, limit)
+	if want > len(buf) {
+		buf = make([]C.irgx_span, want)
+		if again := re.oneFindIn(h, text, from, to, buf); again < want {
+			want = again
+		}
+	}
+	out := make([][2]int, want)
+	for i := range out {
+		out[i] = [2]int{int(buf[i].start), int(buf[i].end)}
+	}
+	return out
+}
+
+// oneFindIn is a single windowed find_all, returning how many matches the region
+// holds. Nothing may be read past len(buf); everything beyond it is a count.
+func (re *Regexp) oneFindIn(h *handle, text string, from, to int, buf []C.irgx_span) int {
+	var (
+		written C.size_t
+		fault   C.irgx_fault
+	)
+	st := C.go_find_all_in(h.ptr, bytePtr(text), C.size_t(len(text)),
+		C.size_t(from), C.size_t(to), &buf[0], C.size_t(len(buf)), &written, &fault)
+	runtime.KeepAlive(text)
+	if st < 0 {
+		panic(newError(st, &fault, "search with "+strconv.Quote(re.expr)))
+	}
+	return int(written)
+}
+
+// lexer is one irgx_munch: the anchored automata and the permission set each
+// scan rewrites. Single-threaded for the same reason a [slate] is, and pooled the
+// same way one layer up, in [Munch].
+type lexer struct{ ptr *C.irgx_munch }
+
+// compileLexer determinizes every terminal as one anchored slate.
+//
+// Partial refusal is success here, unlike [compileSlate]: a slate of a hundred
+// and fifty terminals where one is outside the linear grammar is a working
+// lexer, and the refusals are read back with declined. Only a slate where
+// NOTHING could be seated is an error, and it declines rather than failing -
+// there is no handle to read reasons from in that case.
+func compileLexer(exprs []string, flags uint32) (*lexer, error) {
+	var pin runtime.Pinner
+	defer pin.Unpin()
+	pats := make([]C.irgx_munch_pattern, len(exprs))
+	for i, expr := range exprs {
+		body := bytePtr(expr)
+		// Pinned rather than copied into C memory, as compileSlate does it and
+		// for the same reason: the ABI copies the bytes during the compile, so
+		// they need to survive exactly this call.
+		if len(expr) != 0 {
+			pin.Pin(body)
+		}
+		pats[i] = C.irgx_munch_pattern{pattern: body, len: C.size_t(len(expr))}
+	}
+	var (
+		ptr   *C.irgx_munch
+		fault C.irgx_fault
+	)
+	// A munch of no terminals is a legitimate one that matches nothing, but
+	// &pats[0] is not addressable then.
+	var list *C.irgx_munch_pattern
+	if len(pats) != 0 {
+		list = &pats[0]
+	}
+	st := C.go_munch_compile(list, C.size_t(len(pats)), C.uint32_t(flags), &ptr, &fault)
+	runtime.KeepAlive(exprs)
+	if st == C.IRGX_STALE {
+		return nil, fmt.Errorf("irregex: CompileMunch: not one of these %d terminals "+
+			"could be determinized, so there is no lexer to build: %w", len(exprs), ErrNeedsPCRE)
+	}
+	if st != C.IRGX_OK {
+		return nil, newError(st, &fault, "compile a munch of "+strconv.Itoa(len(exprs))+" terminals")
+	}
+	l := &lexer{ptr: ptr}
+	runtime.SetFinalizer(l, (*lexer).release)
+	return l, nil
+}
+
+func (l *lexer) release() {
+	if l.ptr != nil {
+		C.irgx_munch_free(l.ptr)
+		l.ptr = nil
+	}
+}
+
+// seated is how many terminals the slate actually took - the exact cap at which
+// a scan's winner buffer can never come up short, since a declined terminal can
+// never win and so can never be written.
+func (l *lexer) seated() int { return int(C.irgx_munch_len(l.ptr)) }
+
+// refusals is every terminal the slate could not take, ascending. The compile
+// list is the exact cap: one refusal per pattern, so this never comes up short.
+func (l *lexer) refusals(count int) []Refusal {
+	if count == 0 {
+		return nil
+	}
+	buf := make([]C.irgx_munch_refusal, count)
+	var (
+		written C.size_t
+		fault   C.irgx_fault
+	)
+	st := C.go_munch_declined(l.ptr, &buf[0], C.size_t(count), &written, &fault)
+	if st < 0 {
+		panic(newError(st, &fault, "read a munch's refusals"))
+	}
+	if st != C.IRGX_MATCH || written == 0 {
+		return nil
+	}
+	out := make([]Refusal, written)
+	for i := range out {
+		out[i] = Refusal{Pattern: int(buf[i].pattern), Why: Why(buf[i].why)}
+	}
+	return out
+}
+
+// scan is the token beginning at exactly at, among the permitted terminals.
+// allow nil permits everything seated; pick selects the longest or the shortest
+// non-empty reading.
+func (l *lexer) scan(text string, at int, allow []int, pick uint32, cap int) (Token, bool) {
+	ids := make([]C.uint32_t, cap)
+	var (
+		tok   C.irgx_munch_token
+		fault C.irgx_fault
+	)
+	var permitted *C.uint32_t
+	row := make([]C.uint32_t, len(allow))
+	for i, id := range allow {
+		row[i] = C.uint32_t(id)
+	}
+	if len(row) != 0 {
+		permitted = &row[0]
+	}
+	var winners *C.uint32_t
+	if cap != 0 {
+		winners = &ids[0]
+	}
+	st := C.go_munch_scan(l.ptr, bytePtr(text), C.size_t(len(text)), C.size_t(at),
+		permitted, C.size_t(len(row)), C.uint32_t(pick), &tok, winners, C.size_t(cap), &fault)
+	runtime.KeepAlive(text)
+	if st < 0 {
+		panic(newError(st, &fault, "scan a munch"))
+	}
+	if st != C.IRGX_MATCH {
+		return Token{}, false
+	}
+	out := make([]int, tok.count)
+	for i := range out {
+		out[i] = int(ids[i])
+	}
+	return Token{Length: int(tok.len), Patterns: out}, true
 }

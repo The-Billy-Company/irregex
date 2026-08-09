@@ -20,9 +20,10 @@ Three things differ from :mod:`re`, and each is deliberate:
   accept a backtracking engine.
 * Flags are **keyword arguments**, not an or-ed bitmask, and include options
   ``re`` has no spelling for: ``fixed``, ``word``, ``smart_case``.
-* There is a type :mod:`re` has none of: :func:`compile_set` asks *which* of N
-  patterns are in a text, in one pass, keeping the attribution an alternation
-  would have thrown away.
+* There are two types :mod:`re` has none of. :func:`compile_set` asks *which* of
+  N patterns are in a text, in one pass, keeping the attribution an alternation
+  would have thrown away; :func:`compile_munch` asks which of N patterns wins
+  *at* a cursor and how far it reaches, which is the primitive a lexer runs on.
 """
 
 from __future__ import annotations
@@ -34,6 +35,7 @@ from typing import Any
 
 from ._abi import ENGINE_VERSION, LIBRARY, PCRE2_VERSION, UnsupportedPattern, error
 from ._match import Match
+from ._munch import Munch, Refusal, Scan, Token, Why, compile_munch
 from ._pattern import Pattern, flag_bits
 from ._set import PatternSet, compile_set
 
@@ -42,11 +44,17 @@ __all__ = [
     "LIBRARY",
     "PCRE2_VERSION",
     "Match",
+    "Munch",
     "Pattern",
     "PatternSet",
+    "Refusal",
+    "Scan",
+    "Token",
     "UnsupportedPattern",
+    "Why",
     "__version__",
     "compile",
+    "compile_munch",
     "compile_set",
     "error",
     "escape",

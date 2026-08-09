@@ -72,6 +72,52 @@ pub struct Slate {
     _opaque: [u8; 0],
 }
 
+/// An opaque compiled anchored slate — the longest of many patterns starting at
+/// one offset. Never dereferenced on this side.
+#[repr(C)]
+pub struct Munch {
+    _opaque: [u8; 0],
+}
+
+/// `irgx_munch_pattern`: one terminal of a lexer slate. No flag word, because a
+/// munch determinizes every pattern together under one set of options.
+#[repr(C)]
+pub struct MunchPattern {
+    pub pattern: *const u8,
+    pub len: usize,
+}
+
+/// `irgx_munch_refusal`: one pattern the slate could not take, and why.
+#[derive(Clone, Copy, Debug, Default)]
+#[repr(C)]
+pub struct MunchRefusal {
+    pub pattern: u32,
+    pub why: u32,
+}
+
+/// `IRGX_MUNCH_SYNTAX`: the parser rejected the pattern.
+pub const MUNCH_SYNTAX: u32 = 0;
+/// `IRGX_MUNCH_STATES`: the engine's `max_states` bound, a fact about the build.
+pub const MUNCH_STATES: u32 = 1;
+/// `IRGX_MUNCH_WORD_CONTEXT`: `\b`, with no left context for it to resolve
+/// against.
+pub const MUNCH_WORD_CONTEXT: u32 = 2;
+/// `IRGX_MUNCH_BUFFER_ANCHOR`: `\A` or `\z`, which no build's budget admits.
+pub const MUNCH_BUFFER_ANCHOR: u32 = 3;
+
+/// `irgx_munch_token`: how far a scan reached, and how many patterns got there.
+#[derive(Clone, Copy, Debug, Default)]
+#[repr(C)]
+pub struct MunchToken {
+    pub len: usize,
+    pub count: usize,
+}
+
+/// `IRGX_MUNCH_LONGEST`: maximal munch.
+pub const MUNCH_LONGEST: u32 = 0;
+/// `IRGX_MUNCH_SHORTEST`: the shortest non-empty reading instead.
+pub const MUNCH_SHORTEST: u32 = 1;
+
 /// `irgx_slate_pattern`: one pattern of a slate, and the flag word
 /// [`irgx_compile`] takes for a single one.
 #[repr(C)]
@@ -163,6 +209,14 @@ unsafe extern "C" {
     // with an inert bound, and this crate needs the bound anyway for `find_at`.
     // Declaring both would leave two spellings of one call for a reader to
     // reconcile.
+    /// Whether this pattern's engine honors a LIVE `to` bound (1) or not (0).
+    ///
+    /// A property of the pattern, not of the call: the linear engine treats the
+    /// bound as a ceiling on its walk, and PCRE2 structurally cannot, since its
+    /// subject has one length and stopping at `to` would move every anchor. So a
+    /// windowed call on the PCRE arm faults rather than quietly answering the
+    /// sliced question, and this is how a host finds out before it asks.
+    pub fn irgx_pattern_windows(re: *mut Regex) -> i32;
     pub fn irgx_is_match_in(
         re: *mut Regex,
         text: *const u8,
@@ -207,6 +261,37 @@ unsafe extern "C" {
         out: *mut u32,
         cap: usize,
         written: *mut usize,
+    ) -> i32;
+
+    pub fn irgx_munch_compile(
+        patterns: *const MunchPattern,
+        count: usize,
+        flags: u32,
+        out: *mut *mut Munch,
+    ) -> i32;
+    pub fn irgx_munch_free(munch: *mut Munch);
+    // Declared, where the slate's equivalent above is not, because it is a
+    // different number: the slate's length is the pattern count the crate already
+    // holds, and a munch's is how many patterns it SEATED, which only the engine
+    // knows once a refusal has happened.
+    pub fn irgx_munch_len(munch: *const Munch) -> usize;
+    pub fn irgx_munch_declined(
+        munch: *const Munch,
+        out: *mut MunchRefusal,
+        cap: usize,
+        written: *mut usize,
+    ) -> i32;
+    pub fn irgx_munch_scan(
+        munch: *mut Munch,
+        text: *const u8,
+        len: usize,
+        at: usize,
+        allow: *const u32,
+        nallow: usize,
+        pick: u32,
+        tok: *mut MunchToken,
+        out: *mut u32,
+        cap: usize,
     ) -> i32;
 
     pub fn irgx_group_count(re: *mut Regex, out: *mut u32) -> i32;

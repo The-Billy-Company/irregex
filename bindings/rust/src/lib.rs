@@ -111,6 +111,11 @@
 //!   by rewriting the pattern.
 //! * **Faults are possible after compiling.** The `regex`-shaped verbs panic on
 //!   one; each has a `try_` sibling that returns [`Error`].
+//! * **[`Munch`] has no `regex`-crate counterpart at all.** It answers the
+//!   question a tokenizer asks and a search cannot: starting at exactly this
+//!   offset, over these patterns, which reaches furthest? Maximal munch, with the
+//!   permitted set narrowed per call, which is what makes a state-directed lexer
+//!   possible without stepping the automaton by hand.
 //!
 //! # Linking
 //!
@@ -124,6 +129,7 @@
 
 mod error;
 mod matches;
+mod munch;
 mod pattern;
 mod pool;
 mod replace;
@@ -145,6 +151,7 @@ pub mod runtime;
 
 pub use crate::error::{Error, Status};
 pub use crate::matches::{CaptureMatches, Captures, Match, Matches, Split};
+pub use crate::munch::{Munch, MunchBuilder, Pick, Refusal, Token, Why};
 pub use crate::pattern::{Regex, RegexBuilder};
 pub use crate::replace::{NoExpand, Replacer};
 pub use crate::set::{RegexSet, RegexSetBuilder, SetMatches};
