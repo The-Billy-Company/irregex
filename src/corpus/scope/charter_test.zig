@@ -199,6 +199,53 @@ test "a near-miss is guessed at, a genuinely foreign name is not" {
     }
 }
 
+test "a library may not be given the posture that ends its host's process" {
+    // The default is the whole bug fix: `governing()` used to `exit(2)` on a
+    // malformed charter, so a C host that opened a walk in a tree carrying one
+    // bad config line lost its process with no way to catch it. Nothing has to
+    // be *called* for the safe posture to hold — that is what makes it safe.
+    try t.expectEqual(charter.Refusal.fault, charter.refusalNow());
+}
+
+test "a face adopts the loud exit, and a scope puts back what it found" {
+    // `honorNoConfig` is the seam that arms it in production (every face's first
+    // act, and the only one that takes an argv); `failLoud` is what it calls, so
+    // the posture is a named greppable thing rather than a side effect hidden in
+    // an argv loop. Scoped here so the assertion cannot leak `exit` into another
+    // test in this process — the exact hazard `StatedRefusal` exists for.
+    const held = charter.stateRefusal(.fault);
+    defer held.release();
+
+    charter.failLoud();
+    try t.expectEqual(charter.Refusal.exit, charter.refusalNow());
+
+    // Nested statement restores its own predecessor, not the global default.
+    {
+        const inner = charter.stateRefusal(.fault);
+        try t.expectEqual(charter.Refusal.fault, charter.refusalNow());
+        inner.release();
+    }
+    try t.expectEqual(charter.Refusal.exit, charter.refusalNow());
+}
+
+test "the reason for a dropped charter is pulled, not thrown" {
+    // `governing()` returns an optional rather than an error union because its
+    // three callers ask while assembling a walk and none can act on the reason;
+    // `faulted()` is where the reason lives instead. What matters for the C seam
+    // is that a fault is NAMEABLE afterwards — every refusal the grammar can
+    // produce has a note, so the seam always has something to say when it turns
+    // one into `Corrupt` on `irgx_last_fault`.
+    for ([_]anyerror{
+        error.UnknownKey,     error.DuplicateKey,       error.ExpectedEquals,
+        error.ExpectedValue,  error.UnterminatedString, error.BadEscape,
+        error.TooManyEntries, error.Oversized,          error.EmptyValue,
+    }) |e| {
+        const note = charter.faultNote(e);
+        try t.expect(note.len > 0);
+        try t.expect(!std.mem.eql(u8, note, "unreadable")); // the catch-all, not a real note
+    }
+}
+
 test "a transposition is one edit, not two" {
     // The most common typing error there is, and the reason the metric is
     // Damerau rather than plain Levenshtein — plain scores these 2, which

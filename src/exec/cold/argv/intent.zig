@@ -622,8 +622,21 @@ pub const Builder = struct {
     pub fn addGlob(self: *Builder, g: []const u8, insensitive: bool) void {
         // `{a,b,c}` alternation (ripgrep/git glob): expand into the cartesian
         // product of every brace group up front, then register each variant.
+        //
+        // The expander is fallible because the corpus-eligibility seam calls it
+        // too, and a library function may not end its host's process. THIS is
+        // the seam that spends that fallibility on the loud exit a command line
+        // wants — the same division `charter.honorNoConfig` draws for a
+        // malformed charter: the kernel states the fault, the face decides it
+        // is fatal.
         var variants: std.ArrayList([]const u8) = .empty;
-        verdict.braceExpand(self.a, g, &variants);
+        glob.braceExpand(self.a, g, &variants, glob.brace_cap) catch |e| switch (e) {
+            error.OutOfMemory => oom(),
+            error.BudgetExceeded => die(
+                assay.tag ++ "error parsing glob '{s}': expands past {d} patterns\n",
+                .{ g, glob.brace_cap },
+            ),
+        };
         for (variants.items) |v| self.addGlobOne(v, insensitive);
     }
     /// `--pre-glob <g>`: which files `--pre` is fed. A leading `!` marks an
@@ -691,3 +704,24 @@ pub const Builder = struct {
         };
     }
 };
+
+test "argv: a brace glob still becomes every alternative the command line meant" {
+    const t = std.testing;
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    var b = Builder{ .a = arena.allocator() };
+
+    // The expander moved into `kernel/math/glob.zig` and grew a return type;
+    // what a command line SEES must not have moved with it. The negated form
+    // matters on its own: the `!` is stripped per variant, after the product.
+    b.addGlob("*.{js,ts}", false);
+    b.addGlob("!vendor/{a,b}/**", false);
+    try t.expectEqualDeep(
+        @as([]const []const u8, &.{ "*.js", "*.ts" }),
+        @as([]const []const u8, b.includes.items),
+    );
+    try t.expectEqualDeep(
+        @as([]const []const u8, &.{ "vendor/a/**", "vendor/b/**" }),
+        @as([]const []const u8, b.excludes.items),
+    );
+}

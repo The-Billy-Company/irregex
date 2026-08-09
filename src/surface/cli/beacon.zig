@@ -7,7 +7,7 @@
 //!
 //! It lives in the shared `cli` vocabulary rather than inside gist's emitter
 //! because all three faces print paths: a `relate echoes` family and an
-//! `irregex blast` ripple are lists of files whose whole purpose is to be
+//! `blast blast` ripple are lists of files whose whole purpose is to be
 //! opened next. Nothing here knows what a match is, which face is asking, or
 //! what that face's flags are called — `resolve` takes a `Request`, and each
 //! CLI fills it from its own argv.
@@ -687,7 +687,7 @@ pub fn anchor(a: Allocator, label: []const u8) []const u8 {
 }
 
 /// `path:line` rendered as one clickable locator, into a buffer the caller
-/// already owns — the row shape `irregex blast`, `provenance`, `relate
+/// already owns — the row shape `blast blast`, `provenance`, `relate
 /// patterns`, and the `--rank` view all print. Under `GIST_HYPERLINK_SCOPE=path`
 /// the click target narrows to the filename and the `:line` trails outside the
 /// frame, so selecting a row still yields text a shell can take.

@@ -28,11 +28,18 @@
 //! preference layer, which is a different file for a different reader.
 //!
 //! Format is a strict, tiny subset of TOML — top-level `key = "str"` or
-//! `key = ["a", "b"]`, `#` comments — and every departure from it fails loud
-//! with a line number. It is deliberately NOT ripgrep's "each line is a verbatim
-//! argv element", which has no tokenization and so turns an ordinary quoted glob
-//! into a silent no-match (ripgrep #927, #932, #2646, #3428 — still being filed).
-//! Here a quote is a quote.
+//! `key = ["a", "b"]`, `#` comments — and every departure from it is refused with
+//! a line number rather than half-applied. It is deliberately NOT ripgrep's
+//! "each line is a verbatim argv element", which has no tokenization and so turns
+//! an ordinary quoted glob into a silent no-match (ripgrep #927, #932, #2646,
+//! #3428 — still being filed). Here a quote is a quote.
+//!
+//! WHAT A REFUSAL COSTS IS THE CALLER'S, NOT THIS MODULE'S. A face refuses to
+//! search at all — the judgement is right, and it stays — but this file is also
+//! read from inside an embedding host through the C ABI, where ending the process
+//! is a defect no host can catch. So a malformed charter is dropped and its
+//! reason left readable (`faulted`), and a CLI ADOPTS the loud exit at startup
+//! (`failLoud`, reached by `honorNoConfig`). See `Refusal`.
 
 const std = @import("std");
 const assay = @import("../../assay/assay.zig");
@@ -83,11 +90,13 @@ pub const Charter = struct {
 /// fault note quotes, kept as one list so they cannot disagree.
 pub const keys = [_][]const u8{ "roots", "skip", "types" };
 
-/// Why a charter was rejected. Every one of these is a loud exit rather than a
+/// Why a charter was rejected. Every one of these is a refusal rather than a
 /// shrug: a corpus declaration that half-parsed would mean searching a corpus
-/// nobody described, which is worse than not having the file.
+/// nobody described, which is worse than not having the file. What a refusal
+/// *costs* is the caller's to decide — see `Refusal`.
 // File-private parse vocabulary (the fault-channel taxonomy): these names never leave this module
-// as a public error set — `governing` exits, tests assert via global `error.X`.
+// as a public error set — callers read one back through `faulted()`, tests assert
+// via global `error.X`.
 const Fault = error{
     UnknownKey,
     DuplicateKey,
@@ -100,22 +109,95 @@ const Fault = error{
     EmptyValue,
 };
 
+// ── refusal: who decides what a malformed charter costs ──────────────────────
+
+/// What a malformed charter costs the caller who asked for it.
+///
+/// The judgement itself is not in dispute — a corpus nobody described is worse
+/// than no file — but the *remedy* differs by who is asking, and only one of the
+/// two askers may be assumed. `governing` is called from the middle of corpus
+/// setup: root resolution (`corpus.resolveRoots`), the walk's skip overlay
+/// (`haystack.extra_skips`), the type-def pass (`argv.grammar`). Every one of
+/// those also runs inside an embedding host, behind the C ABI, where
+/// `process.exit(2)` is a defect with no catch — the same reason `ignore.zig`
+/// returns `Oom` rather than exiting, stated at its own `Oom` alias.
+///
+/// So the default is `fault`: the charter is dropped, the reason stays readable
+/// through `faulted()`, and the walk proceeds on the tree's undeclared defaults.
+/// A CLI's remedy is the opposite one and it is correct for a CLI — refuse to
+/// search rather than search the wrong tree — so a face ADOPTS `exit` at
+/// startup, where the process it would end is its own.
+pub const Refusal = enum {
+    /// Drop the charter and leave the reason in `faulted()`. A library may not
+    /// choose anything else.
+    fault,
+    /// Say why on the diagnostic channel and end the process with status 2.
+    exit,
+};
+
+/// The posture in force. Library-safe until a face states otherwise, so the
+/// never-terminate-the-host property holds by construction rather than by every
+/// future caller remembering to ask for it.
+var refusal: Refusal = .fault;
+
+/// Adopt the CLI's fail-loud posture: the next search that asks for a malformed
+/// charter reports it and exits 2. `honorNoConfig` calls this, so every face
+/// that scans raw argv gets it without asking; a face that does not scan argv
+/// calls it directly.
+///
+/// Deliberately NOT a validation — it arms the posture and reads nothing. Eager
+/// validation here would kill `gist config check`, whose entire job is to
+/// REPORT a malformed charter and which runs after this call, in the same
+/// process, in every face. That is also why `governing` applies the posture
+/// lazily instead: `config` reaches the file through `inspect`/`faulted`, which
+/// have no posture at all.
+pub fn failLoud() void {
+    refusal = .exit;
+}
+
+/// The posture in force — what a malformed charter would cost right now.
+pub fn refusalNow() Refusal {
+    return refusal;
+}
+
+/// A posture held for the duration of a scope, with whatever was in force
+/// before put back on the way out. Same shape and same reason as
+/// `haystack.stateSkipOverlay`: a caller that must not terminate — the C seam,
+/// a test — states its own and restores the ambient one, rather than trusting
+/// that nothing upstream armed the other.
+pub const StatedRefusal = struct {
+    ambient: Refusal,
+
+    pub fn release(self: StatedRefusal) void {
+        refusal = self.ambient;
+    }
+};
+
+pub fn stateRefusal(r: Refusal) StatedRefusal {
+    const ambient = refusal;
+    refusal = r;
+    return .{ .ambient = ambient };
+}
+
 // ── discovery ────────────────────────────────────────────────────────────────
 
 /// The charter governing the working directory, or `null` when the tree has
 /// none. Resolved once per process and cached; the result is borrowed for the
 /// process lifetime, exactly as the env-var knobs beside it are.
 ///
-/// A parse fault exits (2) here rather than propagating: every caller asks this
-/// question in the middle of setting up a search, and "your committed corpus
-/// declaration is malformed" is not a condition any of them can act on.
+/// `null` is also the answer for a charter that would not parse, and the fault
+/// behind it is readable through `faulted()` rather than thrown — this returns
+/// an optional, not an error union, because its three callers ask the question
+/// while assembling a walk and none of them can act on the reason. Under the
+/// `exit` posture a face has adopted, a fault is instead reported and ends the
+/// process here; see `Refusal` for why that decision is the caller's.
 pub fn governing() ?*const Charter {
     if (suppressedNow()) return null;
     const c = inspect();
-    if (state.fault) |e| {
+    if (state.fault) |e| if (refusal == .exit) {
         report(e);
         std.process.exit(2);
-    }
+    };
     return c;
 }
 
@@ -146,7 +228,12 @@ pub fn inspect() ?*const Charter {
 
 /// Say why the charter could not be used, located and with a guess where one is
 /// worth making. Split from the exit so `gist config check` can print the same
-/// sentence for a file it is only inspecting.
+/// sentence for a file it is only inspecting — and so the `exit` posture is a
+/// two-line policy over this rather than a second copy of the wording.
+///
+/// Writes to the diagnostic channel, so it belongs to a caller that HAS one: the
+/// library path never reaches it (`governing` under `Refusal.fault` returns
+/// without reporting), which is what keeps an embedding host's streams clean.
 pub fn report(e: anyerror) void {
     var loc: [24]u8 = undefined;
     assay.diag(assay.tag ++ "{s}{s}: {s}\n", .{ state.faulted_path, misread.at(&loc, state.diag), faultNote(e) });
@@ -168,8 +255,11 @@ pub fn didYouMean(e: anyerror, token: []const u8) ?[]const u8 {
     return misread.nearest(token, &keys);
 }
 
-/// The fault that kept the charter from loading, if any — the inspect-path twin
-/// of `governing`, which exits on one.
+/// The fault that kept the charter from loading, if any. This is how a caller
+/// learns WHY `governing` handed back nothing: the reason does not ride the
+/// return type (see `governing`), so it is pulled from here — the same
+/// ask-afterwards grammar `irgx_last_fault` uses at the C seam, which is the one
+/// consumer that then has to name a domain member for it.
 pub fn faulted() ?struct { path: []const u8, err: anyerror, at: misread.Diagnostic } {
     _ = inspect();
     const e = state.fault orelse return null;
@@ -201,7 +291,14 @@ pub fn suppressedNow() bool {
 /// (see `portal.argsIterator`); on POSIX it is untouched. A platform that cannot
 /// even enumerate its own arguments has nothing to suppress, so a failure here
 /// leaves the charter honored rather than silently disabling it.
+///
+/// It also ADOPTS the fail-loud posture (`failLoud`), which is why this is the
+/// right seam for it rather than a second call every face would have to
+/// remember: having an argv at all is the fact that distinguishes a face from a
+/// library, and this is the one function that takes one before anything is
+/// searched. A face with no argv scan states the posture itself.
 pub fn honorNoConfig(gpa: std.mem.Allocator, argv: std.process.Args) void {
+    failLoud();
     var scan = portal.argsIterator(argv, gpa) catch return;
     while (scan.next()) |a| {
         if (std.mem.eql(u8, a, "--")) return;

@@ -185,7 +185,7 @@ const Collector = struct {
 /// it; cold owns that exit 2), a leading-`/` anchored glob (cold strips the
 /// anchor against the search root, a rule the flat prune does not reproduce),
 /// and a `{a,b}` alternation, which cold expands into one glob per branch
-/// (`argv.braceExpand`) before matching. The flat filter has no expansion step,
+/// (`glob.braceExpand`) before matching. The flat filter has no expansion step,
 /// so a braced glob pushed raw here matches nothing rather than the branches the
 /// user asked for — a wrong answer, not a slow one. Any `{` declines: an
 /// unbalanced one is a literal to cold, and conserving warm eligibility for a
