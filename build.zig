@@ -786,6 +786,7 @@ pub fn build(b: *std.Build) void {
         .{ .step = "sweep-rung", .exe = "sweep-rung", .root = "bench/rungs/sweep/bench.zig", .blurb = "Sweep-rung consumer proof: each recursive analysis raced against the fused interned-AST sweep, alone and bundled, fail-closed on any disagreement" },
         .{ .step = "ladder-price", .exe = "ladder-price", .root = "bench/rungs/price/bench.zig", .instrument = "pmu", .libc = true, .blurb = "Ladder price plane: re-time every auction coefficient in isolation (verify), and gate the auction's per-pattern picks against the measured-fastest machine (regret)" },
         .{ .step = "engine-census", .exe = "engine-census", .root = "bench/rungs/census/bench.zig", .instrument = "probes", .blurb = "Engine census: which ladder machine each certificate probe class actually compiles to" },
+        .{ .step = "partition-rung", .exe = "partition-rung", .root = "bench/rungs/partition/bench.zig", .libc = true, .tested = true, .blurb = "Partition rung: the math floor's two collapse primitives priced by regime — Moore vs Hopcroft vs auto on a blown-up quotient and on a chain, and the DAFSA's size against a sorted array as suffix sharing varies at a fixed key count" },
     }) |lane| {
         const shipped = lane.posture == .shipped;
         const mod = codegen.module(b.createModule(.{
@@ -820,7 +821,21 @@ pub fn build(b: *std.Build) void {
             b.fmt("build-{s}", .{lane.step}),
             b.fmt("Install (do not run) {s}", .{lane.exe}),
         ).dependOn(install);
-        if (lane.tested) test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = mod })).step);
+        // A lane carrying its own tests is a third plane, and it gets the same
+        // treatment as the C-ABI one above for the same reason: its own step to
+        // be hunted in, folded into `test` only when nothing is filtered. A
+        // filter naming a lane's test is not a typo, so it must not fail the
+        // main plane's shards — and the way to say that is for a narrowed run to
+        // mean exactly one plane.
+        if (lane.tested) {
+            const lane_tests = b.addTest(.{ .root_module = mod, .test_runner = bg.runner() });
+            const lane_step = b.step(
+                b.fmt("test-{s}", .{lane.step}),
+                b.fmt("Run {s}'s own unit tests (folded into `test`)", .{lane.exe}),
+            );
+            bg.shard(lane_step, lane_tests, .{ .count = 1 });
+            if (!bg.narrowed()) test_step.dependOn(lane_step);
+        }
     }
 
     // Layer-B drift guard: the `probes/` copies must stay ≡ the real production
@@ -832,7 +847,10 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     probes_drift.addImport("irregex", engine);
-    test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = probes_drift })).step);
+    const drift_tests = b.addTest(.{ .root_module = probes_drift, .test_runner = bg.runner() });
+    const drift_step = b.step("test-probes-drift", "Run the Layer-B probe/production drift guard (folded into `test`)");
+    bg.shard(drift_step, drift_tests, .{ .count = 1 });
+    if (!bg.narrowed()) test_step.dependOn(drift_step);
 
     // ── `zig build ir` — reading what LLVM actually did ──
     // The knobs at the top choose what LLVM is ALLOWED to emit; this is how you
