@@ -107,14 +107,24 @@ pub const Munch = struct {
     /// caller ever learning that voices exist.
     seats: []const Seat,
 
-    /// The three ways a pattern can fail to become an automaton. Exhaustive by
+    /// The four ways a pattern can fail to become an automaton. Exhaustive by
     /// construction: `voice` is the only place a refusal is minted.
+    ///
+    /// The split between `states` and `buffer_anchor` is the difference between a
+    /// budget and a wall, and a caller acts on it: `states` says a bigger ceiling
+    /// would admit this pattern, `buffer_anchor` says no ceiling ever will. They
+    /// were one value until a test asked why `\Ab` reported a size problem.
     pub const Because = enum {
         /// The parser would not accept the pattern's syntax.
         syntax,
         /// The subset construction reached the `max_states` safety bound. Not a
         /// statement about regular languages; a statement about this build.
         states,
+        /// A buffer anchor (`\A`/`\z`) — undeterminizable at any size, because
+        /// the position it asserts is content the automaton cannot see. Rewrite
+        /// the terminal without it: an anchored scan already starts where the
+        /// caller pointed, so `\A` is either redundant or unsatisfiable here.
+        buffer_anchor,
         /// A word-boundary assertion reached through the pattern body, which the
         /// caller never asked for by flag. The automaton was built and dropped.
         word_context,
@@ -580,7 +590,12 @@ fn voice(
     // exactly as before and `admit` bisects it to name the pattern responsible.
     const outcome = try powerset.build(gpa, c.states.items, start, true, opts.unicode, .slate);
     return switch (outcome) {
-        .declined => .{ .refused = .states },
+        // `.slate` waives the visit cap, so `too_costly` cannot arrive here; it
+        // shares the size reading because both are budgets rather than walls.
+        .declined => |d| .{ .refused = switch (d) {
+            .unsupported => .buffer_anchor,
+            .too_large, .too_costly => .states,
+        } },
         .built => |dfa| if (dfa.word_ctx) blk: {
             // An assertion the caller did not ask for by flag, reached through
             // a pattern body. Same reasoning as `opts.word`, discovered later.
