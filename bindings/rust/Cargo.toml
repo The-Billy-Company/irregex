@@ -44,7 +44,19 @@ categories = [
 ]
 # The vendored archives are the install story, so they ship. `target/` and the
 # per-target build caches do not.
-exclude = [ "/target", "/.cargo" ]
+#
+# `LICENSE` and `NOTICE` are copies of the repository's, kept beside this manifest
+# rather than referenced upward: Cargo cannot package a file outside the crate
+# directory, so without the copies an Apache-2.0 crate shipped no license text and
+# no attribution notice at all - the two things section 4 of that license requires a
+# redistributor to hand on, and the notice here is the one that credits what the
+# vendored archives are built from. Keep them byte-identical to the root pair.
+#
+# `rust-toolchain.toml` is deliberately not shipped. It pins 1.96.0 so this
+# repository's contributors lint identically, which is no business of someone
+# building the extracted crate - and it would silently override the 1.85
+# `rust-version` above, which is the floor the sources actually ask for.
+exclude = [ "/target", "/.cargo", "/rust-toolchain.toml" ]
 
 # No `[lib] name` override: the package is `irgx`, so the library Cargo derives
 # is already `irgx` and callers already type `use irgx::…`. It used to be here
