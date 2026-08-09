@@ -10,6 +10,7 @@
 //! story and `../matcher.zig` for the union that dispatches to us.
 
 const std = @import("std");
+const mark = @import("../../../mark.zig");
 const core = @import("../linear/program/core.zig");
 const ffi = @import("ffi.zig");
 const literal = @import("literal.zig");
@@ -57,6 +58,105 @@ pub const jit_stack_max: usize = 10 * 1024 * 1024;
 pub const jit_stack_start: usize = 32 * 1024;
 pub const match_limit: u32 = 10_000_000;
 pub const depth_limit: u32 = 10_000;
+
+/// The ceilings a caller may put on one search — `mark.Limits`, re-exported so
+/// this arm's callers name it once. `null` is "whatever this engine already
+/// does", which here means the four constants above, so an all-null `Limits`
+/// builds the exact match context the arm has always built.
+///
+/// `states` is inert here: this arm builds no automaton, so there is nothing
+/// for a state ceiling to bound. Ignoring it rather than refusing it is the
+/// type's own rule — a host that defensively sets every field should not be
+/// punished for the caution the field exists to permit.
+pub const Limits = mark.Limits;
+
+/// Which ceiling a `BudgetExceeded` was about.
+///
+/// A reason rather than three error names, because a step budget, a recursion
+/// depth and a heap ceiling are one fact — the limit this host asked for was
+/// hit — and the taxonomy's rule is one member per condition, not one per call
+/// site (`contract/engine.toml`, `[fault_domains].resource`). It is the same
+/// shape `munch.Because` uses for a refusal: a small enumeration minted at
+/// exactly one site and read beside the answer.
+///
+/// It needs no cell of its own. PCRE2 already distinguishes the three, so the
+/// reason is a decode of the return code the arm was latching anyway.
+pub const Ceiling = enum {
+    /// `Limits.steps` — the backtracking budget ran out.
+    steps,
+    /// `Limits.depth` — the interpreter hit the frame ceiling.
+    depth,
+    /// `Limits.heap_bytes` — the frame vector could not grow further.
+    heap,
+
+    /// The ceiling `rc` reports, or null when it is any other outcome.
+    pub fn of(rc: c_int) ?Ceiling {
+        return switch (rc) {
+            ffi.ERROR_MATCHLIMIT => .steps,
+            ffi.ERROR_DEPTHLIMIT => .depth,
+            ffi.ERROR_HEAPLIMIT => .heap,
+            else => null,
+        };
+    }
+
+    /// Did the CALLER name this ceiling, or is it the arm's own default?
+    ///
+    /// The distinction is what makes a `BudgetExceeded` honest. A default the
+    /// caller never asked about tripping is the old fail-closed no-match this
+    /// arm has always reported, and calling it "the budget you set" would be a
+    /// fault about a request nobody made.
+    fn asked(self: Ceiling, limits: Limits) bool {
+        return switch (self) {
+            .steps => limits.steps != null,
+            .depth => limits.depth != null,
+            .heap => limits.heap_bytes != null,
+        };
+    }
+};
+
+/// The one fault a ceiling produces. Never a declinature: `.stale` promises a
+/// slower tier can answer, and there is no slower tier for a caller who asked
+/// to be stopped — the remedy is a bigger ceiling, which only the caller can
+/// grant. Distinct from `OutOfMemory` (the machine's limit, not the caller's).
+pub const BudgetError = error{BudgetExceeded};
+
+/// `value`, narrowed to the width PCRE2 spends it in — never upward.
+///
+/// A ceiling that granted more than it was asked for would be a ceiling in name
+/// only, so the saturation is deliberately one-directional: `steps` arrives as
+/// a `u64` and `heap_bytes` as a `usize`, and both are floored into `u32`.
+fn narrowed(value: anytype) u32 {
+    return @intCast(@min(value, std.math.maxInt(u32)));
+}
+
+/// Put `limits` on a fresh match context, leaving every unnamed ceiling at this
+/// arm's own default so an all-null `Limits` is the context we always built.
+///
+/// `heap_bytes` is the one that cannot be forwarded verbatim: PCRE2 counts its
+/// heap ceiling in kibibytes. The conversion floors, for the same reason the
+/// narrowing does — under a sub-kibibyte request the honest answer is that
+/// nothing PCRE2 can allocate fits inside it, and refusing is the fail-closed
+/// direction. An unset `heap_bytes` never calls the setter at all, so PCRE2's
+/// own default stands untouched.
+pub fn applyLimits(mc: *ffi.MatchContext, limits: Limits) void {
+    _ = ffi.pcre2_set_match_limit_8(mc, if (limits.steps) |s| narrowed(s) else match_limit);
+    _ = ffi.pcre2_set_depth_limit_8(mc, limits.depth orelse depth_limit);
+    if (limits.heap_bytes) |b| _ = ffi.pcre2_set_heap_limit_8(mc, narrowed(b / 1024));
+}
+
+/// May this compile be JIT'd, given the ceilings it must honor?
+///
+/// The JIT reads `match_limit` and nothing else — it runs on its own stack, so
+/// `pcre2_set_depth_limit` and `pcre2_set_heap_limit` are simply not consulted
+/// on that path (`vendor/pcre2/src/pcre2_jit_match_inc.h` forwards `limit_match`
+/// alone). A host that asks to be bounded and is silently not bounded has a
+/// safety property that only looks like one, so naming either of those two
+/// ceilings costs the JIT: the interpreter is always the guaranteed fallback,
+/// and a slower search that stops is what was actually requested. A caller that
+/// sets only `steps` keeps the JIT, because the JIT honors that one.
+pub fn jitHonors(limits: Limits) bool {
+    return limits.depth == null and limits.heap_bytes == null;
+}
 
 /// No match-time option bits: UTF + UCP + invalid-UTF tolerance are baked into
 /// the compiled program (they are `pcre2_compile` options), so every
@@ -110,18 +210,71 @@ pub fn matchError() c_int {
     return match_error_code.load(.acquire);
 }
 
+/// The caller ceiling this run reached, latched beside the raw error code.
+///
+/// One cell rather than a decode of `matchError`, because the return code alone
+/// cannot tell the two ceilings apart that matter here: PCRE2 spells "your
+/// ten-million-step default ran out" and "the thousand steps you asked for ran
+/// out" with the same `-47`, and only the first is the old fail-closed
+/// no-match. `+1` biased so zero is "none" without a sentinel member — the same
+/// reason `AtSpace.none` is 0. Process-global like `match_error_code`, and
+/// cleared by the same reset, so the parallel `-P` pipeline's workers latch
+/// into one cell the main thread reads after they join.
+var budget_ceiling: std.atomic.Value(u32) = .init(0);
+
+/// Which ceiling this run hit, or null if it reached none of the caller's.
+pub fn ceilingHit() ?Ceiling {
+    const biased = budget_ceiling.load(.acquire);
+    return if (biased == 0) null else @enumFromInt(biased - 1);
+}
+
+/// `error.BudgetExceeded` iff a ceiling the caller named was reached.
+///
+/// The arm's own verbs stay fail-closed and answer `null`/`false` — a ceiling
+/// hit is not a match, and the frozen `?Span` seam has no room to say more —
+/// so this is where the fact becomes a fault a host can `try`. Which ceiling it
+/// was rides `ceilingHit` beside it, exactly as a `munch.Because` rides beside
+/// a refused ordinal.
+///
+/// It does **not** install a `fault.Detail` yet, and that is a missing edge
+/// rather than a design: `[fault_domains].resource` already declares
+/// `BudgetExceeded`, but `fault.Resource` does not name it, and adding it there
+/// obliges `contract.Status.ofFault` to grow the prong `[status_codes]` already
+/// assigns (the `resource` domain folds onto `out_of_memory`). Both files
+/// belong to other lanes. Until they land, the reason is readable here and the
+/// C seam cannot see it.
+pub fn budgetVerdict() BudgetError!void {
+    if (ceilingHit() != null) return error.BudgetExceeded;
+}
+
 /// Clear the sticky match-time error (call once before a search begins).
 pub fn clearMatchError() void {
     match_error_code.store(0, .release);
+    budget_ceiling.store(0, .release);
 }
 
 /// Latch a `pcre2_match` return code as a fault iff it is worse than a clean
 /// no-match (`< ERROR_NOMATCH`) — the match/depth-limit and JIT-stack failures
-/// ripgrep exits 2 on. Shared by the boolean/span `Sim` and the capture
-/// engine (and safe across the parallel pipeline's workers) so all paths
-/// surface catastrophic input identically.
-pub fn recordMatchFault(rc: c_int) void {
+/// ripgrep exits 2 on — and, when the ceiling it reports is one `limits`
+/// actually named, latch which ceiling that was. Shared by the boolean/span
+/// `Sim` and the capture engine (and safe across the parallel pipeline's
+/// workers) so all paths surface catastrophic input identically.
+///
+/// The reason is recorded here, at the hit, rather than at whatever surface
+/// eventually asks. A search that answered no-match and a search that was
+/// stopped are the same `null` to the caller above, so the fact has to be kept
+/// while the arm still knows which it was.
+///
+/// An unnamed ceiling is deliberately left at the first line. Hitting the arm's
+/// ten-million step default is the fail-closed no-match this engine has always
+/// reported, and dressing it as "the budget you set" would be a fault about a
+/// request nobody made — so an all-null `Limits` records exactly what it always
+/// did and no more.
+pub fn recordFault(limits: Limits, rc: c_int) void {
     if (rc < ffi.ERROR_NOMATCH) match_error_code.store(rc, .release);
+    const hit = Ceiling.of(rc) orelse return;
+    if (!hit.asked(limits)) return;
+    budget_ceiling.store(@intFromEnum(hit) + 1, .release);
 }
 
 /// Render the latched match-time error into `buf` (empty when none), for the
@@ -179,6 +332,13 @@ pub const Pcre = struct {
     code: *ffi.Code = undefined,
     /// True iff `pcre2_jit_compile` succeeded; false ⇒ interpreter fallback.
     jit: bool = false,
+    /// The ceilings every `Sim` built from this program runs under. They ride
+    /// the compiled program rather than each match call because that is where
+    /// the C ABI already puts them (`irgx_options` is a compile-time struct),
+    /// and because the scratch is built from the program — so a worker cannot
+    /// end up bounded differently from the query it belongs to. All-null is
+    /// the arm's own defaults, unchanged.
+    limits: Limits = .{},
     /// The linear-time over-approximation gate (`shadow.zig`): a compiled
     /// linear `Regex` whose language provably CONTAINS this pattern's, so a
     /// haystack it rejects cannot match and PCRE2 never scans it — the
@@ -192,7 +352,15 @@ pub const Pcre = struct {
     /// supports it. Declines with `BadPattern` (diagnostic in `lastError`) for
     /// an invalid pattern, `OutOfMemory` on allocation failure.
     pub fn compileOpts(allocator: std.mem.Allocator, pattern: []const u8, opts: Options) CompileError!Pcre {
-        return compileMode(allocator, pattern, opts, true);
+        return compileMode(allocator, pattern, opts, true, .{});
+    }
+
+    /// `compileOpts` under caller ceilings — the entry a host that cannot
+    /// afford this arm's defaults compiles through. Every field of `limits`
+    /// left null keeps the default, so this is `compileOpts` for `.{}` and the
+    /// two are one program with one behavior rather than two code paths.
+    pub fn compileLimited(allocator: std.mem.Allocator, pattern: []const u8, opts: Options, limits: Limits) CompileError!Pcre {
+        return compileMode(allocator, pattern, opts, true, limits);
     }
 
     pub fn deinit(self: *Pcre) void {
@@ -216,6 +384,11 @@ pub const Pcre = struct {
         /// Pike scratch for the shadow gate's rare no-DFA fallback (a powerset
         /// blow-up). Present iff `re.shadow` is — the gates below unwrap it.
         shadow: ?core.Regex.Sim,
+        /// The ceilings this scratch was built under, copied from the program
+        /// it belongs to. Held rather than re-read because `find` needs to know
+        /// whether the ceiling PCRE2 just reported is one the caller named, and
+        /// the return code cannot say.
+        limits: Limits,
 
         pub fn init(allocator: std.mem.Allocator, re: *const Pcre) CompileError!Sim {
             const md = ffi.pcre2_match_data_create_from_pattern_8(re.code, null) orelse
@@ -224,8 +397,7 @@ pub const Pcre = struct {
             const mc = ffi.pcre2_match_context_create_8(null) orelse
                 return CompileError.OutOfMemory;
             errdefer ffi.pcre2_match_context_free_8(mc);
-            _ = ffi.pcre2_set_match_limit_8(mc, match_limit);
-            _ = ffi.pcre2_set_depth_limit_8(mc, depth_limit);
+            applyLimits(mc, re.limits);
 
             var jit_stack: ?*ffi.JitStack = null;
             errdefer if (jit_stack) |js| ffi.pcre2_jit_stack_free_8(js);
@@ -237,7 +409,7 @@ pub const Pcre = struct {
                 core.Regex.Sim.init(allocator, sh) catch return CompileError.OutOfMemory
             else
                 null;
-            return .{ .md = md, .mc = mc, .jit_stack = jit_stack, .shadow = sh_sim };
+            return .{ .md = md, .mc = mc, .jit_stack = jit_stack, .shadow = sh_sim, .limits = re.limits };
         }
         pub fn deinit(self: *Sim) void {
             if (self.shadow) |*s| s.deinit();
@@ -255,8 +427,10 @@ pub const Pcre = struct {
             if (rc < 0) {
                 // A clean no-match is `ERROR_NOMATCH`; anything more negative is a
                 // resource limit or fault ripgrep exits 2 on — latch it (last one
-                // wins; any error is enough to force the exit-2 the CLI mirrors).
-                recordMatchFault(rc);
+                // wins; any error is enough to force the exit-2 the CLI mirrors),
+                // and, when the caller named the ceiling that stopped us, record
+                // the `BudgetExceeded` incident it can read back afterwards.
+                recordFault(self.limits, rc);
                 return null;
             }
             const ov = ffi.pcre2_get_ovector_pointer_8(self.md);
@@ -328,7 +502,10 @@ pub const Pcre = struct {
 /// agree byte-for-byte. The interpreter is always the guaranteed fallback, so a
 /// `false` here is exactly the platform-has-no-JIT case. Kept a module-level
 /// helper (not a `Pcre` method) so the frozen `Pcre` surface stays byte-stable.
-pub fn compileMode(allocator: std.mem.Allocator, pattern: []const u8, opts: Options, enable_jit: bool) CompileError!Pcre {
+///
+/// `limits` may also withdraw the JIT on its own — see `jitHonors`. A ceiling
+/// the fast path would not read is not a ceiling.
+pub fn compileMode(allocator: std.mem.Allocator, pattern: []const u8, opts: Options, enable_jit: bool, limits: Limits) CompileError!Pcre {
     const compile_options = compileOptionBits(opts);
 
     const src = try wordWrapped(allocator, pattern, opts);
@@ -345,7 +522,7 @@ pub fn compileMode(allocator: std.mem.Allocator, pattern: []const u8, opts: Opti
     errdefer ffi.pcre2_code_free_8(code);
 
     // Best-effort JIT; the interpreter is always the guaranteed fallback.
-    const jit = enable_jit and ffi.pcre2_jit_compile_8(code, ffi.JIT_COMPLETE) == 0;
+    const jit = enable_jit and jitHonors(limits) and ffi.pcre2_jit_compile_8(code, ffi.JIT_COMPLETE) == 0;
 
     var req = try literal.required(allocator, pattern, opts.caseless);
     errdefer allocator.free(req);
@@ -389,6 +566,7 @@ pub fn compileMode(allocator: std.mem.Allocator, pattern: []const u8, opts: Opti
         .code = code,
         .jit = jit,
         .shadow = shadow,
+        .limits = limits,
     };
 }
 
@@ -405,9 +583,20 @@ fn buildShadow(allocator: std.mem.Allocator, pattern: []const u8, opts: Options)
     // Mirror the PCRE2 compile knobs so the two languages align (fold, `.`-vs-
     // `\n`, Unicode classes). `line_anchors` is irrelevant: the shadow is
     // assertion-free by construction.
+    //
+    // `multiline` is the exception, and it is pinned rather than mirrored. It
+    // does not name a language here — the shadow has no anchors for it to move
+    // — it names the GRAIN the gate scans at, and `admits` is handed a whole
+    // buffer by `matchSpan` and a line by `docMatch` alike. Mirrored, a shadow
+    // built for line grain answered a buffer question, and a pattern whose
+    // language needs a terminator was gated out of a buffer that plainly holds
+    // one: `irgx_find_all(re, "x\ny")` for `\n` found nothing under PCRE while
+    // the linear arm and every general-purpose regex library found (1,2).
+    // Pinned true, the gate scans whatever it is given, and it can only ever
+    // admit MORE - which is the safe direction for an over-approximation.
     var sh = core.Regex.compileOpts(allocator, text, .{
         .caseless = opts.caseless,
-        .multiline = opts.multiline,
+        .multiline = true,
         .dotall = opts.dotall,
         .unicode = opts.unicode,
     }) catch |e| switch (e) {

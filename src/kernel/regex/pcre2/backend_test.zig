@@ -11,6 +11,7 @@ const std = @import("std");
 const t = std.testing;
 const pcre2 = @import("backend.zig");
 const engine = @import("engine.zig");
+const ffi = @import("ffi.zig");
 const literal = @import("literal.zig");
 
 const Pcre = pcre2.Pcre;
@@ -116,6 +117,136 @@ test "catastrophic backtracking terminates deterministically as no-match" {
     try t.expect(!try matches(&re, evil));
 }
 
+// ── caller ceilings (mark.Limits) ──────────────────────────────────────────
+//
+// The evil subject every ceiling test below runs against. `(a+)+$` over a run
+// of 'a's terminated by a character `$` cannot accept is the textbook
+// exponential: every ceiling has something to stop.
+const evil_pattern = "(a+)+$";
+const evil_subject = "a" ** 42 ++ "!";
+
+/// Run `evil_pattern` under `limits` with the run's latches freshly cleared,
+/// and hand back the ceiling it reached (null for none). `enable_jit` is
+/// explicit because two of the three ceilings only exist on the interpreter —
+/// see `engine.jitHonors` — and a test that let the arm decide would be
+/// asserting the arm's decision rather than the ceiling.
+fn ceilingUnder(limits: engine.Limits, enable_jit: bool) !?engine.Ceiling {
+    engine.clearMatchError();
+    var re = try engine.compileMode(t.allocator, evil_pattern, .{}, enable_jit, limits);
+    defer re.deinit();
+    try t.expect(!try matches(&re, evil_subject)); // fail-closed: never a match
+    return engine.ceilingHit();
+}
+
+test "limits: an all-null Limits reproduces the arm's own ceilings exactly" {
+    // The whole promise of `null`: it is "whatever this engine already does",
+    // not "unlimited". So the default 10M step budget still trips on the evil
+    // subject and still latches PCRE2's own MATCHLIMIT — and the arm claims NO
+    // budget, because a ceiling the caller never named is the fail-closed
+    // no-match this engine has always reported, not a fault about their request.
+    try t.expectEqual(@as(?engine.Ceiling, null), try ceilingUnder(.{}, true));
+    try t.expectEqual(ffi.ERROR_MATCHLIMIT, engine.matchError());
+    try t.expectEqual({}, try engine.budgetVerdict());
+
+    // A `states` ceiling is INERT here rather than an error: this arm builds no
+    // automaton, so there is nothing for it to bound and refusing a defensive
+    // host would punish the caution the field exists to permit.
+    try t.expectEqual(@as(?engine.Ceiling, null), try ceilingUnder(.{ .states = 1 }, true));
+    try t.expectEqual({}, try engine.budgetVerdict());
+
+    // And the compiled program is the one we always compiled: an unbounded
+    // request keeps the JIT, and a `steps`-only request keeps it too, because
+    // the JIT is the one ceiling PCRE2's fast path actually reads.
+    var plain = try compile(evil_pattern);
+    defer plain.deinit();
+    var stepped = try engine.Pcre.compileLimited(t.allocator, evil_pattern, .{}, .{ .steps = 1000 });
+    defer stepped.deinit();
+    try t.expect(plain.jit);
+    try t.expectEqual(plain.jit, stepped.jit);
+}
+
+test "limits: a tiny steps ceiling fires and names the step budget" {
+    // 1000 steps against a subject that wants billions. The JIT reads
+    // `match_limit`, so this one fires on either engine — assert both, since a
+    // ceiling that only holds on the slow path is not a safety property.
+    for ([_]bool{ true, false }) |jit| {
+        try t.expectEqual(@as(?engine.Ceiling, .steps), try ceilingUnder(.{ .steps = 1000 }, jit));
+        try t.expectEqual(ffi.ERROR_MATCHLIMIT, engine.matchError());
+        try t.expectError(error.BudgetExceeded, engine.budgetVerdict());
+    }
+}
+
+test "limits: a tiny depth ceiling fires and names the depth budget" {
+    // Two frames of recursion. `(a+)+` nests, so the interpreter's
+    // `Frdepth >= match_limit_depth` guard trips long before the step budget
+    // does — which is the point: the two ceilings are reported apart.
+    try t.expectEqual(@as(?engine.Ceiling, .depth), try ceilingUnder(.{ .depth = 2 }, false));
+    try t.expectEqual(ffi.ERROR_DEPTHLIMIT, engine.matchError());
+    try t.expectError(error.BudgetExceeded, engine.budgetVerdict());
+
+    // The JIT never reads `pcre2_set_depth_limit`, so asking for one withdraws
+    // it rather than leaving the caller silently unbounded. The ceiling still
+    // fires with `enable_jit` true precisely because the arm declined to JIT.
+    var re = try engine.Pcre.compileLimited(t.allocator, evil_pattern, .{}, .{ .depth = 2 });
+    defer re.deinit();
+    try t.expect(!re.jit);
+    try t.expectEqual(@as(?engine.Ceiling, .depth), try ceilingUnder(.{ .depth = 2 }, true));
+}
+
+test "limits: a tiny heap ceiling fires and names the heap budget" {
+    // The newly wired one. PCRE2 counts this ceiling in KIBIBYTES, so 1 KiB is
+    // what `heap_bytes = 1024` must reach it as — a frame vector that cannot
+    // grow past one kibibyte gives up on the evil subject instead of climbing
+    // until the allocator refuses, which is what this arm did before.
+    try t.expectEqual(@as(?engine.Ceiling, .heap), try ceilingUnder(.{ .heap_bytes = 1024 }, false));
+    try t.expectEqual(ffi.ERROR_HEAPLIMIT, engine.matchError());
+    try t.expectError(error.BudgetExceeded, engine.budgetVerdict());
+
+    // Proof it is not silently dropped: the SAME subject and the SAME pattern
+    // reach the step budget when only `steps` is named, so `heap` above can
+    // only have come from the heap setter actually being called.
+    try t.expectEqual(@as(?engine.Ceiling, .steps), try ceilingUnder(.{ .steps = 1000 }, false));
+
+    var re = try engine.Pcre.compileLimited(t.allocator, evil_pattern, .{}, .{ .heap_bytes = 1024 });
+    defer re.deinit();
+    try t.expect(!re.jit); // the JIT does not read the heap ceiling either
+}
+
+test "limits: the reached ceiling stays readable after the search returns" {
+    // The arm's verbs are fail-closed and answer `false`, so "did it not match"
+    // and "was it stopped" are the same answer above — the reason has to
+    // outlive the call. It does, and it survives being asked twice.
+    engine.clearMatchError();
+    var re = try engine.Pcre.compileLimited(t.allocator, evil_pattern, .{}, .{ .depth = 2 });
+    defer re.deinit();
+    var sim = try engine.Pcre.Sim.init(t.allocator, &re);
+    defer sim.deinit();
+    try t.expect(!re.lineMatch(&sim, evil_subject));
+
+    try t.expectEqual(@as(?engine.Ceiling, .depth), engine.ceilingHit());
+    try t.expectEqual(@as(?engine.Ceiling, .depth), engine.ceilingHit());
+    try t.expectError(error.BudgetExceeded, engine.budgetVerdict());
+
+    // And the run's reset clears it, so the next query starts unaccused.
+    engine.clearMatchError();
+    try t.expectEqual(@as(?engine.Ceiling, null), engine.ceilingHit());
+    try t.expectEqual({}, try engine.budgetVerdict());
+}
+
+test "limits: a bounded search still answers a pattern it can afford" {
+    // A ceiling must bound the pathological case without costing the ordinary
+    // one — otherwise a defensive host pays for its caution on every query.
+    engine.clearMatchError();
+    var re = try engine.Pcre.compileLimited(t.allocator, "a.c", .{}, .{ .steps = 1000, .depth = 32, .heap_bytes = 64 * 1024 });
+    defer re.deinit();
+    var sim = try engine.Pcre.SpanSim.init(t.allocator, &re);
+    defer sim.deinit();
+    const sp = re.matchSpan(&sim, "xxaZcyy", 0) orelse return error.NoMatch;
+    try t.expectEqual(@as(usize, 2), sp.start);
+    try t.expectEqual(@as(usize, 5), sp.end);
+    try t.expectEqual(@as(?engine.Ceiling, null), engine.ceilingHit());
+}
+
 // ── zero-width / nullable contract ─────────────────────────────────────────
 
 test "nullable flags zero-width patterns" {
@@ -159,6 +290,37 @@ test "multiline doc and buffer matching" {
     try t.expect(!re.bufMatch(&sim, ""));
 }
 
+test "a pattern whose language is a terminator still matches the buffer holding one" {
+    // The shadow gate is compiled once and asked about both grains. Built at
+    // LINE grain it could not find a `\n` in anything — no line contains its own
+    // terminator — so it gated the PCRE arm out of a BUFFER that plainly held
+    // one, and `irgx_find_all(re, "x\ny")` for `\n` reported nothing while the
+    // linear arm and every general-purpose regex library reported (1,2). The
+    // arms disagreeing about a two-byte question is the whole defect; the
+    // header promises agreement with a general-purpose library at this grain.
+    for ([_][]const u8{ "\n", "[\n]", "(?:\n)", "\n{1}" }) |pattern| {
+        var re = try compile(pattern);
+        defer re.deinit();
+        try expectSpan(&re, "x\ny", 1, 2);
+    }
+
+    // Two needles the fix must not have papered over. `\r` is not a terminator
+    // and always worked, so it fails only if the gate stopped gating at all;
+    // and a pattern needing a terminator must STILL be refused per line, which
+    // is the rg model both arms share (`rg $'\n'` refuses outright, `rg -P`
+    // exits 1) and the thing a widened gate would quietly break.
+    var cr = try compile("\r");
+    defer cr.deinit();
+    try expectSpan(&cr, "x\ry", 1, 2);
+
+    var nl = try compile("\n");
+    defer nl.deinit();
+    try t.expect(!try matches(&nl, "x")); // lineMatch: a line has no terminator
+    var sim = try Pcre.Sim.init(t.allocator, &nl);
+    defer sim.deinit();
+    try t.expect(!nl.docMatch(&sim, "x\ny")); // every line, still none of them
+}
+
 test "whole-buffer dotall lookahead crosses newlines (the -U (?s)…(?=.*…) contract)" {
     // rg `-P -U '(?s)alpha(?=.*bar)'`: DOTALL lets `.*` span `\n`, so the
     // zero-width lookahead can see a `bar` on a LATER line than the `alpha`
@@ -185,9 +347,9 @@ test "JIT and interpreter agree on whole-buffer multiline dotall lookahead" {
     // interpreter fallback — the same fail-closed guarantee as the single-line
     // parity slate, on the whole-buffer path.
     const buf = "alpha x\nmid\nyy bar\n";
-    var jit = try engine.compileMode(t.allocator, "alpha(?=.*bar)", .{ .multiline = true, .dotall = true }, true);
+    var jit = try engine.compileMode(t.allocator, "alpha(?=.*bar)", .{ .multiline = true, .dotall = true }, true, .{});
     defer jit.deinit();
-    var interp = try engine.compileMode(t.allocator, "alpha(?=.*bar)", .{ .multiline = true, .dotall = true }, false);
+    var interp = try engine.compileMode(t.allocator, "alpha(?=.*bar)", .{ .multiline = true, .dotall = true }, false, .{});
     defer interp.deinit();
     try t.expect(!interp.jit);
     var js = try Pcre.Sim.init(t.allocator, &jit);
@@ -215,7 +377,7 @@ test "JIT compiles on this build target" {
     // arm64, …), and the `-P` lane exists for rg-parity speed — so a silent
     // drop to the interpreter is a regression we want to see loudly. The
     // interpreter fallback's *correctness* is proven independently below.
-    var re = try engine.compileMode(t.allocator, "a.c", .{}, true);
+    var re = try engine.compileMode(t.allocator, "a.c", .{}, true, .{});
     defer re.deinit();
     try t.expect(re.jit);
 }
@@ -230,9 +392,9 @@ test "JIT and interpreter agree byte-for-byte" {
         .{ .pat = "a*", .hay = "bbb" },
     };
     for (cases) |c| {
-        var jit = try engine.compileMode(t.allocator, c.pat, .{}, true);
+        var jit = try engine.compileMode(t.allocator, c.pat, .{}, true, .{});
         defer jit.deinit();
-        var interp = try engine.compileMode(t.allocator, c.pat, .{}, false);
+        var interp = try engine.compileMode(t.allocator, c.pat, .{}, false, .{});
         defer interp.deinit();
         try t.expect(!interp.jit); // forced off
         const a = try firstSpan(&jit, c.hay);

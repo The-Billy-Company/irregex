@@ -49,6 +49,16 @@ pub const JIT_COMPLETE: u32 = 0x00000001;
 /// surfaces as exit 2 rather than a silent no-match. Value from `pcre2.h`.
 pub const ERROR_NOMATCH: c_int = -1;
 
+/// The three rcs that mean "a ceiling on this match context was reached", as
+/// opposed to the pattern simply not being there. They are what lets the arm
+/// say WHICH ceiling without keeping a second cell to remember it in: PCRE2
+/// already distinguishes them, so the reason is a decode of the return code
+/// rather than a fact we have to carry alongside it. Values from `pcre2.h`
+/// (`PCRE2_ERROR_DEPTHLIMIT` and the obsolete `RECURSIONLIMIT` are one number).
+pub const ERROR_MATCHLIMIT: c_int = -47;
+pub const ERROR_DEPTHLIMIT: c_int = -53;
+pub const ERROR_HEAPLIMIT: c_int = -63;
+
 /// `PCRE2_INFO_CAPTURECOUNT` — the number of capturing subpatterns, queried via
 /// `pcre2_pattern_info` to size a replacement's slot vector (`2*(count+1)`).
 pub const INFO_CAPTURECOUNT: u32 = 4;
@@ -108,6 +118,13 @@ pub extern fn pcre2_match_context_create_8(gcontext: ?*GeneralContext) ?*MatchCo
 pub extern fn pcre2_match_context_free_8(mcontext: ?*MatchContext) void;
 pub extern fn pcre2_set_match_limit_8(mcontext: *MatchContext, value: u32) c_int;
 pub extern fn pcre2_set_depth_limit_8(mcontext: *MatchContext, value: u32) c_int;
+
+/// The heap a single match may hold, **counted in kibibytes** — PCRE2's own
+/// unit, and the reason the caller-facing `heap_bytes` cannot be forwarded
+/// verbatim. Unset by this arm until a caller names one, so a context nobody
+/// bounded keeps PCRE2's own default exactly as it always has. Honored by the
+/// interpreter only; the JIT runs on its own stack and never reads it.
+pub extern fn pcre2_set_heap_limit_8(mcontext: *MatchContext, value: u32) c_int;
 
 // ── JIT: compile + per-thread executable stack ──
 pub extern fn pcre2_jit_compile_8(code: *Code, options: u32) c_int;

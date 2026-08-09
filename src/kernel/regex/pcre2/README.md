@@ -7,7 +7,7 @@ Its hermetic sources live at [`../../../../vendor/pcre2/`](../../../../vendor/pc
 ## Files
 
 - **`ffi.zig`** is the minimal explicit-`extern` C-ABI surface of the vendored 8-bit library (`_8` symbols). It uses no `@cImport`; `build.zig` links `pcre2Library`.
-- **`engine.zig`** defines the `Pcre` handle: compile (JIT plus interpreter fallback), an immutable shared program, per-thread `Sim` scratch, and `lineMatch`/`docMatch`/`bufMatch`.
+- **`engine.zig`** defines the `Pcre` handle: compile (JIT plus interpreter fallback), an immutable shared program, per-thread `Sim` scratch, `lineMatch`/`docMatch`/`bufMatch`, and the caller ceilings below.
 - **`literal.zig`** does sound required-literal extraction for the trigram prefilter — the longest ASCII run every match must contain, or `""`. It never over-claims.
 - **`shadow.zig`** builds a linear-time over-approximation of a PCRE pattern, so the byte-class DFA pre-filters and PCRE2 only confirms survivors. It rewrites by erasure (assertions), splice (backreferences), and relaxation (atomics/possessive).
 - **`captures.zig`** bridges capture groups, unified with the linear capture shape.
@@ -25,6 +25,21 @@ Every rewrite rule is provably language-growing or language-preserving.
 - **Relaxation.** Atomic groups and possessive quantifiers become greedy; removing commitment only adds matches.
 
 Anything whose containment is not trivially provable — recursion, subroutine calls, conditionals — bails: no shadow, and PCRE2 runs raw exactly as before. Under-approximating the *rewriter* costs only speed; over-approximating the *language* would be a soundness bug.
+
+## Caller Ceilings
+
+`compileLimited` takes a `mark.Limits`, and every `Sim` built from that program runs under it. A null field is *this arm's own default*, not "unlimited", so an all-null `Limits` builds the match context the arm has always built — a 10,000,000-step budget, a 10,000-frame depth, and no heap ceiling at all.
+
+| Field | Reaches PCRE2 as | Notes |
+|---|---|---|
+| `steps` | `pcre2_set_match_limit` | Honored by the JIT as well as the interpreter |
+| `depth` | `pcre2_set_depth_limit` | Interpreter only |
+| `heap_bytes` | `pcre2_set_heap_limit` | Interpreter only; PCRE2 counts it in **kibibytes**, so the conversion floors |
+| `states` | — | Inert: this arm builds no automaton |
+
+Naming `depth` or `heap_bytes` **withdraws the JIT**. PCRE2's fast path forwards `limit_match` alone, so a JIT-compiled program would silently ignore those two — and a ceiling the fast path does not read is a safety property in name only. The interpreter is always the guaranteed fallback, so the cost is speed and the gain is that the ceiling is real.
+
+A ceiling the caller actually named reads back as `ceilingHit()` (which one) and `budgetVerdict()` (`error.BudgetExceeded`). A ceiling they did *not* name — the arm's own default tripping on catastrophic input — stays the fail-closed no-match it has always been, because a fault about a request nobody made would be a lie.
 
 ## Invariants
 

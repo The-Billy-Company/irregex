@@ -42,6 +42,21 @@ pub const CompileError = engine.CompileError;
 /// workers (PCRE2 match data lives per-thread inside the scratch).
 pub const Pcre = engine.Pcre;
 
+/// The ceilings a caller may put on one search (`mark.Limits`), and what this
+/// arm reports when one is reached. `null`/all-null is the arm's own defaults,
+/// so a host that names nothing gets exactly today's engine.
+///
+/// The three verbs are one fact read three ways: `ceilingHit` says WHICH
+/// ceiling (the `munch.Because` shape — a small enumerated reason beside the
+/// answer), `budgetVerdict` turns it into the `error.BudgetExceeded` a host can
+/// `try`, and `fault.last()` carries the incident the C seam pulls. All three
+/// are silent unless the caller actually asked to be stopped.
+pub const Limits = engine.Limits;
+pub const Ceiling = engine.Ceiling;
+pub const BudgetError = engine.BudgetError;
+pub const ceilingHit = engine.ceilingHit;
+pub const budgetVerdict = engine.budgetVerdict;
+
 /// The most recent compile diagnostic for this thread ("" if none) — the useful
 /// message surface behind a `BadPattern`, sitting beside the frozen error set.
 pub const lastError = engine.lastError;

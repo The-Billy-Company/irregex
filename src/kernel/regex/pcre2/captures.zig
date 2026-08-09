@@ -19,6 +19,7 @@ const engine = @import("engine.zig");
 
 pub const Options = engine.Options;
 pub const CompileError = engine.CompileError;
+pub const Limits = engine.Limits;
 
 /// A compiled PCRE2 program dedicated to capture extraction. Owns its own match
 /// scratch (a match-data block + resource-ceilinged context) — one per run,
@@ -31,8 +32,20 @@ pub const PcreCaptures = struct {
     /// every `(…)`. The replacement expander allocs an `[]isize` of this length.
     nslots: usize,
     allocator: std.mem.Allocator,
+    /// The ceilings every `find`/`matchAt` here runs under — the same
+    /// `mark.Limits` the search program carries, so `-P -r` is bounded exactly
+    /// as the search that produced its spans was. All-null is the arm's own
+    /// defaults, so a caller that asks for nothing pays for nothing.
+    limits: Limits = .{},
 
     pub fn compile(allocator: std.mem.Allocator, pattern: []const u8, opts: Options) CompileError!PcreCaptures {
+        return compileLimited(allocator, pattern, opts, .{});
+    }
+
+    /// `compile` under caller ceilings — the replacement arm's twin of
+    /// `Pcre.compileLimited`, so a host cannot bound its search and then run
+    /// the capture pass over the same catastrophic input unbounded.
+    pub fn compileLimited(allocator: std.mem.Allocator, pattern: []const u8, opts: Options, limits: Limits) CompileError!PcreCaptures {
         // The same `-w` rewrite the search program compiles, so a `-w -r` run
         // replaces the span the search found rather than the greedy one starting
         // where it found it.
@@ -46,8 +59,11 @@ pub const PcreCaptures = struct {
             return CompileError.BadPattern;
         };
         errdefer ffi.pcre2_code_free_8(code);
-        // Best-effort JIT — matching is the hot path even for replacement.
-        _ = ffi.pcre2_jit_compile_8(code, ffi.JIT_COMPLETE);
+        // Best-effort JIT — matching is the hot path even for replacement — but
+        // withdrawn by a depth or heap ceiling for the reason `engine.jitHonors`
+        // records: the JIT never reads those two, and a ceiling the fast path
+        // ignores is a safety property in name only.
+        if (engine.jitHonors(limits)) _ = ffi.pcre2_jit_compile_8(code, ffi.JIT_COMPLETE);
 
         var count: u32 = 0;
         _ = ffi.pcre2_pattern_info_8(code, ffi.INFO_CAPTURECOUNT, &count);
@@ -56,10 +72,9 @@ pub const PcreCaptures = struct {
         errdefer ffi.pcre2_match_data_free_8(md);
         const mc = ffi.pcre2_match_context_create_8(null) orelse return CompileError.OutOfMemory;
         errdefer ffi.pcre2_match_context_free_8(mc);
-        _ = ffi.pcre2_set_match_limit_8(mc, engine.match_limit);
-        _ = ffi.pcre2_set_depth_limit_8(mc, engine.depth_limit);
+        engine.applyLimits(mc, limits);
 
-        return .{ .code = code, .md = md, .mc = mc, .nslots = 2 * (@as(usize, count) + 1), .allocator = allocator };
+        return .{ .code = code, .md = md, .mc = mc, .nslots = 2 * (@as(usize, count) + 1), .allocator = allocator, .limits = limits };
     }
 
     pub fn deinit(self: *PcreCaptures) void {
@@ -72,8 +87,9 @@ pub const PcreCaptures = struct {
     /// Leftmost match of the pattern within `line[from..]`. On a match, fills
     /// `out` (length `nslots`) with group byte offsets — `out[2k]`/`out[2k+1]`
     /// bracket group `k`, `-1` for a non-participating group — and returns true.
-    /// A resource fault latches through `engine.recordMatchFault` (so `-P -r`
-    /// over catastrophic input still exits 2) and reads as no-match here.
+    /// A resource fault latches through `engine.recordFault` (so `-P -r` over
+    /// catastrophic input still exits 2, and a caller ceiling still names
+    /// itself) and reads as no-match here.
     pub fn find(self: *PcreCaptures, line: []const u8, from: usize, out: []isize) bool {
         return self.run(line, from, out, engine.match_options);
     }
@@ -94,7 +110,7 @@ pub const PcreCaptures = struct {
         const subject: [*]const u8 = if (line.len == 0) engine.empty_subject else line.ptr;
         const rc = ffi.pcre2_match_8(self.code, subject, line.len, from, opts, self.md, self.mc);
         if (rc < 0) {
-            engine.recordMatchFault(rc);
+            engine.recordFault(self.limits, rc);
             return false;
         }
         const ov = ffi.pcre2_get_ovector_pointer_8(self.md);
