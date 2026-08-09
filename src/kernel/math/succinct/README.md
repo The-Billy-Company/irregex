@@ -41,7 +41,7 @@ question about that walk:
 | `lca(a, b)` | the previous k with `E(k) = min E over [a, b] - 1` |
 
 So there is really one primitive - "walk to the nearest position holding a
-target excess" - in a forward and a backward flavour, and the range min-max
+target excess" - in a forward and a backward flavor, and the range min-max
 tree is what makes that walk sub-linear. It is a segment tree over 512-bit
 blocks storing the min and max excess each block reaches. If the target is
 outside a block's `[min, max]` the block cannot hold it and the walk skips the

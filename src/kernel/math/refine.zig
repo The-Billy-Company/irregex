@@ -1,16 +1,16 @@
 //! refine — the coarsest partition a transition table cannot tell apart.
 //!
-//! Given `n` states, a labelled transition function `δ(state, symbol)`, and an
-//! initial colouring of the states, find the coarsest partition that refines
-//! the colouring and is **stable**: if two states share a block then, for every
-//! symbol, their successors share a block too. Fix what the colour means and
+//! Given `n` states, a labeled transition function `δ(state, symbol)`, and an
+//! initial coloring of the states, find the coarsest partition that refines
+//! the coloring and is **stable**: if two states share a block then, for every
+//! symbol, their successors share a block too. Fix what the color means and
 //! that one definition is several familiar problems:
 //!
-//! | Colouring is… | the stable partition is… |
+//! | Coloring is… | the stable partition is… |
 //! |---|---|
 //! | accept vs reject | the Myhill–Nerode congruence — DFA minimization |
 //! | a parse-action row | action-bisimulation — the LR-table quotient |
-//! | a single colour | the automaton's reachable-behaviour classes |
+//! | a single color | the automaton's reachable-behavior classes |
 //!
 //! **Two engines, one answer.** `moore` re-partitions every state by the
 //! signature `(own block, successors' blocks)` until the block count stops
@@ -36,7 +36,7 @@
 //! settled within `log₂ n` passes — handing over the partition Moore reached,
 //! which is a legitimate head start rather than wasted work: the coarsest stable
 //! partition refining an intermediate refinement is the same one, since any
-//! stable partition refining it also refines the original colouring. One Moore
+//! stable partition refining it also refines the original coloring. One Moore
 //! pass costs `O(n · k)` and Hopcroft's whole run is `O(k · n · log n)`, so the
 //! passes spent before escalating are at most a constant factor of the bound
 //! they escalate into. `auto` therefore lands within a constant factor of
@@ -133,10 +133,10 @@ pub const Plan = enum {
     hopcroft,
 };
 
-/// Refine `colour` into the coarsest stable partition, writing `block[s]` for
+/// Refine `color` into the coarsest stable partition, writing `block[s]` for
 /// every state and returning the block count.
 ///
-/// `colour` is any labelling — values need be neither dense nor ordered, and
+/// `color` is any labeling — values need be neither dense nor ordered, and
 /// all-equal means one initial block. `block` may alias nothing else, and both
 /// slices hold at least `t.states` entries.
 ///
@@ -149,20 +149,20 @@ pub const Plan = enum {
 pub fn refine(
     gpa: std.mem.Allocator,
     t: Table,
-    colour: []const u32,
+    color: []const u32,
     block: []u32,
     plan: Plan,
 ) std.mem.Allocator.Error!Refinement {
     std.debug.assert(t.delta.len == @as(usize, t.states) * t.symbols);
-    std.debug.assert(colour.len >= t.states);
+    std.debug.assert(color.len >= t.states);
     std.debug.assert(block.len >= t.states);
     if (t.states == 0) return .{ .blocks = 0, .engine = .moore, .passes = 0 };
 
     // Both engines start from the same dense seeding, which is half of why they
-    // agree. It also closes a hazard the raw colouring carries: a colour that
+    // agree. It also closes a hazard the raw coloring carries: a color that
     // happened to equal `nowhere` would read, in a Moore signature, as a step
     // into the sink rather than into a state.
-    var seeded = try condense(gpa, t.states, colour, block);
+    var seeded = try condense(gpa, t.states, color, block);
 
     var engine: Engine = .moore;
     var passes: u32 = 0;
@@ -197,18 +197,18 @@ pub fn refine(
     };
 }
 
-/// Number the distinct colours by first appearance, writing dense ids to `out`.
+/// Number the distinct colors by first appearance, writing dense ids to `out`.
 fn condense(
     gpa: std.mem.Allocator,
     states: u32,
-    colour: []const u32,
+    color: []const u32,
     out: []u32,
 ) std.mem.Allocator.Error!u32 {
     var ids = std.AutoHashMap(u32, u32).init(gpa);
     defer ids.deinit();
     try ids.ensureTotalCapacity(states);
     var count: u32 = 0;
-    for (colour[0..states], out[0..states]) |c, *slot| {
+    for (color[0..states], out[0..states]) |c, *slot| {
         const gop = ids.getOrPutAssumeCapacity(c);
         if (!gop.found_existing) {
             gop.value_ptr.* = count;
@@ -329,7 +329,7 @@ const Blocks = struct {
     /// Blocks holding at least one mark, so `split` visits those and no others.
     touched: std.ArrayList(u32) = .empty,
 
-    /// Lay out `n` states already labelled with `count` dense block ids.
+    /// Lay out `n` states already labeled with `count` dense block ids.
     fn init(
         gpa: std.mem.Allocator,
         n: u32,

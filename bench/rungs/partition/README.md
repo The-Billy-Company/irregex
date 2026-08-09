@@ -22,9 +22,9 @@ the partition here is wide and shallow — 2 to 6 passes — and a splitter queu
 plus an inverted delta is overhead a shallow partition never amortizes.
 
 The generator matters more than the timing loop. Its quotient is known by
-construction: `classes` behaviour classes, every state one blown-up copy of a
+construction: `classes` behavior classes, every state one blown-up copy of a
 class, with each copy's successors drawn from anywhere inside the target class so
-the copies are genuinely equivalent rather than merely identically coloured. A
+the copies are genuinely equivalent rather than merely identically colored. A
 *random* delta is the trap — nothing merges there, every state ends alone, and
 the board measures queue overhead against a refinement that never happened.
 
@@ -63,7 +63,7 @@ reads as a *result* rather than as a bug:
   and countable over an arbitrary-looking subset.
 - Base 26 of a small number is mostly `'a'`, so a 25-letter stem taken straight
   from the index carried a shared 19-letter run: the *most* shared corpus on the
-  board, printed in the row labelled unshared. The stem positions are hashed, and
+  board, printed in the row labeled unshared. The stem positions are hashed, and
   only the low positions — enough to name the count — carry the index bijectively,
   which is what keeps the keys distinct while the stems genuinely diverge.
 

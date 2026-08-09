@@ -25,7 +25,7 @@ const nowhere = refine.nowhere;
 
 // ── the third algorithm ────────────────────────────────────────────────────
 
-/// Myhill–Nerode by pairwise marking: two states are apart if the colouring
+/// Myhill–Nerode by pairwise marking: two states are apart if the coloring
 /// separates them, or if some symbol leads to a pair already known apart. Sweep
 /// until nothing new is marked; whatever is left unmarked is equivalent.
 ///
@@ -36,7 +36,7 @@ const nowhere = refine.nowhere;
 fn textbook(
     gpa: std.mem.Allocator,
     table: refine.Table,
-    colour: []const u32,
+    color: []const u32,
     block: []u32,
 ) !u32 {
     const n = table.states;
@@ -52,7 +52,7 @@ fn textbook(
     };
 
     for (0..n) |i| for (0..n) |j| {
-        if (colour[i] != colour[j]) apart[pair.at(@intCast(i), @intCast(j), n)] = true;
+        if (color[i] != color[j]) apart[pair.at(@intCast(i), @intCast(j), n)] = true;
     };
 
     var moved = true;
@@ -125,13 +125,13 @@ fn stable(table: refine.Table, block: []const u32) !void {
     }
 }
 
-/// Coarsest: no two blocks share a colour and a successor-block vector, because
+/// Coarsest: no two blocks share a color and a successor-block vector, because
 /// two that did would have merged. The contrapositive of stability, and the half
 /// that catches an engine which splits too eagerly rather than not enough.
 fn coarsest(
     gpa: std.mem.Allocator,
     table: refine.Table,
-    colour: []const u32,
+    color: []const u32,
     block: []const u32,
     blocks: u32,
 ) !void {
@@ -149,7 +149,7 @@ fn coarsest(
         if (filled[b]) continue;
         filled[b] = true;
         const sig = sigs[@as(usize, b) * w ..][0..w];
-        sig[0] = colour[s];
+        sig[0] = color[s];
         for (0..k) |a| {
             const to = table.delta[s * k + a];
             sig[1 + a] = if (to == nowhere) nowhere else block[to];
@@ -182,13 +182,13 @@ fn canonical(block: []const u32, blocks: u32) !void {
 const Shape = struct {
     states: u32,
     symbols: u32,
-    colours: u32,
+    colors: u32,
     /// How often a transition is missing, out of 256. Zero is a total function;
     /// a high value is a sparse table where the sink does most of the splitting.
     holes: u8,
 };
 
-/// A table of `shape`, with `delta` and `colour` owned by the caller.
+/// A table of `shape`, with `delta` and `color` owned by the caller.
 fn deal(gpa: std.mem.Allocator, r: std.Random, shape: Shape) !struct { refine.Table, []u32 } {
     const cells = @as(usize, shape.states) * shape.symbols;
     const delta = try gpa.alloc(u32, cells);
@@ -199,10 +199,10 @@ fn deal(gpa: std.mem.Allocator, r: std.Random, shape: Shape) !struct { refine.Ta
         else
             r.uintLessThan(u32, shape.states);
     }
-    const colour = try gpa.alloc(u32, shape.states);
-    errdefer gpa.free(colour);
-    for (colour) |*c| c.* = r.uintLessThan(u32, shape.colours);
-    return .{ .{ .states = shape.states, .symbols = shape.symbols, .delta = delta }, colour };
+    const color = try gpa.alloc(u32, shape.states);
+    errdefer gpa.free(color);
+    for (color) |*c| c.* = r.uintLessThan(u32, shape.colors);
+    return .{ .{ .states = shape.states, .symbols = shape.symbols, .delta = delta }, color };
 }
 
 test "both engines and the textbook marking algorithm agree, state for state" {
@@ -214,32 +214,32 @@ test "both engines and the textbook marking algorithm agree, state for state" {
         const shape: Shape = .{
             .states = 1 + r.uintLessThan(u32, 24), // the oracle is O(n³k); stay small
             .symbols = r.uintLessThan(u32, 5),
-            .colours = 1 + r.uintLessThan(u32, 3),
+            .colors = 1 + r.uintLessThan(u32, 3),
             .holes = switch (r.uintLessThan(u8, 3)) {
                 0 => 0, // total function
                 1 => 200, // mostly sink
                 else => 64,
             },
         };
-        const table, const colour = try deal(gpa, r, shape);
+        const table, const color = try deal(gpa, r, shape);
         defer gpa.free(table.delta);
-        defer gpa.free(colour);
+        defer gpa.free(color);
 
         const want = try gpa.alloc(u32, shape.states);
         defer gpa.free(want);
-        const wanted = try textbook(gpa, table, colour, want);
+        const wanted = try textbook(gpa, table, color, want);
         try canonical(want, wanted);
 
         const got = try gpa.alloc(u32, shape.states);
         defer gpa.free(got);
         for ([_]refine.Plan{ .moore, .hopcroft, .auto }) |plan| {
             @memset(got, 0xAA);
-            const out = try refine.refine(gpa, table, colour, got, plan);
+            const out = try refine.refine(gpa, table, color, got, plan);
             try t.expectEqual(wanted, out.blocks);
             try t.expectEqualSlices(u32, want, got);
             try canonical(got, out.blocks);
             try stable(table, got);
-            try coarsest(gpa, table, colour, got, out.blocks);
+            try coarsest(gpa, table, color, got, out.blocks);
         }
     }
 }
@@ -253,27 +253,27 @@ test "the engines still agree at a size the quadratic oracle cannot afford" {
         const shape: Shape = .{
             .states = 64 + r.uintLessThan(u32, 448),
             .symbols = 1 + r.uintLessThan(u32, 8),
-            .colours = 1 + r.uintLessThan(u32, 6),
+            .colors = 1 + r.uintLessThan(u32, 6),
             .holes = r.int(u8),
         };
-        const table, const colour = try deal(gpa, r, shape);
+        const table, const color = try deal(gpa, r, shape);
         defer gpa.free(table.delta);
-        defer gpa.free(colour);
+        defer gpa.free(color);
 
         const a = try gpa.alloc(u32, shape.states);
         defer gpa.free(a);
         const b = try gpa.alloc(u32, shape.states);
         defer gpa.free(b);
 
-        const from_moore = try refine.refine(gpa, table, colour, a, .moore);
-        const from_hopcroft = try refine.refine(gpa, table, colour, b, .hopcroft);
+        const from_moore = try refine.refine(gpa, table, color, a, .moore);
+        const from_hopcroft = try refine.refine(gpa, table, color, b, .hopcroft);
         try t.expectEqual(from_moore.blocks, from_hopcroft.blocks);
         try t.expectEqualSlices(u32, a, b);
         try stable(table, a);
-        try coarsest(gpa, table, colour, a, from_moore.blocks);
+        try coarsest(gpa, table, color, a, from_moore.blocks);
 
         // And `auto` is not a third answer, whichever engine it settled on.
-        const from_auto = try refine.refine(gpa, table, colour, b, .auto);
+        const from_auto = try refine.refine(gpa, table, color, b, .auto);
         try t.expectEqual(from_moore.blocks, from_auto.blocks);
         try t.expectEqualSlices(u32, a, b);
     }
@@ -286,7 +286,7 @@ test "a deep chain escalates to hopcroft; a shallow table never leaves moore" {
     const n: u32 = 64;
 
     // Every state distinguishable only by its distance from the end: state i
-    // steps to i+1, the last steps nowhere, and one colour throughout. Moore
+    // steps to i+1, the last steps nowhere, and one color throughout. Moore
     // learns exactly one new state per pass, so it needs n of them where the
     // budget allows ⌈log₂ n⌉ + 1 = 7.
     const chain = try gpa.alloc(u32, n);
@@ -339,12 +339,12 @@ test "two pairs merge across a swap, and the answer is hand-checkable" {
     // 0 ⇄ 1 and 3 ⇄ 2, accepting on {0, 3}. Both accepting states step to a
     // rejecting one that steps back to an accepting one, so {0,3} and {1,2}.
     const delta = [_]u32{ 1, 0, 3, 2 };
-    const colour = [_]u32{ 1, 0, 0, 1 };
+    const color = [_]u32{ 1, 0, 0, 1 };
     var block: [4]u32 = undefined;
     const out = try refine.refine(
         gpa,
         .{ .states = 4, .symbols = 1, .delta = &delta },
-        &colour,
+        &color,
         &block,
         .auto,
     );
@@ -352,16 +352,16 @@ test "two pairs merge across a swap, and the answer is hand-checkable" {
     try t.expectEqualSlices(u32, &.{ 0, 1, 1, 0 }, &block);
 }
 
-test "a cycle of one colour is one block, and does not spin" {
+test "a cycle of one color is one block, and does not spin" {
     const gpa = t.allocator;
     const delta = [_]u32{ 1, 2, 0 };
-    const colour = [_]u32{ 4, 4, 4 };
+    const color = [_]u32{ 4, 4, 4 };
     var block: [3]u32 = undefined;
     for ([_]refine.Plan{ .moore, .hopcroft, .auto }) |plan| {
         const out = try refine.refine(
             gpa,
             .{ .states = 3, .symbols = 1, .delta = &delta },
-            &colour,
+            &color,
             &block,
             plan,
         );
@@ -372,17 +372,17 @@ test "a cycle of one colour is one block, and does not spin" {
 
 test "the sink splits states nothing else could tell apart" {
     const gpa = t.allocator;
-    // Both states share a colour and neither has a successor with any structure
+    // Both states share a color and neither has a successor with any structure
     // to compare — only the presence of the transition differs. An engine that
     // treated a missing transition as a wildcard would merge these.
     const delta = [_]u32{ 0, nowhere };
-    const colour = [_]u32{ 0, 0 };
+    const color = [_]u32{ 0, 0 };
     var block: [2]u32 = undefined;
     for ([_]refine.Plan{ .moore, .hopcroft, .auto }) |plan| {
         const out = try refine.refine(
             gpa,
             .{ .states = 2, .symbols = 1, .delta = &delta },
-            &colour,
+            &color,
             &block,
             plan,
         );
@@ -404,13 +404,13 @@ test "degenerate shapes: no states, no symbols, one state" {
     );
     try t.expectEqual(@as(u32, 0), empty.blocks);
 
-    // No symbols: nothing can refine the colouring, so the answer is exactly its
-    // distinct colours — renumbered by first appearance.
-    const colour = [_]u32{ 9, 3, 9, 400 };
+    // No symbols: nothing can refine the coloring, so the answer is exactly its
+    // distinct colors — renumbered by first appearance.
+    const color = [_]u32{ 9, 3, 9, 400 };
     const bare = try refine.refine(
         gpa,
         .{ .states = 4, .symbols = 0, .delta = &.{} },
-        &colour,
+        &color,
         &block,
         .auto,
     );
@@ -428,19 +428,19 @@ test "degenerate shapes: no states, no symbols, one state" {
     try t.expectEqual(@as(u32, 0), block[0]);
 }
 
-test "an arbitrary colouring is condensed, including one that collides with the sink" {
+test "an arbitrary coloring is condensed, including one that collides with the sink" {
     const gpa = t.allocator;
-    // A colour equal to `nowhere` must not read as a step into the sink when it
-    // lands in a Moore signature. Both states step to state 0, so the colouring
+    // A color equal to `nowhere` must not read as a step into the sink when it
+    // lands in a Moore signature. Both states step to state 0, so the coloring
     // is the only thing separating them, and it separates them.
     const delta = [_]u32{ 0, 0 };
-    const colour = [_]u32{ nowhere, 0 };
+    const color = [_]u32{ nowhere, 0 };
     var block: [2]u32 = undefined;
     for ([_]refine.Plan{ .moore, .hopcroft, .auto }) |plan| {
         const out = try refine.refine(
             gpa,
             .{ .states = 2, .symbols = 1, .delta = &delta },
-            &colour,
+            &color,
             &block,
             plan,
         );

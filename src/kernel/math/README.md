@@ -402,8 +402,8 @@ coarsest way to group things that nothing in a given vocabulary can tell apart.
 `refine.zig` groups the **states** of a transition table. Two states belong
 together when no input word ever separates them, which is Myhill-Nerode read as a
 partition rather than as a language, and the answer is DFA minimization, an LR
-table's action-bisimulation, and behaviour classes depending only on what a
-state's colour is taken to mean.
+table's action-bisimulation, and behavior classes depending only on what a
+state's color is taken to mean.
 
 `minterm.zig` groups the **scalars** of a line. Two scalars belong together when
 every set in a family agrees about both of them, so a consumer that asked the
@@ -496,7 +496,7 @@ Sorted input is required and checked, because ascending order is what lets a
 state be sealed the moment the next key diverges from it. Daciuk et al. give a
 second algorithm for unsorted input that clones states along the way; it is a
 much larger piece of code, and a caller who sorts first does not need it. So
-unsorted input — equal neighbours included, since a set has no duplicates and
+unsorted input — equal neighbors included, since a set has no duplicates and
 dropping one would make `rank` disagree with the caller's own array — is
 `error.NonCanonical`, never a wrong automaton.
 
@@ -514,7 +514,7 @@ each state accepts.
  - [Daciuk, Mihov, Watson & Watson, *Incremental Construction of Minimal Acyclic
  Finite-State Automata*](https://doi.org/10.1162/089120100561601) (Computational
  Linguistics 26(1), 2000) – the construction, register and all.
- - [Revuz, *Minimisation of acyclic deterministic automata in linear
+ - [Revuz, *Minimization of acyclic deterministic automata in linear
  time*](https://doi.org/10.1016/0304-3975(92)90142-3) (TCS 92(1), 1992) – the
  other road, minimizing a finished trie by height-ordered bucketing, worth
  knowing because it is what the test oracle does by a third route.

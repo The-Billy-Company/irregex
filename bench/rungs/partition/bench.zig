@@ -46,7 +46,7 @@ fn ms(ns: u64) f64 {
 
 // ── refine ──────────────────────────────────────────────────────────────────
 
-/// A table with a quotient known by construction: `classes` behaviour classes,
+/// A table with a quotient known by construction: `classes` behavior classes,
 /// every state one blown-up copy of a class. A *random* delta is the degenerate
 /// benchmark and the trap worth naming — nothing merges there, so refinement
 /// never does any work and the board measures only queue overhead.
@@ -60,7 +60,7 @@ fn blowUp(gpa: std.mem.Allocator, n: u32, k: u32, classes: u32, rnd: std.Random)
         const want = spec[@as(usize, s % classes) * k + a];
         // Any state of the target class will do, and picking a random one is
         // what makes the copies genuinely equivalent rather than merely
-        // identically coloured — equivalence has to survive the successor.
+        // identically colored — equivalence has to survive the successor.
         delta[s * k + a] = want + classes * rnd.uintLessThan(u32, copies);
     };
     return delta;
@@ -86,15 +86,15 @@ const Race = struct {
     blocks: u32,
     passes: u32,
 
-    fn run(gpa: std.mem.Allocator, tab: refine.Table, colour: []const u32, block: []u32) !Race {
+    fn run(gpa: std.mem.Allocator, tab: refine.Table, color: []const u32, block: []u32) !Race {
         var a = nanos();
-        const m = try refine.refine(gpa, tab, colour, block, .moore);
+        const m = try refine.refine(gpa, tab, color, block, .moore);
         const moore = nanos() - a;
         a = nanos();
-        const h = try refine.refine(gpa, tab, colour, block, .hopcroft);
+        const h = try refine.refine(gpa, tab, color, block, .hopcroft);
         const hopcroft = nanos() - a;
         a = nanos();
-        const u = try refine.refine(gpa, tab, colour, block, .auto);
+        const u = try refine.refine(gpa, tab, color, block, .auto);
         const auto = nanos() - a;
         if (m.blocks != h.blocks or m.blocks != u.blocks) {
             std.debug.print(
@@ -123,16 +123,16 @@ fn quotientBoard(gpa: std.mem.Allocator) !void {
         for ([_]u32{ 8, 512, n / 2 }) |classes| {
             const delta = try blowUp(gpa, n, k, classes, rnd);
             defer gpa.free(delta);
-            const colour = try gpa.alloc(u32, n);
-            defer gpa.free(colour);
-            for (colour, 0..) |*c, s| c.* = @intFromBool(s % classes == 0);
+            const color = try gpa.alloc(u32, n);
+            defer gpa.free(color);
+            for (color, 0..) |*c, s| c.* = @intFromBool(s % classes == 0);
             const block = try gpa.alloc(u32, n);
             defer gpa.free(block);
 
-            const r = try Race.run(gpa, .{ .states = n, .symbols = k, .delta = delta }, colour, block);
+            const r = try Race.run(gpa, .{ .states = n, .symbols = k, .delta = delta }, color, block);
             std.debug.print("{d:>8} {d:>9} {d:>10.2} {d:>12.2} {d:>10.2} {d:>9.2} {d:>8} {d:>8}\n", .{
-                n,        classes,   ms(r.moore), ms(r.hopcroft),
-                ms(r.auto), ms(r.moore) / ms(r.hopcroft), r.blocks, r.passes,
+                n,          classes,                      ms(r.moore), ms(r.hopcroft),
+                ms(r.auto), ms(r.moore) / ms(r.hopcroft), r.blocks,    r.passes,
             });
         }
     }
@@ -150,16 +150,16 @@ fn chainBoard(gpa: std.mem.Allocator) !void {
     for ([_]u32{ 256, 1024, 4096, 16384 }) |n| {
         const delta = try chain(gpa, n);
         defer gpa.free(delta);
-        const colour = try gpa.alloc(u32, n);
-        defer gpa.free(colour);
-        @memset(colour, 0);
-        colour[0] = 1;
+        const color = try gpa.alloc(u32, n);
+        defer gpa.free(color);
+        @memset(color, 0);
+        color[0] = 1;
         const block = try gpa.alloc(u32, n);
         defer gpa.free(block);
 
-        const r = try Race.run(gpa, .{ .states = n, .symbols = 1, .delta = delta }, colour, block);
+        const r = try Race.run(gpa, .{ .states = n, .symbols = 1, .delta = delta }, color, block);
         std.debug.print("{d:>8} {d:>10.2} {d:>12.2} {d:>10.2} {d:>9.0} {d:>9.1} {d:>8}\n", .{
-            n,                            ms(r.moore), ms(r.hopcroft), ms(r.auto),
+            n,                            ms(r.moore),                 ms(r.hopcroft), ms(r.auto),
             ms(r.moore) / ms(r.hopcroft), ms(r.auto) / ms(r.hopcroft), r.passes,
         });
     }
@@ -330,12 +330,12 @@ test "blowUp's quotient is exactly the class count" {
         const k: u32 = 4;
         const delta = try blowUp(gpa, n, k, classes, prng.random());
         defer gpa.free(delta);
-        const colour = try gpa.alloc(u32, n);
-        defer gpa.free(colour);
-        for (colour, 0..) |*c, s| c.* = @intFromBool(s % classes == 0);
+        const color = try gpa.alloc(u32, n);
+        defer gpa.free(color);
+        for (color, 0..) |*c, s| c.* = @intFromBool(s % classes == 0);
         const block = try gpa.alloc(u32, n);
         defer gpa.free(block);
-        const r = try refine.refine(gpa, .{ .states = n, .symbols = k, .delta = delta }, colour, block, .auto);
+        const r = try refine.refine(gpa, .{ .states = n, .symbols = k, .delta = delta }, color, block, .auto);
         // At most `classes`, because the copies are equivalent by construction.
         // Fewer is legal — a random class spec may itself be non-minimal — so
         // the assertion is the ceiling, which is what the board's claim needs.
@@ -351,13 +351,13 @@ test "the chain forces one pass per state" {
     const n: u32 = 64;
     const delta = try chain(gpa, n);
     defer gpa.free(delta);
-    const colour = try gpa.alloc(u32, n);
-    defer gpa.free(colour);
-    @memset(colour, 0);
-    colour[0] = 1;
+    const color = try gpa.alloc(u32, n);
+    defer gpa.free(color);
+    @memset(color, 0);
+    color[0] = 1;
     const block = try gpa.alloc(u32, n);
     defer gpa.free(block);
-    const r = try refine.refine(gpa, .{ .states = n, .symbols = 1, .delta = delta }, colour, block, .moore);
+    const r = try refine.refine(gpa, .{ .states = n, .symbols = 1, .delta = delta }, color, block, .moore);
     try t.expectEqual(n, r.blocks);
     try t.expectEqual(n - 1, r.passes);
 }

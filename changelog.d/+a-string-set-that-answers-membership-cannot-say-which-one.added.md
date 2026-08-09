@@ -25,7 +25,7 @@ Sorted input is required and checked, because ascending order is what lets a
 state be sealed the moment the next key diverges from it. Daciuk et al. give a
 second algorithm for unsorted input that clones states on the way; it is a much
 larger piece of code and a caller who sorts first does not need it. So unsorted
-input is `error.NonCanonical` rather than a wrong automaton - equal neighbours
+input is `error.NonCanonical` rather than a wrong automaton - equal neighbors
 included, since a set has no duplicates and silently dropping one would make
 `rank` disagree with the caller's own array.
 

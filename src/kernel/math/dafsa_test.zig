@@ -84,13 +84,13 @@ fn quotient(gpa: std.mem.Allocator, keys: []const []const u8) !Size {
 
     const delta = try gpa.alloc(u32, @as(usize, n) * k);
     defer gpa.free(delta);
-    const colour = try gpa.alloc(u32, n);
-    defer gpa.free(colour);
+    const color = try gpa.alloc(u32, n);
+    defer gpa.free(color);
     const block = try gpa.alloc(u32, n);
     defer gpa.free(block);
 
     for (0..n) |s| {
-        colour[s] = @intFromBool(trie.accepts[s]);
+        color[s] = @intFromBool(trie.accepts[s]);
         for (alphabet.items, 0..) |c, j| {
             const to = trie.next[s * 256 + c];
             delta[s * k + j] = if (to == Trie.absent) refine.nowhere else to;
@@ -100,7 +100,7 @@ fn quotient(gpa: std.mem.Allocator, keys: []const []const u8) !Size {
     const got = try refine.refine(
         gpa,
         .{ .states = n, .symbols = k, .delta = delta },
-        colour,
+        color,
         block,
         .auto,
     );
@@ -142,7 +142,7 @@ fn agrees(gpa: std.mem.Allocator, keys: []const []const u8) !void {
     }
     try t.expectEqual(@as(?[]const u8, null), d.spell(d.count(), buf));
 
-    // Near misses. A structure that accepts its keys and also their neighbours
+    // Near misses. A structure that accepts its keys and also their neighbors
     // would pass every check above.
     var scratch: std.ArrayList(u8) = .empty;
     defer scratch.deinit(gpa);

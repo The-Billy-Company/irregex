@@ -1,8 +1,8 @@
 `math.refine` - the coarsest partition a transition table cannot tell apart.
-Hand it a delta, a colouring, and a plan; get back the blocks that no input word
-separates. That is DFA minimization when the colour is acceptance, an LR table's
-action-bisimulation when it is a reduce decision, and behaviour classes whenever
-the colour means something else.
+Hand it a delta, a coloring, and a plan; get back the blocks that no input word
+separates. That is DFA minimization when the color is acceptance, an LR table's
+action-bisimulation when it is a reduce decision, and behavior classes whenever
+the color means something else.
 
 It ships **both** engines, and the reason is a measurement that contradicts the
 asymptotics. Moore is O(n²k), Hopcroft O(nk log n), so the argument reads as

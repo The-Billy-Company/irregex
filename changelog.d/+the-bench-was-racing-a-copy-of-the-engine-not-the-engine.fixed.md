@@ -10,7 +10,7 @@ treat them that way.
 
 `prod` is now an arm that calls `Dfa.docMatch` itself. `ship` and the geomean are
 measurements of the binary instead of labels on a copy, and every other column is
-a mechanism priced against it - so a body that only beats its neighbours in this
+a mechanism priced against it - so a body that only beats its neighbors in this
 file can no longer read as a body that beats the engine. On source geometry
 `prod` is the fastest arm on every row (0.3808 ns/byte against the classed
 four-lane baseline's 0.6187), which is the result the reimplementations were

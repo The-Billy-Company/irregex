@@ -314,7 +314,7 @@ const source_ventiles = [_]u16{ 1, 3, 10, 20, 25, 29, 34, 39, 44, 50, 57, 63, 70
 ///   * `uniform` — every line exactly `line_len`. The minimum over N is `line_len`
 ///     for every N, so width costs the fast body nothing: all lanes stay in phase
 ///     and reseed together. This is the shape the ladder has always used, and it
-///     is the most favourable document a wide walk can be handed.
+///     is the most favorable document a wide walk can be handed.
 ///   * `source` — lengths drawn from `source_ventiles`. The minimum collapses with
 ///     width — 22.5 bytes at four lanes, 12.2 at eight, 8.1 at twelve, 5.8 at
 ///     sixteen — so a wider walk spends proportionally more of its bytes in the
@@ -1687,7 +1687,7 @@ const Arm = struct {
     /// the cost, and they did not: the region carve read 1.55x here against the
     /// bench's own `walkLanes` and ~1.0x against the shipped binary. With this arm
     /// on the ladder the `ship` column is a measurement instead of a label, and a
-    /// body that only beats its neighbour in this file says so in its own row.
+    /// body that only beats its neighbor in this file says so in its own row.
     engine: bool = false,
 
     fn label(comptime self: Arm) []const u8 {
@@ -2291,7 +2291,7 @@ fn runBurst(gpa: std.mem.Allocator, io: anytype, failed: *bool, shape: LineShape
         \\   CALLS `Dfa.docMatch` rather than reimplementing what it dispatches, so
         \\   `ship` and the geomean price the binary and every other column is a
         \\   mechanism measured against it. A body that beats `prod` here has found
-        \\   something; a body that only beats its neighbours has found a spelling.
+        \\   something; a body that only beats its neighbors has found a spelling.
         \\   `agree` is the mutation sweep — rounds where EVERY
         \\   arm and the shipped `docMatch` matched the scalar oracle / rounds that
         \\   actually HIT, so a row proving parity only on match-free text shows it.

@@ -40,7 +40,7 @@
 //! Finite-State Automata*](https://doi.org/10.1162/089120100561601)
 //! (Computational Linguistics 26(1), 2000) — the construction below, register
 //! and all;
-//! [Revuz, *Minimisation of acyclic deterministic automata in linear
+//! [Revuz, *Minimization of acyclic deterministic automata in linear
 //! time*](https://doi.org/10.1016/0304-3975(92)90142-3) (TCS 92(1), 1992) — the
 //! other road, minimizing a finished trie by height-ordered bucketing, worth
 //! knowing because it is what the test oracle does by a third route;
@@ -56,7 +56,7 @@ const mix = @import("mix.zig");
 /// name for input that is not in the form a reader requires (`fault.Persist`),
 /// and this is that fact about a key list rather than about a file — the
 /// vocabulary is closed on purpose, so an `Unsorted` here would be a sixth
-/// spelling of it. Equal neighbours land here too: a set has no duplicates, and
+/// spelling of it. Equal neighbors land here too: a set has no duplicates, and
 /// silently dropping one would make `rank`'s ordinals disagree with the caller's
 /// own array.
 pub const Error = error{NonCanonical};

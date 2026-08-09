@@ -61,8 +61,8 @@ pub const crest = @import("crest.zig");
 pub const semiring = @import("semiring.zig");
 
 /// The coarsest partition a transition table cannot tell apart — DFA
-/// minimization, an LR table's action-bisimulation, and behaviour classes, which
-/// are one algorithm over three readings of what a state's colour means. Moore
+/// minimization, an LR table's action-bisimulation, and behavior classes, which
+/// are one algorithm over three readings of what a state's color means. Moore
 /// and Hopcroft both, because each is the other's oracle.
 pub const refine = @import("refine.zig");
 
