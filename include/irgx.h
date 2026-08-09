@@ -1169,7 +1169,7 @@ int32_t irgx_needles_find_all(irgx_needles *handle, const uint8_t *text,
 typedef struct irgx_cursor irgx_cursor;
 
 /* IRGX_MATCH_LINE is a line the pattern selected; IRGX_MATCH_CONTEXT is a
- * neighbour carried along by before_context/after_context. */
+ * neighbor carried along by before_context/after_context. */
 #define IRGX_MATCH_LINE 0u
 #define IRGX_MATCH_CONTEXT 1u
 
@@ -1287,7 +1287,7 @@ typedef struct {
 /* Policy bits. Each is a DECLINATURE of a default the walk would otherwise
  * apply, which is why they read as no_*: the safe spelling is 0. */
 #define IRGX_WALK_HIDDEN (1u << 0)          /* descend into dotfiles      */
-#define IRGX_WALK_NO_IGNORE (1u << 1)       /* honour no ignore file      */
+#define IRGX_WALK_NO_IGNORE (1u << 1)       /* honor no ignore file      */
 #define IRGX_WALK_NO_IGNORE_VCS (1u << 2)   /* ... not .gitignore         */
 #define IRGX_WALK_NO_IGNORE_DOT (1u << 3)   /* ... not .ignore            */
 #define IRGX_WALK_NO_IGNORE_PARENT (1u << 4)/* ... none above the root    */

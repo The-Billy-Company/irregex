@@ -69,13 +69,13 @@ func special(b byte) bool {
 // begin several different ways ("foo|bar") has no single required prefix and gets
 // the empty string - which is a true statement about it, not a failure.
 //
-// complete is the caller's licence to stop using a regex engine: when it is true,
+// complete is the caller's license to stop using a regex engine: when it is true,
 // matching re is the same question as searching for prefix, and [Needles] or
 // strings.Index answers it for less. It says nothing about capture groups -
 // "(foo)bar" is complete, and a caller that needs the group still needs the
 // engine.
 //
-// It is that licence, rather than the standard library's "the literal comprises
+// It is that license, rather than the standard library's "the literal comprises
 // the entire regexp", which is why an ANCHORED literal is not complete here:
 // regexp calls "^foo$" complete, but substring-searching for "foo" answers a
 // different question than matching "^foo$" does, and the whole value of the
@@ -112,7 +112,7 @@ func (re *Regexp) LiteralPrefix() (prefix string, complete bool) {
 // written as a leading group - so the round trip preserves meaning and not just
 // bytes. An option with no inline spelling ([CompileOpts.PCRE],
 // [CompileOpts.Fixed], [CompileOpts.Word], [CompileOpts.SmartCase]) is refused
-// rather than dropped: a case-insensitive pattern silently marshalling to a
+// rather than dropped: a case-insensitive pattern silently marshaling to a
 // case-sensitive one is a config that reads correctly and matches wrongly.
 func (re *Regexp) MarshalText() ([]byte, error) {
 	inline, err := re.inlineFlags()

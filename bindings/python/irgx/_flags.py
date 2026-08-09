@@ -8,7 +8,7 @@ any bit outside its set is ``IRGX_INVALID`` rather than ignored, because a host
 that set one has a wrong belief about what it is about to be told.
 
 So there is no single ``flags=`` integer in this package's surface. Each plane
-takes keywords it can actually honour, and a bit that plane cannot express is not
+takes keywords it can actually honor, and a bit that plane cannot express is not
 a parameter at all — which is how "accepted and silently ignored" is made
 unspellable rather than merely discouraged.
 

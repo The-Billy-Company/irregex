@@ -76,7 +76,7 @@ class Policy(enum.IntFlag):
     HIDDEN = 1 << 0
     """Descend into dotfiles."""
     NO_IGNORE = 1 << 1
-    """Honour no ignore file at all."""
+    """Honor no ignore file at all."""
     NO_IGNORE_VCS = 1 << 2
     NO_IGNORE_DOT = 1 << 3
     NO_IGNORE_PARENT = 1 << 4

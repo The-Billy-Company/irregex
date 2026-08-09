@@ -164,7 +164,7 @@ class Pattern:
         A property of the PATTERN, not of the call, so it is asked once. ``False``
         for the PCRE2 arm, which has no windowed entry — which is why
         :meth:`search`'s ``endpos`` truncates the haystack rather than passing a
-        bound the other arm could not honour.
+        bound the other arm could not honor.
         """
         return bool(check(lib.irgx_pattern_windows(self._pool.handle()), "could not ask"))
 

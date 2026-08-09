@@ -108,14 +108,14 @@ const FLAG_MAX_COUNT: u32 = 1 << 4;
 /// `IRGX_INVERT`: select the non-matching lines.
 const FLAG_INVERT: u32 = 1 << 7;
 
-/// Whether a record is a line the pattern selected, or a neighbour carried along
+/// Whether a record is a line the pattern selected, or a neighbor carried along
 /// by the context request.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Kind {
     /// A line the pattern selected.
     #[default]
     Line,
-    /// A neighbour, carried by [`Query::context`].
+    /// A neighbor, carried by [`Query::context`].
     Context,
 }
 
@@ -503,7 +503,7 @@ impl<'s> Record<'s> {
         self.raw.line_number
     }
 
-    /// Whether this is a selected line or a context neighbour.
+    /// Whether this is a selected line or a context neighbor.
     #[must_use]
     pub fn kind(&self) -> Kind {
         match self.raw.kind {

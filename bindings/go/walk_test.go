@@ -70,7 +70,7 @@ func TestGitignoreHidesAFileAndNoIgnoreBringsItBack(t *testing.T) {
 }
 
 // A negation in an ignore file re-admits what an earlier rule hid, and it is
-// order-sensitive - which is why a walk cannot be modelled as a set of excluded
+// order-sensitive - which is why a walk cannot be modeled as a set of excluded
 // globs applied in any order.
 func TestANegatedIgnoreRuleReadmitsTheFileItNames(t *testing.T) {
 	root := corpus(t, map[string]string{

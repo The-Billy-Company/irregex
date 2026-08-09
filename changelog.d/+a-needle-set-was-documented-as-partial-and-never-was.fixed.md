@@ -19,7 +19,7 @@ actually meet it: `irgx.error.index` in Python, the error text in Go. Go keeps i
 own pre-crossing check for an empty needle - not for the message, but because
 `unsafe.StringData("")` need not return a real address and pinning that panics
 before the engine sees anything - and therefore passes NULL for a slot its own
-guard has already pre-empted, which the header permits.
+guard has already caught, which the header permits.
 
 `irgx_munch_*` and the slate verbs ARE genuinely partial. That distinction is the
 reason the fiction was plausible, and it is why this fragment names the one plane

@@ -137,7 +137,11 @@ func TestAPlanOutlivesThePatternItWasDerivedFrom(t *testing.T) {
 	for range 3 {
 		// Compile and drop a few more, so a plan that aliased a pooled handle's
 		// arena would be reading something reused by now.
-		irgx.MustCompile("other" + "Pattern").Winnow()
+		other, err := irgx.MustCompile("other" + "Pattern").Winnow()
+		if err != nil {
+			t.Fatalf("churn Winnow: %v", err)
+		}
+		other.Close()
 	}
 	if got := plan.Describe(); got != before {
 		t.Errorf("the plan changed after its pattern went away: %+v was %+v", got, before)

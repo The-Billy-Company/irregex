@@ -951,7 +951,8 @@ test "walk: a type term narrows, and an unknown one is refused rather than empty
 
     // A typo'd type is the one filter mistake that reads exactly like an empty
     // corpus, so it is `.invalid` and never `.ok` with nothing in it.
-    const typo = Term{ .kind = term_type, .reserved = 0, .text = "markdwon", .text_len = 8 };
+    const unknown = "unknown-type-name";
+    const typo = Term{ .kind = term_type, .reserved = 0, .text = unknown, .text_len = unknown.len };
     var bad = try rooted(a, root, 0, &.{typo});
     var unused: *Walk = undefined;
     try t.expectEqual(Status.invalid, open(&bad, &unused));
