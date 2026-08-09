@@ -7,7 +7,7 @@
 //! demand — into the vendored PCRE2 JIT. The seven stages behind this file
 //! (`syntax → analysis → compile → linear`, with `unicode`, `pcre2`, `oracle`
 //! alongside) are INTERNALS. Callers get this file and nothing else; the seal
-//! in `contract/irregex.zone` makes that a build-time law rather than a
+//! in `charter.zone` makes that a build-time law rather than a
 //! convention, and `zoning verify` in CI judges it.
 //!
 //! Why a seal and not just a README: the engine's correctness rests on every

@@ -3,11 +3,11 @@
 Algorithms and math — no argv, no walk, no emit, no filesystem. Every
 transport (cold CLI, warm session, FFI, bindings) compiles through here so
 they cannot drift on what a hit is. This package's own contract
-(`contract/irregex.zone`) declares eight tiers, low→high, and an import may
-only point back down the page. Two more tiers of the same ward — compression
+(`charter.zone`) declares eight tiers, low→high, and an import may
+only point back down the page. Two more tiers of the same law — compression
 kinship and set-algebra composition — are zoned separately in the sibling
 `relate` package, which stands above this library in the ecosystem DAG and
-carries its own `contract/*.zone`.
+carries its own `charter.zone`.
 
 - [`math/`](math) is the math floor: bits, mix, the pure glob matcher, the
   crest sieve, misread, forest, lease, parallel, the succinct structures.

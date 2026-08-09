@@ -1,6 +1,6 @@
 # irregex/src
 
-This is the prose half of [`../contract/irregex.zone`](../contract/irregex.zone).
+This is the prose half of [`../charter.zone`](../charter.zone).
 The Zig tree is the LIBRARY the ecosystem's three product faces (`gist` ·
 `relate` · `blast`) stand on, organized into five layers, read bottom-up.
 `root.zig` re-exports every tier through the flat C ABI in

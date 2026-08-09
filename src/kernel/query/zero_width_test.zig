@@ -28,7 +28,7 @@
 //! ordinary matching.
 //!
 //! This file sits in the `query` tier rather than beside the `Cursor` it pins,
-//! and `contract/irregex.zone` is why: imports point one way down the stack, so
+//! and `charter.zone` is why: imports point one way down the stack, so
 //! `query` may reach `regex` and never the reverse. A differential has to hold
 //! both rules at once, which makes this the only height it can legally live at.
 

@@ -603,7 +603,7 @@ resource caps instead, because there is no slower exact tier below it.
 ## What's in the Toolkit
 
 Four tiers, low to high. Nothing above may be imported by anything below, and
-[`contract/irregex.zone`](contract/irregex.zone) enforces that against the real
+[`charter.zone`](charter.zone) enforces that against the real
 `@import` graph rather than against anybody's memory of it.
 
  - **kernels** ([`src/kernel/`](src/kernel/README.md)) – algorithms and math. No
@@ -824,7 +824,7 @@ actually reach for.
 There is exactly one grammar, and that is a property rather than a promise. Every
 one of those stages is an internal, callers enter through
 [`regex.zig`](src/kernel/regex/regex.zig), and
-[`contract/irregex.zone`](contract/irregex.zone) seals the package so an import
+[`charter.zone`](charter.zone) seals the package so an import
 cannot reach past it.
 
 The seal is soundness, not tidiness. The crest sieve once carried a second,
@@ -1163,7 +1163,7 @@ happened rather than a claim that it did.
  engine's asserts 8,000 (pattern, input) comparisons — each a minimum the
  generator must clear rather than a fixed total, so a run that silently
  produced fewer cases fails loudly instead of passing quietly.
- - **Structure as law.** [`contract/irregex.zone`](contract/irregex.zone)
+ - **Structure as law.** [`charter.zone`](charter.zone)
  declares the zone order, the seals, a five-hop reach ceiling, and a cycle ban
  over the real `@import` graph.
  - **Five baseline-guarded scanners** in

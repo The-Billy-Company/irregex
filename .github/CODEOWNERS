@@ -9,6 +9,7 @@
 # The engine tiers and the contract that binds them. A change to the import
 # topology is an architecture change even when the diff is three lines.
 /src/                   @GriffinCanCode
+/charter.zone           @GriffinCanCode
 /contract/              @GriffinCanCode
 
 # The C ABI is the promise every binding and every face rests on, and it

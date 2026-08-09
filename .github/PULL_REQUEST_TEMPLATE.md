@@ -44,7 +44,7 @@ of the same bug.
 - [ ] A news fragment is in `changelog.d/` (`+<slug>.<type>.md`), unless this is
       comment-only, format-only, or genuinely invisible
 - [ ] No ratchet baseline was raised to make a gate pass
-- [ ] `contract/irregex.ward` is updated in this PR if a new import edge was needed
+- [ ] `charter.zone` is updated in this PR if a new import edge was needed
 - [ ] Third-party code, data, or a published algorithm is credited in `NOTICE`
       and at the call site
 - [ ] The public C ABI in `include/irgx.h` is unchanged, or the change is

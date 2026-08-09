@@ -1,6 +1,6 @@
 # The Export Gate
 
-`contract/irregex.zone` governs what a file *inside* this package may reach.
+`charter.zone` governs what a file *inside* this package may reach.
 Nothing governed what the package **hands out**, and it showed: seventeen
 `regex_*` names shaped by one bench harness sat in the public surface with no
 note saying who they were for, next to a `commands` namespace that existed

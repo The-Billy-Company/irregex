@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The export gate: does `src/root.zig` hand out exactly what was promised?
 
-`contract/irregex.ward` governs what a file inside this package may reach.
+`charter.zone` governs what a file inside this package may reach.
 Nothing governed what the package hands out, which is how seventeen `regex_*`
 names shaped by one bench harness ended up in the public surface with no note
 saying who they were for. This closes the other side: every top-level `pub` in
