@@ -15,6 +15,9 @@ or that a search exists.
 | [`parallel.zig`](parallel.zig) | shard geometry and a partial-spawn-safe fan-out | `shardBounds`, `evenBounds`, `fanOut` | every parallel lane in the package |
 | [`crest.zig`](crest.zig) | the sieve for patterns the trigram index cannot prune | `crest(doc)`, `Swell.prunes` | fifteen call sites across query, cold, session, corpus index |
 | [`semiring.zig`](semiring.zig) | four semirings and two algebraic-path algorithms | `shortestDistance`, `closure` | nobody in-package yet; the floor a sibling package's parser sits on |
+| [`refine.zig`](refine.zig) | the coarsest partition a transition table cannot tell apart, by Moore and by Hopcroft | `refine`, `Plan`, `nowhere` | `dafsa_test.zig`'s minimality oracle; out of package, a parser quotienting its action table |
+| [`minterm.zig`](minterm.zig) | the coarsest partition of a scalar line a family of interval sets cannot tell apart | `Space(Scalar, top, capacity)`, then `Builder.intern` and `Partition.contains` | the linear engine's symbolic alphabet; out of package, a lexer generator's character classes |
+| [`dafsa.zig`](dafsa.zig) | a string set as the smallest automaton accepting it, with a minimal perfect hash falling out of it | `build`, then `rank` and `spell` | nobody in-package yet; the floor under a persisted keyword table |
 | [`succinct/`](succinct) | SA-IS, RRR and the Huffman wavelet tree the FM-index composes, plus balanced parentheses at 2n + o(n) bits | [its own README](succinct/README.md) | the FM-index and the corpus index |
 
 Not knowing is the membership test, and it cuts both ways. A file belongs here
@@ -348,9 +351,12 @@ how a cycle gets summed. Tropical and Boolean have a total `star`; counting does
 not, because a reachable cycle means infinitely many derivations, and Viterbi
 diverges above 1.
 
-So `star` returns an optional, `closure` raises `error.NoClosure` rather than a
+So `star` returns an optional, `closure` raises `error.Unsupported` rather than a
 silently wrong finite number, and `shortestDistance` carries a visit budget that
-fails closed the same way when handed a semiring that is not k-closed.
+fails closed the same way when handed a semiring that is not k-closed. The name is
+the taxonomy's, not a local one: a semiring is the selected engine of the
+arithmetic, and a query with no answer under the selected engine already has a
+spelling.
 
 Tropical's integer carrier is unsigned by compile error. A negative weight admits
 a negative cycle, `star` stops existing, and every guarantee evaporates, so
@@ -388,17 +394,152 @@ hold exactly, or work in the log domain, which is `Tropical`.
  Springer 1986) – the algebra itself, and where "closed semiring" and the
  formal-power-series view of `star` are set up properly.
 
+## Partitions
+
+Two files here answer the same question over different carriers: what is the
+coarsest way to group things that nothing in a given vocabulary can tell apart.
+
+`refine.zig` groups the **states** of a transition table. Two states belong
+together when no input word ever separates them, which is Myhill-Nerode read as a
+partition rather than as a language, and the answer is DFA minimization, an LR
+table's action-bisimulation, and behaviour classes depending only on what a
+state's colour is taken to mean.
+
+`minterm.zig` groups the **scalars** of a line. Two scalars belong together when
+every set in a family agrees about both of them, so a consumer that asked the
+family `n` questions per input asks the partition one. The blocks are the atoms
+of the Boolean algebra the family generates — its minterms.
+
+Both refuse the obvious quadratic shape. `refine` ships Moore *and* Hopcroft,
+because at the sizes the engine here actually sees, Moore's `O(n²k)` with a tiny
+constant beats Hopcroft's `O(nk log n)` with a splitter queue, and neither
+threshold is guessable from a paper. So `.auto` starts with Moore and escalates
+only when Moore has spent more passes than `log₂ n`, which is where its advantage
+has already been paid back. Having both also means each is the other's oracle,
+which is why the `Engine` that ran is reported rather than hidden.
+
+That is measured rather than assumed, in [`bench/rungs/partition/`](../../../bench/rungs/partition/README.md).
+On a blown-up quotient — wide and shallow, the shape a determinizer hands you —
+Moore settles in 2 to 6 passes and beats Hopcroft by 3 to 5× at every size up to
+65 536 states, because a splitter queue and an inverted delta are overhead a
+shallow partition never amortizes. On a chain, where the coarsest stable
+partition is the discrete one and can only be reached one state at a time, Moore
+pays a full `n·k` sweep per state and loses by 2 634× at 16 384 states. `.auto`
+lands within 3.2× of Hopcroft there while staying on Moore everywhere else,
+which is the entire argument for shipping two engines and one default.
+
+`minterm` refuses the textbook `O(2ⁿ)` of intersecting every subset of the
+family. Every set's endpoints become open/close events on one line, sorted once;
+between two consecutive endpoints the covering set is constant, so each gap is an
+atom whose label is the live set of sets, and atoms sharing a label are the same
+block. The label *is* the block's identity, so the partition arrives minimal
+rather than minimized afterwards, at `O(B log B)` in endpoints.
+
+A missing transition in `refine` goes to an implicit sink rather than being
+skipped. That matters: a state with no transition on `a` and a state that loops on
+`a` are distinguishable, and treating the hole as "no constraint" would merge them
+and silently produce a machine accepting more than it was given.
+
+Both refuse rather than truncate at their ceilings — a partition too large to
+name is an error, not a wrapped index.
+
+### Prior Art
+
+ - [Hopcroft, *An n log n algorithm for minimizing states in a finite
+ automaton*](https://doi.org/10.1016/B978-0-12-417750-5.50022-1) (1971) – the
+ `n log n` engine, and the "process the smaller half" argument that is the whole
+ reason it is not quadratic.
+ - [Valmari & Lehtinen, *Efficient Minimization of DFAs with Partial
+ Transition Functions*](https://doi.org/10.4230/LIPIcs.STACS.2008.1328) (STACS
+ 2008) – the refinable-partition structure `refine` uses, where splitting costs
+ what moved rather than what the block held, and the partial-transition
+ treatment the implicit sink is.
+ - [van Noord & Gerdemann, *Finite State Transducers with Predicates and
+ Identities*](https://doi.org/10.1023/A:1011491702637) (Grammars 4(3), 2001) –
+ automata over predicates instead of symbols, where the minterm partition comes
+ from.
+ - [D'Antoni & Veanes, *Minimization of Symbolic
+ Automata*](https://doi.org/10.1145/2535838.2535849) (POPL 2014) – the same
+ partition computed by solver calls over an arbitrary predicate algebra, which
+ is what you need when the predicates are not intervals and what you do not need
+ when they are.
+
+## String Sets
+
+`dafsa.zig` stores a set of strings as the smallest automaton that accepts it. A
+trie shares prefixes; this shares prefixes *and suffixes*, so a hundred keys
+ending `_test.zig` walk one shared tail instead of a hundred copies of it. Built
+by inserting sorted keys and hash-consing each state at the moment nothing can be
+added to it again, so it is minimal at every step rather than built large and
+minimized after.
+
+The reason to reach for it over a sorted array is the ordinal. Because every
+state knows how many keys it accepts, the walk that answers membership can count
+the keys sorting before the one it is walking, so `rank` is a *minimal perfect
+hash* onto `0..count` obtained from the same bytes that answer `contains`. Put
+the payloads in an array, index it with `rank`, and no key is stored twice.
+`spell` inverts it, which is what makes the structure a bijection rather than a
+one-way hash you hope is injective.
+
+And the ordinal, not the compression, is what to come here for — which the same
+rung measures, because the received wisdom about this structure is a size claim.
+Compression is entirely the tails the keys have in common, so it is a property of
+the corpus and not of the structure. At a fixed 4 096 keys, going from 4 096
+distinct tails to 64 tails shared 64 ways moves the resident size from 1.33× a
+sorted array's to 11.1×. Point it at keys with genuinely unshared 25-byte stems —
+file paths, roughly — and it *loses* to a sorted array by 7 to 8×, at every count
+from 128 keys to 32 768, with no crossing. What holds across all of it is `rank`:
+27 to 108 ns per key, pointer-free, order-preserving, and unavailable from the
+sorted array at any size.
+
+Sorted input is required and checked, because ascending order is what lets a
+state be sealed the moment the next key diverges from it. Daciuk et al. give a
+second algorithm for unsorted input that clones states along the way; it is a
+much larger piece of code, and a caller who sorts first does not need it. So
+unsorted input — equal neighbours included, since a set has no duplicates and
+dropping one would make `rank` disagree with the caller's own array — is
+`error.NonCanonical`, never a wrong automaton.
+
+It does not sit on `dag.zig`, and the reason is worth stating because that looks
+like the right floor. A `Dag` node is a payload plus exactly `arity` children
+fixed at comptime; a DAFSA state's fan-out is whatever the keys gave it, so it
+would have to be a wasted `[256]Id` per state or an edge list inside the payload,
+at which point `Dag` contributes a hash table and nothing else. What is shared is
+the discipline, not the type: structural identity, and children interned before
+parents, so every id points strictly downward and one ascending sweep counts what
+each state accepts.
+
+### Prior Art
+
+ - [Daciuk, Mihov, Watson & Watson, *Incremental Construction of Minimal Acyclic
+ Finite-State Automata*](https://doi.org/10.1162/089120100561601) (Computational
+ Linguistics 26(1), 2000) – the construction, register and all.
+ - [Revuz, *Minimisation of acyclic deterministic automata in linear
+ time*](https://doi.org/10.1016/0304-3975(92)90142-3) (TCS 92(1), 1992) – the
+ other road, minimizing a finished trie by height-ordered bucketing, worth
+ knowing because it is what the test oracle does by a third route.
+ - [Lucchesi & Kowaltowski, *Applications of finite automata representing large
+ vocabularies*](https://doi.org/10.1002/spe.4380230103) (Softw. Pract. Exper.
+ 23(1), 1993) – where counting keys per state to get a perfect hash out of the
+ automaton comes from.
+
 ## Invariants
 
  - **Caller-owned storage** – `Field`, `crest`, `glob`, `misread`, `pruned` and
- the semiring operations allocate nothing. The four that do (`Forest`, `Dag`,
- the `Dag` sweeps, and `shortestDistance`) take a `gpa` and hand ownership
- straight back, through a `deinit` or as a slice the caller frees.
+ the semiring operations allocate nothing, and `refine` writes its answer into a
+ block array the caller sized. The rest (`Forest`, `Dag`, the `Dag` sweeps,
+ `shortestDistance`, `refine`'s scratch, and the `minterm` and `dafsa` builders)
+ take a `gpa` and hand ownership straight back, through a `deinit` or as a slice
+ the caller frees.
+ - **A frozen artifact holds no allocator** – `Dafsa` and `minterm`'s
+ `Partition` take the allocator in `deinit` rather than storing it, so an
+ instance costs a word less and cannot be freed by an allocator that did not
+ make it.
  - **Crest soundness rounds down only** – under-prune, never a false negative.
  - **Saturate, never wrap** – crest counters, tropical costs and derivation
  counts pin at their cap, because a wrapped value would read as *better* than
  the truth and win a comparison it should lose.
- - **Fail closed on a missing guarantee** – no closure is `error.NoClosure`
+ - **Fail closed on a missing guarantee** – no closure is `error.Unsupported`
  rather than a finite lie, a tie in `nearest` is null rather than a coin flip,
  and a non-unique payload representation is a compile error rather than a silent
  second id.
@@ -409,7 +550,7 @@ hold exactly, or work in the log domain, which is `Tropical`.
  - **Three imports out, all downward** – beyond `std`, `builtin` and its own
  siblings, this tier reaches for exactly `portal` in `parallel`, `fault` in
  `sais`, and `signet` in `crest`. Each is a floor declared below `math` in
- `contract/irregex.zone`, so the tier stays reachable from everywhere above it,
+ `charter.zone`, so the tier stays reachable from everywhere above it,
  and that is checked rather than hoped for.
 
 ## How It Is Proven
@@ -438,6 +579,23 @@ itself.
  - **`succinct/parens_test.zig`** – one O(n) explicit-stack scan knowing nothing
  about excess, blocks or min-max trees, over the shapes the range min-max tree
  can get wrong.
+ - **`refine_test.zig`** – the textbook pairwise marking algorithm, O(n³k) and
+ obviously right, plus stability and coarseness stated separately so an engine
+ that over-splits fails distinguishably from one that under-splits. Moore,
+ Hopcroft and the marking algorithm must agree state for state, and the two
+ engines alone are checked at a size the quadratic oracle cannot afford.
+ - **`minterm_test.zig`** – the definition rather than a second implementation:
+ over a space small enough to enumerate, two scalars share a block *exactly
+ when* the same sets contain them. Left to right is stability, right to left is
+ minimality, and stating both is what catches a sweep that emits one atom per
+ scalar. Run at two instantiations, because a generic instantiated once is a
+ generic on paper.
+ - **`dafsa_test.zig`** – the trie over the same keys, quotiented by `refine`:
+ two different algorithms, one hash-consing without ever building the trie and
+ one minimizing a finished trie, that have to land on the same state and edge
+ count. The language is checked against near misses — prefixes, extensions,
+ one-byte mutations — because a set that says yes to everything also says yes to
+ every key.
 
 `forest`, `misread` and `parallel` keep their tests inline, because each property
 reads beside the code it constrains: transitive joins collapsing to one
@@ -457,5 +615,5 @@ semiring, or an algorithm over one.
 Never file I/O, never ignore-file rules, and never anything that has to ask what
 the caller wanted, which is `corpus/` and `exec/cold/`. If a new file would need
 to import a tier above this one to make sense it belongs in that tier instead,
-and `contract/irregex.zone` is where that is enforced rather than merely
+and `charter.zone` is where that is enforced rather than merely
 intended.

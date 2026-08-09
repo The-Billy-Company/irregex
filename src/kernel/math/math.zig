@@ -56,12 +56,36 @@ pub const Dag = dag.Dag;
 /// prunes files a literal-free pattern cannot match (`research/crest/PROOF.md`).
 pub const crest = @import("crest.zig");
 
-/// SA-IS suffix array construction, RRR bit vectors, and the Huffman-shaped
-/// wavelet tree — the three structures the FM-index composes.
+/// The four questions one algorithm can answer when you swap its arithmetic:
+/// is there a path, what is the cheapest, which is likeliest, how many.
+pub const semiring = @import("semiring.zig");
+
+/// The coarsest partition a transition table cannot tell apart — DFA
+/// minimization, an LR table's action-bisimulation, and behaviour classes, which
+/// are one algorithm over three readings of what a state's colour means. Moore
+/// and Hopcroft both, because each is the other's oracle.
+pub const refine = @import("refine.zig");
+
+/// A set of strings as the smallest automaton accepting it — prefixes *and*
+/// suffixes shared, and a minimal perfect hash onto `0..count` falling out of the
+/// same walk that answers membership, so payloads index an array instead of
+/// storing their keys a second time.
+pub const dafsa = @import("dafsa.zig");
+
+/// The coarsest partition of a scalar line a family of sets cannot tell apart —
+/// character classes, token predicates, guard conditions — so a consumer that
+/// asked the family `n` questions per input asks the partition one. One boundary
+/// sweep, not the textbook `O(2^n)` of pairwise intersection.
+pub const minterm = @import("minterm.zig");
+
+/// SA-IS suffix array construction, RRR bit vectors, the Huffman-shaped wavelet
+/// tree — the three structures the FM-index composes — and balanced
+/// parentheses, which is the ordinal tree those structures don't cover.
 pub const succinct = struct {
     pub const sais = @import("succinct/sais.zig");
     pub const rrr = @import("succinct/rrr.zig");
     pub const wavelet = @import("succinct/wavelet.zig");
+    pub const parens = @import("succinct/parens.zig");
 };
 
 test {

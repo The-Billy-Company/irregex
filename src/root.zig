@@ -136,7 +136,7 @@ pub const index = struct {
 // flattening added no capability, cost every reader the question of whether the
 // two groupings agreed, and — since most were minted so one bench could reach
 // one stage — made the package's public surface a function of its own test
-// harness. The seal (`contract/irregex.zone`) is what makes a single door
+// harness. The seal (`charter.zone`) is what makes a single door
 // load-bearing rather than merely tidy: nothing enters this engine except
 // through it, so a second grammar cannot grow beside the first.
 pub const regex = @import("kernel/regex/regex.zig");
@@ -458,6 +458,11 @@ test {
     _ = @import("kernel/math/dag_test.zig"); // hash-consed DAG substrate: identity, topological order, sweeps vs recursion
     _ = @import("kernel/regex/ast/ast_test.zig"); // interned AST: re-association safety, fused facts vs today's recursive walkers
     _ = @import("kernel/math/crest_test.zig"); // crest sieve, document half: ρ(d) scan + dominance decision + sidecar schema
+    _ = @import("kernel/math/semiring_test.zig"); // the four semirings against their axioms; closure/shortest-distance vs Bellman–Ford, BFS, and a topological DP
+    _ = @import("kernel/math/succinct/parens_test.zig"); // balanced parentheses: every navigation op vs a naive stack walk over random shapes
+    _ = @import("kernel/math/refine_test.zig"); // partition refinement: Moore ≡ Hopcroft ≡ textbook pairwise marking, plus stability/coarseness and the escalation
+    _ = @import("kernel/math/dafsa_test.zig"); // string sets: exact language incl. near misses, rank/spell bijection, and size ≡ a trie quotiented by refine
+    _ = @import("kernel/math/minterm_test.zig"); // minterm partition: same block iff the same sets contain it — stability and coarseness in one biconditional, at two instantiations
     _ = @import("kernel/math/parallel.zig"); // shared byte-balanced sharding + partial-spawn-safe fan-out
     _ = @import("corpus/index/frame/signet_test.zig"); // BLAKE3 identity: domain separation, seal round-trip, torn-write detection
     _ = @import("kernel/math/lease_test.zig"); // reader/writer lease guards + double-checked readReconciled dance

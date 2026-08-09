@@ -44,7 +44,7 @@ Munch = { why = "anchored longest-match over a slate: the lexer primitive, and t
 Chorus = { why = "many patterns in one pass, answering which of them occur" }
 scan = { why = "the byte tier: memmem, Teddy, Aho-Corasick, class runs, and the LiteralSet that dispatches across them" }
 slate = { why = "many patterns in one walk with exact per-pattern attribution, and the plan that shapes the rows" }
-math = { why = "the product-free floor: bits, globs, edit distance, union-find, sharding, leases, the hash-consed DAG, the crest calculus, the succinct structures" }
+math = { why = "the product-free floor: bits, globs, edit distance, union-find, sharding, leases, the hash-consed DAG, the crest calculus, the succinct structures, the balanced-parenthesis tree, the four semirings one shortest-path routine runs on, and the three collapse primitives — partition refinement, the minterm partition of a scalar line, and the DAFSA" }
 codex = { why = "the FM-index over the succinct floors, and the persisted multi-doc shelf above it" }
 
 # ── which bytes are eligible, and what is persisted about them ──
