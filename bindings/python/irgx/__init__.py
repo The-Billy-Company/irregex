@@ -34,10 +34,81 @@ from collections.abc import Callable, Iterator
 from typing import Any
 
 from ._abi import ENGINE_VERSION, LIBRARY, PCRE2_VERSION, UnsupportedPattern, error
+from ._flags import flag_bits
 from ._match import Match
 from ._munch import Munch, Refusal, Scan, Token, Why, compile_munch
-from ._pattern import Pattern, flag_bits
+from ._pattern import Pattern
 from ._set import PatternSet, compile_set
+
+#: The planes beyond the buffer, and the one module each lives in. They are
+#: resolved on first attribute access rather than imported here, because each one
+#: binds its own prototypes at import time and a program that only ever calls
+#: :func:`search` should not pay for the tree, the walk, the sieve and an
+#: FM-index to be declared. It also means a wheel linked against an older engine
+#: still imports: the plane that is missing raises when it is *reached for*,
+#: naming the symbol, instead of making ``import irgx`` fail outright.
+_PLANES: dict[str, tuple[str, str]] = {
+    # anchored - re's match/fullmatch/Scanner, over the lexer plane
+    "Scanner": ("_anchored", "Scanner"),
+    "scanner": ("_anchored", "scanner"),
+    # lines - byte offsets to the rows a person reads
+    "Band": ("_lines", "Band"),
+    "Line": ("_lines", "Line"),
+    "line_context": ("_lines", "line_context"),
+    "line_count": ("_lines", "line_count"),
+    "split_lines": ("_lines", "split_lines"),
+    # literals - what a pattern promises before it runs, and the Unicode tables
+    "Facts": ("_literals", "Facts"),
+    "Literals": ("_literals", "Literals"),
+    "Place": ("_literals", "Place"),
+    "Verdict": ("_literals", "Verdict"),
+    "fold_orbit": ("_literals", "fold_orbit"),
+    "literals": ("_literals", "literals"),
+    "property_has": ("_literals", "property_has"),
+    "property_ranges": ("_literals", "property_ranges"),
+    "unicode_version": ("_literals", "unicode_version"),
+    # needles - N literal strings in one pass, with attribution
+    "Hit": ("_needles", "Hit"),
+    "Needles": ("_needles", "Needles"),
+    "Shape": ("_needles", "Shape"),
+    "Tier": ("_needles", "Tier"),
+    "compile_needles": ("_needles", "compile_needles"),
+    # walk - which files a search may read
+    "Ceilings": ("_walk", "Ceilings"),
+    "File": ("_walk", "File"),
+    "Genus": ("_walk", "Genus"),
+    "Policy": ("_walk", "Policy"),
+    "Walk": ("_walk", "Walk"),
+    "genus": ("_walk", "genus"),
+    "is_binary": ("_walk", "binary"),
+    "walk": ("_walk", "walk"),
+    "walk_limits": ("_walk", "limits"),
+    # sieve - narrowing, so most files are never opened
+    "Anchor": ("_sieve", "Anchor"),
+    "Contents": ("_sieve", "Contents"),
+    "Freshness": ("_sieve", "Freshness"),
+    "Plan": ("_sieve", "Plan"),
+    "Sieve": ("_sieve", "Sieve"),
+    "Winnow": ("_sieve", "Winnow"),
+    "sieve": ("_sieve", "sieve"),
+    "winnow": ("_sieve", "winnow"),
+    # tree - search a corpus on disk, not a buffer in hand
+    "Cancel": ("_tree", "Cancel"),
+    "Corpus": ("_tree", "Corpus"),
+    "Cursor": ("_tree", "Cursor"),
+    "Record": ("_tree", "Record"),
+    "RecordKind": ("_tree", "Kind"),
+    "corpus": ("_tree", "corpus"),
+    # codex - an FM-index that answers about a text it does not store
+    "Codex": ("_codex", "Codex"),
+    "Cost": ("_codex", "Cost"),
+    "Encoding": ("_codex", "Encoding"),
+    "NO_LOCATE": ("_codex", "NO_LOCATE"),
+    "Rows": ("_codex", "Rows"),
+    "build_codex": ("_codex", "build"),
+    "load_codex": ("_codex", "load"),
+    "max_text_len": ("_codex", "max_text_len"),
+}
 
 __all__ = [
     "ENGINE_VERSION",
@@ -60,13 +131,38 @@ __all__ = [
     "escape",
     "findall",
     "finditer",
+    "fullmatch",
     "is_match",
+    "match",
     "purge",
     "search",
     "split",
     "sub",
     "subn",
+    *_PLANES,
 ]
+
+
+def __getattr__(name: str) -> Any:
+    """Resolve a plane's export on first use.
+
+    :raises AttributeError: for a name this package does not have — and, with the
+        missing symbol named, for a plane the linked engine is too old to export.
+    """
+    try:
+        module, attr = _PLANES[name]
+    except KeyError:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from None
+    import importlib
+
+    value = getattr(importlib.import_module(f".{module}", __name__), attr)
+    globals()[name] = value  # one import per plane, not one per access
+    return value
+
+
+def __dir__() -> list[str]:
+    return sorted(__all__)
+
 
 #: The version of this Python package, read from the installed distribution's
 #: own metadata rather than restated here — ``pyproject.toml`` is the only
@@ -185,6 +281,24 @@ def search(
 ) -> Match | None:
     """The first match of ``pattern`` in ``text``, or ``None``."""
     return _prepared(pattern, flags).search(text)
+
+
+def match(
+    pattern: str | bytes | Pattern,
+    text: str | bytes,
+    **flags: bool,
+) -> Match | None:
+    """The match of ``pattern`` beginning at the start of ``text``, or ``None``."""
+    return _prepared(pattern, flags).match(text)
+
+
+def fullmatch(
+    pattern: str | bytes | Pattern,
+    text: str | bytes,
+    **flags: bool,
+) -> Match | None:
+    """The match of ``pattern`` spanning the whole of ``text``, or ``None``."""
+    return _prepared(pattern, flags).fullmatch(text)
 
 
 def finditer(

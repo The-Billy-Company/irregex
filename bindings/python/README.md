@@ -46,8 +46,8 @@ for m in irgx.finditer(r"(\w+)@(\w+\.\w+)", "write me@example.com or you@other.o
 (24, 37) you other.org
 ```
 
-The module-level verbs are `compile`, `search`, `finditer`, `findall`, `split`,
-`sub`, `subn`, `is_match`, and `escape`. `compile` returns a `Pattern` with the
+The module-level verbs are `compile`, `search`, `match`, `fullmatch`, `finditer`,
+`findall`, `split`, `sub`, `subn`, `is_match`, and `escape`. `compile` returns a `Pattern` with the
 same verbs as methods. A `Match` has `group`, `groups`, `groupdict`, `start`,
 `end`, `span`, `expand`, `__getitem__`, and the `.re` and `.string` attributes.
 
@@ -175,6 +175,73 @@ a nullable terminal cannot answer zero everywhere, and `allow=` restricts a sing
 call to a subset without a second compile — which is how context-sensitive lexing
 works.
 
+## Beyond One Buffer
+
+`re` searches a string you already have. Most of the work in a real search tool
+is deciding which strings to have at all, and the engine exposes that as six more
+planes. Every one of them is imported lazily, so a program that only calls
+`search` never pays to declare them.
+
+```python
+import irgx
+
+# Which files may a search read? A materialized set, narrowed by term, not a
+# generator you filter afterwards.
+with irgx.walk(".", globs=["*.py"], not_globs=["*_test.py"]) as files:
+    print(len(files), "eligible")
+
+# Search a corpus rather than a buffer. `None` means no tier answered and you
+# should fall back; an EMPTY cursor means the corpus really holds nothing.
+with irgx.corpus(".") as corpus:
+    cursor = corpus.search("WalletService", before=1, after=1)
+    if cursor is not None:
+        with cursor:
+            for record in cursor.pull():
+                print(f"{record.path}:{record.line_number}: {record.line}")
+
+# An FM-index over a text it does not keep: counting needs no enumeration,
+# because the count IS the width of the row interval the pattern admits.
+with irgx.build_codex(open("big.log").read()) as codex:
+    print(codex.count("ERROR"), codex.locate("ERROR"))
+
+# The line grid, so the byte-offset-to-row conversion happens once, in one place.
+text = "one\ntwo\nthree\n"
+band = irgx.line_context(text, at=irgx.search("two", text).start(), before=2, after=2)
+print(band.center, [row.number for row in band.rows])
+
+# What a pattern promises before it runs, plus the Unicode tables behind it.
+facts = irgx.literals(irgx.compile("hello world"))
+if facts is not None:  # None for a pcre=True pattern: nothing to promise
+    with facts:
+        print(facts.set(irgx.Place.PREFIX))
+print(irgx.unicode_version(), irgx.fold_orbit(ord("k")))
+
+# N literal strings in one pass, keeping which one hit - what an alternation
+# throws away.
+with irgx.compile_needles(["cat", "the", "zebra"]) as needles:
+    print(needles.which("the cat sat"))  # (0, 1) - zebra is absent
+```
+
+The sixth plane is `sieve`, which narrows a corpus against a persisted artifact
+so most files are never opened. It is the one plane that declines routinely: with
+no artifact on disk there is nothing to narrow *with*, so `irgx.sieve(path)`
+returns `None` and your next move is to walk the tree yourself.
+
+Two rules hold across all of them, and both are the kind of thing a ctypes
+binding gets wrong invisibly:
+
+- **Every value is copied at the boundary.** A tree record's path, a walk
+  entry's path and a sieve's candidate list all point into an arena the handle
+  owns. In Python a `str` built from borrowed memory looks exactly like any
+  other, so nothing here hands one back: close the handle, drop it, let the GC
+  run, and the values you already read still work.
+- **A declinature is `None`, never an exception.** `IRGX_STALE` is the engine
+  stepping aside with no fault set. The caller's next move is a fallback, not a
+  traceback.
+
+Handles are context managers, close idempotently, and refuse use afterward
+instead of following a dangling pointer.
+
 ## A `Pattern` Is Safe to Share Across Threads
 
 Put a compiled pattern at module scope and use it from a thread pool. That is
@@ -237,10 +304,18 @@ Most patterns behave identically, and the test suite checks a set of them
 against `re` on every run. These are the places they part ways, all of them on
 purpose.
 
-- **No `match` or `fullmatch`.** Both would have to be faked on top of an
-  unanchored search, which is where they end up subtly wrong. Write the
-  anchor instead: `\A` and `\z` are in the grammar. Note the spelling of the
-  end anchor; it is `\z`, as in Rust and RE2, not `\Z`.
+- **`fullmatch` refuses instead of guessing when groups would be wrong.** Both
+  `match` and `fullmatch` are here, and they are not faked on top of an
+  unanchored search - `match` is a leftmost search plus a start comparison, which
+  is exact because this engine is leftmost-first exactly as `re` is, and
+  `fullmatch` asks the anchored-longest automaton, so `a|ab` full-matches `"ab"`
+  here the same way it does under `re`'s backtracking. What that automaton cannot
+  do is report capture groups, and for the handful of patterns whose full match
+  takes a path their leftmost match does not - `(a)|(ab)` over `"ab"` - the
+  groups would belong to the wrong match, so it raises and says so rather than
+  answering. Anchoring in the pattern still works and needs none of this: `\A`
+  and `\z` are in the grammar. Note the spelling of the end anchor; it is `\z`,
+  as in Rust and RE2, not `\Z`.
 - **`finditer` is eager.** The engine reports the whole match sequence in one
   call rather than handing back a cursor a Python loop advances, so the
   iterator knows its own `len()` before you walk it. The sequence itself is

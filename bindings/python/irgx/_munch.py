@@ -38,8 +38,8 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 
 from . import _abi
 from ._abi import _VOID, MunchPattern, MunchRefusal, MunchToken, UnsupportedPattern, check, lib
+from ._flags import flag_bits
 from ._match import TextView
-from ._pattern import flag_bits
 from ._pool import Pool
 
 if TYPE_CHECKING:

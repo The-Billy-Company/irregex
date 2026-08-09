@@ -25,7 +25,7 @@ from typing import Any
 
 from . import _abi
 from ._abi import _VOID, SlatePattern, UnsupportedPattern, check, lib
-from ._pattern import flag_bits
+from ._flags import flag_bits
 from ._pool import Pool
 
 #: The two flags a slate has nowhere to carry. Refused rather than dropped: a

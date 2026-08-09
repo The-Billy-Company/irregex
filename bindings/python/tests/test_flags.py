@@ -10,7 +10,7 @@ from __future__ import annotations
 import irgx
 import pytest
 from irgx import _abi
-from irgx._pattern import flag_bits
+from irgx._flags import flag_bits
 
 
 def test_fixed_makes_the_pattern_literal():

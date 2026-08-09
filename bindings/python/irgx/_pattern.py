@@ -60,38 +60,6 @@ def _on_characters(spans: list[tuple[int, int]], data: bytes) -> list[tuple[int,
     return [at for at in spans if at[0] >= size or data[at[0]] & 0xC0 != 0x80]
 
 
-def flag_bits(
-    *,
-    fixed: bool = False,
-    ignore_case: bool = False,
-    word: bool = False,
-    smart_case: bool = False,
-    unicode: bool = True,
-    multiline: bool = False,
-    dotall: bool = False,
-    pcre: bool = False,
-) -> int:
-    """The ``IRGX_*`` bit word for a set of keyword flags.
-
-    ``unicode`` is inverted on purpose: Unicode semantics are the engine's
-    default, so the bit that exists is ``IRGX_NO_UNICODE`` and passing
-    ``unicode=True`` sets nothing.
-
-    ``multiline`` and ``dotall`` are ``re.M`` and ``re.S``, spelled as keywords
-    and defaulting off exactly as they do there.
-    """
-    return (
-        (_abi.FIXED if fixed else 0)
-        | (_abi.IGNORE_CASE if ignore_case else 0)
-        | (_abi.WORD if word else 0)
-        | (_abi.SMART_CASE if smart_case else 0)
-        | (0 if unicode else _abi.NO_UNICODE)
-        | (_abi.MULTILINE if multiline else 0)
-        | (_abi.DOTALL if dotall else 0)
-        | (_abi.PCRE if pcre else 0)
-    )
-
-
 class Pattern:
     """A compiled pattern. Immutable, and safe to share across threads.
 
@@ -188,6 +156,31 @@ class Pattern:
     def groupindex(self) -> dict[str, int]:
         """Named groups, mapped to their numbers. Empty when there are none."""
         return dict(self._groupindex)
+
+    @property
+    def windows(self) -> bool:
+        """Whether this pattern can be searched from a mid-buffer offset.
+
+        A property of the PATTERN, not of the call, so it is asked once. ``False``
+        for the PCRE2 arm, which has no windowed entry — which is why
+        :meth:`search`'s ``endpos`` truncates the haystack rather than passing a
+        bound the other arm could not honour.
+        """
+        return bool(check(lib.irgx_pattern_windows(self._pool.handle()), "could not ask"))
+
+    @property
+    def earliest(self) -> bool:
+        """Whether this pattern can report earliest-mode spans.
+
+        ``False`` is a **refusal**, not a slower path: an earliest span request
+        would fault rather than quietly hand back the leftmost-first match wearing
+        an earliest label. PCRE2 declines because it exposes no inspectable
+        program, and so does any assertion-bearing pattern, whose determinized
+        states depend on the gap they were entered at. Informational here — this
+        binding's search verbs are all leftmost — and reported because the answer
+        belongs to the pattern a host is holding.
+        """
+        return bool(check(lib.irgx_pattern_earliest(self._pool.handle()), "could not ask"))
 
     def __repr__(self) -> str:
         return f"irgx.compile({self._source!r})"
@@ -403,6 +396,24 @@ class Pattern:
         if status != _abi.MATCH:
             return None
         return Match(self, view, out[0].start, out[0].end)
+
+    def match(self, text: str | bytes, pos: int = 0, endpos: int | None = None) -> Match | None:
+        """The match beginning at exactly ``pos``, or ``None`` — ``re``'s ``match``."""
+        from ._anchored import match as anchored
+
+        return anchored(self, text, pos, endpos)
+
+    def fullmatch(self, text: str | bytes, pos: int = 0, endpos: int | None = None) -> Match | None:
+        """The match spanning the whole region, or ``None`` — ``re``'s ``fullmatch``.
+
+        Answered by the anchored-longest automaton rather than by a leftmost
+        search, which is what makes it exact on a non-backtracking engine, and
+        what makes it decline for ``pcre=True``, ``multiline=True`` and patterns
+        already carrying ``\\A``/``\\z``. :mod:`irgx._anchored` has the reasoning.
+        """
+        from ._anchored import full
+
+        return full(self, text, pos, endpos)
 
     def finditer(
         self, text: str | bytes, pos: int = 0, endpos: int | None = None

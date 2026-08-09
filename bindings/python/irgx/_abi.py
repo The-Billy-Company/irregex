@@ -22,8 +22,14 @@ from __future__ import annotations
 import ctypes
 import os
 import sys
+from collections.abc import Sequence
 from pathlib import Path
-from typing import NamedTuple
+from typing import Any, NamedTuple
+
+#: One ctypes prototype: the symbol, its return type, and its parameter types.
+#: ``restype`` is ``None`` for a ``void`` verb, which is why the tuple carries it
+#: explicitly rather than letting a missing entry mean anything.
+Signatures = Sequence[tuple[str, Any, tuple[Any, ...]]]
 
 # The only C-ABI version this binding knows how to speak. The header promises
 # this bumps on any breaking change, so refusing anything else is the whole
@@ -323,38 +329,70 @@ _SIGNATURES = (
             _SIZE,
         ),
     ),
+    ("irgx_pattern_earliest", ctypes.c_int32, (_VOID,)),
 )
+
+#: Every prototype this binding has declared, keyed by symbol. Written by
+#: :func:`declare` and read back by ``tests/test_abi_types.py``, which holds each
+#: entry to the return type ``include/irgx.h`` states for it — so the table is
+#: checked against the frozen header rather than against a reviewer's attention.
+PROTOTYPES: dict[str, tuple[Any, tuple[Any, ...]]] = {}
+
+
+def declare(signatures: Signatures, plane: str = "this plane") -> None:
+    """Bind ``(name, restype, argtypes)`` prototypes onto the loaded library.
+
+    Both halves are always set, and the ``restype`` half is the one that bites.
+    ctypes defaults an unset ``restype`` to ``c_int``, so a verb returning
+    ``size_t`` — ``irgx_matches_count``, ``irgx_walk_count``, ``irgx_codex_len``,
+    ``irgx_codex_max_text_len``, ``irgx_slate_len``, ``irgx_munch_len``,
+    ``irgx_needles_len`` — would come back **silently truncated** to 32 bits on a
+    64-bit host. That is a wrong answer rather than a crash, and no test whose
+    numbers stay under 2\\ :sup:`31` can see it, which is why every entry is
+    declared and the whole table is audited against the header.
+
+    A plane declares its own prototypes beside the wrapper that calls them,
+    rather than growing one table that knows about every plane. A symbol this
+    library does not export is a stale library and says so, naming the plane it
+    is behind — additive symbols do not bump :data:`ABI_VERSION`, so the version
+    probe cannot catch it.
+    """
+    for name, restype, argtypes in signatures:
+        try:
+            fn = getattr(lib, name)
+        except AttributeError as exc:
+            raise error(
+                f"the library at {LIBRARY} does not export {name}; it is not "
+                f"libirgx, or it predates {plane}"
+            ) from exc
+        fn.restype = restype
+        fn.argtypes = list(argtypes)
+        PROTOTYPES[name] = (restype, tuple(argtypes))
 
 
 def _load() -> ctypes.CDLL:
     path = library_path()
     try:
-        lib = ctypes.CDLL(str(path))
+        return ctypes.CDLL(str(path))
     except OSError as exc:
         raise error(f"could not load the irregex library at {path}: {exc}") from exc
 
-    for name, restype, argtypes in _SIGNATURES:
-        try:
-            fn = getattr(lib, name)
-        except AttributeError as exc:
-            raise error(
-                f"the library at {path} does not export {name}; it is not libirgx, "
-                f"or it predates the regex plane"
-            ) from exc
-        fn.restype = restype
-        fn.argtypes = list(argtypes)
-
-    found = lib.irgx_abi_version()
-    if found != ABI_VERSION:
-        raise error(
-            f"irregex ABI mismatch: this wheel speaks ABI {ABI_VERSION}, but the "
-            f"library at {path} reports ABI {found}. The wheel and the library "
-            f"disagree; install a matching pair, or unset IRGX_LIB."
-        )
-    return lib
-
 
 lib = _load()
+
+#: The resolved path of the loaded library. Public so a caller can prove which
+#: copy answered, which matters the moment IRGX_LIB enters the picture.
+LIBRARY = str(library_path())
+
+declare(_SIGNATURES, "the regex plane")
+
+_FOUND_ABI = lib.irgx_abi_version()
+if _FOUND_ABI != ABI_VERSION:
+    raise error(
+        f"irregex ABI mismatch: this wheel speaks ABI {ABI_VERSION}, but the "
+        f"library at {LIBRARY} reports ABI {_FOUND_ABI}. The wheel and the "
+        f"library disagree; install a matching pair, or unset IRGX_LIB."
+    )
 
 #: The engine's semantic version, e.g. ``"1.0.0"``. Distinct from the Python
 #: package version: one wheel can bundle a newer engine without an API change.
@@ -362,10 +400,6 @@ ENGINE_VERSION = lib.irgx_version().decode()
 
 #: The vendored PCRE2 version the ``pcre=True`` arm runs on.
 PCRE2_VERSION = lib.irgx_pcre2_version().decode()
-
-#: The resolved path of the loaded library. Public so a caller can prove which
-#: copy answered, which matters the moment IRGX_LIB enters the picture.
-LIBRARY = str(library_path())
 
 
 def _status_text(status: int) -> str:

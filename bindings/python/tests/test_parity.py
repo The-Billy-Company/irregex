@@ -307,14 +307,60 @@ def test_a_nonleading_or_foreign_inline_flag_is_declined_rather_than_ignored():
     assert irgx.findall("(?i:a)b", "AB ab Ab") == re.findall("(?i:a)b", "AB ab Ab")
 
 
-def test_there_is_no_fullmatch_or_match_because_the_engine_has_no_anchored_verb():
-    # Both would have to be faked on top of an unanchored search, which is how
-    # they end up subtly wrong. `\A...\z` in the pattern says the same thing and
-    # is the engine's own answer. Note the spelling: the end-of-text anchor is
-    # `\z`, as in Rust and RE2. `\Z` is not in this grammar, and asking for it
-    # raises rather than quietly meaning something else.
-    assert not hasattr(irgx, "fullmatch")
-    assert not hasattr(irgx, "match")
+def test_match_is_a_leftmost_search_with_a_start_test():
+    # Exact rather than approximate, and only because this engine is leftmost-first
+    # exactly as `re` is: if any match begins at `pos` then the leftmost match at
+    # or after `pos` begins there, and if it begins later then none begins at
+    # `pos`. So the comparison IS the anchor, not a stand-in for one.
+    for pattern, text in ((r"\d+", "abc123"), (r"\w+", "abc123"), ("b", "abc"), ("x*", "")):
+        got, want = irgx.match(pattern, text), re.match(pattern, text)
+        assert (got is None) == (want is None), (pattern, text)
+        if got is not None and want is not None:
+            assert got.span() == want.span(), (pattern, text)
+    # `pos` anchors where the caller says, in the caller's own units.
+    assert irgx.compile(r"\d+").match("abc123", 3).span() == (3, 6)
+    assert irgx.compile(r"\d+").match("abc123", 2) is None
+    assert irgx.compile(r"\w").match("café", 3).span() == (3, 4)
+
+
+def test_fullmatch_uses_the_anchored_automaton_rather_than_faking_an_anchor():
+    # The reason the previous design refused to ship `fullmatch` at all: faking it
+    # on an unanchored search is subtly wrong, and `a|ab` is the witness. Under
+    # leftmost-first no match beginning at 0 is two bytes long, yet the region
+    # HAS a full match, and `re` finds it by backtracking. This engine does not
+    # backtrack, so the question goes to `irgx_munch_scan` under
+    # IRGX_MUNCH_LONGEST — longest-at-exactly-here — where reaching the end of the
+    # region is a complete answer, since longest is maximal.
+    for pattern, text in (("a|ab", "ab"), ("ab|a", "ab"), (r"\d+", "12a"), (r"\w+", "café")):
+        got, want = irgx.fullmatch(pattern, text), re.fullmatch(pattern, text)
+        assert (got is None) == (want is None), (pattern, text)
+        if got is not None and want is not None:
+            assert got.span() == want.span(), (pattern, text)
+    assert irgx.compile(r"\d+").fullmatch("ab12", 2).span() == (2, 4)
+    assert irgx.compile(r"\d+").fullmatch("12ab", 0, 2).span() == (0, 2)
+    assert irgx.fullmatch(r"(\d+)-(\d+)", "12-34").groups() == ("12", "34")
+
+
+def test_fullmatch_refuses_rather_than_reporting_the_wrong_groups():
+    # `(a)|(ab)` full-matches "ab" only along a path its LEFTMOST match does not
+    # take, and `irgx_captures` reports the leftmost match at an offset — there is
+    # no anchored capture verb in this ABI. Reporting group 1 from the one-byte
+    # match under the two-byte span would be a wrong answer, so it is refused.
+    with pytest.raises(irgx.error, match="anchored capture verb"):
+        irgx.compile("(a)|(ab)").fullmatch("ab")
+    # Without groups there is nothing to disagree about, so the same shape answers.
+    assert irgx.fullmatch("a|ab", "ab").span() == (0, 2)
+    # The anchored automaton is a determinization, so its refusals come along.
+    for pattern, flags in ((r"\w+", {"pcre": True}), (r"^\w+$", {"multiline": True})):
+        with pytest.raises(irgx.error, match="anchored automaton"):
+            irgx.compile(pattern, **flags).fullmatch("abc")
+
+
+def test_the_pattern_can_still_carry_its_own_anchors():
+    # `\A...\z` remains the engine's own answer and needs no anchored verb at all.
+    # Note the spelling: the end-of-text anchor is `\z`, as in Rust and RE2. `\Z`
+    # is not in this grammar, and asking for it raises rather than quietly meaning
+    # something else.
     whole = irgx.search(r"\A\w+\z", "abc")
     assert whole is not None and whole.span() == (0, 3)
     assert irgx.search(r"\A\w+\z", "abc def") is None
