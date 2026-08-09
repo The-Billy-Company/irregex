@@ -37,6 +37,7 @@
 
 const std = @import("std");
 const bulkstat = @import("../../tree/bulkstat.zig");
+const fault = @import("../../../fault.zig");
 const frame = @import("../frame/frame.zig");
 const signet = @import("../frame/signet.zig");
 const portal = @import("../../../portal.zig");
@@ -257,9 +258,9 @@ pub fn buildRecalled(
     paths: []const []const u8,
     lens: []const u32,
     anchor_ns: i128,
-) !void {
+) !fault.Answer(void) {
     std.debug.assert(lens.len == paths.len);
-    if (lens.len == 0 or lens.len > std.math.maxInt(u32)) return;
+    if (lens.len == 0 or lens.len > std.math.maxInt(u32)) return .{ .got = {} };
 
     var widest: u32 = 1;
     for (lens) |n| widest = @max(widest, n);
@@ -271,13 +272,17 @@ pub fn buildRecalled(
     defer gpa.free(crew);
     const threads = try gpa.alloc(std.Thread, nthr);
     defer gpa.free(threads);
-    return write(io, shardFile(), Recalled{
+    write(io, shardFile(), Recalled{
         .src = src,
         .lens = lens,
         .buf = buf,
         .crew = crew,
         .threads = threads,
-    }, paths, anchor_ns);
+    }, paths, anchor_ns) catch |err| switch (err) {
+        error.CorpusChurned => return .{ .declined = .freshness_unprovable },
+        else => return err,
+    };
+    return .{ .got = {} };
 }
 
 /// How much of the corpus is in flight while the shard is written.
@@ -316,6 +321,8 @@ const Held = struct {
 };
 
 /// One crew member's run of docs within the window, and where they land in it.
+const RecallError = error{CorpusChurned};
+
 const Slice = struct {
     r: *const Recalled = undefined,
     lo: usize = 0,
@@ -371,7 +378,7 @@ const Recalled = struct {
     }
 
     /// Read docs `[lo, hi)` into the window, byte-balanced across the crew.
-    fn fill(r: *const Recalled, lo: usize, hi: usize, span: usize) !void {
+    fn fill(r: *const Recalled, lo: usize, hi: usize, span: usize) RecallError!void {
         const nthr = @min(r.crew.len, @max(1, hi - lo));
         var at: usize = 0;
         var doc = lo;
