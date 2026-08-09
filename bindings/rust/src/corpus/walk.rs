@@ -31,6 +31,7 @@
 //! # Ok::<(), irgx::Error>(())
 //! ```
 
+use std::borrow::Cow;
 use std::marker::PhantomData;
 use std::path::Path;
 use std::ptr::NonNull;
@@ -454,9 +455,12 @@ impl Walk {
     }
 
     /// Whether this exact path is in the set — membership, without iterating.
+    ///
+    /// Native Windows separators are converted to the ABI's canonical `/`;
+    /// nothing else is normalized.
     #[must_use]
     pub fn holds(&self, path: &Path) -> bool {
-        let bytes = path.as_os_str().as_encoded_bytes();
+        let bytes = slash_path(path);
         // SAFETY: the handle is live for `&self` and `bytes` is a live slice passed
         // with its own length.
         let status =
@@ -646,6 +650,20 @@ pub fn is_binary(bytes: &[u8]) -> bool {
     // authoritative.
     let status = unsafe { ffi::irgx_walk_binary(bytes.as_ptr(), bytes.len()) };
     status == sys::MATCH
+}
+
+fn slash_path(path: &Path) -> Cow<'_, [u8]> {
+    let bytes = path.as_os_str().as_encoded_bytes();
+    #[cfg(windows)]
+    if bytes.contains(&b'\\') {
+        return Cow::Owned(
+            bytes
+                .iter()
+                .map(|&byte| if byte == b'\\' { b'/' } else { byte })
+                .collect(),
+        );
+    }
+    Cow::Borrowed(bytes)
 }
 
 /// What a path is FOR, from the path alone.
