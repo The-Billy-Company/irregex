@@ -34,6 +34,12 @@ pub const UTF: u32 = 0x00080000;
 /// text degrades instead of failing. Implies UTF; 10.34+.
 pub const MATCH_INVALID_UTF: u32 = 0x04000000;
 
+/// `PCRE2_ANCHORED` — the match must begin at the start offset it was handed,
+/// with no forward search for a later start. A match-time bit (also legal at
+/// compile time), which is what lets one compiled program serve both an
+/// unanchored `find` and an anchored `matchAt`.
+pub const ANCHORED: u32 = 0x80000000;
+
 /// Full JIT compilation for complete (non-partial) matching.
 pub const JIT_COMPLETE: u32 = 0x00000001;
 

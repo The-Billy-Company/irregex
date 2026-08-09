@@ -27,7 +27,9 @@ const OnePass = captures.OnePass;
 
 const ta = std.testing.allocator;
 
-/// Run both engines over `line` and require identical verdicts and slots.
+/// Run both engines over `line` and require identical verdicts and slots — for
+/// the unanchored search AND its anchored twin, since `matchAt` is a second
+/// specialization of the same program and owes the same slot-exact parity.
 fn agree(op: *OnePass, pike: *Captures, line: []const u8, from: usize) !void {
     var a: [64]isize = undefined;
     var b: [64]isize = undefined;
@@ -37,6 +39,15 @@ fn agree(op: *OnePass, pike: *Captures, line: []const u8, from: usize) !void {
     const hb = pike.find(line, from, bv);
     try std.testing.expectEqual(hb, ha);
     if (hb) try std.testing.expectEqualSlices(isize, bv, av);
+
+    const aa = op.matchAt(line, from, av);
+    const ab = pike.matchAt(line, from, bv);
+    try std.testing.expectEqual(ab, aa);
+    if (ab) {
+        try std.testing.expectEqualSlices(isize, bv, av);
+        // Anchored means what it says: the whole match starts where we asked.
+        try std.testing.expectEqual(@as(isize, @intCast(from)), bv[0]);
+    }
 }
 
 const Arms = struct { op: OnePass, pike: Captures };
@@ -396,6 +407,37 @@ test "onepass: empty and zero-length-match edges" {
         defer both.op.deinit();
         defer both.pike.deinit();
         for (0..c.line.len + 1) |k| try agree(&both.op, &both.pike, c.line, k);
+    }
+}
+
+test "matchAt asks a different question than find, and every Caps arm answers it the same" {
+    // The distinction the anchored twin exists for: `find` searches forward and
+    // reports a match the caller never reached; `matchAt` reports what IS at the
+    // offset. A lexer probe wants the second, and a silent substitution of the
+    // first is a probe that fires on text it isn't looking at.
+    const cases = [_]struct { pat: []const u8, line: []const u8, at: usize, find: bool, anchored: bool }{
+        .{ .pat = "(b+)", .line = "aaabbb", .at = 0, .find = true, .anchored = false },
+        .{ .pat = "(b+)", .line = "aaabbb", .at = 3, .find = true, .anchored = true },
+        .{ .pat = "```(\\w*)", .line = "text ```zig", .at = 0, .find = true, .anchored = false },
+        .{ .pat = "```(\\w*)", .line = "text ```zig", .at = 5, .find = true, .anchored = true },
+        .{ .pat = "( *)#", .line = "  # head", .at = 0, .find = true, .anchored = true },
+        .{ .pat = "x", .line = "", .at = 0, .find = false, .anchored = false },
+    };
+    for (cases) |c| {
+        // All three arms of the union: the linear Pike VM, the one-pass table it
+        // determinizes into when it can, and PCRE2. One pattern, one answer.
+        for ([_]captures.Caps.Selection{
+            .{ .unicode = false },
+            .{ .unicode = false, .pcre = true },
+        }) |sel| {
+            var caps = try captures.Caps.compile(ta, c.pat, sel);
+            defer caps.deinit();
+            var buf: [64]isize = undefined;
+            const slots = buf[0..caps.nslots()];
+            try std.testing.expectEqual(c.find, caps.find(c.line, c.at, slots));
+            try std.testing.expectEqual(c.anchored, caps.matchAt(c.line, c.at, slots));
+            if (c.anchored) try std.testing.expectEqual(@as(isize, @intCast(c.at)), slots[0]);
+        }
     }
 }
 

@@ -75,9 +75,24 @@ pub const PcreCaptures = struct {
     /// A resource fault latches through `engine.recordMatchFault` (so `-P -r`
     /// over catastrophic input still exits 2) and reads as no-match here.
     pub fn find(self: *PcreCaptures, line: []const u8, from: usize, out: []isize) bool {
+        return self.run(line, from, out, engine.match_options);
+    }
+
+    /// The anchored twin: the match must BEGIN at `from`, with no forward search
+    /// for a later start. `find` answers "is it anywhere after here", which is a
+    /// different question from "is it here" — a caller deciding what a byte
+    /// position is (a lexer probe, a tokenizer arm) needs the second one, and
+    /// getting the first is how a probe silently succeeds on text it never
+    /// reached. One compiled program serves both: `PCRE2_ANCHORED` is a
+    /// match-time bit.
+    pub fn matchAt(self: *PcreCaptures, line: []const u8, from: usize, out: []isize) bool {
+        return self.run(line, from, out, engine.match_options | ffi.ANCHORED);
+    }
+
+    fn run(self: *PcreCaptures, line: []const u8, from: usize, out: []isize, opts: u32) bool {
         if (from > line.len) return false;
         const subject: [*]const u8 = if (line.len == 0) engine.empty_subject else line.ptr;
-        const rc = ffi.pcre2_match_8(self.code, subject, line.len, from, engine.match_options, self.md, self.mc);
+        const rc = ffi.pcre2_match_8(self.code, subject, line.len, from, opts, self.md, self.mc);
         if (rc < 0) {
             engine.recordMatchFault(rc);
             return false;

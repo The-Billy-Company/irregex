@@ -57,6 +57,15 @@ pub const Caps = union(enum) {
             inline else => |*c| c.find(line, from, out),
         };
     }
+    /// `find`, anchored: the match must begin exactly at `from`. Every arm owes
+    /// it for the same reason they owe `find` — a caller asking what a byte
+    /// position IS (a lexer probe deciding a token) must not be answered about a
+    /// position further along that it never reached.
+    pub fn matchAt(self: *Caps, line: []const u8, from: usize, out: []isize) bool {
+        return switch (self.*) {
+            inline else => |*c| c.matchAt(line, from, out),
+        };
+    }
     pub fn groupByName(self: *const Caps, name: []const u8) ?u32 {
         return switch (self.*) {
             inline else => |*c| c.groupByName(name),
@@ -279,6 +288,19 @@ pub const Captures = struct {
     /// true; `out[0]`/`out[1]` bracket the whole match. Priority mirrors the main
     /// engine: leftmost start, earliest alternation branch, greedy quantifiers.
     pub fn find(self: *Captures, line: []const u8, from: usize, out: []isize) bool {
+        return self.run(line, from, out, false);
+    }
+
+    /// The anchored twin of `find`: the match must BEGIN at `from`. Same program,
+    /// same priority rules — the only difference is that no new thread is seeded
+    /// at later positions, which is precisely what "anchored" means for a Pike
+    /// VM. A caller asking what a byte position IS (a lexer probe) needs this;
+    /// `find`'s forward search would answer about a position it never reached.
+    pub fn matchAt(self: *Captures, line: []const u8, from: usize, out: []isize) bool {
+        return self.run(line, from, out, true);
+    }
+
+    fn run(self: *Captures, line: []const u8, from: usize, out: []isize, anchored: bool) bool {
         var clist = St{ .list = self.cur, .slots = self.cslots };
         var nlist = St{ .list = self.nxt, .slots = self.nslots_buf };
 
@@ -302,10 +324,13 @@ pub const Captures = struct {
                     self.addThread(&nlist.list, &nlist.len, nlist.slots, cn.out, clist.slots[pc], i + 1, line),
                 else => {},
             };
-            if (!have) {
+            if (!have and !anchored) {
                 @memset(init_slots, -1);
                 self.addThread(&nlist.list, &nlist.len, nlist.slots, self.start, init_slots, i + 1, line);
             }
+            // Anchored, no surviving thread, and nothing reseeds: the rest of the
+            // line cannot matter, so stop rather than walk it.
+            if (anchored and nlist.len == 0) break;
             std.mem.swap(St, &clist, &nlist);
             cut = self.takeMatch(&clist, out, &have);
             if (have and cut == 0) break;

@@ -228,6 +228,18 @@ pub const OnePass = struct {
         return false;
     }
 
+    /// The anchored twin of `find`: exactly the one-pass walk, with the candidate
+    /// -start restart loop removed. No budget is needed — a single walk is O(1)
+    /// per byte by construction, so the quadratic shape `find` guards against
+    /// cannot arise here.
+    pub fn matchAt(self: *OnePass, line: []const u8, from: usize, out: []isize) bool {
+        if (self.degraded) return self.caps.matchAt(line, from, out);
+        if (from > line.len) return false;
+        var steps: usize = 0;
+        @memset(out, -1);
+        return self.walk(line, from, out, &steps);
+    }
+
     /// One anchored walk from `at`. Exactly one transition is viable per byte by
     /// construction, so this is a plain DFA loop that writes group offsets
     /// straight into the caller's buffer.
