@@ -216,6 +216,102 @@ can do this at all - the linear one treats the bound as a ceiling on its walk, a
 PCRE2 structurally cannot, since its subject has one length and stopping short
 would move the anchors it was asked about.
 
+## Beyond one buffer
+
+Everything above answers a question about a `[]byte` you already have. The rest
+of the ABI answers the questions a search tool actually asks, and all of it is
+bound here. Each of these types is a handle: safe to hand between goroutines, not
+safe to use from two at once, `Close()` when you are done and a finalizer as the
+backstop if you forget. Every string, path and span they hand back is **copied
+into Go memory** at the boundary, so a result outlives the handle it came from and
+nothing you keep can dangle after a `Close`.
+
+**A corpus, not a buffer.** `OpenCorpus(roots...)` is a warm engine over a tree,
+and `Search` walks it under a `context.Context` you can cancel:
+
+```go
+c, err := irgx.OpenCorpus(".")
+defer c.Close()
+
+cur, err := c.Search(ctx, irgx.SearchOpts{Pattern: `pgxpool\.\w+`, Before: 1, After: 1})
+defer cur.Close()
+for rec, ok := cur.Next(); ok; rec, ok = cur.Next() {
+	fmt.Printf("%s:%d: %s\n", rec.Path, rec.Number, rec.Line)
+}
+```
+
+`Next` is one cgo crossing per **batch** rather than per record, because a cgo
+call costs about a hundred Go calls and a corpus search reports thousands of rows.
+`Count` is the number of records without walking them, `All` drains the rest, and
+a `Record` says whether it is a hit or context (`Kind`) so a printer does not have
+to guess.
+
+**Which files a search may read.** `OpenWalk` materializes the eligible set - the
+same gitignore, hidden-file, glob and type rules the corpus search applies, asked
+as a question instead of taken as a side effect:
+
+```go
+w, err := irgx.OpenWalk(irgx.WalkSpec{
+	Terms: []irgx.Term{
+		irgx.RootOf("."),
+		irgx.TypeOf("go"),
+		{Kind: irgx.GlobNot, Text: "vendor/**"},
+	},
+	Hidden: true,
+})
+defer w.Close()
+for e, ok := w.Next(); ok; e, ok = w.Next() {
+	fmt.Println(e.Path, e.Genus)
+}
+```
+
+`Len` sizes it, `Holds` asks about one path, `Gapped` counts directories the walk
+could not read, and `Rewind` replays it. `Members: true` applies the content rules
+too - an empty or binary file leaves the set - and is the setting that fills in
+`Entry.Size`.
+
+**Skipping the files nobody needs to open.** A `Sieve` is the persisted narrowing
+tier: given a needle or a pattern's plan, which documents *may* contain it.
+
+```go
+s, err := irgx.OpenSieve("") // "" = the artifact home for this tree
+if errors.Is(err, irgx.ErrNoIndex) {
+	// nothing has been indexed here - walk everything
+}
+docs, narrowed := s.MayContain("WalletService")
+```
+
+The second return is the honest half: `narrowed == false` means the tier could not
+bound this query, which is a different statement from "no document holds it". A
+`*Winnow` (from `Regexp.Winnow`) is a pattern's plan, and `ReadingList` narrows
+with it. `Freshness` dates the index against the bytes on disk, and a stale index
+is a **declinature** - `(value, ok)` - never an error.
+
+**An index that is the text.** A `Codex` is an FM-index: it answers about a text
+it does not store, and can reconstruct the text it never kept.
+
+```go
+cx, err := irgx.BuildCodexString(doc, irgx.CodexOpts{})
+defer cx.Close()
+
+cx.Count("mississippi")   // every overlapping occurrence
+at, ok := cx.Locate("issi") // where, if a locate layer was built
+cx.Extract(0, 40)          // the text back out
+image := cx.Save()         // and it survives a process
+```
+
+`CodexOpts{SampleRate: irgx.NoLocate}` drops the locate layer for a smaller index,
+after which counting stays exact and `Locate` **declines** rather than answering an
+empty slice - the distinction between "not there" and "never built".
+
+**Three small planes.** `Lines`/`LineContext` are the line grid and the `-B`/`-A`
+band, with the terminator rules spelled out (a `\r` stays in the content, an
+unterminated tail is still a line). `Regexp.Literals` is what a pattern promises -
+its required, prefix, suffix and whole literal sets, each with a verdict saying
+what the set proves - plus `FoldOrbit` and `PropertyRanges` for the engine's own
+Unicode tables. `CompileNeedles` is many literals over one text in one pass, with
+attribution, when a regex was never the question.
+
 ## Differences from `regexp`
 
 **Nullable patterns iterate exactly like `regexp`'s.** The engine's own match
@@ -250,10 +346,24 @@ matching, hand the engine one line at a time.
 
 **What is missing.** No `MatchReader`, `FindReaderIndex` or
 `FindReaderSubmatchIndex`: the engine searches a buffer you already hold, so
-there is nothing to hang a `RuneReader` off. No `Longest`, because the engine
-does not expose leftmost-longest as a switch. No `LiteralPrefix`. These are
-absent rather than faked; everything else in the tour above is present, on both
-the `string` and the `[]byte` side.
+there is nothing to hang a `RuneReader` off. No `Longest` or `CompilePOSIX`,
+because the engine has no arm that reports leftmost-longest and a method that
+quietly returned leftmost-first spans under a POSIX name would be worse than its
+absence. No `Copy`, which the standard library deprecated and which would buy
+nothing here - a `*Regexp` is already safe to share, and its per-goroutine
+scratch comes from a pool rather than from the value. These are absent rather
+than faked; everything else in the tour above is present, on both the `string`
+and the `[]byte` side.
+
+`QuoteMeta`, `LiteralPrefix`, and the `encoding.TextMarshaler` pair are present.
+`QuoteMeta` escapes what the standard library's escapes, byte for byte, and the
+suite proves it means the same thing here by checking a quoted literal against
+the engine's own `Fixed` machine over the same text. `LiteralPrefix` is read out
+of the pattern's literal plane rather than re-derived, so it agrees with what the
+search actually prefilters on - with one deliberate divergence: an anchored
+literal like `^foo$` is not `complete` here, because `complete` is a licence to
+replace the regex with a substring search and searching for `foo` answers a
+different question than matching `^foo$` does.
 
 **Offsets are byte offsets**, which is not a difference, but it is the thing
 most likely to worry you when a binding sits on top of a C library. Go strings
@@ -343,14 +453,14 @@ If you need a regex engine in a cgo-free build, that is what `regexp` is for.
 One static archive is vendored per platform, selected by the build constraint on
 the `link_*.go` file that names it:
 
-- **darwin/arm64** ships `libirgx_darwin_arm64.a`, about 2.2 MB.
-- **darwin/amd64** ships `libirgx_darwin_amd64.a`, about 2.3 MB.
-- **linux/amd64** ships `libirgx_linux_amd64.a`, about 2.9 MB.
-- **linux/arm64** ships `libirgx_linux_arm64.a`, about 2.4 MB.
-- **windows/amd64** ships `libirgx_windows_amd64.a`, about 3.0 MB.
-- **windows/arm64** ships `libirgx_windows_arm64.a`, about 2.6 MB.
+- **darwin/arm64** ships `libirgx_darwin_arm64.a`, about 3.2 MB.
+- **darwin/amd64** ships `libirgx_darwin_amd64.a`, about 3.4 MB.
+- **linux/amd64** ships `libirgx_linux_amd64.a`, about 4.0 MB.
+- **linux/arm64** ships `libirgx_linux_arm64.a`, about 3.4 MB.
+- **windows/amd64** ships `libirgx_windows_amd64.a`, about 4.0 MB.
+- **windows/arm64** ships `libirgx_windows_arm64.a`, about 3.5 MB.
 
-That is about 15 MB of module, of which your binary links one archive. The Linux
+That is about 21 MB of module, of which your binary links one archive. The Linux
 archives are built against glibc 2.17, the macOS ones against the macOS 11 SDK,
 and the Windows ones against Windows 10 RS4, so they work on anything newer.
 

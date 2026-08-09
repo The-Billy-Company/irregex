@@ -15,17 +15,7 @@ package irgx
 /*
 #cgo CFLAGS: -I${SRCDIR}
 #include "irgx.h"
-
-static void capture(int32_t st, irgx_fault *f) {
-  f->struct_size = (uint32_t)sizeof(*f);
-  f->name = NULL;
-  f->path = NULL;
-  f->at_space = IRGX_AT_NONE;
-  // A negative status does not imply a detail exists; name stays NULL then.
-  // IRGX_STALE is not asked at all: a declinature installs no fault, so the
-  // slot would answer with an older call's detail on this thread.
-  if (st < 0 && st != IRGX_STALE && irgx_last_fault(f) != IRGX_MATCH) f->name = NULL;
-}
+#include "shim.h"
 
 static int32_t go_compile(const uint8_t *pat, size_t len, uint32_t flags,
                           irgx_regex **out, irgx_fault *f) {
@@ -144,9 +134,14 @@ import (
 )
 
 // The pattern-semantics bits, taken from the header rather than mirrored in Go,
-// so the option surface cannot drift from the ABI it compiles down to. Bits 3,
-// 4 and 7 are absent on purpose: the sibling search library claims them, and one
-// numbering across the family is the point.
+// so the option surface cannot drift from the ABI it compiles down to. Bit 3 is
+// absent on purpose: the sibling search library claims it, and one numbering
+// across the family is the point.
+//
+// The last two are the tree plane's alone. A buffer you already hold has no
+// per-file ceiling to cap and nothing to invert a line selection against, so
+// [CompileOpts] cannot spell them and [SearchOpts] can - which is why they are
+// grouped apart rather than looking like an oversight.
 const (
 	flagFixed      = C.IRGX_FIXED
 	flagIgnoreCase = C.IRGX_IGNORE_CASE
@@ -156,6 +151,9 @@ const (
 	flagPCRE       = C.IRGX_PCRE
 	flagMultiLine  = C.IRGX_MULTILINE
 	flagDotAll     = C.IRGX_DOTALL
+
+	flagMaxCount = C.IRGX_MAX_COUNT
+	flagInvert   = C.IRGX_INVERT
 )
 
 // Which string irgx_fault.at is an offset into. Taken from the header for
@@ -252,6 +250,19 @@ func newError(status C.int32_t, fault *C.irgx_fault, op string) *Error {
 		}
 	}
 	return err
+}
+
+// refuse is the error for an argument this binding rejects before the engine
+// sees it - a shape the ABI would also refuse, but without saying WHICH element
+// was wrong, because a C signature has nowhere to put that.
+//
+// It borrows IRGX_INVALID's own sentence rather than inventing a second wording
+// for the same refusal, so a caller reading the message cannot tell whether the
+// guard was here or there - which is the point. The fault is zero because no
+// engine call ran, and there is therefore nothing on this thread to read.
+func refuse(op string) *Error {
+	var none C.irgx_fault
+	return newError(C.IRGX_INVALID, &none, op)
 }
 
 // compileError says which of the two refusals this is, from the status code
@@ -712,6 +723,16 @@ func (re *Regexp) windows() bool {
 	h := re.acquire()
 	defer re.release(h)
 	return C.irgx_pattern_windows(h.ptr) == 1
+}
+
+// earliest reports whether this pattern can report earliest-mode spans, and is a
+// property of the pattern for the same reason windows is: it is really a property
+// of the arm that compiled it, so it is asked once rather than per call. No shim,
+// because a capability probe starts no work and so leaves no fault to read.
+func (re *Regexp) earliest() bool {
+	h := re.acquire()
+	defer re.release(h)
+	return C.irgx_pattern_earliest(h.ptr) == 1
 }
 
 // matchIn is [Regexp.matchOn] with a ceiling: is there a match of this pattern

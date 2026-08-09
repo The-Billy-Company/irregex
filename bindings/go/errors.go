@@ -33,6 +33,24 @@ import (
 // with [errors.Is] rather than by comparison.
 var ErrNeedsPCRE = errors.New("pattern needs the PCRE2 grammar: set CompileOpts.PCRE")
 
+// ErrNoIndex reports that a corpus has no persisted narrowing tier: nobody has
+// run an index over it. Nothing is wrong, and it is not an empty index - there
+// is no index - so the honest response is to read every file, exactly as a host
+// with no sieve at all would.
+//
+// It is the third answer [OpenSieve] can give, and the reason it is an error
+// rather than a nil handle is that "no index" and "an index that admits nothing"
+// must not be spellable the same way. Match it with [errors.Is]:
+//
+//	s, err := irgx.OpenSieve("")
+//	switch {
+//	case errors.Is(err, irgx.ErrNoIndex):
+//		return readEverything()
+//	case err != nil:
+//		return err
+//	}
+var ErrNoIndex = errors.New("no narrowing index has been built over this corpus")
+
 // SyntaxError is a pattern that no grammar here accepts: an unclosed group, a
 // reversed class range, a quantifier with nothing to quantify. Setting
 // [CompileOpts.PCRE] does not rescue it, which is exactly what separates it

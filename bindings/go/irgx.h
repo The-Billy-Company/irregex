@@ -1,11 +1,16 @@
-/* irregex — a regex over a buffer you already hold.
+/* irregex — a regex over a buffer you already hold, and the corpus planes built
+ * on top of it.
  *
- * This is the engine's own C ABI, and it is deliberately small: compile a
- * pattern, then ask is_match / find_all / captures about bytes in your
- * process. There is no corpus here — no session, no walk, no index, no
- * freshness. A host that wants those links libgist, whose header is gist.h and
- * whose symbols are gist_*; a host that just wants a regex links this and gets
- * nothing it did not ask for.
+ * The floor is deliberately small: compile a pattern, then ask is_match /
+ * find_all / captures about bytes in your process. A host that wants only that
+ * links this and gets nothing it did not ask for.
+ *
+ * Above the floor, this ABI also carries the warm corpus planes the sibling
+ * products share — opening an engine over a tree, searching and walking it,
+ * sieving literals, and the codex verbs over a persisted index. What is
+ * deliberately NOT here is the session: the resident pull cursor and gist_run
+ * live in libgist, whose header is gist.h and whose symbols are gist_*, and the
+ * kinship / compose producers live in librelate and libblast.
  *
  * Every entry returns a status instead of aborting, so a bad pattern can never
  * terminate the host. On a negative status, irgx_last_fault gives the
@@ -117,16 +122,19 @@ int32_t irgx_last_fault(irgx_fault *out);
 
 /* ── pattern semantics ───────────────────────────────────────────── */
 
-/* What a pattern MEANS. Shared with libgist, which adds its behavioral bits
- * (quiet, invert, max_count) in the gaps at 3, 4 and 7 — one numbering across
- * the ecosystem, so "ignore case" has a single definition. Any bit outside
- * this set makes irgx_compile return IRGX_INVALID: an unknown flag is
- * never silently dropped. */
+/* What a pattern MEANS. Bits 4 and 7 are behavioral rather than semantic and
+ * belong to tree search, not to irgx_compile. libgist reuses this numbering and
+ * alone owns the gap at bit 3 (GIST_QUIET) — one numbering across the
+ * ecosystem, so "ignore case" has a single definition. Any bit outside this set
+ * makes irgx_compile return IRGX_INVALID: an unknown flag is never silently
+ * dropped. */
 #define IRGX_FIXED (1u << 0)       /* -F: fixed string, not a regex     */
 #define IRGX_IGNORE_CASE (1u << 1) /* -i: case-insensitive              */
 #define IRGX_WORD (1u << 2)        /* -w: word-bounded matches only     */
+#define IRGX_MAX_COUNT (1u << 4)   /* -m: tree search, max_count is set */
 #define IRGX_SMART_CASE (1u << 5)  /* -S: fold iff pattern has no caps  */
 #define IRGX_NO_UNICODE (1u << 6)  /* ASCII classes/fold/boundaries     */
+#define IRGX_INVERT (1u << 7)      /* -v: select the NON-matching lines */
 #define IRGX_PCRE (1u << 8)        /* -P: PCRE2 grammar (lookaround...) */
 #define IRGX_MULTILINE (1u << 9)   /* (?m): ^ and $ also match a line   */
 #define IRGX_DOTALL (1u << 10)     /* (?s): . matches a newline too     */
@@ -172,6 +180,99 @@ typedef struct {
   int64_t start;
   int64_t end;
 } irgx_span;
+
+/* An opaque cancellation token. Trip it from any thread. Declared here, above
+ * the plane that opens one, because a search takes a token and a corpus makes
+ * one -- so the type is vocabulary shared by two planes rather than the warm
+ * engine's private noun. */
+typedef struct irgx_cancel irgx_cancel;
+
+/* ── the request: one struct, so the verb count stops tracking the option count ─
+ *
+ * Every question about a buffer is asked with an irgx_input. This is the shape
+ * that stops the surface from doubling: a bounded search arrived as
+ * irgx_is_match_in beside irgx_is_match, and adding anchored and earliest the
+ * same way is four more names per verb, each a separate declaration to bind in
+ * three languages and a separate paragraph to keep true. A struct absorbs those
+ * as FIELDS, so the next mode is a bit rather than an ABI.
+ *
+ * ZERO IS TODAY. A struct you memset to zero -- then stamp struct_size on -- is
+ * an unanchored leftmost search over the whole text with no cancellation. Every
+ * field's 0 is its documented default, so a host writes only what it means.
+ *
+ * struct_size IS FAIL-CLOSED. A size this build does not recognize is
+ * IRGX_INVALID, never a best-effort read of the prefix it thinks it recognizes:
+ * the alternative is a v1 caller and a v2 engine agreeing on a struct whose
+ * meaning drifted, which is the failure irgx_abi_version exists to make loud.
+ * The layout is APPEND-ONLY. Never widen a field in place -- ABI 2 widened
+ * `has_at` and that is exactly why the version probe had to exist.
+ *
+ * `text` IS THE WHOLE TEXT, AND STAYS SO. `from` and `to` bound where matching
+ * may begin and must stop; they do NOT move the edges the pattern reasons
+ * about. This is the one property that makes a bounded search different from
+ * searching a slice, and the reason a caller cannot get it by slicing: $ still
+ * means the end of `text`, \b still reads the byte before `from`, and a
+ * look-behind still sees what precedes the window. Slice instead and every one
+ * of those silently starts answering about the cut.
+ *
+ * A LIVE `to` IS NOT UNIVERSALLY HONORABLE. PCRE2's subject has one length, so
+ * the PCRE2 arm declines a bound rather than pretending -- ask
+ * irgx_pattern_windows once after compiling, which is a property of the pattern
+ * and not of the call. Bounds are checked, never clamped: from > to, to > len,
+ * or from > len is IRGX_INVALID, because a miscomputed bound is a bug in the
+ * caller's arithmetic and silently trimming it hides the day it appears. */
+
+/* Match must START at `from`. This is NOT rewriting the pattern with \A: it
+ * constrains where the SEARCH may begin and leaves the pattern's own assertions
+ * about `text` exactly as they were. The distinction matters at from > 0, where
+ * \A still means offset zero and this means offset `from`. */
+#define IRGX_MODE_ANCHORED (1u << 0)
+/* Report the first accepting position rather than the leftmost-first match --
+ * the earliest end, not the preferred one. What a host wants when the question
+ * is "is there a match at all, cheaply" and a shorter answer is still an answer;
+ * what it must NOT use when the span itself is the answer. */
+#define IRGX_MODE_EARLIEST (1u << 1)
+/* `to`: search to the end of the text. Spelled, so that leaving `to` zero means
+ * an empty window rather than accidentally meaning everything. */
+#define IRGX_TO_END ((size_t) - 1)
+/* `pattern`: any pattern of the slate may answer. The default, and meaningless
+ * to a single-pattern handle, which always answers as pattern 0. */
+#define IRGX_PATTERN_ANY ((uint32_t) - 1)
+
+typedef struct {
+  uint32_t struct_size; /* sizeof(irgx_input); set it yourself   */
+  uint32_t mode;        /* IRGX_MODE_* bits; 0 = leftmost, unanchored */
+  const uint8_t *text;  /* the WHOLE text: what $ \b and look-around read */
+  size_t len;
+  size_t from;          /* where matching may begin                      */
+  size_t to;            /* where it must stop; IRGX_TO_END for all of it  */
+  irgx_cancel *cancel;  /* NULL is uncancellable                         */
+  uint32_t pattern;     /* IRGX_PATTERN_ANY, or one slate pattern id      */
+  uint32_t reserved;    /* always 0                                      */
+} irgx_input;
+
+/* ── the ceilings: what a search may spend, in the currency each engine spends ─
+ *
+ * The engine already HAS ceilings and you cannot see them: PCRE2 runs under a
+ * hardcoded ten-million step budget and a ten-thousand frame depth, and the
+ * determinizer declines at its powerset cap. Those are right for a search a
+ * person is waiting on and wrong in both directions for a library -- too
+ * generous to be a safety property when the pattern came from a stranger, too
+ * mean for a batch job that would rather spend a minute than be declined.
+ *
+ * 0 MEANS THIS ENGINE'S DEFAULT, not "unlimited", so a zeroed struct asks for
+ * exactly what you get today. A ceiling the chosen engine does not spend is
+ * INERT rather than an error: the linear engine cannot exceed a step budget
+ * because it cannot backtrack, and refusing a host that defensively set one
+ * would punish the caution this exists to permit. */
+typedef struct {
+  uint32_t struct_size; /* sizeof(irgx_options)                          */
+  uint32_t flags;       /* the IRGX_* flag bits irgx_compile takes today  */
+  uint64_t steps;       /* PCRE2 match steps before it gives up          */
+  size_t heap_bytes;    /* bytes of heap one match may hold (PCRE2)      */
+  uint32_t depth;       /* PCRE2 recursion frames                        */
+  uint32_t states;      /* DFA states the determinizer may mint          */
+} irgx_options;
 
 /* Compile pattern[0..len] under `flags` and write the handle to *out.
  * IRGX_OK on success; negative on failure, with the reason available from
@@ -288,6 +389,20 @@ int32_t irgx_find_all(irgx_regex *re, const uint8_t *text, size_t len,
 
 /* Whether this pattern's engine can honor a live `to` bound: 1 yes, 0 no. */
 int32_t irgx_pattern_windows(irgx_regex *re);
+
+/* Whether this pattern can report EARLIEST-mode spans: 1 yes, 0 no. Like
+ * irgx_pattern_windows, a property of the pattern rather than of the call —
+ * ask once after compiling.
+ *
+ * 0 is a REFUSAL, not a slower path: a span request under IRGX_MODE_EARLIEST
+ * then faults (Unsupported) instead of quietly returning the leftmost-first
+ * match wearing an earliest label. PCRE2 declines because it exposes no
+ * inspectable program, and so does any assertion-bearing pattern, whose
+ * determinized states depend on the gap they were entered at — something a walk
+ * starting mid-buffer cannot reconstruct. The mode is inert on the boolean
+ * verbs either way, since existence does not depend on WHICH match is reported,
+ * so a host only needs this before asking for spans. */
+int32_t irgx_pattern_earliest(irgx_regex *re);
 
 /* irgx_is_match over the window [from, to]. */
 int32_t irgx_is_match_in(irgx_regex *re, const uint8_t *text, size_t len,
@@ -739,8 +854,8 @@ typedef struct {
  * last - after every cursor drawn from it. */
 typedef struct irgx_engine irgx_engine;
 
-/* An opaque cancellation token. Trip it from any thread. */
-typedef struct irgx_cancel irgx_cancel;
+/* The cancellation token this plane hands out is declared with the request
+ * vocabulary near the top of this header, because a search takes one. */
 
 /* Stand a corpus up over roots[0..nroots] (NUL-terminated paths); writes the
  * handle to *out. nroots == 0 walks the CWD and is not an error. Returns
@@ -803,6 +918,681 @@ uint32_t irgx_schema_count(void);
  * digest mismatch instead of only detecting one; `name` and `fields` are static
  * and outlive every call. */
 int32_t irgx_schema_get(uint32_t id, irgx_schema *out);
+
+/* ── the line plane ──────────────────────────────────────────────────────────
+ *
+ * The grid every grep-shaped host rebuilds by hand, and the one place the
+ * off-by-one lives. The engines here answer in byte offsets; a user reads rows,
+ * and the translation is not as simple as counting '\n' — a final line with no
+ * terminator is still a line, and an offset sitting ON a terminator belongs to
+ * the line that terminator ENDS, not the one after it.
+ */
+
+/* One line of the grid. `content_end` and `term_end` are separate on purpose:
+ * render with the first, slice with the second, and a host never has to guess
+ * whether the file ended "\n", "\r\n", or with no terminator at all. */
+typedef struct {
+  /* 1-based, matching what -n prints and what an editor jumps to. Clamping a
+   * band at the top of the file shortens it; it never renumbers. */
+  uint64_t number;
+  uint64_t start;
+  /* One past the last CONTENT byte: terminator excluded, and a CRLF's '\r'
+   * KEPT — ripgrep's default without --crlf, and what the matching engines in
+   * this library see. A host that strips the '\r' for display but matches on
+   * the unstripped bytes stays consistent with them. */
+  uint64_t content_end;
+  /* One past the terminator, so the next line's `start`. Equals the text length
+   * for a final unterminated line, which is still a line. */
+  uint64_t term_end;
+} irgx_line;
+
+/* How many lines text[0..len] holds. IRGX_MATCH when non-empty, IRGX_OK for
+ * empty text. An unterminated tail counts, because a host printing n rows must
+ * print that one too. */
+int32_t irgx_lines_count(const uint8_t *text, size_t len, uint64_t *out);
+
+/* The band around byte `at`: up to `before` rows preceding it, the row holding
+ * it, then up to `after` following. `at == len` is legal and lands on the tail.
+ *
+ * *center receives the BAND-RELATIVE index of the row holding `at` — the number
+ * a caret needs, and one a caller cannot derive from *written, because a band
+ * clipped at the start of the text has fewer preceding rows than it asked for.
+ * Pass NULL if you do not need it. */
+int32_t irgx_lines_context(const uint8_t *text, size_t len, size_t at,
+                           size_t before, size_t after, irgx_line *out,
+                           size_t cap, size_t *written, size_t *center);
+
+/* The whole grid. *written is the count the TEXT holds, so a short `cap` sizes
+ * its retry rather than truncating silently. */
+int32_t irgx_lines_split(const uint8_t *text, size_t len, irgx_line *out,
+                         size_t cap, size_t *written);
+
+/* ── the literal plane, and the tables the engine decides with ───────────────
+ *
+ * What a pattern PROMISES about the bytes any match must contain — the input an
+ * indexer needs to build a prefilter — plus the Unicode tables this engine folds
+ * and classifies with, so a host is not left reimplementing case folding against
+ * a different Unicode version than the one doing the matching.
+ */
+
+typedef struct irgx_literals irgx_literals;
+
+/* `max_len` when the pattern has no upper bound at all (`a+`, `.*`). */
+#define IRGX_LEN_UNBOUNDED UINT32_MAX
+
+/* Which set. Indices into irgx_promise's arrays. */
+#define IRGX_PLACE_REQUIRED 0u
+#define IRGX_PLACE_PREFIX 1u
+#define IRGX_PLACE_SUFFIX 2u
+#define IRGX_PLACE_WHOLE 3u
+#define IRGX_PLACE_COUNT 4u
+
+/* How much a set proves. Ordered, so `verdict >= IRGX_LITERALS_CANDIDATE` is
+ * the "safe to eliminate on" test. */
+#define IRGX_LITERALS_NONE 0u      /* no set; proves nothing either way, scan */
+#define IRGX_LITERALS_CANDIDATE 1u /* absence of EVERY member proves no match;
+                                    * presence proves nothing and must be
+                                    * verified */
+#define IRGX_LITERALS_EXACT 2u     /* containment and matching are one question */
+
+/* The whole-pattern promise, and the size of every set, in one read. Read this
+ * BEFORE a set: it is what says whether the set you are about to read is a
+ * guarantee or a guess, and a prefilter built on the wrong one silently drops
+ * real matches. */
+typedef struct {
+  uint32_t struct_size;
+  uint32_t verdict[IRGX_PLACE_COUNT];
+  uint32_t count[IRGX_PLACE_COUNT];
+  uint32_t anchored;
+  uint32_t nullable; /* the pattern can match the empty string */
+  uint32_t min_len;
+  uint32_t max_len; /* IRGX_LEN_UNBOUNDED when the pattern has no ceiling */
+                    /* (a real ceiling is never this value, so the sentinel
+                     * cannot collide with a measured length) */
+  /* A 256-bit set of the bytes a match may BEGIN with, as four little-endian
+   * words: bit (b & 63) of first_bytes[b >> 6]. Empty means unknown, not "no
+   * byte can start a match". */
+  uint64_t first_bytes[4];
+  /* A structural fingerprint of the LANGUAGE the pattern denotes, not of its
+   * text: two patterns spelled differently that accept the same set share it.
+   * For caching a derived artifact across spellings. */
+  uint64_t signature[2];
+} irgx_promise;
+
+/* An inclusive codepoint range. */
+typedef struct {
+  uint32_t lo;
+  uint32_t hi;
+} irgx_range;
+
+/* Extract what `re` promises about its matches. The handle copies what it needs,
+ * so it borrows nothing from `re` and the two are freed independently. */
+int32_t irgx_literals_open(irgx_regex *re, irgx_literals **out);
+
+/* Release a handle from irgx_literals_open. */
+void irgx_literals_free(irgx_literals *lits);
+
+/* Fill *out with the promise. Set struct_size to sizeof(irgx_promise) first. */
+int32_t irgx_literals_promise(const irgx_literals *lits, irgx_promise *out);
+
+/* One set by `place`, with its grade written to *verdict — not optional, because
+ * the grade is how the exact-versus-inexact property rides along with the bytes
+ * instead of being looked up separately and forgotten.
+ *
+ * The irgx_text rows BORROW the handle's arena and die with
+ * irgx_literals_free; copy anything that must outlive it. */
+int32_t irgx_literals_set(const irgx_literals *lits, uint32_t place,
+                          uint32_t *verdict, irgx_text *out, size_t cap,
+                          size_t *written);
+
+/* Every codepoint that case-folds together with `cp`, INCLUDING `cp` — the
+ * orbit, not a pair, because 'k', 'K' and U+212A KELVIN SIGN are one class.
+ * This is the table -i folds with, so a host building its own index folds
+ * identically rather than approximately. */
+int32_t irgx_fold_orbit(uint32_t cp, uint32_t *out, size_t cap,
+                        size_t *written);
+
+/* The inclusive ranges of the Unicode property name[0..len] ("Letter", "Greek",
+ * "Nd", …), ascending and non-overlapping. An unknown name FAULTS rather than
+ * answering empty, so a misspelled property and an empty class cannot look
+ * alike. */
+int32_t irgx_property_ranges(const uint8_t *name, size_t len, irgx_range *out,
+                             size_t cap, size_t *written);
+
+/* Whether `cp` is in property name[0..len]: IRGX_MATCH yes, IRGX_OK no,
+ * negative for an unknown property. The membership test without materializing
+ * the ranges. */
+int32_t irgx_property_has(const uint8_t *name, size_t len, uint32_t cp);
+
+/* The Unicode version these tables were generated from. A host whose own tables
+ * disagree is a host whose prefilter and this engine disagree about what a
+ * letter is. */
+int32_t irgx_unicode_version(irgx_text *out);
+
+/* ── the needle plane ────────────────────────────────────────────────────────
+ *
+ * Many literals, one pass, with attribution — the question a regex alternation
+ * answers slowly and a wordlist scanner answers quickly.
+ */
+
+typedef struct irgx_needles irgx_needles;
+
+/* Which machine seated the set. Reported, not chosen: the tier is a consequence
+ * of the needles, and a host that wants to know what it will cost asks. */
+#define IRGX_NEEDLE_TIER_NONE 0u
+#define IRGX_NEEDLE_TIER_MEMMEM 1u      /* one needle: a plain substring find */
+#define IRGX_NEEDLE_TIER_LITERAL_SET 2u /* a few: SIMD multi-substring */
+#define IRGX_NEEDLE_TIER_TRAWL 3u       /* many: Aho-Corasick */
+
+typedef struct {
+  const uint8_t *needle;
+  size_t len;
+} irgx_needle;
+
+/* One occurrence, attributed to the needle that produced it. */
+typedef struct {
+  uint32_t needle; /* index into the compiled list */
+  uint32_t reserved;
+  size_t start;
+  size_t end;
+} irgx_occurrence;
+
+/* What the set is and which machine answers about it. */
+typedef struct {
+  uint32_t struct_size;
+  /* The two tiers can differ: presence may be answerable by a cheaper machine
+   * than attribution, and a host budgeting a scan needs the one it will use. */
+  uint32_t presence_tier;
+  uint32_t attributed_tier;
+  uint32_t reserved;
+  size_t count;   /* needles SEATED, which a refusal makes < the count passed */
+  size_t longest;
+  size_t bytes;
+} irgx_needle_shape;
+
+/* Compile list[0..count] into one scanner. ALL OR NOTHING: there is no partial
+ * set, so a non-OK return means no handle was written and nothing was seated.
+ *
+ * *refused is a DIAGNOSIS, not a count: on a refusal it receives the INDEX of
+ * the needle that caused it, and on success it is untouched. That is the answer
+ * a wordlist needs and a single needle does not -- with four hundred terms,
+ * "one of them is empty" is not actionable. NULL if you do not care which.
+ *
+ * An empty needle is refused (fault `NeedleTooShort`), not accepted: it occurs
+ * at every position, so seating one would turn every answer into the haystack's
+ * own length and bury the terms actually asked about.
+ *
+ * `flags` must be 0. No bit is defined for this plane yet, and an undefined bit
+ * is IRGX_INVALID rather than ignored -- so a host that guessed IRGX_IGNORE_CASE
+ * hears about it instead of silently getting a case-sensitive scanner. */
+int32_t irgx_needles_compile(const irgx_needle *list, size_t count,
+                             uint32_t flags, size_t *refused,
+                             irgx_needles **out);
+
+/* Release a handle from irgx_needles_compile. */
+void irgx_needles_free(irgx_needles *handle);
+
+/* How many needles the set holds — the exact `cap` irgx_needles_which never
+ * needs to retry at. */
+size_t irgx_needles_len(const irgx_needles *handle);
+
+/* Fill *out with the shape. A pure reader: it starts no work, so it cannot
+ * disturb the fault a previous call left in irgx_last_fault. */
+int32_t irgx_needles_describe(const irgx_needles *handle,
+                              irgx_needle_shape *out);
+
+/* Whether ANY needle occurs in text[0..len]: IRGX_MATCH yes, IRGX_OK no. The
+ * cheapest question — it stops at the first hit and attributes nothing. */
+int32_t irgx_needles_is_match(irgx_needles *handle, const uint8_t *text,
+                              size_t len);
+
+/* WHICH needles occur, as ascending indices into the compiled list — presence
+ * per needle, NOT one row per occurrence. Size `cap` from irgx_needles_len and
+ * this never retries. */
+int32_t irgx_needles_which(irgx_needles *handle, const uint8_t *text,
+                           size_t len, uint32_t *out, size_t cap,
+                           size_t *written);
+
+/* Every occurrence, each carrying its needle index and span. *written is the
+ * count the TEXT holds, so a short `cap` sizes its retry. */
+int32_t irgx_needles_find_all(irgx_needles *handle, const uint8_t *text,
+                              size_t len, irgx_occurrence *out, size_t cap,
+                              size_t *written);
+
+/* ── the tree plane: searching a corpus, not a buffer you already hold ──
+ *
+ * irgx_engine_open → irgx_tree_search → irgx_matches_next* → irgx_matches_close.
+ * A cursor comes back on IRGX_OK too -- including IRGX_OK with no records -- so
+ * the status reports the ANSWER, never whether there is a handle to release. */
+
+/* A pull handle over one search's records. Opaque; single-threaded. */
+typedef struct irgx_cursor irgx_cursor;
+
+/* IRGX_MATCH_LINE is a line the pattern selected; IRGX_MATCH_CONTEXT is a
+ * neighbour carried along by before_context/after_context. */
+#define IRGX_MATCH_LINE 0u
+#define IRGX_MATCH_CONTEXT 1u
+
+/* One complete tree-search shape. APPEND-ONLY with a FAIL-CLOSED struct_size:
+ * a size this build does not recognize is IRGX_INVALID, never a best-effort
+ * read of the prefix it thinks it recognizes.
+ *
+ * ZERO IS TODAY. Every field's 0 is its documented default, so a memset struct
+ * with struct_size stamped on is an unbudgeted, uncancelled, contextless
+ * leftmost search for the empty pattern. The budgets read 0 as "unset" rather
+ * than "zero allowed" -- which is exactly why max_count, where 0 IS a legal
+ * ceiling, needs IRGX_MAX_COUNT to say it is present.
+ *
+ * `flags` takes IRGX_FIXED, IRGX_IGNORE_CASE, IRGX_WORD, IRGX_MAX_COUNT,
+ * IRGX_SMART_CASE, IRGX_NO_UNICODE and IRGX_INVERT. The gap is the point: the
+ * warm engine's request has no knob for IRGX_PCRE, IRGX_MULTILINE or
+ * IRGX_DOTALL to travel in, and existence-only early halt is said here with
+ * max_results = 1 rather than by a second way to say it. Any other bit is
+ * IRGX_INVALID, because a host that set one has a wrong belief about what it
+ * is about to be told. */
+typedef struct {
+  uint32_t struct_size;
+  uint32_t flags;
+  uint64_t max_count;      /* per-file ceiling; needs IRGX_MAX_COUNT   */
+  uint64_t before_context; /* -B                                       */
+  uint64_t after_context;  /* -A                                       */
+  const uint8_t *pattern;
+  size_t pattern_len;
+  uint64_t timeout_ns;  /* 0 = unbudgeted                              */
+  size_t max_results;   /* 0 = unbounded; 1 = existence only           */
+  const irgx_cancel *cancel; /* or NULL                                */
+} irgx_tree_request;
+
+/* One record. `path` and `line` are borrowed from the CURSOR's arena and stay
+ * valid until irgx_matches_close; `spans` likewise. Copy anything you keep. */
+typedef struct {
+  irgx_text path;
+  irgx_text line;
+  const irgx_span *spans;
+  size_t nspans;
+  uint64_t line_number;
+  uint32_t kind; /* IRGX_MATCH_LINE | IRGX_MATCH_CONTEXT */
+} irgx_match;
+
+/* Run one search over the engine's corpus. Owes irgx_matches_close on every
+ * non-negative return. */
+int32_t irgx_tree_search(irgx_engine *engine, const irgx_tree_request *req,
+                         irgx_cursor **out);
+
+/* Pull one record: IRGX_MATCH for a record, IRGX_OK for a drained stream with
+ * `out` untouched. The one-record spelling of irgx_matches_next_batch. */
+int32_t irgx_matches_next(irgx_cursor *cursor, irgx_match *out);
+
+/* Pull up to `cap` records in one crossing. *written is what this call
+ * CONSUMED, never a total that exists -- so cap == 0 is a legal no-op. */
+int32_t irgx_matches_next_batch(irgx_cursor *cursor, irgx_match *out,
+                                size_t cap, size_t *written);
+
+/* How many records the stream holds, without advancing it. */
+size_t irgx_matches_count(const irgx_cursor *cursor);
+
+/* Release the cursor and every byte its records borrowed. */
+void irgx_matches_close(irgx_cursor *cursor);
+
+/* ── the walk plane: which files a search is even allowed to read ──
+ *
+ * gitignore precedence, the type registry, hidden and binary policy. Answered
+ * as a materialized set you iterate, so eligibility is a question you can ask
+ * on its own rather than a side effect of searching. */
+
+typedef struct irgx_walk irgx_walk;
+
+/* What a path is FOR -- a total, disjoint partition, so an unfamiliar
+ * extension lands in CODE rather than falling through a gap. */
+#define IRGX_GENUS_CODE 0u
+#define IRGX_GENUS_DOCS 1u
+#define IRGX_GENUS_DATA 2u
+
+/* The ceilings this build enforces, so a host sizes its request against the
+ * truth instead of a constant it copied. Set struct_size before the call. */
+typedef struct {
+  uint32_t struct_size;
+  uint32_t binary_window; /* bytes sniffed for the binary verdict      */
+  uint64_t file_cap;      /* most files one walk may materialize       */
+  uint32_t type_rows;     /* rows the type registry holds              */
+  uint32_t type_names;    /* distinct type names it answers to         */
+} irgx_limits;
+
+/* What a term MEANS. A root is a place to walk from; the rest narrow. */
+#define IRGX_TERM_ROOT 0u
+#define IRGX_TERM_GLOB 1u
+#define IRGX_TERM_GLOB_NOT 2u
+#define IRGX_TERM_IGLOB 3u
+#define IRGX_TERM_TYPE 4u
+#define IRGX_TERM_TYPE_NOT 5u
+#define IRGX_TERM_IGNORE_FILE 6u
+
+/* One clause of a walk spec. `text` is borrowed for the duration of the
+ * irgx_walk_open call only -- the walk copies what it keeps. */
+typedef struct {
+  uint32_t kind; /* IRGX_TERM_* */
+  uint32_t reserved;
+  const uint8_t *text;
+  size_t text_len;
+} irgx_walk_term;
+
+/* Policy bits. Each is a DECLINATURE of a default the walk would otherwise
+ * apply, which is why they read as no_*: the safe spelling is 0. */
+#define IRGX_WALK_HIDDEN (1u << 0)          /* descend into dotfiles      */
+#define IRGX_WALK_NO_IGNORE (1u << 1)       /* honour no ignore file      */
+#define IRGX_WALK_NO_IGNORE_VCS (1u << 2)   /* ... not .gitignore         */
+#define IRGX_WALK_NO_IGNORE_DOT (1u << 3)   /* ... not .ignore            */
+#define IRGX_WALK_NO_IGNORE_PARENT (1u << 4)/* ... none above the root    */
+#define IRGX_WALK_NO_IGNORE_EXCLUDE (1u << 5)/* ... not .git/info/exclude */
+#define IRGX_WALK_NO_IGNORE_GLOBAL (1u << 6)/* ... not the global one     */
+#define IRGX_WALK_NO_IGNORE_FILES (1u << 7) /* ... none named by a term   */
+#define IRGX_WALK_NO_REQUIRE_GIT (1u << 8)  /* VCS rules outside a repo   */
+#define IRGX_WALK_IGNORE_FILE_ICASE (1u << 9)
+#define IRGX_WALK_FOLLOW (1u << 10)         /* follow symlinks            */
+#define IRGX_WALK_ONE_FILE_SYSTEM (1u << 11)
+#define IRGX_WALK_GLOB_ICASE (1u << 12)
+/* Additionally apply the CORPUS content rules -- unreadable, empty, at or over
+ * the per-file ceiling, or binary is NOT a member -- and report each admitted
+ * file's length in `irgx_walk_entry.size`. Two consequences, both easy to miss:
+ * this NARROWS the set rather than widening it, and it is the only flag that
+ * makes the walk read file bytes. Nothing to do with directories. */
+#define IRGX_WALK_MEMBERS (1u << 13)
+/* Unreadable directories become a COUNT (irgx_walk_gapped) instead of a
+ * refusal. Without it an unreadable directory fails the walk -- because
+ * "nothing matched" and "we never looked there" are different answers. */
+#define IRGX_WALK_TOLERATE_GAPS (1u << 14)
+
+/* One complete eligibility question. APPEND-ONLY, fail-closed struct_size. */
+typedef struct {
+  uint32_t struct_size;
+  uint32_t flags;     /* IRGX_WALK_*                                   */
+  uint64_t max_depth; /* 0 = unbounded                                 */
+  const irgx_walk_term *terms;
+  size_t term_count;
+} irgx_walk_spec;
+
+/* One eligible file. `path` is borrowed from the walk and dies at
+ * irgx_walk_close. */
+typedef struct {
+  irgx_text path;
+  uint64_t size;  /* member length, and 0 unless IRGX_WALK_MEMBERS was set --
+                   * reading it costs a file read, so nothing pays for it by
+                   * default. 0 here means "not measured", never "empty":
+                   * an empty file is not a member and never appears at all. */
+  uint32_t genus; /* IRGX_GENUS_* */
+  uint32_t reserved;
+} irgx_walk_entry;
+
+/* The ceilings this build enforces. */
+int32_t irgx_walk_limits(irgx_limits *out);
+
+/* Materialize the eligible set.
+ *
+ * IRGX_MATCH when at least one file was admitted and IRGX_OK when none was --
+ * and in BOTH cases a handle was written and you own it, exactly as a tree
+ * search hands back an empty cursor. The status reports the ANSWER, never
+ * whether there is something to release.
+ *
+ * IRGX_INVALID covers every spec this build cannot honor, not only the
+ * malformed ones: a null slot, an unrecognized struct_size, an unknown flag
+ * bit, a term with uninitialized padding or no text, an unrecognized type
+ * name, an unclosed glob class, an unclosed brace. Each would otherwise read
+ * as a corpus that happened to be empty. A WELL-FORMED `{a,b}` alternation is
+ * not among them -- it expands here, once, into the concrete globs it names,
+ * so `-g '*.{js,ts}'` admits exactly what `-g '*.js' -g '*.ts'` admits.
+ *
+ * IRGX_OPEN_FAILED carries `Corrupt` (or `Oversized`) for an `.irregex.toml`
+ * that would not parse, and `AccessDenied` for a walk that could not finish --
+ * see IRGX_WALK_TOLERATE_GAPS. IRGX_OOM is the only other failure, and it is
+ * two things the status folds together: real allocation failure, and a brace
+ * expansion that hit its ceiling. `irgx_last_fault()->name` tells them apart
+ * (`OutOfMemory` vs `BudgetExceeded`) -- the second means the spec was fine
+ * and the remedy is a smaller glob, not more memory.
+ *
+ * So: test the SIGN, not the value. `if (st < 0)` is the failure branch; the
+ * reflex `if (st != IRGX_OK)` leaks the handle of every non-empty walk, which
+ * is the common case and never the one under test. */
+int32_t irgx_walk_open(const irgx_walk_spec *spec, irgx_walk **out);
+
+/* How many entries it holds. */
+size_t irgx_walk_count(const irgx_walk *w);
+
+/* How many directories were unreadable but tolerated -- the number that
+ * separates "nothing matched" from "we never looked there". */
+uint32_t irgx_walk_gapped(const irgx_walk *w);
+
+/* Pull one entry; IRGX_OK once drained. */
+int32_t irgx_walk_next(irgx_walk *w, irgx_walk_entry *out);
+
+/* Pull up to `cap` entries in one crossing. */
+int32_t irgx_walk_next_batch(irgx_walk *w, irgx_walk_entry *out, size_t cap,
+                             size_t *written);
+
+/* Restart iteration. The set is already materialized, so this re-reads
+ * nothing from the filesystem. */
+void irgx_walk_rewind(irgx_walk *w);
+
+/* Whether this exact path is in the set -- membership, without iterating. */
+int32_t irgx_walk_holds(const irgx_walk *w, const uint8_t *path,
+                        size_t path_len);
+
+/* Release the walk and every byte it lent out. */
+void irgx_walk_close(irgx_walk *w);
+
+/* Whether these bytes read as binary under the same window the walk applies. */
+int32_t irgx_walk_binary(const uint8_t *bytes, size_t len);
+
+/* What a path is FOR: *out is one of IRGX_GENUS_*. */
+int32_t irgx_walk_genus(const uint8_t *path, size_t len, uint32_t *out);
+
+/* ── the sieve plane: narrowing, so most files are never opened ──
+ *
+ * Two persisted tiers -- the trigram index and the crest sieve. Every answer
+ * is a SUPERSET: a sieve rules documents OUT, it never rules one in, so a
+ * candidate still has to be read. */
+
+typedef struct irgx_sieve irgx_sieve;
+/* A pattern's narrowing plan, derived once and spent across many queries. */
+typedef struct irgx_winnow irgx_winnow;
+
+/* What the artifacts contain, and which tiers are present at all. */
+typedef struct {
+  uint32_t struct_size;
+  uint32_t doc_count;
+  uint32_t path_count;
+  uint32_t posting_count;
+  uint32_t root_count;
+  uint32_t has_crest;    /* 1 when the crest tier is present   */
+  uint32_t has_codicil;  /* 1 when the sidecar is present      */
+  uint32_t reserved;
+} irgx_sieve_facts;
+
+/* Which freshness posture is in force -- a total set, so `state` is always one
+ * of these three and never 0. A question that cannot be answered is not a
+ * fourth state: it is IRGX_INVALID from the call, which writes nothing. */
+#define IRGX_FRESH_ANCHORED 1   /* the artifacts date this tree             */
+#define IRGX_FRESH_UNANCHORED 2 /* no anchor on disk -- nothing to date     */
+#define IRGX_FRESH_FOREIGN 3    /* an anchor, but built over another tree   */
+
+/* Whether the artifacts still describe the tree. `anchor_ns` is the wall clock
+ * the verdict is measured against -- so a stale index is a known quantity, not
+ * a silent wrong answer.
+ *
+ * `state` is signed for room to grow and is never negative today; a host that
+ * writes a `state < 0` branch is writing dead code. Switch on the three
+ * IRGX_FRESH_* values and let an unrecognized one be the future's problem. */
+typedef struct {
+  uint32_t struct_size;
+  int32_t state;
+  int64_t anchor_ns;
+  int32_t reserved;
+} irgx_freshness;
+
+/* What a plan is made of. `idle` is the honest answer that this pattern rules
+ * nothing out -- an empty candidate list would have been a lie. */
+typedef struct {
+  uint32_t struct_size;
+  uint32_t flags;
+  uint32_t clauses;
+  uint32_t atoms;
+  uint32_t literals;
+  uint32_t alternatives;
+  uint32_t sieve_active;
+  uint32_t idle;
+} irgx_winnow_facts;
+
+/* Open the persisted artifacts in `dir`. Artifacts built over a different tree
+ * open INERT rather than wrong. */
+int32_t irgx_sieve_open(const uint8_t *dir, size_t dir_len, irgx_sieve **out);
+
+/* Release the sieve and every byte it lent out. */
+void irgx_sieve_close(irgx_sieve *s);
+
+/* What this artifact set contains. */
+int32_t irgx_sieve_describe(const irgx_sieve *s, irgx_sieve_facts *out);
+
+/* The path a document id names; bytes borrowed until irgx_sieve_close. */
+int32_t irgx_sieve_doc_path(const irgx_sieve *s, uint32_t doc, irgx_text *out);
+
+/* The i-th root the artifacts were built over. */
+int32_t irgx_sieve_root(const irgx_sieve *s, uint32_t i, irgx_text *out);
+
+/* Documents that could contain this literal, ascending. A superset. */
+int32_t irgx_sieve_literal(irgx_sieve *s, const uint8_t *needle, size_t len,
+                           uint32_t *out, size_t cap, size_t *written);
+
+/* The same for a union of literals, merged inside the index rather than by N
+ * crossings the host stitches together. */
+int32_t irgx_sieve_alternation(irgx_sieve *s, const irgx_text *needles,
+                               size_t n, uint32_t *out, size_t cap,
+                               size_t *written);
+
+/* What a whole plan admits, in document-id order. */
+int32_t irgx_sieve_candidates(irgx_sieve *s, const irgx_winnow *w,
+                              uint32_t *out, size_t cap, size_t *written);
+
+/* The same set, sequenced by what is cheapest to read. */
+int32_t irgx_sieve_reading_list(irgx_sieve *s, const irgx_winnow *w,
+                                uint32_t *out, size_t cap, size_t *written);
+
+/* Whether the artifacts still describe the tree. */
+int32_t irgx_sieve_freshness(const irgx_sieve *s, irgx_freshness *out);
+
+/* HOW MANY documents changed since the anchor -- the magnitude freshness
+ * reduces to a state, for a host deciding whether a rebuild is worth it. */
+int32_t irgx_sieve_stale_count(const irgx_sieve *s, size_t *out);
+
+/* Derive a pattern's narrowing plan once. */
+int32_t irgx_winnow_of(irgx_regex *re, irgx_winnow **out);
+
+/* Release the plan. */
+void irgx_winnow_free(irgx_winnow *w);
+
+/* What the plan is made of, and whether it can narrow at all. */
+int32_t irgx_winnow_describe(const irgx_winnow *w, irgx_winnow_facts *out);
+
+/* ── the codex plane: count, locate and restore WITHOUT the text ──
+ *
+ * A self-index: it answers about a text it does not store, and can hand the
+ * text back. Counting costs the PATTERN, not the corpus. */
+
+typedef struct irgx_codex irgx_codex;
+
+/* How the wavelet layer is encoded. ADOPT_MIN picks the smaller of the two per
+ * block; PLAIN_ONLY forbids the compressed form, for a host that wants a
+ * predictable size over a smaller one. */
+#define IRGX_CODEX_ADOPT_MIN 0u
+#define IRGX_CODEX_PLAIN_ONLY 1u
+
+/* An INPUT for irgx_codex_options.sample_rate, not a return value anywhere:
+ * build no locate layer at all -- the count-only artifact. It is a sentinel
+ * rather than 0 because a zeroed options struct has to mean today's default,
+ * which is the rule every options struct at this seam keeps. Such an index
+ * still counts; irgx_codex_locate and irgx_codex_position then DECLINE with
+ * IRGX_STALE, which is a build-time choice being reported, not a failure.
+ * (irgx_codex_stats.locates says which you have, and spells "none" as 0.) */
+#define IRGX_NO_LOCATE 0xFFFFFFFFu
+
+/* Build options. Zero is the default everywhere: sample_rate 0 takes the
+ * build's own, encoding 0 is ADOPT_MIN. */
+typedef struct {
+  uint32_t struct_size;
+  uint32_t sample_rate; /* 0 = this build's default; larger = smaller
+                         * index, slower locate; IRGX_NO_LOCATE = build
+                         * no locate layer at all                     */
+  uint32_t encoding;    /* IRGX_CODEX_*                                */
+  uint32_t reserved;
+} irgx_codex_options;
+
+/* What the index cost and what it can still do. */
+typedef struct {
+  uint32_t struct_size;
+  uint32_t sample_rate;
+  uint32_t locates; /* 1 when the locate layer is present */
+  uint32_t reserved;
+  size_t text_len;
+  size_t index_bytes;
+  size_t tree_bytes;
+  size_t locate_bytes;
+} irgx_codex_stats;
+
+/* A half-open row interval [lo, hi) in the index -- the set of suffixes a
+ * pattern prefix still admits. Driving it yourself is what
+ * irgx_codex_rows_whole and irgx_codex_rows_extend are for. */
+typedef struct {
+  size_t lo;
+  size_t hi;
+} irgx_codex_rows;
+
+/* The longest text this build can index, so a host refuses before allocating. */
+size_t irgx_codex_max_text_len(void);
+
+/* Build a self-index over text[0..len). */
+int32_t irgx_codex_build(const uint8_t *text, size_t len,
+                         const irgx_codex_options *opts, irgx_codex **out);
+
+/* Load a saved index. A blob this build cannot read fails closed. */
+int32_t irgx_codex_load(const uint8_t *bytes, size_t len, irgx_codex **out);
+
+/* Release the index. */
+void irgx_codex_free(irgx_codex *cx);
+
+/* The length of the text it stands for -- which need not exist any more. */
+size_t irgx_codex_len(const irgx_codex *cx);
+
+/* What it cost and what it can still do. */
+int32_t irgx_codex_measure(const irgx_codex *cx, irgx_codex_stats *out);
+
+/* How many times `pattern` occurs, in time proportional to the PATTERN. The
+ * occurrences are never enumerated to count them. */
+int32_t irgx_codex_count(const irgx_codex *cx, const uint8_t *pattern,
+                         size_t len, size_t *out);
+
+/* WHERE it occurs, as text offsets. IRGX_STALE when the index was built
+ * without the locate layer -- a declinature, not an empty answer. */
+int32_t irgx_codex_locate(const irgx_codex *cx, const uint8_t *pattern,
+                          size_t len, size_t *out, size_t cap,
+                          size_t *written);
+
+/* The text offset one row stands for. */
+int32_t irgx_codex_position(const irgx_codex *cx, size_t row, size_t *out);
+
+/* The whole row range: the interval before any character has narrowed it. */
+int32_t irgx_codex_rows_whole(const irgx_codex *cx, irgx_codex_rows *out);
+
+/* Narrow a row range by one byte, extending the pattern LEFTWARD -- the
+ * backward-search step, so a host can drive its own search. */
+int32_t irgx_codex_rows_extend(const irgx_codex *cx, irgx_codex_rows *rows,
+                               uint8_t byte);
+
+/* Reconstruct the text from `at` onward. The index IS the text. */
+int32_t irgx_codex_extract(irgx_codex *cx, size_t at, uint8_t *out, size_t cap,
+                           size_t *written);
+
+/* Serialize the index. *written is the size it NEEDS, so a short cap sizes the
+ * retry rather than truncating silently. */
+int32_t irgx_codex_save(irgx_codex *cx, uint8_t *out, size_t cap,
+                        size_t *written);
 
 #ifdef __cplusplus
 }

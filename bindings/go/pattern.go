@@ -215,6 +215,23 @@ func (re *Regexp) SubexpIndex(name string) int {
 	return -1
 }
 
+// Earliest reports whether this pattern can report EARLIEST-mode spans: the
+// first accepting position rather than the leftmost-first match.
+//
+// The sibling of [Regexp.Windows], and a property of the pattern for the same
+// reason - it is really a property of the engine arm that compiled it. PCRE2
+// declines because it exposes no inspectable program to walk, and so does any
+// assertion-bearing pattern, whose determinized states depend on the gap they
+// were entered at, which a walk starting mid-buffer cannot reconstruct.
+//
+// False is a REFUSAL rather than a slower path: the mode faults instead of
+// quietly returning the leftmost-first match wearing an earliest label. Nothing
+// in this package selects the mode - every Find here is leftmost-first, and the
+// boolean verbs are unaffected either way, because existence does not depend on
+// WHICH match is reported - so this is here for a host that drives the mode
+// through the C ABI's own request struct and needs to know first.
+func (re *Regexp) Earliest() bool { return re.earliest() }
+
 // acquire takes a handle out of the pool, compiling a fresh one when the pool is
 // empty. The compile is pure, so a handle per busy goroutine costs one compile
 // each and nothing after that.
