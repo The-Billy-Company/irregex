@@ -39,6 +39,11 @@ impl Status {
     /// The engine ran out of memory.
     pub const OUT_OF_MEMORY: Self = Self(sys::OOM);
 
+    /// An argument the library will not accept. Also what this crate reports for
+    /// an argument it refuses on the library's behalf, rather than passing down a
+    /// value the ABI has no way to express.
+    pub const INVALID: Self = Self(sys::INVALID);
+
     /// The raw code, as `irgx.h` spells it.
     #[must_use]
     pub const fn code(self) -> i32 {
@@ -65,6 +70,69 @@ impl fmt::Display for Status {
 impl fmt::Debug for Status {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "Status({}: {})", self.0, self.message())
+    }
+}
+
+/// An answer, or the tier declining to give one.
+///
+/// `IRGX_STALE` is the one negative status that is not a failure: a tier says it
+/// will not answer *this* question and installs no fault, so the caller is meant
+/// to fall back rather than to handle an error. Folding it into `Err` would make
+/// a routine handoff look like a defect, and folding it into an empty `Ok` would
+/// make "the index has no locate layer" indistinguishable from "the pattern does
+/// not occur" — which are opposite instructions.
+///
+/// So it is neither. A verb that can decline answers with this, and the two
+/// cases are decidable without looking at a status code:
+///
+/// ```
+/// # use irgx::{Answer, codex::Codex};
+/// # let codex = Codex::build(b"mississippi")?;
+/// match codex.locate(b"ssi")? {
+///     Answer::Given(offsets) => assert_eq!(offsets, [2, 5]),
+///     // Built without the locate layer: ask a tier that has one.
+///     Answer::Declined => {},
+/// }
+/// # Ok::<(), irgx::Error>(())
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Answer<T> {
+    /// The tier answered.
+    Given(T),
+    /// The tier declined, with no fault behind it. Ask something else.
+    Declined,
+}
+
+impl<T> Answer<T> {
+    /// The answer, or `None` for a declinature.
+    ///
+    /// The conversion to lose the distinction, for a caller whose fallback is
+    /// the same either way.
+    pub fn given(self) -> Option<T> {
+        match self {
+            Self::Given(value) => Some(value),
+            Self::Declined => None,
+        }
+    }
+
+    /// Whether the tier stepped aside.
+    #[must_use]
+    pub fn is_declined(&self) -> bool {
+        matches!(self, Self::Declined)
+    }
+
+    /// Transform the answer, leaving a declinature a declinature.
+    pub fn map<U>(self, f: impl FnOnce(T) -> U) -> Answer<U> {
+        match self {
+            Self::Given(value) => Answer::Given(f(value)),
+            Self::Declined => Answer::Declined,
+        }
+    }
+}
+
+impl<T> From<Answer<T>> for Option<T> {
+    fn from(answer: Answer<T>) -> Self {
+        answer.given()
     }
 }
 
@@ -215,6 +283,44 @@ pub enum Error {
         /// Where it was asked to end — less than `start`, which is the defect.
         end: usize,
     },
+    /// A plane outside the regex face could not answer: the corpus search, the
+    /// walk, the sieve, the codex, the needle set, the line grid, the Unicode
+    /// tables.
+    ///
+    /// One variant for all of them rather than seven, because the repair is the
+    /// same shape in every case — read `plane` for what was asked and the
+    /// [`Status`] and fault detail for why it was refused. These planes touch
+    /// the filesystem, so unlike a pattern refusal the fault behind one often
+    /// names a *path* rather than an offset, and that path is folded into
+    /// `detail`.
+    Plane {
+        /// Which plane refused, spelled as the ABI verb family: `"tree"`,
+        /// `"walk"`, `"sieve"`, `"winnow"`, `"codex"`, `"needles"`,
+        /// `"literals"`, `"lines"`, `"unicode"`.
+        plane: &'static str,
+        /// The status the refusal crossed the seam as.
+        status: Status,
+        /// The engine's per-incident fault name, and the path it was about when
+        /// there was one.
+        detail: Option<String>,
+    },
+    /// A `cap`/`written` verb kept asking for a larger buffer than the one it
+    /// had just been given.
+    ///
+    /// The protocol is that a short `cap` comes back with the count the answer
+    /// *needs*, so one retry at that size is enough. A plane reading a tree that
+    /// is being written underneath it can legitimately grow between two calls,
+    /// so the retry is bounded and this is what running out looks like — an
+    /// honest "the corpus would not hold still", never a truncated answer
+    /// wearing a success code.
+    Unsettled {
+        /// Which plane could not be sized. Spelled as in [`Error::Plane`].
+        plane: &'static str,
+        /// The size of the last buffer offered.
+        offered: usize,
+        /// The size it asked for after that.
+        wanted: usize,
+    },
 }
 
 impl Error {
@@ -231,6 +337,7 @@ impl Error {
             Self::Pattern { status, .. }
             | Self::Syntax { status, .. }
             | Self::Search { status, .. }
+            | Self::Plane { status, .. }
             | Self::Groups { status, .. } => Some(*status),
             Self::NeedsPcre { .. } => Some(Status::DECLINED),
             Self::OutOfMemory { .. } => Some(Status::OUT_OF_MEMORY),
@@ -311,6 +418,24 @@ impl fmt::Display for Error {
                 "the search window ends at byte {end}, before it starts at {start}. \
                  Bounds are not clamped, because a miscomputed one is worth hearing about."
             ),
+            Self::Plane {
+                plane,
+                status,
+                detail,
+            } => {
+                write!(f, "the {plane} plane could not answer: ")?;
+                write_reason(f, *status, detail.as_deref())
+            },
+            Self::Unsettled {
+                plane,
+                offered,
+                wanted,
+            } => write!(
+                f,
+                "the {plane} plane asked for {wanted} rows after being offered {offered}, and \
+                 kept growing across every retry. The answer is over something that is still \
+                 being written; ask again when it has settled."
+            ),
         }
     }
 }
@@ -339,6 +464,22 @@ pub(crate) fn fault(status: i32, build: impl FnOnce(Status, Option<String>) -> E
         };
     }
     build(Status(status), detail.map(|found| found.text))
+}
+
+/// The typed error for a negative `status` from a plane outside the regex face.
+///
+/// The one call every corpus, index and table verb makes on a failure, so which
+/// plane refused is a word at the call site instead of a variant per plane. Never
+/// pass `IRGX_STALE` here: that status installs no fault, so this would attach an
+/// unrelated one and report a handoff as a failure. Decline it before you get
+/// this far — see [`Answer`].
+pub(crate) fn plane_fault(status: i32, plane: &'static str) -> Error {
+    debug_assert_ne!(status, sys::STALE, "a declinature is not a plane failure");
+    fault(status, |status, detail| Error::Plane {
+        plane,
+        status,
+        detail,
+    })
 }
 
 /// The typed error for a negative `status` from compiling `pattern`.
@@ -423,36 +564,28 @@ fn last_fault() -> Option<Detail> {
     if name.is_empty() {
         return None;
     }
-    // The offset says which ruler it is measured in, so there is nothing to
-    // derive here: only a pattern-space offset can index the pattern a caller
-    // handed over. The other space, `AT_FILE`, belongs to the sibling libraries
-    // that walk a corpus - there is none behind this one, no verb here opens a
-    // file, and an offset into a file the caller never named could not be
-    // pointed at anyway. So it is asserted rather than handled: if the engine
-    // ever does report one here, that is worth a failed test rather than a
-    // caret under the wrong string.
-    debug_assert_ne!(
-        slot.at_space,
-        sys::AT_FILE,
-        "no verb in this plane reads a file, so a file-space offset cannot be about anything \
-         the caller can see"
-    );
+    // The offset states which ruler it is measured in, so `Detail::at` — which
+    // exists to index the pattern the caller handed over — may only take a
+    // pattern-space one. The corpus planes ([`crate::corpus`]) reach the other
+    // space: `AT_FILE` is measured inside the file `path` names, and putting it
+    // in `at` would point a caret under the pattern at a byte from a different
+    // document. It is not thrown away, though — it goes into the text beside the
+    // file it belongs to, which is the only place it means anything.
+    let offset = usize::try_from(slot.at).ok();
     let at = (slot.at_space == sys::AT_PATTERN)
-        .then(|| usize::try_from(slot.at).ok())
+        .then_some(offset)
         .flatten();
-    let about_a_file = !slot.path.is_null() && slot.path_len > 0;
-    if !about_a_file {
-        return Some(Detail {
-            text: name.to_owned(),
-            at,
-        });
-    }
-    // SAFETY: the header documents `path` / `path_len` as a borrowed byte span
-    // valid until this thread's next work call, and no such call happens between
-    // the `irgx_last_fault` above and this read.
-    let path = unsafe { std::slice::from_raw_parts(slot.path, slot.path_len) };
-    Some(Detail {
-        text: format!("{name} at {}", String::from_utf8_lossy(path)),
-        at,
-    })
+    let path = (!slot.path.is_null() && slot.path_len > 0).then(|| {
+        // SAFETY: the header documents `path` / `path_len` as a borrowed byte
+        // span valid until this thread's next work call, and no such call happens
+        // between the `irgx_last_fault` above and this read.
+        let bytes = unsafe { std::slice::from_raw_parts(slot.path, slot.path_len) };
+        String::from_utf8_lossy(bytes)
+    });
+    let text = match (path, slot.at_space == sys::AT_FILE, offset) {
+        (Some(path), true, Some(offset)) => format!("{name} at {path}:{offset}"),
+        (Some(path), _, _) => format!("{name} at {path}"),
+        (None, _, _) => name.to_owned(),
+    };
+    Some(Detail { text, at })
 }

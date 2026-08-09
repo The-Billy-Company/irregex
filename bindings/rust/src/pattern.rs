@@ -159,6 +159,44 @@ impl Regex {
         })
     }
 
+    /// Whether this pattern can report EARLIEST-mode spans — the first match the
+    /// automaton *reaches*, rather than the leftmost one it would prefer.
+    ///
+    /// A property of the pattern, as [`Regex::windows`] is, and for the same
+    /// reason: it depends on which arm compiled it. `false` is a REFUSAL and not
+    /// a slower path — a span request in earliest mode then faults instead of
+    /// quietly handing back the leftmost match wearing an earliest label. The
+    /// PCRE arm declines because it exposes no inspectable program, and so does
+    /// any assertion-bearing pattern, whose determinized states depend on the gap
+    /// they were entered at, which a walk starting mid-buffer cannot reconstruct.
+    ///
+    /// The boolean verbs are unaffected either way: existence does not depend on
+    /// which match is reported, so a host only needs this before asking for
+    /// spans.
+    #[must_use]
+    pub fn earliest(&self) -> bool {
+        // As `windows`: a capability question is the wrong place to surface a
+        // pool fault, and false only ever withholds a mode.
+        self.pool.lease().is_ok_and(|lease| {
+            // SAFETY: a leased handle is live and exclusively ours for the
+            // lease, which is all this call reads — it touches no text.
+            let earliest = unsafe { sys::irgx_pattern_earliest(lease.raw()) };
+            earliest == 1
+        })
+    }
+
+    /// Run `f` with the exclusive C handle behind this pattern.
+    ///
+    /// The one door out of the pool for the planes that take a compiled pattern
+    /// as *input* rather than searching with it — [`crate::Literals`] and
+    /// [`crate::Winnow`], both of which copy what they need and so may outlive
+    /// the lease. Kept as a closure rather than a returned lease so the pool's
+    /// borrow discipline stays inside this module.
+    pub(crate) fn with_handle<T>(&self, f: impl FnOnce(*mut sys::Regex) -> T) -> Result<T, Error> {
+        let lease = self.pool.lease()?;
+        Ok(f(lease.raw()))
+    }
+
     // ── the search surface ───────────────────────────────────────────────
 
     /// Whether `text` holds a match anywhere.

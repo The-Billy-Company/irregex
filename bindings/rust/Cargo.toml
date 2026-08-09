@@ -47,8 +47,8 @@ categories = [
 #
 # `LICENSE` and `NOTICE` are copies of the repository's, kept beside this manifest
 # rather than referenced upward: Cargo cannot package a file outside the crate
-# directory, so without the copies an Apache-2.0 crate shipped no license text and
-# no attribution notice at all - the two things section 4 of that license requires a
+# directory, so without the copies an Apache-2.0 crate shipped no licence text and
+# no attribution notice at all - the two things section 4 of that licence requires a
 # redistributor to hand on, and the notice here is the one that credits what the
 # vendored archives are built from. Keep them byte-identical to the root pair.
 #

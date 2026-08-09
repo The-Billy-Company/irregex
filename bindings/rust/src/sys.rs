@@ -180,6 +180,10 @@ impl Default for Fault {
 /// authoritative. The library's one string shape - it is how a group name comes
 /// back and how the row protocol carries every field - so one reader serves
 /// both.
+///
+/// `Copy` because it is two words of borrowed span and every plane that answers
+/// with a list of them fills a `Vec<Text>` the library writes into directly.
+#[derive(Clone, Copy)]
 #[repr(C)]
 pub struct Text {
     pub ptr: *const u8,
@@ -193,6 +197,27 @@ impl Default for Text {
             len: 0,
         }
     }
+}
+
+/// The bytes an `irgx_text` names, borrowed for `'a`.
+///
+/// Every plane that answers with borrowed spans — the literal sets, a tree
+/// record's path and line, a walk entry, a sieve's document paths — reads them
+/// through here, so the null-and-empty case is handled once. An empty span comes
+/// back as an empty slice rather than a dangling one.
+///
+/// # Safety
+///
+/// `text` must have been written by a live library handle, and `'a` must not
+/// outlive the handle that owns the arena those bytes are in. Callers get that
+/// from a lifetime tied to the owning handle; this function cannot check it.
+pub unsafe fn borrowed<'a>(text: &Text) -> &'a [u8] {
+    if text.ptr.is_null() || text.len == 0 {
+        return &[];
+    }
+    // SAFETY: the caller promises the span is live for `'a`; the header documents
+    // `len` as authoritative and the bytes as contiguous.
+    unsafe { std::slice::from_raw_parts(text.ptr, text.len) }
 }
 
 unsafe extern "C" {
@@ -217,6 +242,12 @@ unsafe extern "C" {
     /// windowed call on the PCRE arm faults rather than quietly answering the
     /// sliced question, and this is how a host finds out before it asks.
     pub fn irgx_pattern_windows(re: *mut Regex) -> i32;
+    /// Whether this pattern can report EARLIEST-mode spans (1) or not (0).
+    ///
+    /// The companion to `irgx_pattern_windows`, and 0 is a refusal rather than a
+    /// slower path: asking for spans under the earliest mode then faults instead
+    /// of answering with the leftmost match under an earliest label.
+    pub fn irgx_pattern_earliest(re: *mut Regex) -> i32;
     pub fn irgx_is_match_in(
         re: *mut Regex,
         text: *const u8,

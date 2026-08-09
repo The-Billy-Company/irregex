@@ -47,20 +47,41 @@ fn the_munch_section_compiles_and_answers() {
 
     // Restricting one call, and the other reading of the same offset.
     assert_eq!(lex.token_among("if x", 0, &[1]).map(|t| t.len()), Some(2));
-    assert_eq!(lex.shortest_among("if x", 0, &[0, 1]).map(|t| t.len()), Some(1));
+    assert_eq!(
+        lex.shortest_among("if x", 0, &[0, 1]).map(|t| t.len()),
+        Some(1)
+    );
 
     // `admitted()` is the capacity at which the engine can never come up short.
     let mut winners = Vec::with_capacity(lex.admitted());
-    let len = lex.scan_into("if x", 0, None, Pick::Longest, &mut winners).unwrap();
+    let len = lex
+        .scan_into("if x", 0, None, Pick::Longest, &mut winners)
+        .unwrap();
     assert_eq!((len, winners.as_slice()), (Some(2), [0, 1].as_slice()));
 }
 
 #[test]
 fn the_munch_flags_are_spelled_as_regexbuilder_spells_them() {
-    assert!(MunchBuilder::new(["if"]).ignore_case(true).build().unwrap().token("IF", 0).is_some());
-    let dotall = MunchBuilder::new(["."]).dot_matches_new_line(true).build().unwrap();
+    assert!(
+        MunchBuilder::new(["if"])
+            .ignore_case(true)
+            .build()
+            .unwrap()
+            .token("IF", 0)
+            .is_some()
+    );
+    let dotall = MunchBuilder::new(["."])
+        .dot_matches_new_line(true)
+        .build()
+        .unwrap();
     assert!(dotall.token("\n", 0).is_some());
-    assert!(MunchBuilder::new(["."]).build().unwrap().token("\n", 0).is_none());
+    assert!(
+        MunchBuilder::new(["."])
+            .build()
+            .unwrap()
+            .token("\n", 0)
+            .is_none()
+    );
     // And there is no `multi_line` to call at all, which is the claim itself: it
     // is unrepresentable rather than accepted and ignored. A compiler cannot
     // assert the absence of a method, so the nearest thing it can hold is that
@@ -73,11 +94,14 @@ fn the_munch_flags_are_spelled_as_regexbuilder_spells_them() {
 fn a_partial_refusal_seats_the_rest_and_says_why() {
     let partial = Munch::new(["ok", r"(a)\1", r"\Ab"]).unwrap();
     assert_eq!((partial.len(), partial.admitted()), (3, 1));
-    assert_eq!(partial.declined().iter().map(|r| r.why).collect::<Vec<_>>(), [
-        Why::Syntax,
-        Why::BufferAnchor,
-    ]);
-    assert!(partial.token("ok", 0).is_some(), "the seated terminal still lexes");
+    assert_eq!(
+        partial.declined().iter().map(|r| r.why).collect::<Vec<_>>(),
+        [Why::Syntax, Why::BufferAnchor,]
+    );
+    assert!(
+        partial.token("ok", 0).is_some(),
+        "the seated terminal still lexes"
+    );
     // A wall and a budget are different advice, so they are different values.
     assert_ne!(Why::States, Why::BufferAnchor);
 }

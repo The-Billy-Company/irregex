@@ -134,7 +134,23 @@ mod pattern;
 mod pool;
 mod replace;
 mod set;
+mod sink;
 mod sys;
+
+/// Count, locate and restore a text the index does not store.
+pub mod codex;
+/// Searching a TREE rather than a buffer you already hold: the `tree`, `walk`
+/// and `sieve` planes, and the corpus that warms them.
+pub mod corpus;
+/// The line grid: rows, bands, and the off-by-one that lives here instead of in
+/// your host.
+pub mod lines;
+/// Many literals, one pass, with attribution.
+pub mod needles;
+/// What a pattern PROMISES about every byte sequence it can match.
+pub mod promise;
+/// The Unicode tables this engine folds and classifies with.
+pub mod unicode;
 
 /// Shared contract mirrors — engine/analytic/kinship constants and row tables.
 #[allow(missing_docs)]
@@ -149,7 +165,7 @@ pub mod request;
 #[allow(clippy::undocumented_unsafe_blocks, missing_docs)]
 pub mod runtime;
 
-pub use crate::error::{Error, Status};
+pub use crate::error::{Answer, Error, Status};
 pub use crate::matches::{CaptureMatches, Captures, Match, Matches, Split};
 pub use crate::munch::{Munch, MunchBuilder, Pick, Refusal, Token, Why};
 pub use crate::pattern::{Regex, RegexBuilder};
