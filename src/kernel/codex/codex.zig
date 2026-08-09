@@ -12,6 +12,10 @@
 //!   restore()  the ENTIRE original text, byte-exact, from the index alone.
 //!              This is the Shannon claim made mechanical: the index is a
 //!              decodable lossless code — a compression — not a companion to one.
+//!   extract()  any ONE range of it, at O(sample_rate + range) rather than
+//!              O(n) — the same decode, begun beside the answer instead of at
+//!              the corpus end. Attribution asks for eighty bytes around a hit,
+//!              and materializing a gigabyte to read them is not an answer.
 //!
 //! Pipeline: SA-IS suffix array (O(n), `sais.zig` over vendored libsais) →
 //! Burrows–Wheeler transform
@@ -38,6 +42,17 @@ const parallel = @import("../math/parallel.zig");
 
 const Oom = std.mem.Allocator.Error;
 const SIGMA: usize = 257; // 256 byte symbols shifted +1, sentinel 0
+
+/// The corpus ceiling, republished from the suffix sort that sets it: libsais
+/// addresses rows with `int32_t`, so a longer text leaves `build` as
+/// `error.Oversized` rather than as a truncated index. Named here because a
+/// host sizing a build reads this package, not the sort under it.
+pub const max_text_len = sais.max_text_len;
+
+/// No sample lands on this stride slot of the anchor table. A real entry
+/// indexes `samples`, whose length is bounded by `max_text_len`, so this can
+/// never collide with one.
+const unsampled: u32 = std.math.maxInt(u32);
 
 /// One contiguous row range of the BWT derivation, and the histogram of the
 /// symbols it produced. Row j reads `sa[j]` and writes `bwt[j]` and nothing
@@ -134,6 +149,17 @@ pub const Codex = struct {
     sample_rate: u32,
     n: usize, // symbol count = text len + 1
     stats: Stats,
+    /// The inverse of `samples`, and the one structure here that `build` does
+    /// not produce: `anchors[p / sample_rate]` is the index in `samples` whose
+    /// value is exactly `p`. That is what lets `extract` begin its walk beside
+    /// the range it was asked for instead of at the corpus end.
+    ///
+    /// Derived, never persisted, and never allocated until the first `extract`
+    /// — so an index that only counts pays nothing for it, and one that does
+    /// extract pays exactly what its locate samples already cost (one `u32` per
+    /// `sample_rate` bytes). Filled once and read thereafter, which is safe on
+    /// the single-threaded terms every handle in this library is held under.
+    anchors: ?[]u32 = null,
 
     /// Build from `text` (any bytes, up to `sais.max_text_len` — the suffix
     /// sort's 2 GiB addressing ceiling, past which this returns `Oversized`
@@ -235,11 +261,20 @@ pub const Codex = struct {
         self.tree.deinit(gpa);
         if (self.marks) |*m| m.deinit(gpa);
         gpa.free(self.samples);
+        if (self.anchors) |a| gpa.free(a);
     }
 
     /// Original text length in bytes.
     pub fn len(self: *const Codex) usize {
         return self.n - 1;
+    }
+
+    /// Whether this index can answer *where*, and not only *how many*. False
+    /// for a codex built with `sample_rate == 0`, whose counts are exact and
+    /// whose `find`/`posOf` decline — a capability the builder declined to buy,
+    /// which a caller is entitled to ask about before asking for it.
+    pub fn locates(self: *const Codex) bool {
+        return self.marks != null;
     }
 
     /// A suffix-array row interval — the state of an incremental backward
@@ -338,14 +373,130 @@ pub const Codex = struct {
     /// index is a decodable code. Caller frees.
     pub fn restore(self: *const Codex, gpa: std.mem.Allocator) ![]u8 {
         const out = try gpa.alloc(u8, self.n - 1);
-        var row: usize = 0; // row 0 is the sentinel suffix; LF walks the text right-to-left
-        for (0..self.n - 1) |step| {
-            const a = self.tree.access(row);
-            std.debug.assert(a.sym != 0); // the sentinel can only close the walk
-            out[self.n - 2 - step] = @intCast(a.sym - 1);
-            row = self.c_table[a.sym] + a.occ;
-        }
+        // Row 0 is the sentinel suffix, so the corpus end is where a walk that
+        // was given no anchor has to start.
+        self.unwind(out, 0, 0, self.n - 1);
         return out;
+    }
+
+    /// Reconstruct `text[at..at + dst.len)` and nothing else.
+    ///
+    /// The gap `restore` leaves. LF walks right-to-left, so a decode always
+    /// *ends* where it was asked to begin; `restore` therefore starts at the
+    /// corpus end and pays O(n) for every question, which makes eighty bytes of
+    /// context around a hit cost a materialized gigabyte. This starts at the
+    /// nearest sampled suffix at or above the range instead, so the walk is
+    /// O(sample_rate + dst.len) — proportional to the answer, which is the
+    /// property the rest of this index already has.
+    ///
+    /// `gpa` is for the one-time anchor table, never for the output. Without
+    /// locate samples — or if that allocation is refused — the walk still
+    /// answers, from the corpus end, at `restore`'s cost. That is why this
+    /// returns bytes rather than an `Answer`: unlike `find`, there is no
+    /// capability here a build can decline, only a speed it can decline to buy.
+    pub fn extract(self: *Codex, gpa: std.mem.Allocator, dst: []u8, at: usize) void {
+        std.debug.assert(at + dst.len <= self.n - 1);
+        if (dst.len == 0) return;
+        const start = self.anchorAbove(gpa, at + dst.len) orelse
+            Landing{ .row = 0, .pos = self.n - 1 };
+        self.unwind(dst, at, start.row, start.pos);
+    }
+
+    /// The one backward LF walk both reconstructors ride: from `row`, whose
+    /// suffix begins at text position `at`, step left to `from`, keeping
+    /// `text[from..from + dst.len)` and dropping whatever lay above it.
+    ///
+    /// The bytes above the range are decoded and discarded rather than skipped,
+    /// because there is nothing to skip with: LF is a step, not a seek. That
+    /// discard is what the anchor bounds — at most `sample_rate - 1` bytes.
+    fn unwind(self: *const Codex, dst: []u8, from: usize, row: usize, at: usize) void {
+        var r = row;
+        var pos = at;
+        while (pos > from) {
+            const a = self.tree.access(r);
+            std.debug.assert(a.sym != 0); // the sentinel can only close the walk
+            pos -= 1;
+            if (pos - from < dst.len) dst[pos - from] = @intCast(a.sym - 1);
+            r = self.c_table[a.sym] + a.occ;
+        }
+    }
+
+    /// Where an unwind may start: a row and the text position its suffix begins
+    /// at.
+    const Landing = struct { row: usize, pos: usize };
+
+    /// The cheapest place to start a walk that must reach down past `hi` — the
+    /// nearest sampled suffix position at or above it.
+    ///
+    /// Null whenever there is no such place to be had: no locate samples, `hi`
+    /// beyond the last sampled position, or an anchor table this machine would
+    /// not allocate. Each of those falls back to the corpus end, which is
+    /// slower and never wrong — so this returns an optional rather than an
+    /// error, and `extract` has no failure mode to publish.
+    fn anchorAbove(self: *Codex, gpa: std.mem.Allocator, hi: usize) ?Landing {
+        const marks = if (self.marks) |*m| m else return null;
+        const rate = self.sample_rate;
+        // Rate and marks are separate fields on the wire, so "marked, yet rate
+        // zero" is a shape a mangled blob could carry past its seal. It divides
+        // by zero two lines down, and a library may not die of its own artifact.
+        if (rate == 0) return null;
+        const pos = (hi + rate - 1) / rate * rate;
+        if (pos >= self.n) return null;
+        const table = self.anchorTable(gpa) orelse return null;
+        const j = table[pos / rate];
+        if (j == unsampled) return null;
+        return .{ .row = markedRow(marks, self.n, j) orelse return null, .pos = pos };
+    }
+
+    /// Build (once) and hand back the position→sample-index table.
+    ///
+    /// It is a pure inversion of `samples`, so it costs one pass over an array
+    /// this index already holds and needs nothing from the bitvector layer. A
+    /// refusal is returned as null rather than as an error: the caller's
+    /// fallback is a correct answer, and failing an extract over a table that
+    /// only makes it faster would be the wrong trade.
+    fn anchorTable(self: *Codex, gpa: std.mem.Allocator) ?[]const u32 {
+        if (self.anchors) |a| return a;
+        const rate = self.sample_rate;
+        const slots = (self.n - 1) / rate + 1;
+        const table = gpa.alloc(u32, slots) catch return null;
+        @memset(table, unsampled);
+        for (self.samples, 0..) |p, j| {
+            // Only an exactly-strided sample may claim a stride slot. A value
+            // that is not a multiple of the rate would start the walk at a text
+            // position other than the one the slot names — a wrong answer where
+            // leaving the slot empty is merely a slow one.
+            if (p % rate != 0) continue;
+            const slot = p / rate;
+            if (slot < slots) table[slot] = @intCast(j);
+        }
+        self.anchors = table;
+        return table;
+    }
+
+    /// The row carrying sample `j` — select₁ over the mark vector, spelled as a
+    /// binary search on its rank because the bitvector layer publishes rank and
+    /// not select, and this package does not own that layer.
+    ///
+    /// O(log n) rank queries, once per extract, against a walk already costing
+    /// O(sample_rate + range) — small enough not to be worth a select structure
+    /// the index would then have to carry and persist. Null if the marks and
+    /// the sample array disagree about how many samples there are, which only a
+    /// mangled artifact can produce and which the fallback answers correctly.
+    fn markedRow(marks: *const rrr.Bits, n: usize, j: u32) ?usize {
+        var lo: usize = 0; // rank1(lo) ≤ j throughout
+        var hi: usize = n;
+        while (hi - lo > 1) {
+            const mid = lo + (hi - lo) / 2;
+            if (marks.rank1(mid) > j) hi = mid else lo = mid;
+        }
+        // The loop lands on the largest row whose exclusive rank is still ≤ j;
+        // that is select₁(j) only if the row is itself marked and its rank is
+        // exactly j. Both can fail together only when the vector holds fewer
+        // than j+1 ones, so this is also the out-of-range answer — and the
+        // reason the search never has to ask for rank1(n), which is one past
+        // the vector's last addressable word.
+        return if (marks.get(lo) == 1 and marks.rank1(lo) == j) lo else null;
     }
 
     // ── persistence ──

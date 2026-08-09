@@ -85,7 +85,12 @@ pub fn verify(bytes: []const u8) Error!void {
 
 pub fn parseHeader(bytes: []const u8) Error!Header {
     if (bytes.len < header_len or !std.mem.eql(u8, bytes[0..magic.len], magic)) return Error.Corrupt;
-    if (std.mem.readInt(u32, bytes[magic.len..][0..4], .little) != format_version) return Error.Corrupt;
+    // A version the reader doesn't know is not damage — it is an older writer, and
+    // the two call for opposite responses: rebuild the index versus distrust the
+    // disk. The seal has already passed by the time this runs (`verify` precedes
+    // `parseHeader` on the untrusted path), so these bytes are provably intact and
+    // reporting them as `Corrupt` would send a caller hunting a fault that isn't.
+    if (std.mem.readInt(u32, bytes[magic.len..][0..4], .little) != format_version) return Error.VersionMismatch;
     const n64 = std.mem.readInt(u64, bytes[magic.len + 8 ..][0..8], .little);
     const pc64 = std.mem.readInt(u64, bytes[magic.len + 16 ..][0..8], .little);
     if (n64 > std.math.maxInt(usize) or pc64 > std.math.maxInt(u32)) return Error.Corrupt;

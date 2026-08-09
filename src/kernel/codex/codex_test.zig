@@ -540,6 +540,154 @@ test "codex: load fails closed on truncation, bit rot, and wrong magic" {
     try testing.expectError(error.Corrupt, codex.Codex.load(gpa, bad_magic));
 }
 
+// ── extract ──
+//
+// `extract` is the one operation here with a *cheaper* oracle than the code
+// under test: `restore` already reconstructs the whole corpus by a walk that
+// predates it and is itself checked against the literal text everywhere above.
+// So every assertion below is `extract(lo, hi) == restore()[lo..hi]`, byte for
+// byte — and because the two walks differ ONLY in where they start, any error
+// in the anchor lands as a divergence rather than as a plausible-looking
+// alternative answer.
+
+/// Every range of `text`, exhaustively — all n(n+1)/2 of them — against the
+/// restored corpus. Quadratic on purpose: the failures this is hunting live at
+/// specific offsets against the sampling stride, and sampling the sample rate
+/// is how you miss them.
+fn expectExtractMatchesRestore(text: []const u8, opts: codex.Options) !void {
+    const gpa = testing.allocator;
+    var idx = try codex.Codex.build(gpa, text, opts);
+    defer idx.deinit(gpa);
+    const whole = try idx.restore(gpa);
+    defer gpa.free(whole);
+    try testing.expectEqualSlices(u8, text, whole);
+
+    const buf = try gpa.alloc(u8, text.len + 1);
+    defer gpa.free(buf);
+    for (0..text.len + 1) |lo| {
+        for (lo..text.len + 1) |hi| {
+            const dst = buf[0 .. hi - lo];
+            @memset(dst, 0xAA); // a byte the walk must overwrite, not inherit
+            idx.extract(gpa, dst, lo);
+            try testing.expectEqualSlices(u8, whole[lo..hi], dst);
+        }
+    }
+}
+
+test "codex: extract equals restore on every range of every adversarial corpus" {
+    // The empty corpus: the only legal range is the empty one, and it must not
+    // walk, allocate, or index anything.
+    try expectExtractMatchesRestore("", .{});
+    try expectExtractMatchesRestore("x", .{}); // first byte IS the last byte
+    try expectExtractMatchesRestore("mississippi", .{ .sample_rate = 1 });
+    // Every position sampled vs. none of them: the two ends of the anchor
+    // mechanism, over a corpus whose suffixes are maximally ambiguous.
+    try expectExtractMatchesRestore("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", .{ .sample_rate = 1 });
+    try expectExtractMatchesRestore("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", .{ .sample_rate = 0 });
+    // NUL and 0xff are content, not terminators — a walk that treated the
+    // sentinel as a byte, or a byte as the sentinel, diverges here.
+    try expectExtractMatchesRestore("\x00\x01\xff\x00\x01\xff\x00\x00\xff", .{ .sample_rate = 2 });
+    try expectExtractMatchesRestore("\x00\x00\x00\x00\x00\x00\x00\x00", .{ .sample_rate = 3 });
+    // A corpus longer than the stride, with the stride deliberately coprime to
+    // nothing in particular, so ranges land on, above, below, and across the
+    // sampled positions.
+    const prose = "the quick brown fox jumps over the lazy dog, twice over and over";
+    for ([_]u32{ 0, 1, 2, 5, 8, 32, 64, 4096 }) |rate| {
+        try expectExtractMatchesRestore(prose, .{ .sample_rate = rate });
+    }
+    try expectExtractMatchesRestore(prose, .{ .sample_rate = 7, .encoding = .plain_only });
+}
+
+test "codex: extract holds at the corpus edges and across the sampling stride" {
+    const gpa = testing.allocator;
+    // Every byte value present, at a length that is not a multiple of any
+    // stride tried below, so the last stride slot is a partial one.
+    const len = 1000;
+    const text = try gpa.alloc(u8, len);
+    defer gpa.free(text);
+    var prng = std.Random.DefaultPrng.init(0xe8_7ac7);
+    const rand = prng.random();
+    for (text) |*c| c.* = rand.int(u8);
+    for (text[0..256], 0..) |*c, i| c.* = @intCast(i);
+
+    for ([_]u32{ 0, 1, 16, 32, 33, 512 }) |rate| {
+        var idx = try codex.Codex.build(gpa, text, .{ .sample_rate = rate });
+        defer idx.deinit(gpa);
+        const whole = try idx.restore(gpa);
+        defer gpa.free(whole);
+        try testing.expectEqualSlices(u8, text, whole);
+
+        const buf = try gpa.alloc(u8, len);
+        defer gpa.free(buf);
+        // The very first byte, the very last byte, both empty edges, the whole
+        // corpus, and — the interesting ones — every range whose endpoints
+        // straddle a sampled position by one either way.
+        var edges: std.ArrayList(usize) = .empty;
+        defer edges.deinit(gpa);
+        for ([_]usize{ 0, 1, 2, len - 2, len - 1, len }) |p| try edges.append(gpa, p);
+        const stride: usize = if (rate == 0) 32 else rate;
+        var s: usize = stride;
+        while (s < len) : (s += stride) {
+            for ([_]usize{ s - 1, s, s + 1 }) |p| if (p <= len) try edges.append(gpa, p);
+        }
+        for (edges.items) |lo| {
+            for (edges.items) |hi| {
+                if (hi < lo) continue;
+                const dst = buf[0 .. hi - lo];
+                @memset(dst, 0x5C);
+                idx.extract(gpa, dst, lo);
+                try testing.expectEqualSlices(u8, whole[lo..hi], dst);
+            }
+        }
+    }
+}
+
+test "codex: extract answers identically on a loaded index and repeats itself" {
+    const gpa = testing.allocator;
+    const text = "attribution wants eighty bytes, not a gigabyte \x00 of them; twice: attribution";
+    var built = try codex.Codex.build(gpa, text, .{ .sample_rate = 4 });
+    defer built.deinit(gpa);
+    const blob = try built.save(gpa);
+    defer gpa.free(blob);
+    var loaded = try codex.Codex.load(gpa, blob);
+    defer loaded.deinit(gpa);
+
+    // The anchor table is derived and deliberately NOT persisted, so a loaded
+    // index has to rebuild it from the samples it did carry. Locating the
+    // needle and extracting exactly its bytes is the whole attribution loop in
+    // four lines — the reason this function exists.
+    const hits = (try loaded.find(gpa, "attribution")).got;
+    defer gpa.free(hits);
+    try testing.expectEqual(@as(usize, 2), hits.len);
+    var buf: [11]u8 = undefined;
+    for (hits) |at| {
+        // Twice each: the first call builds the table, the second reads it, and
+        // a table that memoized wrong would answer differently the second time.
+        for (0..2) |_| {
+            @memset(&buf, 0);
+            loaded.extract(gpa, &buf, at);
+            try testing.expectEqualSlices(u8, "attribution", &buf);
+        }
+    }
+    try testing.expect(loaded.locates());
+    try testing.expectEqual(built.len(), loaded.len());
+}
+
+test "codex: extract still answers where the index declined to locate" {
+    const gpa = testing.allocator;
+    const text = "count only, and yet the bytes are all still in here";
+    var idx = try codex.Codex.build(gpa, text, .{ .sample_rate = 0 });
+    defer idx.deinit(gpa);
+    // No samples means no anchor and no locate — `find` declines. `extract`
+    // does not: the walk simply starts at the corpus end, which is slower and
+    // exactly as correct, so there is no capability to decline.
+    try testing.expect(!idx.locates());
+    try testing.expectEqual(fault.Decline.capability_missing, (try idx.find(gpa, "bytes")).declined);
+    var buf: [5]u8 = undefined;
+    idx.extract(gpa, &buf, std.mem.indexOf(u8, text, "bytes").?);
+    try testing.expectEqualSlices(u8, "bytes", &buf);
+}
+
 test "codex: index measures smaller than raw text on compressible input" {
     const gpa = testing.allocator;
     // realistic compressible text: repeated vocabulary, code-like shape

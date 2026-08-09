@@ -53,7 +53,14 @@ const bits = @import("../math/bits.zig");
 const B64 = bits.Field(u64);
 
 /// No such state / no such literal. `0` is the root, so it cannot be a sentinel.
-const none = std.math.maxInt(u32);
+///
+/// Published because it TERMINATES two chains a caller may legitimately walk —
+/// `out_next` (the literals ending at a state) and `link` (the dictionary-suffix
+/// chain) — so anyone reporting every occurrence rather than the first has to
+/// know where those chains stop. The `needles` FFI plane respelled it locally
+/// before this was `pub`, which is a duplicated constant that no test can catch
+/// until the day the two disagree.
+pub const none = std.math.maxInt(u32);
 
 /// Transition rows are the whole memory cost, so the tier declines rather than
 /// build a table that would evict everything else from cache. 1<<15 states over
