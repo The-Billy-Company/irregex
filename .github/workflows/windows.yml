@@ -175,7 +175,10 @@ jobs:
 
   required:
     name: native
-    if: always()
+    # A newer push deliberately cancels this run. Preserve the aggregate for
+    # real matrix failures, but do not turn an obsolete cancellation into a
+    # second, misleading failed check.
+    if: ${{ !cancelled() }}
     needs: [native, bindings]
     runs-on: ubuntu-latest
     steps:
