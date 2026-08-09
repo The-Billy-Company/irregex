@@ -287,19 +287,78 @@ fn document(gpa: std.mem.Allocator, fill: []const u8) ![]u8 {
 /// one, and it must be the same *shape* (same alphabet, same line length) or it is
 /// proving something about a different document.
 fn documentOf(gpa: std.mem.Allocator, fill: []const u8, bytes: usize) ![]u8 {
+    return shapedDoc(gpa, fill, bytes, .uniform);
+}
+
+/// `documentOf` with the line geometry chosen — the burst section's two arms.
+fn shapedDoc(gpa: std.mem.Allocator, fill: []const u8, bytes: usize, shape: LineShape) ![]u8 {
     const doc = try gpa.alloc(u8, bytes);
-    fillLines(doc, fill, line_len);
+    fillShaped(doc, fill, line_len, shape);
     return doc;
 }
 
-/// `documentOf`'s body, with the line length free. An interior skip's stride is
+/// Line lengths of this repository's own source, as ventiles (p0, p5, … p100)
+/// over the ~100k non-empty lines of `src/**` in `.zig .py .rs .go .md`. The top
+/// ventile is clamped to p99 = 142: the raw maximum is one 316 KB generated line,
+/// which is real but is a single line and would otherwise be a twentieth of the
+/// draws. Measured, not chosen — a distribution invented to make a point would
+/// prove exactly nothing about what this walk meets.
+const source_ventiles = [_]u16{ 1, 3, 10, 20, 25, 29, 34, 39, 44, 50, 57, 63, 70, 73, 76, 77, 78, 80, 81, 89, 142 };
+
+/// How a document's lines are LENGTHED, and — for a multi-lane walk — the most
+/// consequential property a document has. A burst runs to the SHORTEST lane's
+/// line end, so the expected burst is the expected MINIMUM over `lanes` line
+/// lengths, and how fast that minimum falls away with width is a property of the
+/// distribution alone.
+///
+///   * `uniform` — every line exactly `line_len`. The minimum over N is `line_len`
+///     for every N, so width costs the fast body nothing: all lanes stay in phase
+///     and reseed together. This is the shape the ladder has always used, and it
+///     is the most favourable document a wide walk can be handed.
+///   * `source` — lengths drawn from `source_ventiles`. The minimum collapses with
+///     width — 22.5 bytes at four lanes, 12.2 at eight, 8.1 at twelve, 5.8 at
+///     sixteen — so a wider walk spends proportionally more of its bytes in the
+///     per-line `trans_fin`/reseed tail and fewer in the body being measured.
+///
+/// Both are run, because a width that only wins on `uniform` has won on the
+/// document rather than on the automaton.
+const LineShape = enum { uniform, source };
+
+/// One line length from the empirical distribution: a ventile bucket uniformly,
+/// then uniformly inside it. Never 0 — an empty line is a different code path
+/// (`empty_match`) and would change what the row measures rather than its
+/// geometry.
+fn sampleLine(rng: std.Random) usize {
+    const b = rng.uintLessThan(usize, source_ventiles.len - 1);
+    const lo = source_ventiles[b];
+    const hi = source_ventiles[b + 1];
+    return @max(1, lo + if (hi > lo) rng.uintLessThan(u16, hi - lo) else 0);
+}
+
+/// `documentOf`'s body, with the line geometry free. An interior skip's stride is
 /// capped by the distance to the next `\n`, so line length is the one knob that
 /// moves that stride without changing the automaton, the alphabet, or the
 /// instruction mix — which is what makes a break-even measurement possible.
 fn fillLines(doc: []u8, fill: []const u8, line: usize) void {
+    fillShaped(doc, fill, line, .uniform);
+}
+
+fn fillShaped(doc: []u8, fill: []const u8, line: usize, shape: LineShape) void {
     var prng = std.Random.DefaultPrng.init(0xA07_0_9A7A);
     const rng = prng.random();
+    // The next newline position, redrawn per line for `source` and fixed for
+    // `uniform`, so the two shapes differ in geometry and in nothing else.
+    var next: usize = if (shape == .uniform) line - 1 else sampleLine(rng);
     for (doc, 0..) |*b, i| {
+        if (shape == .source) {
+            if (i == next) {
+                b.* = '\n';
+                next = i + 1 + sampleLine(rng);
+                continue;
+            }
+            b.* = fill[rng.uintLessThan(usize, fill.len)];
+            continue;
+        }
         b.* = if (i % line == line - 1) '\n' else fill[rng.uintLessThan(usize, fill.len)];
     }
 }
@@ -1506,26 +1565,65 @@ fn runSearch(gpa: std.mem.Allocator, io: anytype, failed: *bool) !?f64 {
 
 // ──────────── burst: the lockstep body, both forms × every width ────────────
 
-/// Which burst body the lockstep walk runs.
+/// Which of the burst body's three bookkeeping mechanisms the lockstep walk drops.
+/// The bookkept body spends, per lane per byte, a `prev` copy, a cursor increment,
+/// and a compare-and-branch match test — three instructions that carry no
+/// information the recurrence needs. Each has its own removal, and they are
+/// independent, so each is a flag rather than a body:
 ///
-///   * `bookkept` — a `prev` copy and a cursor increment per lane per byte, plus
-///     one compare-and-branch match test per lane: eight instructions per byte per
-///     lane, three of which carry no information the recurrence needs.
-///   * `slim` — `prev` peeled to the burst's final step (the only step on which a
-///     lane can reach its line end, so nothing earlier can read it), one shared
-///     induction variable every lane addresses off so N cursor increments become
-///     one, and the N match tests folded into a minimum plus one branch.
+///   * `peel_prev` — write `prev` only on the burst's FINAL step. `prev` is read
+///     only by a lane that reached its line end, which by construction is that
+///     step, so nothing earlier can observe the copy.
+///   * `share_cursor` — one induction variable every lane addresses off, so N
+///     cursor increments become one add of `burst` after the loop.
+///   * `fold_test` — the N match tests replaced by a scalar `@min` tree and one
+///     branch; `fold_vector` is the same fold through `@reduce(.Min, …)` over a
+///     `@Vector(N, u32)`, which is the form the proposal usually names. The two
+///     are mutually exclusive and both are raced, because "one instruction" and
+///     "one instruction on the critical path" are different claims.
+///
+/// `bookkept` keeps all three and `slim` drops all three; the single-flag arms
+/// exist so the bundle's result can be attributed, and attribution is the whole
+/// point. Two of the three removals delete an instruction that aarch64 was
+/// already issuing for free — move elimination retires the `prev` copy in rename,
+/// and the cursor bump folds into a post-indexed load — so they are washes. The
+/// third does not delete anything: N independent compares are N perfectly
+/// predicted not-taken branches, off the critical path entirely, and folding them
+/// puts a serial reduction in FRONT of one branch on every byte. Raced together
+/// that reads as "the slim body loses"; raced apart it reads as which mechanism
+/// lost and why, which is the difference between a number and a retirement.
 ///
 /// **The body alone is not the claim, and this section is why.** At the shipped
 /// four lanes the recurrence is already close to its load-latency floor, so
 /// deleting three instructions per byte per lane buys ~nothing — the honest
-/// measurement is a wash. What the slim body actually buys is *registers*: no
-/// `prev` and one induction variable instead of N is what lets the walk carry more
-/// independent dependent-load chains before the frame starts spilling, and width
-/// is the axis that moves a latency-bound loop. So both bodies are raced at every
-/// width, and the pair at each width is what separates "the body paid" from "the
-/// width paid".
-const Body = enum { bookkept, peeled };
+/// measurement is a wash at best. What the slim body actually buys is *registers*:
+/// no `prev` and one induction variable instead of N is what lets the walk carry
+/// more independent dependent-load chains before the frame starts spilling, and
+/// width is the axis that moves a latency-bound loop. So both bodies are raced at
+/// every width, and the pair at each width is what separates "the body paid" from
+/// "the width paid".
+const Body = struct {
+    peel_prev: bool = false,
+    share_cursor: bool = false,
+    fold_test: bool = false,
+    fold_vector: bool = false,
+
+    const bookkept: Body = .{};
+    const slim: Body = .{ .peel_prev = true, .share_cursor = true, .fold_test = true };
+
+    /// The column name: the two bundles keep the names the prose and the ladder's
+    /// history use, and a partial arm spells the flags it turned on.
+    fn tag(comptime self: Body) []const u8 {
+        if (std.meta.eql(self, Body.bookkept)) return "bk";
+        if (std.meta.eql(self, Body.slim)) return "pl";
+        var t: []const u8 = "";
+        if (self.peel_prev) t = t ++ "p";
+        if (self.share_cursor) t = t ++ "c";
+        if (self.fold_test) t = t ++ "m";
+        if (self.fold_vector) t = t ++ "v";
+        return t;
+    }
+};
 
 /// Which table shape a step indexes — the other half of the per-byte budget, and
 /// the half that turns out to matter.
@@ -1547,21 +1645,63 @@ const Shape = enum { classed, direct };
 /// One machine raced: a body, at a width, over a table shape. `4 × bookkept ×
 /// classed` is the form the engine shipped before this section existed, and every
 /// ratio is against it.
+/// What a lane OWNS, which decides how often the walk stops being a walk.
+///
+///   * `lines` — the carve the engine shipped until regions beat it, kept as the
+///     control: one line per lane, burst to the shortest lane's line end, resolve
+///     `$` and refill there. Lines are independent in the per-line model, so this
+///     is the obvious carve, and being obvious is the whole reason it lasted.
+///   * `regions` — what `docMatchDense` dispatches now: one contiguous byte range
+///     per lane, cut at line boundaries, with `\n` handled inside the body —
+///     resolve `$` off `prev`, reset to `start`, keep going. Same four
+///     independent chains, but the burst is the whole region rather than the
+///     minimum over four remainders.
+///
+/// They diverge exactly as line lengths vary, because `lines` pays a full stop —
+/// recompute the minimum, test four lane ends, `memchr` a new line, reseat — every
+/// time the SHORTEST lane runs out, and on measured source geometry that is every
+/// 22.5 bytes. A burst that short never gets four dependent load chains in flight
+/// before it drains them, which is the one thing the lockstep walk exists to do.
+/// Regions measure 1.52–1.59x on every source row.
+///
+/// `regions` pays for it with one compare per byte per lane, and that shows in the
+/// one place the stop was already free: a PARKED automaton reading lines of
+/// identical length, where `lines` amortizes its bookkeeping over a full 80-byte
+/// burst and every load is an L1 hit. Those rows lose ~1.21x, and they are the
+/// reason both carves stay on the ladder rather than the loser being deleted. The
+/// rung that would close it is folding `\n` into the transition table — a reset
+/// column costs no branch — which needs `freeze` to own the column and is not
+/// this change.
+const Split = enum { lines, regions };
+
 const Arm = struct {
     lanes: usize,
     body: Body,
     shape: Shape = .classed,
+    split: Split = .lines,
+    /// Call `Dfa.docMatch` itself rather than any body written here. Every other
+    /// arm is a reimplementation — necessarily, since they vary a mechanism the
+    /// engine has only one of — and a reimplementation is a claim about production
+    /// that nothing on this ladder was checking. `burstAgrees` proved the arms
+    /// agree with `docMatch` about the ANSWER; it could not prove they agree about
+    /// the cost, and they did not: the region carve read 1.55x here against the
+    /// bench's own `walkLanes` and ~1.0x against the shipped binary. With this arm
+    /// on the ladder the `ship` column is a measurement instead of a label, and a
+    /// body that only beats its neighbour in this file says so in its own row.
+    engine: bool = false,
 
     fn label(comptime self: Arm) []const u8 {
-        return std.fmt.comptimePrint("{d}{s}{s}", .{
+        if (self.engine) return "prod";
+        return std.fmt.comptimePrint("{d}{s}{s}{s}", .{
             self.lanes,
-            switch (self.body) {
-                .bookkept => "bk",
-                .peeled => "pl",
-            },
+            self.body.tag(),
             switch (self.shape) {
                 .classed => "",
                 .direct => "·d",
+            },
+            switch (self.split) {
+                .lines => "",
+                .regions => "r",
             },
         });
     }
@@ -1572,15 +1712,48 @@ const Arm = struct {
 /// remainders leaves the fast body often enough that the reseed tail dominates,
 /// and the frame spills on top of it. That the ladder turns over inside its own
 /// range is evidence, not a gap.
+///
+/// That same sentence is why every width above four is here purely as a control,
+/// and it is what eventually retired the line carve itself. On `uniform` lines the
+/// minimum over N remainders does not fall with N at all — all lanes are the same
+/// length and reseed together — so twelve lanes read a 1.17× win on the rows that
+/// wander, and this ladder reported that gap for as long as one geometry was the
+/// only one it ran. On `source` lines the minimum is the whole story: 22.5 bytes
+/// at four lanes against 8.1 at twelve, and the same rows invert to a 1.35× LOSS.
+/// Four was never a compromise between the two populations; it was the optimum on
+/// the geometry the walk actually meets.
+///
+/// The right conclusion, though, was not "four lanes" — it was that a carve whose
+/// step size is a minimum over remainders is hostage to a distribution. `regions`
+/// takes the minimum away, and wins 1.55× on that same geometry at that same width.
 const burst_arms = [_]Arm{
     .{ .lanes = 4, .body = .bookkept }, // the baseline: what the engine shipped BEFORE the mirror
-    .{ .lanes = 4, .body = .peeled },
-    .{ .lanes = 4, .body = .bookkept, .shape = .direct }, // the shipped narrow plan
-    .{ .lanes = 4, .body = .peeled, .shape = .direct },
+    .{ .lanes = 4, .body = .slim },
+    .{ .lanes = 4, .body = .bookkept, .shape = .direct }, // the walk `docMatch` dispatches
+    .{ .lanes = 4, .body = .slim, .shape = .direct },
+    // The bundle decomposed, at the width and shape the decision is made on: one
+    // flag each, so a slim body that loses says WHICH mechanism it lost on rather
+    // than retiring all three on one number.
+    .{ .lanes = 4, .body = .{ .peel_prev = true }, .shape = .direct },
+    .{ .lanes = 4, .body = .{ .share_cursor = true }, .shape = .direct },
+    .{ .lanes = 4, .body = .{ .fold_test = true }, .shape = .direct },
+    .{ .lanes = 4, .body = .{ .fold_vector = true }, .shape = .direct },
+    // Nothing above four lanes ships — `docMatchDense` fixes `lanes = 4` for both
+    // shapes, which `shipped` below asserts at compile time. These are the widths
+    // the one-width decision is measured against, not alternatives in production.
     .{ .lanes = 8, .body = .bookkept, .shape = .direct },
-    .{ .lanes = 8, .body = .peeled, .shape = .direct }, // the shipped wide plan
-    .{ .lanes = 12, .body = .peeled, .shape = .direct },
-    .{ .lanes = 16, .body = .peeled, .shape = .direct },
+    .{ .lanes = 12, .body = .slim, .shape = .direct },
+    // The carve that won, at the shipped width and two above it. A region lane has
+    // no remainder to take a minimum over, so the width question had to be asked
+    // again here rather than inherited: four still answers it on source geometry
+    // (8 and 12 lose), and eight edges ahead only on uniform lines, which is the
+    // document that made twelve look good under the line carve too.
+    .{ .lanes = 4, .body = .bookkept, .shape = .direct, .split = .regions },
+    .{ .lanes = 8, .body = .bookkept, .shape = .direct, .split = .regions },
+    .{ .lanes = 12, .body = .bookkept, .shape = .direct, .split = .regions },
+    // Production itself. It sits last so the arms above keep the column order
+    // their history was read in, and it is the arm `ship` and the geomean price.
+    .{ .lanes = 4, .body = .bookkept, .shape = .direct, .split = .regions, .engine = true },
 };
 
 /// Widths the shared slate doesn't reach, priced by `burst` alone so the sibling
@@ -1612,6 +1785,15 @@ const burst_width = [_]Row{
 /// on twelve. So the property that separates the two populations is carried by the
 /// document, and a wider automaton corpus cannot make the choice decidable: the
 /// label is not a function of the input a per-automaton predicate gets to read.
+///
+/// The `source` geometry then removes the question rather than answering it. What
+/// this control demonstrates — that `seen` is undecidable at freeze time — was
+/// only ever interesting because a wider walk had something to win. It does not:
+/// on measured line lengths four lanes is the fastest arm on every row here, the
+/// parked ones and the wandering ones alike, so there is no dispatch a perfect
+/// oracle could make that beats simply always choosing four. The control stays
+/// because it is what proves the undecidability is real and not an artifact of a
+/// thin corpus; it is no longer load-bearing for a decision.
 const burst_control = [_]Row{
     .{ .pat = "[0-9a-f]{8}-[0-9a-f]{4}", .fill = "ghijklmnopqrstuv", .why = "no hex digit" },
     .{ .pat = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", .fill = "ghijklmnopqrstuv", .why = "no hex digit" },
@@ -1627,14 +1809,15 @@ const arm_labels = blk: {
     break :blk l;
 };
 
-/// Where the walk `Dfa.docMatch` dispatches sits on the ladder. Resolved at compile
-/// time against `burst_arms`, so an engine that changed its walk without this
-/// section racing the new one is a build error rather than a silently mislabelled
-/// column — and `ship` is a claim about production rather than about the best arm.
+/// Production's own column. It used to name the *reimplementation* whose
+/// parameters matched what `docMatch` dispatches, which is a label and not a
+/// measurement: the two can diverge by anything the compiler does differently to
+/// two spellings of one algorithm, and on the region carve they diverged by 1.5x.
+/// It now resolves to the arm that CALLS `Dfa.docMatch`, so `ship` and the geomean
+/// price the binary, and the ladder around it prices mechanisms against it.
 const shipped = blk: {
-    const want: Arm = .{ .lanes = 4, .body = .bookkept, .shape = .direct };
-    for (burst_arms, 0..) |arm, i| if (std.meta.eql(arm, want)) break :blk i;
-    @compileError("the shipped walk " ++ want.label() ++ " is not on the burst ladder");
+    for (burst_arms, 0..) |arm, i| if (arm.engine) break :blk i;
+    @compileError("the burst ladder has no `engine` arm — `ship` would not measure production");
 };
 
 /// `Dfa.seedLine`: where the next content line at/after `from` begins and ends,
@@ -1711,6 +1894,138 @@ fn mirrorFaithful(d: *const Dfa, w: *const Dfa.Wide) bool {
 /// Faithfulness to production is not assumed: `burstAgrees` checks every round of
 /// its mutation sweep against the shipped `docMatch` as well as against the scalar
 /// oracle, so an arm that drifted from the engine fails the run.
+/// Dispatch on what a lane owns. Both arms answer the same question and are held
+/// to the same oracle by `burstAgrees`, so a difference between them is the carve
+/// and can be nothing else.
+fn walk(comptime arm: Arm, d: *const Dfa, tab: anytype, doc: []const u8) bool {
+    // The engine arm takes no `tab`: `docMatch` picks its own table, which is the
+    // point of measuring it rather than a copy configured to resemble it. Every
+    // row reaching here is `!word_ctx`, `!anchored`, dwell-free and has a mirror
+    // (`runBurst` skips the rest), so this dispatches to `docMatchDense(.direct)`.
+    if (arm.engine) return d.docMatch(doc);
+    return switch (arm.split) {
+        .lines => walkLanes(arm, d, tab, doc),
+        .regions => walkRegions(arm, d, tab, doc),
+    };
+}
+
+/// `lanes` contiguous byte ranges instead of `lanes` lines. Each range starts at a
+/// line start, so no match can straddle one — `docMatch` asks only whether SOME
+/// line matches, and that question does not care in what order the lines are read.
+///
+/// The per-line work does not disappear, it stops being a *stop*: `\n` is handled
+/// where the byte is met, by resolving `$` off the `prev` the body already keeps
+/// and resetting to `start`. What disappears is everything the line carve needed
+/// around the body — the per-burst minimum over four remainders, the four lane-end
+/// tests, the `memchr` that found each line's end before the walk could start it,
+/// and the reseat. On `uniform` lines that machinery amortizes over 320 bytes and
+/// is nearly free; on measured source geometry it runs every 90.
+///
+/// Two automaton-level cases are hoisted out rather than re-tested per line, which
+/// is the other thing the line carve was paying for. `start < mhi` — the automaton
+/// matches at a line start — makes any content line match at all, so it is decided
+/// once for the whole document. `empty_match` is then the only way an all-newline
+/// document can match, and inside the walk it is a `\n` met at a line start.
+fn walkRegions(comptime arm: Arm, d: *const Dfa, tab: anytype, doc: []const u8) bool {
+    const lanes = arm.lanes;
+    const trans = tab.trans_in;
+    const tfin = tab.trans_fin;
+    const cls = &d.class;
+    const mhi = tab.match_hi;
+    const start = tab.start;
+
+    // Decided for the document, not per line. It also has to leave the body: once
+    // `\n` resets a lane to `start`, a `start < mhi` automaton would trip the group
+    // match test on a document with no content line at all.
+    if (start < mhi) {
+        for (doc) |b| if (b != '\n') return true;
+        return d.empty_match and doc.len > 0;
+    }
+
+    // The same indexing `walkLanes` uses, so the two carves differ in the carve
+    // and not in how a byte reaches a row.
+    const at = struct {
+        inline fn f(t: []const u32, c: *const [256]u8, st: u32, b: u8) u32 {
+            return switch (arm.shape) {
+                .classed => t[st + c[b]],
+                .direct => t[st + b],
+            };
+        }
+    }.f;
+
+    var s = [_]u32{start} ** lanes;
+    var prev = [_]u32{start} ** lanes;
+    var cur: [lanes]usize = undefined;
+    var stop: [lanes]usize = undefined;
+    var lb: [lanes]usize = undefined; // where this lane's current line began
+
+    // Cut on line boundaries: aim for an even split and take the next `\n`. A cut
+    // that runs off the end yields an empty region, which the drain below handles
+    // as the degenerate case it is rather than a special one.
+    var cut: usize = 0;
+    inline for (0..lanes) |i| {
+        cur[i] = cut;
+        lb[i] = cut;
+        const aim = doc.len / lanes * (i + 1);
+        cut = if (i + 1 == lanes) doc.len else if (aim <= cut)
+            cut
+        else if (std.mem.indexOfScalarPos(u8, doc, aim, '\n')) |nl| nl + 1 else doc.len;
+        stop[i] = cut;
+    }
+
+    // One byte per lane per step, `\n` included: the branch is taken about once per
+    // line, so it predicts, and unlike a burst boundary it never drains the four
+    // chains in flight.
+    while (true) {
+        var n = stop[0] - cur[0];
+        inline for (1..lanes) |i| n = @min(n, stop[i] - cur[i]);
+        if (n == 0) break;
+        while (n > 0) : (n -= 1) {
+            inline for (0..lanes) |i| {
+                const b = doc[cur[i]];
+                cur[i] += 1;
+                if (b == '\n') {
+                    if (cur[i] - 1 == lb[i]) {
+                        if (d.empty_match) return true;
+                    } else if (at(tfin, cls, prev[i], doc[cur[i] - 2]) < mhi) return true;
+                    s[i] = start;
+                    prev[i] = start;
+                    lb[i] = cur[i];
+                } else {
+                    prev[i] = s[i];
+                    s[i] = at(trans, cls, s[i], b);
+                }
+            }
+            inline for (0..lanes) |i| if (s[i] < mhi) return true;
+        }
+    }
+
+    // Drain: regions differ by at most one line, so this is a line's worth per
+    // lane, plus the last region's unterminated final line if the document has one.
+    inline for (0..lanes) |i| {
+        while (cur[i] < stop[i]) {
+            const b = doc[cur[i]];
+            cur[i] += 1;
+            if (b == '\n') {
+                if (cur[i] - 1 == lb[i]) {
+                    if (d.empty_match) return true;
+                } else if (at(tfin, cls, prev[i], doc[cur[i] - 2]) < mhi) return true;
+                s[i] = start;
+                prev[i] = start;
+                lb[i] = cur[i];
+            } else {
+                prev[i] = s[i];
+                s[i] = at(trans, cls, s[i], b);
+                if (s[i] < mhi) return true;
+            }
+        }
+        if (stop[i] > lb[i] and doc[stop[i] - 1] != '\n') { // unterminated last line
+            if (at(tfin, cls, prev[i], doc[stop[i] - 1]) < mhi) return true;
+        }
+    }
+    return false;
+}
+
 fn walkLanes(comptime arm: Arm, d: *const Dfa, tab: anytype, doc: []const u8) bool {
     const lanes = arm.lanes;
     const body = arm.body;
@@ -1728,6 +2043,19 @@ fn walkLanes(comptime arm: Arm, d: *const Dfa, tab: anytype, doc: []const u8) bo
                 .classed => t[s + c[b]],
                 .direct => t[s + b],
             };
+        }
+    }.f;
+
+    // The match test, in whichever of the three forms this body asked for. It is
+    // a pure function of the states and the threshold, so it factors out without
+    // putting anything between the timed body and its codegen; `mh` rides in as a
+    // parameter because a nested function cannot capture a runtime local.
+    const anyMatch = struct {
+        inline fn f(st: *const [lanes]u32, mh: u32) bool {
+            if (body.fold_vector) return @reduce(.Min, @as(@Vector(lanes, u32), st.*)) < mh;
+            if (body.fold_test) return least(lanes, st) < mh;
+            inline for (0..lanes) |i| if (st[i] < mh) return true;
+            return false;
         }
     }.f;
 
@@ -1755,31 +2083,66 @@ fn walkLanes(comptime arm: Arm, d: *const Dfa, tab: anytype, doc: []const u8) bo
         var burst = end[0] - cur[0];
         inline for (1..lanes) |i| burst = @min(burst, end[i] - cur[i]);
 
-        switch (body) {
-            .bookkept => {
-                var n = burst;
-                while (n > 0) : (n -= 1) {
-                    inline for (0..lanes) |i| {
-                        prev[i] = s[i];
-                        s[i] = at(trans, cls, s[i], doc[cur[i]]);
-                        cur[i] += 1;
-                    }
-                    inline for (0..lanes) |i| if (s[i] < mhi) return true;
-                }
-            },
-            .peeled => {
-                var k: usize = 0;
-                while (k + 1 < burst) : (k += 1) {
-                    inline for (0..lanes) |i| s[i] = at(trans, cls, s[i], doc[cur[i] + k]);
-                    if (least(lanes, &s) < mhi) return true;
-                }
+        // The two bundles run VERBATIM bodies — character for character what this
+        // ladder has always timed. That is not duplication waiting to be tidied
+        // away, it is the section's premise: this rung measures CODEGEN, and a
+        // parameterized body that merely computes the same thing is a different
+        // measurement. Hoisting one loop bound and moving one cursor bump across
+        // the match test cost the twelve-lane slim arm 15% while leaving every
+        // four-lane arm untouched, which is how the rule was learned — at the
+        // widths that spill, where a register lands IS the result.
+        if (comptime std.meta.eql(body, Body.bookkept)) {
+            var n = burst;
+            while (n > 0) : (n -= 1) {
                 inline for (0..lanes) |i| {
                     prev[i] = s[i];
-                    s[i] = at(trans, cls, s[i], doc[cur[i] + k]);
-                    cur[i] += burst;
+                    s[i] = at(trans, cls, s[i], doc[cur[i]]);
+                    cur[i] += 1;
                 }
+                inline for (0..lanes) |i| if (s[i] < mhi) return true;
+            }
+        } else if (comptime std.meta.eql(body, Body.slim)) {
+            var k: usize = 0;
+            while (k + 1 < burst) : (k += 1) {
+                inline for (0..lanes) |i| s[i] = at(trans, cls, s[i], doc[cur[i] + k]);
                 if (least(lanes, &s) < mhi) return true;
-            },
+            }
+            inline for (0..lanes) |i| {
+                prev[i] = s[i];
+                s[i] = at(trans, cls, s[i], doc[cur[i] + k]);
+                cur[i] += burst;
+            }
+            if (least(lanes, &s) < mhi) return true;
+        } else {
+            // The single-mechanism arms, which exist to ATTRIBUTE the bundle's
+            // result rather than to stand as machines anyone would ship. Read them
+            // against each other and against `bk`; they share this body, so the
+            // one thing that differs between two of them is the flag that names
+            // them. `peel_prev` holds the copy back to the burst's FINAL step —
+            // the only step on which a lane can reach its line end, so the only
+            // step whose `prev` any reader below can observe. `burst` is ≥1, so
+            // that step always exists. A `share_cursor` arm with no peel to retire
+            // its cursor inside must bump after the loop, and carries that.
+            var k: usize = 0;
+            const bulk = if (body.peel_prev) burst - 1 else burst;
+            while (k < bulk) : (k += 1) {
+                inline for (0..lanes) |i| {
+                    if (!body.peel_prev) prev[i] = s[i];
+                    s[i] = at(trans, cls, s[i], doc[if (body.share_cursor) cur[i] + k else cur[i]]);
+                    if (!body.share_cursor) cur[i] += 1;
+                }
+                if (anyMatch(&s, mhi)) return true;
+            }
+            if (body.peel_prev) {
+                inline for (0..lanes) |i| {
+                    prev[i] = s[i];
+                    s[i] = at(trans, cls, s[i], doc[if (body.share_cursor) cur[i] + k else cur[i]]);
+                    cur[i] += if (body.share_cursor) burst else 1;
+                }
+                if (anyMatch(&s, mhi)) return true;
+            } else if (body.share_cursor) inline for (0..lanes) |i| {
+                cur[i] += burst;
+            };
         }
 
         inline for (0..lanes) |i| {
@@ -1866,8 +2229,8 @@ fn burstAgrees(d: *const Dfa, wide: *const Dfa.Wide, doc: []u8, pat: []const u8,
         var ok = oracle == d.docMatch(doc); // against PRODUCTION, not just against each other
         inline for (burst_arms) |arm| {
             const hit = switch (arm.shape) {
-                .classed => walkLanes(arm, d, d, doc),
-                .direct => walkLanes(arm, d, wide, doc),
+                .classed => walk(arm, d, d, doc),
+                .direct => walk(arm, d, wide, doc),
             };
             if (hit != oracle) ok = false;
         }
@@ -1882,13 +2245,19 @@ fn burstAgrees(d: *const Dfa, wide: *const Dfa.Wide, doc: []u8, pat: []const u8,
 /// round by round, ns/byte each and the ratio against `4bk` — the body the engine
 /// shipped. Same slate as `search`, same match-free premise, same min-of-N.
 ///
-/// **`seen` is what predicts the width, and nothing available at freeze time
-/// predicts `seen`.** A row parked in one state pays an L1 hit whatever its table's
-/// size, so four lanes win there even at 128 KiB — while a row that wanders over 33
-/// rows wants twelve, and no property of the automaton says which a given document
-/// will do. That is why the engine ships one width and this ladder keeps racing the
-/// others: the `win`/`ship` gap is the standing measurement of what a working-set
-/// -aware walk would recover, and the reason this column is printed.
+/// **`seen` is what predicts the width on `uniform` lines, nothing at freeze time
+/// predicts `seen`, and on `source` lines the width stops being a question at
+/// all.** A row parked in one state pays an L1 hit whatever its table's size, so
+/// four lanes win there even at 128 KiB — while a row that wanders over 33 rows
+/// wants twelve, and no property of the automaton says which a given document will
+/// do. That was read for a long time as headroom the engine could not reach. It is
+/// not headroom: it is the uniform document. Give the same rows the line lengths
+/// measured off real source and every width above four loses on every row, wanderers
+/// included, because a burst is the minimum over `lanes` remainders and that
+/// minimum falls off a cliff — 22.5 bytes at four, 8.1 at twelve. So the engine
+/// ships one width because one width is right, and the `win`/`ship` gap that
+/// remains on the `uniform` half of the table is the measurement of a document,
+/// which is why both halves are printed and only both together mean anything.
 ///
 /// `burst_control` is what turns that from an assertion into a measurement, and
 /// it is the last four rows of the table. They re-run the four patterns that want
@@ -1903,25 +2272,36 @@ fn burstAgrees(d: *const Dfa, wide: *const Dfa.Wide, doc: []u8, pat: []const u8,
 /// the transition load a perfectly-predicted L1 hit, so it prices the instruction
 /// mix and nothing about the automaton. Rows that wander (`[0-9a-f]{32}-` visits
 /// 33 states) are where the recurrence does real work, and they are the rows the
-/// width claim lives or dies on. Returns the geomean ratio of the arm the engine
-/// now ships against the baseline, or null when nothing was priced.
-fn runBurst(gpa: std.mem.Allocator, io: anytype, failed: *bool) !?f64 {
+/// width claim lives or dies on — it dies on them, once they are read on both
+/// geometries. Runs once per `LineShape`; returns the geomean ratio of the arm the
+/// engine now ships against the baseline, or null when nothing was priced.
+fn runBurst(gpa: std.mem.Allocator, io: anytype, failed: *bool, shape: LineShape) !?f64 {
     std.debug.print(
         \\
-        \\── burst: the lockstep body × width × table shape ── {d} MiB match-free document × {d} sweeps, min of {d} ──
+        \\── burst: the lockstep body × width × table shape ── {d} MiB {s}-line match-free document × {d} sweeps, min of {d} ──
         \\   `bk` copies `prev` and bumps a cursor per lane per byte and tests each lane
-        \\   separately; `pl` peels `prev` to the burst's last step, shares one induction
-        \\   variable, and folds the tests into a min. `·d` reads the SHIPPED byte-indexed
+        \\   separately; `pl` drops all three — `prev` peeled to the burst's last step,
+        \\   one shared induction variable, the tests folded into a min. `p`/`c`/`m` drop
+        \\   exactly ONE of those and `v` folds through `@reduce(.Min, @Vector)` rather than a
+        \\   scalar `@min` tree, so a losing `pl` names which. `·d` reads the SHIPPED byte-indexed
         \\   mirror (`Dfa.Wide`) instead of the classed tables — two loads per byte where
         \\   classed pays three, for `256/ncls`× the resident bytes (`clsKiB` vs `dirKiB`).
         \\   Columns are ns/byte, all against `{s}` — the baseline the engine shipped
-        \\   before the mirror existed. `win` is the fastest arm on the ladder; `ship`
-        \\   is the arm `Dfa.docMatch` actually dispatches for that automaton, and the
-        \\   geomean is over `ship`. `agree` is the mutation sweep — rounds where EVERY
+        \\   before the mirror existed. `win` is the fastest arm on the ladder; `prod`
+        \\   CALLS `Dfa.docMatch` rather than reimplementing what it dispatches, so
+        \\   `ship` and the geomean price the binary and every other column is a
+        \\   mechanism measured against it. A body that beats `prod` here has found
+        \\   something; a body that only beats its neighbours has found a spelling.
+        \\   `agree` is the mutation sweep — rounds where EVERY
         \\   arm and the shipped `docMatch` matched the scalar oracle / rounds that
         \\   actually HIT, so a row proving parity only on match-free text shows it.
+        \\   Line geometry is the OTHER half of a width claim: a burst runs to the
+        \\   shortest lane's line end, so `uniform` (every line {d} B, all lanes in phase,
+        \\   burst = {d} B at every width) is the friendliest document a wide walk can get,
+        \\   and `source` (lengths drawn from this repo's own measured distribution —
+        \\   expected burst 22.5 B at four lanes, 8.1 B at twelve) is the one it meets.
         \\
-    , .{ doc_bytes >> 20, sweeps, trials, comptime burst_arms[0].label() });
+    , .{ doc_bytes >> 20, @tagName(shape), sweeps, trials, comptime burst_arms[0].label(), line_len, line_len });
     // Every column name is comptime — the fixed fields and `arm_labels` alike — so the
     // header is one string minted at compile time rather than a runtime buffer that
     // could overflow. The arm columns come off the same list the winner row indexes.
@@ -1954,7 +2334,7 @@ fn runBurst(gpa: std.mem.Allocator, io: anytype, failed: *bool) !?f64 {
             continue;
         }
 
-        const doc = try document(gpa, fill);
+        const doc = try shapedDoc(gpa, fill, doc_bytes, shape);
         defer gpa.free(doc);
         if (walkLanes(burst_arms[0], d, d, doc)) {
             std.debug.print("{s: <46}  document MATCHES ({s}) — timing would measure the hit position\n", .{ row.pat, row.why });
@@ -1976,7 +2356,7 @@ fn runBurst(gpa: std.mem.Allocator, io: anytype, failed: *bool) !?f64 {
 
         // Parity on a small document of the SAME shape, mutated thousands of times:
         // the timed buffer is 8 MiB and this sweep walks every arm per round.
-        const small = try documentOf(gpa, fill, mutation_doc_bytes);
+        const small = try shapedDoc(gpa, fill, mutation_doc_bytes, shape);
         defer gpa.free(small);
         const needle = try witness(gpa, d);
         defer if (needle) |w| gpa.free(w);
@@ -2003,8 +2383,8 @@ fn runBurst(gpa: std.mem.Allocator, io: anytype, failed: *bool) !?f64 {
             inline for (burst_arms, 0..) |arm, ai| {
                 var sp = Span.open(io);
                 for (0..sweeps) |_| std.mem.doNotOptimizeAway(switch (arm.shape) {
-                    .classed => walkLanes(arm, d, d, doc),
-                    .direct => walkLanes(arm, d, wide, doc),
+                    .classed => walk(arm, d, d, doc),
+                    .direct => walk(arm, d, wide, doc),
                 });
                 best[ai] = @min(best[ai], sp.read(io).ns());
             }
@@ -3273,8 +3653,13 @@ pub fn main(init: std.process.Init) !void {
         }
     }
     if (section == .burst or section == .all) {
-        if (try runBurst(gpa, io, &failed)) |geo| {
-            std.debug.print("\ngeomean speedup: {d:.3}x  (ns/byte, the plan `docMatch` dispatches vs the classed four-lane walk)\n", .{geo});
+        // Both geometries, because a width that wins only on lines of one length
+        // has won on the document. `uniform` first: it is the shape every prior
+        // number on this ladder was taken over.
+        for ([_]LineShape{ .uniform, .source }) |shape| {
+            if (try runBurst(gpa, io, &failed, shape)) |geo| {
+                std.debug.print("\ngeomean speedup: {d:.3}x  ({s} lines · ns/byte, the plan `docMatch` dispatches vs the classed four-lane walk)\n", .{ geo, @tagName(shape) });
+            }
         }
     }
     if (failed) {
