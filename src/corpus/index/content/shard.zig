@@ -315,6 +315,13 @@ const Held = struct {
     }
 };
 
+/// `fill`'s own failure mode, PRIVATE to the streamed-write crew below:
+/// a body that no longer matches the catalog's length. Never leaves this
+/// file — `write` is the module boundary every reader sees, and its `!void`
+/// return is unchanged by this name, the same shape as the PCRE2 shadow
+/// rewriter's `error.Bail`.
+const Err = error{CorpusChurned};
+
 /// One crew member's run of docs within the window, and where they land in it.
 const Slice = struct {
     r: *const Recalled = undefined,
@@ -371,7 +378,7 @@ const Recalled = struct {
     }
 
     /// Read docs `[lo, hi)` into the window, byte-balanced across the crew.
-    fn fill(r: *const Recalled, lo: usize, hi: usize, span: usize) !void {
+    fn fill(r: *const Recalled, lo: usize, hi: usize, span: usize) Err!void {
         const nthr = @min(r.crew.len, @max(1, hi - lo));
         var at: usize = 0;
         var doc = lo;
