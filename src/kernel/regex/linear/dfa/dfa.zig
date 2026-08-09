@@ -462,50 +462,46 @@ pub const Dfa = struct {
         return false;
     }
 
-    /// Where the next content line at/after `from` begins/ends. `.match`
-    /// short-circuits the whole doc (an empty line under `empty_match`, or a
-    /// content line whose BOL closure already matched — `isMatch(start)`),
-    /// exactly as `docMatchScalar`'s per-line seed does. `\n` is found by SIMD
-    /// `memchr`, so seeding never re-walks the line byte-by-byte.
-    const Seed = union(enum) {
-        match,
-        done,
-        line: struct { start: usize, end: usize, next: usize },
-    };
-    fn seedLine(self: *const Dfa, doc: []const u8, from: usize) Seed {
-        var p = from;
-        while (p < doc.len) : (p += 1) {
-            if (doc[p] != '\n') {
-                if (self.isMatch(self.start)) return .match; // BOL / zero-width
-                const e = std.mem.indexOfScalarPos(u8, doc, p, '\n') orelse doc.len;
-                return .{ .line = .{ .start = p, .end = e, .next = if (e < doc.len) e + 1 else e } };
-            }
-            if (self.empty_match) return .match; // empty line matches (`^$`, `a*`)
-        }
-        return .done;
-    }
-
     /// The `!anchored`, `accel == null` doc scan — the pure latency-bound table
     /// walk (`[0-9a-f]{8}-[0-9a-f]{4}` and every no-start-skip DFA). The scalar
     /// recurrence `s = trans_in[s + class[b]]` is a single loop-carried dependent
     /// LOAD (≈4 cyc/byte on Apple M4 — a pointer chase, not throughput-bound), so
-    /// one stream idles the load pipeline. Lines are independent in the per-line
-    /// model (a match never crosses `\n`), so we advance up to `lanes` lines in
-    /// lockstep: the out-of-order engine keeps `lanes` transition loads in flight
-    /// and overlaps the load-use latency — the interleaved pointer-chase that
-    /// exposes memory-level parallelism (Chen/Ailamaki group-prefetching for hash
-    /// probes; the same multi-block idea Hyperscan's DFA uses). Each lane replays
-    /// `docMatchScalar`'s per-line logic byte-for-byte (interior `trans_in`, then
-    /// the `$`-resolving `trans_fin` on the last content byte), so the doc-level
-    /// DFA-vs-Pike differential fuzz proves equivalence.
+    /// one stream idles the load pipeline. We therefore run `lanes` streams at
+    /// once: the out-of-order engine keeps `lanes` transition loads in flight and
+    /// overlaps the load-use latency — the interleaved pointer-chase that exposes
+    /// memory-level parallelism (Chen/Ailamaki group-prefetching for hash probes;
+    /// the same multi-block idea Hyperscan's DFA uses).
+    ///
+    /// **A lane owns a REGION of the document, not a line.** Matches never cross
+    /// `\n` and this scan answers only whether SOME line matches, so the document
+    /// can be cut into `lanes` contiguous ranges at line boundaries and read in
+    /// any order. `\n` is handled where it is met — resolve `$` through
+    /// `trans_fin` off the `prev` the body already keeps, reset to `start`,
+    /// continue — so the lanes never have to agree about anything.
+    ///
+    /// The carve this replaced gave each lane a LINE and burst to the shortest
+    /// lane's line end, which sounds equivalent and is not: it stopped the walk
+    /// every time any one lane ran out. On a document whose lines are all one
+    /// length that costs nothing, because all four lanes end together and a burst
+    /// is a whole line. On the line lengths of real source the burst is the
+    /// minimum over four remainders — 22.5 bytes, and often far fewer — and a
+    /// burst that short never gets four dependent load chains in flight before it
+    /// drains them again. Regions measure 1.50–1.58x the line carve across every
+    /// row of the `burst` rung's source-geometry half, and still win on the
+    /// uniform half wherever the automaton actually wanders; the one shape they
+    /// lose on is a parked automaton reading lines of identical length, where the
+    /// line carve's bookkeeping was already amortized to nothing.
+    ///
+    /// Each lane replays `docMatchScalar`'s per-line logic byte-for-byte (interior
+    /// `trans_in`, then the `$`-resolving `trans_fin` on the last content byte), so
+    /// the doc-level DFA-vs-Pike differential fuzz proves equivalence.
     ///
     /// `tab` supplies the four numbers the walk steps through — `trans_in`,
     /// `trans_fin`, `start`, `match_hi` — and is either this `Dfa` (classed rows,
     /// `ncls`-strided) or its `Wide` mirror (raw-byte rows, 256-strided). Both
     /// spell those fields identically, so one body serves both layouts with no
     /// wrapper between them, and `shape` selects only how a byte indexes a row
-    /// (`step`). `Wide` carries what that choice is worth, and why the width stayed
-    /// at four after the ladder raced it to sixteen.
+    /// (`step`).
     fn docMatchDense(self: *const Dfa, comptime shape: Shape, tab: anytype, doc: []const u8) bool {
         const lanes = 4;
         const trans = tab.trans_in;
@@ -514,93 +510,128 @@ pub const Dfa = struct {
         const mhi = tab.match_hi;
         const start = tab.start;
 
-        var s = [_]u32{start} ** lanes;
-        var prev = [_]u32{start} ** lanes;
-        var cur = [_]usize{0} ** lanes;
-        var end = [_]usize{0} ** lanes;
-        var pos: usize = 0;
-        var seated = true; // does EVERY lane carry a line? — the bulk phase's precondition
+        // Both of these are properties of the AUTOMATON, so they are decided once
+        // for the document instead of re-tested at every line the way a per-line
+        // seed had to. `start < mhi` also cannot stay in the body: once a `\n`
+        // resets a lane to `start`, a start-matching automaton would trip the
+        // group match test on a document that has no content line at all.
+        if (start < mhi) { // BOL / zero-width: any content line matches
+            for (doc) |b| if (b != '\n') return true;
+            return self.empty_match and doc.len > 0; // all `\n`: only empty lines left
+        }
 
-        // Initial fill: one content line per lane (order-preserving). A lane the
-        // document ran out of lines for keeps `cur == end`, which is exactly how a
-        // lane retired below is spelled — so "never seated", "line consumed", and
-        // "retired" all read as one emptiness test and need no second array.
-        for (0..lanes) |i| switch (self.seedLine(doc, pos)) {
-            .match => return true,
-            .done => {
-                seated = false;
-                break;
-            },
-            .line => |ln| {
-                cur[i] = ln.start;
-                end[i] = ln.end;
-                pos = ln.next;
-            },
-        };
+        var s: [lanes]u32 = undefined;
+        var prev: [lanes]u32 = undefined;
+        var cur: [lanes]usize = undefined;
+        var stop: [lanes]usize = undefined;
+        var lb: [lanes]usize = undefined; // where this lane's current line began
 
-        // Bulk phase — every lane carries a line, so advance them in lockstep:
-        // each fast-loop iteration issues `lanes` INDEPENDENT transition loads
-        // that overlap. Burst to the shortest lane's line end (branch-free),
-        // then resolve `$`/`trans_fin` and refill every lane now at its end.
-        while (seated) {
-            var burst = end[0] - cur[0]; // ≥1: a seated lane always has content left
-            inline for (1..lanes) |i| burst = @min(burst, end[i] - cur[i]);
+        // The regions are cut per WINDOW, not once over the whole document. Both
+        // halves of that matter and they pull against each other:
+        //
+        //   * A region has to be long enough to keep `lanes` dependent load chains
+        //     in flight, which is the entire point of the carve. `window / lanes`
+        //     is that floor, and 16 KiB clears it by three orders of magnitude.
+        //   * A region must not be so long that a lane is reading the far end of
+        //     the document while the answer sits near the front. `docMatch` returns
+        //     on the FIRST match, and a whole-document carve puts lane 0 alone on
+        //     the front — so a match at byte `p` costs `p` steps where the line
+        //     carve, with all four lanes bunched at the head, spent `p / lanes`.
+        //     Measured on the real `gist` binary that is a 1.3x LOSS on a matching
+        //     document, against a 1.03–1.09x win on one that never matches: the
+        //     bench could not see it because every row there scans to the end.
+        //
+        // Windowing bounds the overshoot at one window instead of one document, so
+        // the early return costs a fixed 64 KiB of extra scan however large the
+        // input, and the sync at a window edge is paid once per 64 KiB rather than
+        // the once per ~22 bytes that made the line carve throttle.
+        const window = 64 << 10;
+        var base: usize = 0;
+        while (base < doc.len) {
+            // A window ends at a line boundary, so no state crosses one and every
+            // lane may start from `start` again below. `wend - 1` is therefore a
+            // `\n` unless this is the document's own end — the invariant the tail
+            // check in the drain rests on.
+            const aim_end = base +| window;
+            const wend = if (aim_end >= doc.len)
+                doc.len
+            else if (std.mem.indexOfScalarPos(u8, doc, aim_end, '\n')) |nl| nl + 1 else doc.len;
 
-            // The body carries a `prev` copy, a cursor bump, and a match test per
-            // lane per byte, and at four lanes every one of those is free: aarch64
-            // folds the bump into a post-indexed load, move elimination retires the
-            // copy, and the four compares fuse into the same branch cluster. The
-            // ladder confirms it — peeling all three out measures 0.2605 against
-            // this body's 0.2312. They only start costing at widths this walk does
-            // not use, which is the trade `Wide` records.
-            var n = burst;
-            while (n > 0) : (n -= 1) {
-                inline for (0..lanes) |i| {
-                    prev[i] = s[i];
-                    s[i] = step(shape, trans, cls, s[i], doc[cur[i]]);
-                    cur[i] += 1;
-                }
-                inline for (0..lanes) |i| if (s[i] < mhi) return true;
+            // Cut on line boundaries: aim for an even split, take the next `\n`. A
+            // cut that runs past the window leaves an empty region, which the drain
+            // finishes as the degenerate case it is rather than a case of its own —
+            // which is also what makes a window shorter than `lanes` correct here.
+            const span = wend - base;
+            var cut: usize = base;
+            inline for (0..lanes) |i| {
+                s[i] = start;
+                prev[i] = start;
+                cur[i] = cut;
+                lb[i] = cut;
+                const aim = base + span / lanes * (i + 1);
+                cut = if (i + 1 == lanes) wend else if (aim <= cut)
+                    cut
+                else if (std.mem.indexOfScalarPos(u8, doc, aim, '\n')) |nl| @min(nl + 1, wend) else wend;
+                stop[i] = cut;
             }
 
-            inline for (0..lanes) |i| {
-                if (cur[i] == end[i]) { // line consumed → resolve `$`, then refill
-                    if (step(shape, tfin, cls, prev[i], doc[end[i] - 1]) < mhi) return true;
-                    switch (self.seedLine(doc, pos)) {
-                        .match => return true,
-                        .done => seated = false, // lane retires: `cur == end` already says so
-                        .line => |ln| {
+            // The body: one byte per lane per step, `\n` included. The `\n` arm is
+            // taken about once per line, so it predicts; unlike a burst boundary it
+            // never drains the chains in flight. The inner loop re-derives the
+            // shared step count only when a region ends, which is once per window.
+            while (true) {
+                var n = stop[0] - cur[0];
+                inline for (1..lanes) |i| n = @min(n, stop[i] - cur[i]);
+                if (n == 0) break;
+                while (n > 0) : (n -= 1) {
+                    inline for (0..lanes) |i| {
+                        const b = doc[cur[i]];
+                        cur[i] += 1;
+                        if (b == '\n') {
+                            if (cur[i] - 1 == lb[i]) {
+                                if (self.empty_match) return true; // `^$`, `a*`
+                            } else if (step(shape, tfin, cls, prev[i], doc[cur[i] - 2]) < mhi) return true;
                             s[i] = start;
                             prev[i] = start;
-                            cur[i] = ln.start;
-                            end[i] = ln.end;
-                            pos = ln.next;
-                        },
+                            lb[i] = cur[i];
+                        } else {
+                            prev[i] = s[i];
+                            s[i] = step(shape, trans, cls, s[i], b);
+                        }
+                    }
+                    inline for (0..lanes) |i| if (s[i] < mhi) return true;
+                }
+            }
+
+            // Drain: the regions differ by at most one line, so this is a line's
+            // worth per lane — plus the document's own final line when it does not
+            // end in `\n`, the one line no `\n` will ever resolve. An interior
+            // region always ends just past a `\n`, so the tail check below can only
+            // fire on that final line, never at a window seam.
+            inline for (0..lanes) |i| {
+                while (cur[i] < stop[i]) {
+                    const b = doc[cur[i]];
+                    cur[i] += 1;
+                    if (b == '\n') {
+                        if (cur[i] - 1 == lb[i]) {
+                            if (self.empty_match) return true;
+                        } else if (step(shape, tfin, cls, prev[i], doc[cur[i] - 2]) < mhi) return true;
+                        s[i] = start;
+                        prev[i] = start;
+                        lb[i] = cur[i];
+                    } else {
+                        prev[i] = s[i];
+                        s[i] = step(shape, trans, cls, s[i], b);
+                        if (s[i] < mhi) return true;
                     }
                 }
-            }
-        }
-
-        // Drain: fewer than `lanes` lines remain. Finish every lane still holding
-        // unconsumed bytes, then the unassigned tail (`doc[pos..]` is line-aligned)
-        // with the scalar walk — identical per-line logic, no double-processing
-        // (seated lanes hold lines strictly before `pos`).
-        inline for (0..lanes) |i| {
-            if (cur[i] < end[i]) {
-                var si = s[i];
-                var pv = prev[i];
-                var ci = cur[i];
-                const ei = end[i];
-                while (ci < ei) {
-                    pv = si;
-                    si = step(shape, trans, cls, si, doc[ci]);
-                    ci += 1;
-                    if (si < mhi) return true;
+                if (stop[i] > lb[i] and doc[stop[i] - 1] != '\n') {
+                    if (step(shape, tfin, cls, prev[i], doc[stop[i] - 1]) < mhi) return true;
                 }
-                if (step(shape, tfin, cls, pv, doc[ei - 1]) < mhi) return true;
             }
+            base = wend;
         }
-        return self.docMatchScalar(doc[pos..]);
+        return false;
     }
 
     /// `docMatch` while the start state's dwell is skippable. Structurally identical

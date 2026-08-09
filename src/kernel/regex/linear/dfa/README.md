@@ -53,7 +53,7 @@ waives the ceiling.
 
 `dfa.zig` is one of the leaf modules named through `regex.dfa` in
 [`../regex.zig`](../../regex.zig), the one door into `kernel/regex/` that
-`contract/irregex.zone` seals at build time. A cost harness reaches it there —
+`charter.zone` seals at build time. A cost harness reaches it there —
 for a Regex handle's own scan, go through `Regex` instead.
 
 ## Word Boundaries at the DFA Floor
