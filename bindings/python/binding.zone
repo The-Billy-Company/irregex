@@ -54,6 +54,14 @@ use cffi by core
 use hatchling by packaging
 use pytest by tests
 
+// A sibling suite, reachable only because pytest puts the test directory on the
+// path — which is why it reads as an outside module here and has to be written
+// down. Two parity suites ask different questions of the same C header, one
+// about its declarations and one about the shapes they reduce to, and both need
+// it tokenized first. The alternative is a second copy of that tokenizer, which
+// would let the two suites disagree about what the header says.
+use test_cdef_header_parity by tests
+
 // Structural laws.
 limit  reach to 1 hop
 forbid cycles across directories
