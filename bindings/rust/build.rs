@@ -184,6 +184,28 @@ enum Kind {
 }
 
 fn link(dir: &Path, kind: Kind, target: &str) {
+    // Every rung watches the library it actually chose, named as a file rather
+    // than as the directory holding it - cargo compares a file's mtime, and a
+    // directory's does not move when a library inside it is overwritten in place,
+    // which is exactly what rebuilding the engine does.
+    //
+    // This lives here rather than at each rung so no rung can be the one that
+    // forgets. `IRGX_LIB_DIR` was, and it is the rung where it matters most: its
+    // whole purpose is linking an engine you just rebuilt, and without this a
+    // `cargo test` after a `zig build` silently re-ran the old archive's
+    // behavior and reported it as the new one's.
+    for name in [
+        "libirgx.a",
+        "libirgx.dylib",
+        "libirgx.so",
+        "irgx.lib",
+        "irgx.dll",
+    ] {
+        let candidate = dir.join(name);
+        if candidate.is_file() {
+            println!("cargo:rerun-if-changed={}", candidate.display());
+        }
+    }
     for lib in system_libs(target) {
         println!("cargo:rustc-link-lib=dylib={lib}");
     }
