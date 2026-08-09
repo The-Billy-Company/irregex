@@ -5,9 +5,9 @@
 //! keeps the five faces (`fold.zig`, `stream.zig`, `present.zig`) from drifting:
 //! they cannot prune differently because they all prune through `candidateIds`,
 //! and they cannot disagree about which doc is live because they all walk
-//! through the same `each*` pair (trigram-pruned base, then the bounded
-//! overlay whose docs are always visited directly — the index is stale for
-//! exactly those).
+//! through the same `each*` pair (index-and-sieve-pruned base, then the bounded
+//! overlay — where the index is stale by definition, so the crest sieve is the
+//! only prefilter that still speaks, and `Candidates` carries it there).
 //!
 //! Two comptime seams keep the walk free of per-face branching. A visitor is
 //! any type with `visit(path, bytes, nul)`; it MAY also expose `stop: bool` to
@@ -126,18 +126,19 @@ pub fn eachDoc(self: *ResidentSession, filter: PathFilter, v: anytype, ceil: Cei
 }
 
 /// Walk every candidate doc through `v.visit(path, bytes, nul)`: first the
-/// trigram-pruned base docs (`candidateIds`) that are not overlaid, then
-/// the overlay's replacement docs — the visitor verifies each with the
-/// shared match kernel. Overlay docs (changed/new since the build) are
-/// always visited directly — the index is stale for exactly those. Shared
-/// by the files/count fold (`Accumulator`) and the doc gather (`Gather`),
-/// so every answer face prunes candidates identically.
+/// pruned base docs (`candidateIds`) that are not overlaid, then the overlay's
+/// replacement docs the same sieve admits — the visitor verifies each with the
+/// shared match kernel. Overlay docs (changed/new since the build) are outside
+/// every index tier, so the sieve is the only prefilter that reaches them.
+/// Shared by the files/count fold (`Accumulator`) and the doc gather
+/// (`Gather`), so every answer face prunes candidates identically.
 pub fn eachCandidate(self: *ResidentSession, cq: *const CompiledQuery, filter: PathFilter, v: anytype, ceil: Ceiling) QueryError!void {
     var cand_buf: ?[]u32 = null;
     defer if (cand_buf) |c| self.gpa.free(c);
-    try eachBase(self, try candidateIds(self, cq, filter, &cand_buf), v, ceil);
+    const cand = try candidateIds(self, cq, filter, &cand_buf);
+    try eachBase(self, cand.ids, v, ceil);
     if (wantsStop(v)) return;
-    try eachOverlay(self, filter, v);
+    try eachOverlay(self, filter, &cand.sieve, v);
 }
 
 /// The base half of `eachCandidate`: visit each trigram base candidate id in
@@ -158,20 +159,30 @@ pub fn eachBase(self: *ResidentSession, cand: []const u32, v: anytype, ceil: Cei
     }
 }
 
-/// The overlay half of `eachCandidate`: visit each overlay replacement doc.
-/// Overlay docs (changed/new since the build) are always visited directly —
-/// the index is stale for exactly those. A reconcile tombstones any overlay
-/// path that left the walk set, but (as for base docs) a delete can still
-/// race the walk→report window, so off the watcher-clean path each visitor
-/// existence-checks its match (the same fail-closed stat-per-hit the base
-/// docs get); the clean path already tombstoned any delete, keeping the
-/// no-stat path. Bounded by the mutation count since build, so always serial.
-pub fn eachOverlay(self: *ResidentSession, filter: PathFilter, v: anytype) QueryError!void {
+/// The overlay half of `eachCandidate`: visit each overlay replacement doc that
+/// the crest sieve cannot rule out. No INDEX tier can speak for these — they
+/// changed since the build, which is exactly what the postings no longer
+/// describe — but the sieve can, because `OwnedDoc` carries ρ(d) measured off
+/// the same live bytes the match would read (`mirror.readDocOwned`). That makes
+/// this the one stage where warm prunes something cold cannot: cold's vectors
+/// are persisted, so its oracle must refuse every file whose timestamps fail to
+/// prove it unchanged. An inert swell prunes nothing by construction
+/// (`Swell.prunes` is false at `len == 0` and against a 0⃗ alternative), so the
+/// unsieved shape needs no separate branch.
+///
+/// A reconcile tombstones any overlay path that left the walk set, but (as for
+/// base docs) a delete can still race the walk→report window, so off the
+/// watcher-clean path each visitor existence-checks its match (the same
+/// fail-closed stat-per-hit the base docs get); the clean path already
+/// tombstoned any delete, keeping the no-stat path. Bounded by the mutation
+/// count since build, so always serial.
+pub fn eachOverlay(self: *ResidentSession, filter: PathFilter, sieve: *const crest.Swell, v: anytype) QueryError!void {
     var it = self.overlay.iterator();
     while (it.next()) |e| switch (e.value_ptr.*) {
         .tombstone => {},
         .doc => |d| {
             if (!filter.admits(e.key_ptr.*)) continue; // out-of-scope overlay doc
+            if (sieve.prunes(d.crest)) continue; // provably short of every ĝ
             try v.visit(e.key_ptr.*, d.bytes, d.nul);
             if (wantsStop(v)) return;
         },
@@ -200,31 +211,48 @@ pub fn eachOverlay(self: *ResidentSession, filter: PathFilter, v: anytype) Query
 ///
 /// `buf` owns the full allocation; every stage compacts in place, so the
 /// returned slice is a prefix view of it and the caller's single free covers it.
-pub fn candidateIds(self: *ResidentSession, cq: *const CompiledQuery, filter: PathFilter, buf: *?[]u32) QueryError![]const u32 {
+pub fn candidateIds(self: *ResidentSession, cq: *const CompiledQuery, filter: PathFilter, buf: *?[]u32) QueryError!Candidates {
     var arena = std.heap.ArenaAllocator.init(self.gpa);
     defer arena.deinit();
     const win = winnowFor(arena.allocator(), cq);
 
-    const c = try asked(self, &win, cq);
-    buf.* = c; // caller frees the full allocation; each prune yields a prefix
+    // An index tier's answer still has to be sieved; the no-index tier
+    // enumerates THROUGH the sieve, so both arrive here already pruned.
+    const kept = if (asked(self, &win, cq)) |c| blk: {
+        buf.* = c; // caller frees the full allocation; each prune yields a prefix
+        break :blk sieved(self, &win.sieve, c);
+    } else try everyDoc(self, &win.sieve, buf);
     // Scope BEFORE matching: a `PathFilter` (positional roots today) drops
     // out-of-scope candidate ids in place, so the fold/gather never reads a
     // file outside the query's subtree — the "faster than rg" prune the
     // glob module documents, and the reason warm scoped work ≤ cold scoped
-    // work. An empty filter returns `c` untouched (rootless pays nothing).
-    return filter.prune(self.mir.paths, sieved(self, &win.sieve, c));
+    // work. An empty filter returns the ids untouched (rootless pays nothing).
+    return .{ .ids = filter.prune(self.mir.paths, kept), .sieve = win.sieve };
 }
 
+/// The pruned base candidate ids, and the sieve that pruned them.
+///
+/// The sieve rides along because the base ids are only half the walk: the
+/// overlay's docs are outside every index tier's knowledge, and the sieve is the
+/// one prefilter that can still speak for them (`eachOverlay`). Handing back the
+/// ids alone is what left that half unpruned. `Swell` is a bounded by-value
+/// struct, so this copies rather than borrowing the winnow's arena.
+pub const Candidates = struct {
+    ids: []const u32,
+    sieve: crest.Swell = crest.no_sieve,
+};
+
 /// Put this query to the resident index, strongest question first, and hand back
-/// an OWNED id slice — cold `askIndex`'s precedence over the warm index, plus
-/// the every-doc fallback cold expresses as a full bitset.
+/// an OWNED id slice — cold `askIndex`'s precedence over the warm index — or
+/// null when no tier could answer (cold's "no candidate set", never "no
+/// matches"; `everyDoc` is the fallback cold expresses as a full bitset).
 ///
 /// The cover plan states everything the pattern forces (`if\s+err\s*!=\s*nil`
 /// proves `if` AND `err` AND `nil`); the flat OR of `prefilter` literals is what
 /// one extracted literal can state, and is both the fallback and the only tier
 /// that reaches a sub-trigram sliver. A plan the postings cannot witness
 /// declines to the weaker question rather than to an empty answer.
-fn asked(self: *ResidentSession, win: *const query_mod.Winnow, cq: *const CompiledQuery) QueryError![]u32 {
+fn asked(self: *ResidentSession, win: *const query_mod.Winnow, cq: *const CompiledQuery) ?[]u32 {
     if (win.plan) |plan| {
         if (self.idx.queryPlan(self.gpa, plan) catch null) |c| return tiered("cover", c, self.mir.docs.len);
     }
@@ -236,9 +264,37 @@ fn asked(self: *ResidentSession, win: *const query_mod.Winnow, cq: *const Compil
         else => self.idx.queryAny(self.gpa, pf) catch null,
     };
     if (flat) |c| return tiered("filters", c, self.mir.docs.len);
+    return null;
+}
+
+/// Every base doc id, admitted through the sieve in ONE pass — the shape the
+/// no-index tier takes, and the one place the two stages fuse.
+///
+/// Enumerating the corpus and then compacting it wrote a u32 per document that
+/// the sieve was about to discard, and `tier=none` is precisely the case the
+/// sieve exists for: a literal-free class repetition forces no trigram, so the
+/// index concedes every document and the wasted write landed on the hot path
+/// every time. The allocation is still the corpus-sized upper bound — the
+/// survivor count is not known until the walk finishes — so what shrinks is the
+/// traffic through it, not the peak.
+///
+/// Both trace lines are emitted exactly as the two-pass shape emitted them, so
+/// the `.index` lens grammar the certificate reads is unmoved.
+fn everyDoc(self: *ResidentSession, sieve: *const crest.Swell, buf: *?[]u32) QueryError![]u32 {
     const all = try self.gpa.alloc(u32, self.mir.docs.len);
-    for (all, 0..) |*x, i| x.* = @intCast(i);
-    return tiered("none", all, all.len);
+    buf.* = all; // caller frees the full allocation; the return is a prefix
+    _ = tiered("none", all, all.len);
+    if (!sieving(self, sieve)) {
+        for (all, 0..) |*x, i| x.* = @intCast(i);
+        return all;
+    }
+    var w: usize = 0;
+    for (self.mir.crests, 0..) |rho, i| if (!sieve.prunes(rho)) {
+        all[w] = @intCast(i);
+        w += 1;
+    };
+    assay.trace(.index, assay.tag ++ "warm sieve candidates={d}/{d}\n", .{ w, all.len });
+    return all[0..w];
 }
 
 /// Name the index tier that answered and how much it admitted — the warm twin of
@@ -277,7 +333,7 @@ fn winnowFor(arena: std.mem.Allocator, cq: *const CompiledQuery) query_mod.Winno
 /// means the prefix falls short too. The sieve therefore prunes a subset of what
 /// a gated vector would — conservative, never a missed match.
 fn sieved(self: *ResidentSession, sieve: *const crest.Swell, ids: []u32) []u32 {
-    if (!sieve.active() or self.mir.crests.len != self.mir.docs.len) return ids;
+    if (!sieving(self, sieve)) return ids;
     var w: usize = 0;
     for (ids) |d| if (!sieve.prunes(self.mir.crests[d])) {
         ids[w] = d;
@@ -285,6 +341,15 @@ fn sieved(self: *ResidentSession, sieve: *const crest.Swell, ids: []u32) []u32 {
     };
     assay.trace(.index, assay.tag ++ "warm sieve candidates={d}/{d}\n", .{ w, ids.len });
     return ids[0..w];
+}
+
+/// Can the sieve speak for this session's BASE docs at all? An inert swell
+/// proves nothing, and a crest table that failed to build (or that does not
+/// cover every doc) has no vector to speak with — the resident twin of a missing
+/// `crest.bin`, which leaves the cold path unpruned the same way. Overlay docs
+/// need no such guard: each carries its own vector by construction.
+inline fn sieving(self: *ResidentSession, sieve: *const crest.Swell) bool {
+    return sieve.active() and self.mir.crests.len == self.mir.docs.len;
 }
 
 /// Does `path` still exist right now? The fail-closed stat-per-hit every

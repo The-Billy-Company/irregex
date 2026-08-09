@@ -92,9 +92,9 @@ pub fn query(self: *ResidentSession, arena: std.mem.Allocator, req: Request) Que
     var sc = cq.scratch(self.gpa) catch return QueryError.OutOfMemory;
     defer sc.deinit();
     var acc = Accumulator{ .mode = req.mode, .arena = arena, .io = self.io, .verify_existence = verify, .cq = &cq, .sc = &sc };
-    if (!try foldBaseParallel(self, arena, req, &cq, cand, verify, &acc, ceil))
-        try gather.eachBase(self, cand, &acc, ceil);
-    try gather.eachOverlay(self, req.filter, &acc); // the (bounded) overlay always folds serially
+    if (!try foldBaseParallel(self, arena, req, &cq, cand.ids, verify, &acc, ceil))
+        try gather.eachBase(self, cand.ids, &acc, ceil);
+    try gather.eachOverlay(self, req.filter, &cand.sieve, &acc); // the (bounded) overlay always folds serially
 
     if (req.mode == .files) std.mem.sort([]const u8, acc.files.items, {}, lessPath);
     if (ceil.declined()) return .{ .declined = .freshness_unprovable };
@@ -210,7 +210,7 @@ fn queryInvert(self: *ResidentSession, arena: std.mem.Allocator, req: Request, c
     const is_cand = try self.gpa.alloc(bool, self.mir.docs.len);
     defer self.gpa.free(is_cand);
     @memset(is_cand, false);
-    for (cand) |id| is_cand[id] = true; // pruned to in-scope ids by the filter
+    for (cand.ids) |id| is_cand[id] = true; // pruned to in-scope ids by the filter
 
     var inv = InvertFold{ .mode = req.mode, .arena = arena, .io = self.io, .cap = req.max_count, .verify_existence = !self.seqlock.provenClean() };
     for (self.mir.paths, self.mir.docs, self.mir.nuls, self.mir.lines, 0..) |path, bytes, nul, nlines, i| {
@@ -231,10 +231,15 @@ fn queryInvert(self: *ResidentSession, arena: std.mem.Allocator, req: Request, c
             if (!req.filter.admits(e.key_ptr.*)) continue;
             const nlines = corpus.gatedLineCount(d.bytes, d.nul);
             if (nlines == 0) continue;
-            // Overlay docs (changed/new since the build) are stale in the
-            // index, so they always run the matcher — the same rule the
-            // positive walk applies.
-            try inv.fold(e.key_ptr.*, nlines, gatedMatches(&cq, &sc, d.bytes, d.nul));
+            // An overlay doc is always FOLDED — under `-v` every line it holds
+            // is selected unless the matcher claims it — but it need not always
+            // be SCANNED. No index tier can speak for a doc changed since the
+            // build, so this used to run the matcher unconditionally; the crest
+            // sieve can, off ρ(d) measured from these very bytes, and a doc it
+            // rules out contributes exactly zero matches. The invert twin of
+            // the `is_cand[i]` short-circuit the base walk above takes.
+            const matches = if (cand.sieve.prunes(d.crest)) 0 else gatedMatches(&cq, &sc, d.bytes, d.nul);
+            try inv.fold(e.key_ptr.*, nlines, matches);
         },
     };
 

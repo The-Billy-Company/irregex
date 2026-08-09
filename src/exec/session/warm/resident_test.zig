@@ -212,6 +212,61 @@ test "resident: a deleted file is never reported" {
     }
 }
 
+test "resident: the crest sieve reaches overlay docs without dropping one that matches" {
+    // The overlay is the half no index tier can speak for — those docs changed
+    // since the build, which is exactly what the postings no longer describe —
+    // so the crest sieve is the only prefilter left, and it prunes off ρ(d)
+    // measured from the doc's own live bytes (`mirror.readDocOwned`).
+    //
+    // `[0-9a-f]{8}` is the pattern the trigram index concedes outright: no
+    // literal to ask for, so every doc is a candidate and the sieve is the sole
+    // pruning. That makes this the adverse case, not the happy one — an
+    // overlay sieve that pruned by one byte too many would silently drop
+    // `hit.txt`, and a search tool reporting "no match" for a file it never
+    // read is the worst defect this engine can ship. Both directions are
+    // pinned: the file that forces the run is FOUND, the ones that cannot are
+    // absent, and the ground truth is read off the pattern, not off a self-run.
+    const gpa = std.testing.allocator;
+    var threaded = std.Io.Threaded.init(gpa, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var fixture = std.heap.ArenaAllocator.init(gpa);
+    defer fixture.deinit();
+
+    var tree = try Tree.init(fixture.allocator(), io, "overlaysieve", @intFromPtr(&threaded));
+    defer tree.deinit();
+    // Base corpus, loaded before any overlay exists. Longest hex run is the
+    // lone `a` of "plain" — 1, far short of the 8 the pattern forces.
+    try tree.write("base.txt", "plain text\n");
+
+    var session = try ResidentSession.init(gpa, io, &.{tree.root});
+    defer session.deinit();
+
+    try advanceClock(io);
+    // Written AFTER the load, so both arrive as overlay entries.
+    try tree.write("hit.txt", "id deadbeef here\n"); // "deadbeef" — a hex run of exactly 8
+    try tree.write("miss.txt", "zz top\nyy bottom\n"); // no hex run at all
+
+    {
+        var q = std.heap.ArenaAllocator.init(gpa);
+        defer q.deinit();
+        const files = try queryFiles(&session, q.allocator(), .{ .pattern = "[0-9a-f]{8}", .mode = .files });
+        try expectFileSet(&tree, files, &.{"hit.txt"});
+    }
+
+    // The invert twin, and the trap the positive case cannot catch: under `-v`
+    // a pruned overlay doc is still FOLDED (every line it holds is selected),
+    // it is merely not SCANNED. Skipping it outright would lose real output.
+    // Ground truth off the fixture: base 1 line + hit 1 + miss 2 = 4 lines, of
+    // which exactly one (hit's) matches ⇒ 3 non-matching lines.
+    {
+        var q = std.heap.ArenaAllocator.init(gpa);
+        defer q.deinit();
+        const inverted = try warm(try session.query(q.allocator(), .{ .pattern = "[0-9a-f]{8}", .mode = .count, .invert = true }));
+        try std.testing.expectEqual(@as(u64, 3), inverted.count);
+    }
+}
+
 test "resident: the file set is the rg-default walk (hidden/gitignore/binary/empty excluded)" {
     // The parity contract: the resident corpus is selected by the SAME rg-default
     // walk cold uses, so hidden files, `.gitignore`/nested-`.gitignore` matches,

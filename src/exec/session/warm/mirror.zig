@@ -76,7 +76,16 @@ pub fn readDoc(a: std.mem.Allocator, io: std.Io, path: []const u8) ?Doc {
 /// never an interior slice. The three decode outcomes are normalized — an
 /// untouched body keeps its read buffer, a stripped UTF-8 BOM re-dupes the
 /// suffix, a UTF-16 transcode frees the raw read.
-pub const OwnedDoc = struct { bytes: []u8, nul: ?usize };
+///
+/// `crest` is ρ(d) over the same whole body the base mirror's table measures,
+/// so the crest sieve can prune an overlay doc exactly as it prunes a base one.
+/// The COLD tier cannot do this — its vectors are persisted, so it must refuse
+/// any file whose timestamps fail to prove it predates the anchor, which is
+/// every changed file. Residency is what changes the economics: these bytes are
+/// already read and already scanned once for `nul`, and the entry then answers
+/// many queries, so one vector here amortizes where cold's would be pure loss
+/// (having read the file, cold may as well search it).
+pub const OwnedDoc = struct { bytes: []u8, nul: ?usize, crest: crest.Vector };
 
 pub fn readDocOwned(gpa: std.mem.Allocator, io: std.Io, path: []const u8) ?OwnedDoc {
     const raw = Dir.cwd().readFileAlloc(io, path, gpa, .unlimited) catch return null;
@@ -98,7 +107,10 @@ pub fn readDocOwned(gpa: std.mem.Allocator, io: std.Io, path: []const u8) ?Owned
         gpa.free(owned);
         return null;
     }
-    return .{ .bytes = owned, .nul = std.mem.indexOfScalar(u8, owned, 0) };
+    // `crest.crest` is what `crest/sidecar.zig`'s builder calls per document, so
+    // an overlay vector and the base table's vector for the same bytes are the
+    // same computation and cannot drift into disagreeing about ρ(d).
+    return .{ .bytes = owned, .nul = std.mem.indexOfScalar(u8, owned, 0), .crest = crest.crest(owned) };
 }
 
 /// The region cold actually searches in one doc: the whole body of a text doc,

@@ -177,7 +177,7 @@ pub fn queryRank(self: *ResidentSession, arena: std.mem.Allocator, req: Request,
     // drops trigram false positives, so the surviving ranked set is identical
     // to cold's, and the array position (the RRF tiebreak) matches too.
     var files: std.ArrayList(ranked.LiveFile) = .empty;
-    for (cand, 0..) |id, i| {
+    for (cand.ids, 0..) |id, i| {
         if (ceil.over(self.io, i)) {
             self.noteBudgetAbort();
             return .{ .declined = .freshness_unprovable };
@@ -191,6 +191,13 @@ pub fn queryRank(self: *ResidentSession, arena: std.mem.Allocator, req: Request,
         .tombstone => {},
         .doc => |d| {
             if (!req.filter.admits(e.key_ptr.*)) continue;
+            // The same sieve the base ids above were pruned by, so this face
+            // does not admit an overlay doc the fold would have ruled out.
+            // Rank order is unmoved: `renderLive`'s `fileDoc` re-verifies every
+            // entry, so a doc the sieve drops is one it would have dropped —
+            // the surviving entries keep their relative array positions, and
+            // with them the RRF tiebreak.
+            if (cand.sieve.prunes(d.crest)) continue;
             files.append(arena, .{ .path = e.key_ptr.*, .bytes = d.bytes }) catch return QueryError.OutOfMemory;
         },
     };

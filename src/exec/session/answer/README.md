@@ -33,7 +33,7 @@ door in [`../facet/`](../facet/).
   compile the request through the shared search core, prune through the same
   three-stage stack cold prunes by (the conjunctive cover plan, then the
   crest sieve over the mirror's per-doc ρ(d), then the path filter — see
-  below), then visit the surviving base docs plus the whole overlay under one
+  below), then visit the surviving base docs plus the sieved overlay under one
   budget and ceiling — with the per-match existence stat applied on every
   path the watcher has not proven clean, so a delete racing the
   walk→report window is never reported.
@@ -78,6 +78,23 @@ the same questions in the same order — cheap-and-strong first:
 
 Each is a *necessary* condition on matching, so dropping any one can only
 widen the candidate set — never drop a match.
+
+The sieve then rides `Candidates` into the **overlay**, which no index tier can
+speak for: those docs changed since the build, which is exactly what the
+postings no longer describe. It is the one stage where warm prunes something
+cold cannot. Cold's vectors are persisted, so its oracle must refuse any file
+whose timestamps fail to prove it unchanged — and having read such a file it may
+as well search it. A resident overlay entry is different: `mirror.readDocOwned`
+already holds and scans those bytes, so ρ(d) costs one more pass over a body
+already in hand (32 B/entry) and then amortizes over every later query.
+
+Read that as a **consistency** property, not a speed one. The overlay is bounded
+by construction — it holds the mutation set since the last build, and a
+divergence large enough to matter makes the session reload or decline rather
+than accumulate — so the scan it saves is a modest number of documents, measured
+below the noise floor of process spawn plus the freshness walk. What the stage
+buys is that both halves of one walk now decide what deserves reading by the
+same rule.
 
 Both AST-derived prunings come off ONE parse
 ([`../../../kernel/query/prefilter.zig`](../../../kernel/query/prefilter.zig)'s
