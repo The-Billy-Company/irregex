@@ -26,7 +26,7 @@
 //! relate/blast shape, 22 generated schemas, a value union per column. A match
 //! line is not that shape and must not borrow it: it is a fixed record of five
 //! facts (path, 1-based line number, the line's bytes, the spans inside it, and
-//! whether it was selected or is a context neighbour) that every grep in
+//! whether it was selected or is a context neighbor) that every grep in
 //! existence already agrees on. Two cursor protocols, named after what they
 //! carry, is the whole design — a `Row` decoded through a schema digest would
 //! make `path` a lookup where it is a field.
@@ -98,7 +98,7 @@ pub const Request = extern struct {
     flags: u32,
     /// Per-file matching-line cap (`-m`). Read only under `flag_max_count`.
     max_count: u64,
-    /// Context neighbours emitted around each selected line (`-B` / `-A`).
+    /// Context neighbors emitted around each selected line (`-B` / `-A`).
     before_context: u64,
     after_context: u64,
     /// The pattern's bytes. Null with a length is a caller bug, not empty text.
@@ -113,7 +113,7 @@ pub const Request = extern struct {
     cancel: ?*const api.CancelToken,
 };
 
-/// Whether a record is a line the query SELECTED or a context neighbour carried
+/// Whether a record is a line the query SELECTED or a context neighbor carried
 /// with it. Explicitly numbered: these cross as a `uint32_t` a host switches on.
 pub const Kind = enum(u32) { match = 0, context = 1 };
 
@@ -445,7 +445,7 @@ test "tree: every byte a record borrows outlives every later pull" {
     try t.expect(held_span != rest[0].spans);
 }
 
-test "tree: context neighbours ride the same cursor, distinguishable by kind" {
+test "tree: context neighbors ride the same cursor, distinguishable by kind" {
     const t = std.testing;
     var arena = std.heap.ArenaAllocator.init(t.allocator);
     defer arena.deinit();
@@ -462,7 +462,7 @@ test "tree: context neighbours ride the same cursor, distinguishable by kind" {
     try t.expectEqual(Status.match, search(engine, &req, &cursor));
     defer cursor.deinit();
 
-    // alpha / needle one / omega — the neighbours carry no spans, which is how
+    // alpha / needle one / omega — the neighbors carry no spans, which is how
     // a host tells a carried line from a selected one without trusting `kind`.
     var rec: [4]Match = undefined;
     var got: usize = 0;

@@ -361,7 +361,7 @@ suite proves it means the same thing here by checking a quoted literal against
 the engine's own `Fixed` machine over the same text. `LiteralPrefix` is read out
 of the pattern's literal plane rather than re-derived, so it agrees with what the
 search actually prefilters on - with one deliberate divergence: an anchored
-literal like `^foo$` is not `complete` here, because `complete` is a licence to
+literal like `^foo$` is not `complete` here, because `complete` is a license to
 replace the regex with a substring search and searching for `foo` answers a
 different question than matching `^foo$` does.
 

@@ -50,7 +50,7 @@ def sized(kind: type[ctypes.Structure]) -> Any:
     """A zeroed ``kind`` with ``struct_size`` stamped from ctypes' own ``sizeof``.
 
     Zero is today's default for every other field by ABI contract, so this is
-    the whole of "build me the struct that asks for current behaviour".
+    the whole of "build me the struct that asks for current behavior".
     """
     out = kind()
     out.struct_size = ctypes.sizeof(kind)

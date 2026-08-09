@@ -160,7 +160,7 @@ func TestALiteralPrefixBeginsEveryMatchItClaims(t *testing.T) {
 		if !complete {
 			continue
 		}
-		// complete is the licence to stop using the engine, so it has to mean the
+		// complete is the license to stop using the engine, so it has to mean the
 		// pattern's whole language is that one string: every match IS the prefix,
 		// and the prefix itself matches.
 		if !re.MatchString(prefix) {
@@ -186,7 +186,7 @@ func TestCompleteIsExactlyTheWhollyLiteralPatterns(t *testing.T) {
 		{"foo", true}, {"a", true}, {"WalletService", true}, {"(foo)bar", true},
 		{"foo+", false}, {"foo.*", false}, {"foo|bar", false}, {"[fb]oo", false},
 		// Anchored, and deliberately NOT complete: searching for "foo" is not the
-		// same question as matching "^foo$", so the licence complete grants would
+		// same question as matching "^foo$", so the license complete grants would
 		// be wrong even though the standard library says true here.
 		{"^foo$", false}, {"^foo", false},
 		// The empty pattern promises nothing at all - no set, no verdict - and
@@ -225,7 +225,7 @@ func TestAPatternRoundTripsThroughItsTextForm(t *testing.T) {
 	for _, c := range []struct {
 		opts irgx.CompileOpts
 		expr string
-		want string // the marshalled text
+		want string // the marshaled text
 	}{
 		{irgx.CompileOpts{}, "foo\\d+", "foo\\d+"},
 		{irgx.CompileOpts{IgnoreCase: true}, "foo", "(?i)foo"},

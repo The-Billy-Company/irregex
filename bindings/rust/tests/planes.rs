@@ -492,7 +492,7 @@ fn eligible(walk: &mut Walk, root: &Path) -> Vec<String> {
 }
 
 #[test]
-fn a_walk_honours_gitignore_and_skips_hidden_by_default() {
+fn a_walk_honors_gitignore_and_skips_hidden_by_default() {
     let dir = plant();
     let root = dir.path();
     let mut walk = Walk::open(&Spec::new().root(root)).unwrap();
@@ -503,7 +503,7 @@ fn a_walk_honours_gitignore_and_skips_hidden_by_default() {
     assert!(found.contains(&"nested/deep.rs".to_owned()));
     assert!(
         !found.contains(&"ignored.rs".to_owned()),
-        ".gitignore is honoured with no policy set: {found:?}"
+        ".gitignore is honored with no policy set: {found:?}"
     );
     assert!(
         !found.iter().any(|p| p.starts_with('.')),

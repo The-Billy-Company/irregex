@@ -94,7 +94,7 @@ pub enum Genus {
     /// Implementation, and everything unrecognized.
     #[default]
     Code,
-    /// The paper trail: markdown, rst, man pages, TeX, licences, changelogs.
+    /// The paper trail: markdown, rst, man pages, TeX, licenses, changelogs.
     Docs,
     /// Configuration and payload: json, yaml, toml, lockfiles.
     Data,
@@ -113,15 +113,15 @@ impl Genus {
 /// A declinature of a default the walk would otherwise apply.
 ///
 /// They all read as negatives because the safe spelling is to set none of them:
-/// a walk with no policy honours every ignore file, skips hidden entries and
+/// a walk with no policy honors every ignore file, skips hidden entries and
 /// refuses to guess about an unreadable directory.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Policy {
     /// Descend into dotfiles and dot-directories.
     Hidden,
-    /// Honour no ignore file at all.
+    /// Honor no ignore file at all.
     NoIgnore,
-    /// Honour every ignore file except `.gitignore`.
+    /// Honor every ignore file except `.gitignore`.
     NoIgnoreVcs,
     /// … except `.ignore`.
     NoIgnoreDot,
@@ -340,7 +340,7 @@ impl<'t> Spec<'t> {
         self.term(5, name.as_bytes())
     }
 
-    /// Also honour an ignore file of this name, e.g. `".gistignore"`.
+    /// Also honor an ignore file of this name, e.g. `".gistignore"`.
     /// Repeatable.
     #[must_use]
     pub fn ignore_file(self, name: &'t str) -> Self {

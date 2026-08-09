@@ -46,7 +46,7 @@ class Kind(enum.IntEnum):
     LINE = 0
     """A line the pattern selected."""
     CONTEXT = 1
-    """A neighbour carried along by ``before``/``after``."""
+    """A neighbor carried along by ``before``/``after``."""
 
 
 class Request(ctypes.Structure):

@@ -1,5 +1,5 @@
 //! The line index over bytes — where a line begins, which one holds an offset,
-//! what its number is, and the clamped band of neighbours around it.
+//! what its number is, and the clamped band of neighbors around it.
 //!
 //! This package spells that arithmetic seven times, in four shapes that agree on
 //! ripgrep's newline rule and disagree on nothing else: content-only slices

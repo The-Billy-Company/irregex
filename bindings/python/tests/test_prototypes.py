@@ -245,10 +245,15 @@ def test_nothing_is_bound_that_the_header_does_not_declare() -> None:
     assert not extra, f"bound but not declared by the header: {extra}"
 
 
-@pytest.mark.parametrize("name", sorted(_header()))
+@pytest.mark.parametrize("name", sorted(_bound()))
 def test_prototype_matches_the_header(name: str) -> None:
-    if name not in _bound():
-        pytest.skip(f"{name} is bound by the cffi tier; test_cdef_header_parity checks it")
+    """Every ctypes prototype matches the header.
+
+    The cffi-only row/schema substrate is checked by
+    ``test_cdef_header_parity`` instead. Parameterizing this ctypes audit over
+    header names used to manufacture seven skipped tests for those deliberately
+    separate bindings, despite both tiers already having complete coverage.
+    """
     want_ret, want_params = _header()[name]
     restype, argtypes = _bound()[name]
     got_ret = _reduce_py(restype)

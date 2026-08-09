@@ -74,14 +74,14 @@ import (
 // the number - it is a rate, not a contract.
 const batchSize = 64
 
-// Kind is what a record IS: a line the pattern selected, or a neighbour carried
+// Kind is what a record IS: a line the pattern selected, or a neighbor carried
 // along by [SearchOpts.Before] / [SearchOpts.After].
 type Kind uint32
 
 const (
 	// KindLine is a line the pattern selected.
 	KindLine Kind = C.IRGX_MATCH_LINE
-	// KindContext is a neighbouring line, carried for display. Its Spans are
+	// KindContext is a neighboring line, carried for display. Its Spans are
 	// empty: nothing in it matched, which is the whole reason it is a separate
 	// kind rather than a match with no spans.
 	KindContext Kind = C.IRGX_MATCH_CONTEXT
@@ -110,7 +110,7 @@ type Record struct {
 	// with the same code it highlights a buffer hit with. Empty for
 	// [KindContext].
 	Spans [][]int
-	// Kind separates a selected line from a neighbour carried along with it.
+	// Kind separates a selected line from a neighbor carried along with it.
 	Kind Kind
 }
 
@@ -144,7 +144,7 @@ type SearchOpts struct {
 	Invert bool
 	// MaxCount is the per-file ceiling, absent by default. Set it with [Limit].
 	MaxCount *uint64
-	// Before and After carry neighbouring lines along with each selected line -
+	// Before and After carry neighboring lines along with each selected line -
 	// grep's -B and -A. They arrive as [KindContext] records in reading order.
 	Before, After int
 	// MaxResults caps the whole search rather than each file: 0 is unbounded,

@@ -74,6 +74,7 @@ static int32_t go_walk_genus(const uint8_t *path, size_t len, uint32_t *out,
 import "C"
 
 import (
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"unsafe"
@@ -126,7 +127,7 @@ const (
 	// Type keeps a registered type by name ("zig", "docs"); TypeNot drops it.
 	Type    TermKind = C.IRGX_TERM_TYPE
 	TypeNot TermKind = C.IRGX_TERM_TYPE_NOT
-	// IgnoreFile names an extra ignore file to honour, on top of the ones the
+	// IgnoreFile names an extra ignore file to honor, on top of the ones the
 	// policy already reads.
 	IgnoreFile TermKind = C.IRGX_TERM_IGNORE_FILE
 )
@@ -145,7 +146,7 @@ func GlobOf(pat string) Term  { return Term{Kind: Glob, Text: pat} }
 func TypeOf(name string) Term { return Term{Kind: Type, Text: name} }
 
 // WalkSpec is one complete eligibility question. The zero value plus a root is
-// the default policy: honour every ignore file, skip hidden entries, skip
+// the default policy: honor every ignore file, skip hidden entries, skip
 // binaries, files only.
 //
 // Every flag here is a DECLINATURE of something the walk would otherwise do,
@@ -360,12 +361,14 @@ func (w *Walk) Gapped() int { return int(C.irgx_walk_gapped(w.ptr)) }
 // iterating, and without disturbing the iteration position.
 //
 // EXACT is the operative word: the comparison is against the path as the walk
-// spelled it, which is rooted the way the [Root] term was. It is not a question
-// about the file, so it does not resolve `.`, `..`, a symlink, or a relative path
+// spelled it, which is rooted the way the [Root] term was. Native Windows
+// separators are converted to the ABI's canonical `/`; nothing else is
+// normalized. It does not resolve `.`, `..`, a symlink, or a relative path
 // against the working directory - "in.go" and "/abs/in.go" are two spellings and
 // only the walk's own answers yes. Ask it with an [Entry.Path], or with a path
 // built from the same root you handed in.
 func (w *Walk) Holds(path string) bool {
+	path = filepath.ToSlash(path)
 	var fault C.irgx_fault
 	st := C.go_walk_holds(w.ptr, bytePtr(path), C.size_t(len(path)), &fault)
 	runtime.KeepAlive(path)

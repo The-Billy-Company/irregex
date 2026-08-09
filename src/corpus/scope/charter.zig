@@ -35,7 +35,7 @@
 //! #3428 — still being filed). Here a quote is a quote.
 //!
 //! WHAT A REFUSAL COSTS IS THE CALLER'S, NOT THIS MODULE'S. A face refuses to
-//! search at all — the judgement is right, and it stays — but this file is also
+//! search at all — the judgment is right, and it stays — but this file is also
 //! read from inside an embedding host through the C ABI, where ending the process
 //! is a defect no host can catch. So a malformed charter is dropped and its
 //! reason left readable (`faulted`), and a CLI ADOPTS the loud exit at startup
@@ -113,7 +113,7 @@ const Fault = error{
 
 /// What a malformed charter costs the caller who asked for it.
 ///
-/// The judgement itself is not in dispute — a corpus nobody described is worse
+/// The judgment itself is not in dispute — a corpus nobody described is worse
 /// than no file — but the *remedy* differs by who is asking, and only one of the
 /// two askers may be assumed. `governing` is called from the middle of corpus
 /// setup: root resolution (`corpus.resolveRoots`), the walk's skip overlay
