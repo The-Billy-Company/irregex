@@ -103,6 +103,7 @@ const glob = @import("../../kernel/math/glob.zig");
 const ignore = @import("../../corpus/tree/ignore.zig");
 const intent = @import("../../exec/cold/argv/intent.zig");
 const path_mod = @import("../../corpus/scope/paths.zig");
+const portal = @import("../../portal.zig");
 const quarry = @import("../../exec/cold/quarry/walk.zig");
 const rows = @import("rows.zig");
 const types = @import("../../corpus/scope/types.zig");
@@ -781,7 +782,7 @@ const Fixture = struct {
 
     fn plant(arena: std.mem.Allocator, seed: u32) !Fixture {
         var self = Fixture{
-            .root = try std.fmt.allocPrint(arena, "/tmp/irgx_walk_{x}_{d}", .{ seed, std.c.getpid() }),
+            .root = try std.fmt.allocPrint(arena, "/tmp/irgx_walk_{x}_{d}", .{ seed, portal.processId() }),
             .threaded = std.Io.Threaded.init(std.testing.allocator, .{}),
         };
         const io = self.threaded.io();
