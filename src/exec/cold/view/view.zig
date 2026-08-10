@@ -22,6 +22,7 @@ const hints = @import("../emit/hints.zig");
 const ingest = @import("../read/ingest.zig");
 const legible = @import("../../../corpus/read/legible.zig");
 const intake = @import("../quarry/intake.zig");
+const witness = @import("../quarry/witness.zig");
 const render = @import("../emit/render.zig");
 const writ_mod = @import("../writ/writ.zig");
 const Outcome = @import("../../../surface/cli/outcome.zig").Outcome;
@@ -89,9 +90,14 @@ pub const Run = struct {
         return r.pre_error.load(.seq_cst);
     }
 
-    /// The shared no-match stderr coaching channel, keyed to this query's shape.
-    fn noMatches(r: Run, searched: ?usize) void {
-        hints.noMatches(hints.shape(r.parsed.patterns, r.o, r.parsed.roots, r.parsed.roots.len > 0), searched);
+    /// The shared no-match stderr coaching channel, keyed to this query's shape
+    /// and to what `files` — the set this lens just read, bytes included — proves
+    /// about it.
+    fn noMatches(r: Run, searched: ?usize, files: anytype) void {
+        const sh = hints.shape(r.parsed.patterns, r.o, r.parsed.roots, r.parsed.roots.len > 0);
+        var ev = hints.probe(r.a, sh, files);
+        witness.sight(r.a, r.io, r.o.no_index, sh, &ev);
+        hints.noMatches(sh, searched, ev);
     }
 };
 
@@ -129,7 +135,7 @@ fn rank(r: Run) !Claim {
     // `walked`, not the read set: index elision leaves a proven non-matcher
     // unread, and a hint that reported only the files it opened would tell an
     // agent its scope was narrower than the walk it actually ran.
-    if (n == 0) r.noMatches(c.walked);
+    if (n == 0) r.noMatches(c.walked, c.files);
     return .done;
 }
 

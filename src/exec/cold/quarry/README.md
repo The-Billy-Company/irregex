@@ -19,6 +19,12 @@ cold-engine deep-module split).
 - **`stream.zig`** admits stdin as a haystack: admitting and draining fd 0.
 - **`notice.zig`** decides how a failed descent reads on stderr — the
   unopenable path, the `-L` loop, the walk that admitted nothing.
+- **`witness.zig`** answers the one question the searched bytes cannot:
+  after an empty scoped run, does the string live in a file this scope
+  excluded? It reads the same persisted index `elide.zig` prunes with,
+  then confirms candidates against their current bytes, so the hint
+  channel can name a file instead of saying "try a wider scope" —
+  [Naming the File Instead of Waving at the Tree](#naming-the-file-instead-of-waving-at-the-tree).
 
 Each of these has consumers in more than one package, and a shared concept
 living inside one of its consumers is how the duplicate oracle was born the
@@ -31,6 +37,34 @@ same indexed-path primitive. Folding the second into the first is stage 2
 of the cold-engine deep-module split — and having them side by side in one
 package, rather than one per engine, is the point of this package existing
 before that fold happens.
+
+## Naming the File Instead of Waving at the Tree
+
+A scoped search that finds nothing has two very different causes, and the
+old stderr line could not tell them apart: the string does not exist, or
+the caller pointed at the wrong file. `witness.sight` separates them.
+
+It belongs here rather than in the hint renderer because it is the same
+index question this package already owns — and it is the *inverse* of
+elision. `elide.zig` uses the index to decide which files need not be
+read; `witness.zig` uses it to decide which files are worth reading even
+though the query never asked for them. Same postings, opposite direction,
+which is why the renderer stays a pure function of an `Evidence` value and
+never learns that an index exists.
+
+The index alone may not answer, on the same soundness law as above: a
+trigram hit is a *candidate*, so a hint derived from postings would name
+files that no longer hold the bytes. Every candidate is therefore read and
+re-matched before it is named, and the budget is what keeps that honest —
+a handful of confirming reads, each capped, candidates ordered by how much
+directory prefix they share with the scope the caller gave, so the first
+read is usually the file they meant. Running out of budget yields no hint
+rather than an unconfirmed one.
+
+Absence stays unclaimable throughout. A confirmed sighting says "this file
+holds it"; nothing here ever says a string is absent from the corpus,
+because the index cannot prove that and a bounded set of reads cannot
+either.
 
 ## The Law This Package Is Built Around
 

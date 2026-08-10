@@ -71,6 +71,10 @@ const Caps = @import("../../../kernel/regex/regex.zig").Caps;
 /// daemon path, where no engine ran in-process but a no-match still deserves
 /// the identical stderr guidance.
 pub const hints = @import("../emit/hints.zig");
+/// `pub` for the same reason `hints` is: the warm daemon path holds no bytes in
+/// the client process, and the corpus-side half of the evidence never needed
+/// them — so a warm miss can still name the file its scope excluded.
+pub const witness = @import("../quarry/witness.zig");
 
 // Per-file semantics live in `read/` — BOM/UTF-16 ingest and the rg line split
 // in `legible.zig`, binary handling in `binary.zig`, the --stats tally in
@@ -373,7 +377,15 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
         // the engine-fault exit above.
         if (o.quiet) (Outcome{ .matched = hits > 0 }).exit();
         corpus_mod.emitStdout(out0.items);
-        if (hits == 0) hints.noMatches(hints.shapeStream(parsed.patterns, o), null);
+        // `body` is the whole stream, still in hand — so a piped miss gets the
+        // same checked findings a file miss does. Only the corpus-side witness is
+        // out of reach here, and rightly: a stream has no scope to have widened.
+        const stream_probe = [_]struct { bytes: []const u8 }{.{ .bytes = body }};
+        const sh0 = hints.shapeStream(parsed.patterns, o);
+        if (hits == 0)
+            hints.noMatches(sh0, null, hints.probe(a, sh0, &stream_probe))
+        else
+            hints.deadBranches(sh0, out0.items);
         (Outcome{ .matched = hits > 0 }).exit();
     }
 
@@ -585,7 +597,22 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
     // moment an agent needs guidance — derived from the query's own shape, on
     // stderr, after the (empty) stdout flush. --json and --quiet stay silent
     // by contract; error exits already carry their own diagnostic.
-    if (matched_files == 0 and !err_exit)
-        hints.noMatches(hints.shape(parsed.patterns, o, parsed.roots, parsed.roots.len > 0), files.len);
+    if (matched_files == 0 and !err_exit) {
+        // `files` still holds the bytes this run searched, so the hint can be
+        // derived from what the corpus actually says instead of only from what the
+        // pattern looks like — one more pass over resident memory, on a run that
+        // already came back empty. `sight` then asks the one question those bytes
+        // cannot answer: whether the string lives in a file this scope excluded.
+        const sh = hints.shape(parsed.patterns, o, parsed.roots, parsed.roots.len > 0);
+        var ev = hints.probe(a, sh, files);
+        witness.sight(a, io, o.no_index, sh, &ev);
+        hints.noMatches(sh, files.len, ev);
+    } else if (!err_exit) {
+        // The mirror case, and the only hint this channel spends on a SUCCESS: a
+        // bundled `A|B|C` whose results none of B's bytes appear in answered fewer
+        // questions than it was asked, silently. `out` is what was just printed, so
+        // the check costs one pass over the output rather than over the corpus.
+        hints.deadBranches(hints.shape(parsed.patterns, o, parsed.roots, parsed.roots.len > 0), out.items);
+    }
     (Outcome{ .matched = matched_files > 0, .faulted = err_exit }).exit();
 }

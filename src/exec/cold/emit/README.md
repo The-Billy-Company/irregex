@@ -28,10 +28,13 @@ cannot disagree with each other.
   match still hides its own line.
 - **`hints.zig`** is the stderr guidance channel, on two triggers: a
   notable outcome (`gist: no matches …` plus up to three ranked `gist:
-  try` / `gist: note:` lines derived from the query's own shape) and a
-  notable duration (`Vigil` — a walk still running past its patience
-  reports progress instead of looking hung). Muted by `GIST_HINTS=0`,
-  never touches stdout.
+  try` / `gist: note:` lines) and a notable duration (`Vigil` — a walk
+  still running past its patience reports progress instead of looking
+  hung). The outcome arm reads an `Evidence` value probed from the bytes
+  the run actually searched rather than from the query's spelling, so a
+  suggestion is withheld unless the corpus backs it — see [A Hint Has to
+  Be Earned](#a-hint-has-to-be-earned). Muted by `GIST_HINTS=0`, never
+  touches stdout.
 
 The warm session's line renderer
 ([`exec/session/facet/render.zig`](../../session/facet/render.zig))
@@ -70,6 +73,69 @@ moves a byte.
 The counters it reports (`Queue.walked`, `Queue.live`) are two atomics the
 work-stealing walk already maintains, so arming a vigil cannot slow the
 walk it watches.
+
+## A Hint Has to Be Earned
+
+Every line on the outcome arm used to be a pure function of the pattern
+text, and a pure function of the pattern text cannot know whether its
+advice helps. `gist -n 'KEY_THREAD_ID|__all__|globals\(\)' attrs.py`
+answered with three suggestions and all three were wrong: `-i` on a file
+holding no case variant of any branch, `-F` because `\(` looked like a
+metacharacter when the backslash is what makes it literal, and `-uu` on a
+path the caller had named explicitly. Meanwhile the fact worth saying —
+the string lives in `attrs.gen.py`, one directory entry over — was not
+sayable at all, because nothing on this channel had ever looked at a byte
+of the corpus.
+
+So the channel takes evidence now. `Shape` is still what the query says;
+`Evidence` is what the corpus says, and `noMatches` only renders the
+second. Four probes fill it, in the order they get cheap:
+
+- **A counterfactual for `-i`.** The `-i` line claims a caseless retry
+  would find something, which is a claim about the bytes. `probe` runs the
+  caseless match over the same resident bytes and sets `caseless_dead`
+  when it also finds nothing, which retires the suggestion instead of
+  printing it. This is the single largest source of the old noise.
+- **The longest live prefix.** A dead literal usually dies at a specific
+  byte, and saying where is worth more than saying it is absent: `KEY_T`
+  is here on 2 lines, so `KEY_THREAD_ID` stops matching after it. That
+  locates a typo or a rename to the character, and it is a fact about the
+  file rather than a guess about the caller.
+- **Per-branch attribution.** `A|B|C` is three questions bundled into one
+  answer, and "no matches" collapses them. Each branch is probed on its
+  own, so the report can name which of them the corpus never held.
+- **Scope versus corpus.** Resident bytes can say a string is absent
+  *here*; they structurally cannot say it exists somewhere the walk never
+  visited. That question goes to [`quarry/witness.zig`](../quarry/witness.zig),
+  which asks the trigram index and then reads the candidates back to
+  confirm them, so the file it names is a file that currently holds the
+  bytes. A generic "try a wider scope" becomes a scope to widen *to*.
+
+The budget is deliberate, and it makes the first three probes' reach
+uneven on purpose. They run over bytes already resident and already paid
+for, on a run that came back empty — so a scope of named files is
+re-readable inside a fixed budget, while a directory or tree scope is not,
+and re-walking one to explain a miss would make the courtesy cost more
+than the search. That scope declines the byte probes and the affected line
+falls back to its old syntactic form rather than vanishing. The index side
+is capped at a handful of confirming reads and is unaffected either way,
+since the sighting never needed the scope's bytes. Nothing here can fail a
+search: a missing index, an unreadable candidate, or a scope too broad to
+materialize each drop their own hint and leave the rest standing.
+
+### The One Hint That Fires on a Successful Run
+
+`A|B|C` where only `A` and `C` matched exits 0, prints rows, and looks
+complete. It answered two of three questions and said nothing about the
+third. `deadBranches` closes that: on a run with matches, a branch whose
+bytes appear nowhere in the output earns a note.
+
+It is gated on `results_faithful`, because the check reads the printed
+results and only some modes print enough to read. `-l` prints paths, `-c`
+prints numbers, `--json` reshapes the text, `-r` rewrites it, and `-m`
+truncates it — in every one of those a branch can match without leaving a
+trace in `out`, so the absence of its bytes proves nothing and the note is
+withheld rather than guessed.
 
 ## One Owner for "Which Literals May I Sweep For?"
 

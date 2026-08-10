@@ -46,6 +46,7 @@ const descent = @import("descent.zig");
 const elide = @import("../../quarry/elide.zig");
 const fresh = @import("../../../../corpus/fresh/fresh.zig");
 const notice = @import("../../quarry/notice.zig");
+const witness = @import("../../quarry/witness.zig");
 const stats = @import("../../read/stats.zig");
 const hints = @import("../../emit/hints.zig");
 const ignore = @import("../../../../corpus/tree/ignore.zig");
@@ -568,7 +569,13 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, parsed: args.Parsed, o: Opts, re:
     // `--files-without-match`: `matched_files` counts files that LACKED the
     // pattern (each `bufferPath` → `emitFilesChunk`), so exit 0 iff at least
     // one such file was found — ripgrep's success predicate for this mode.
-    if (re != null and !o.quiet and o.mode != .files and !o.mode.negated() and sink.matched_files == 0 and !nothing_searched and !q.walk_error.load(.acquire))
-        hints.noMatches(hints.shape(parsed.patterns, o, parsed.roots, parsed.roots.len > 0), null);
+    if (re != null and !o.quiet and o.mode != .files and !o.mode.negated() and sink.matched_files == 0 and !nothing_searched and !q.walk_error.load(.acquire)) {
+        // This walk streams each file past its worker and collects nothing, so
+        // there are no resident bytes here to probe. `afterStreaming` recovers
+        // what it can from the corpus instead — the process exits on the next
+        // line, so its allocations are the last this run makes.
+        const sh = hints.shape(parsed.patterns, o, parsed.roots, parsed.roots.len > 0);
+        hints.noMatches(sh, null, witness.afterStreaming(gpa, io, o.no_index, sh));
+    }
     (Outcome{ .matched = sink.succeeded(), .faulted = q.walk_error.load(.acquire) or nothing_searched }).exit();
 }
