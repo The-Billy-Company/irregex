@@ -1,19 +1,9 @@
 // irregex — import topology.
 //
-// The prose version of this file is src/README.md and the per-tier READMEs.
-// This is the machine-checkable half: Zig has no visibility rules between
-// files inside a package, so every boundary those READMEs describe is
-// convention until it is written here. Judged by `zoning verify` (the zoning
-// gate riding in each consumer's CI).
-//
-// Post-split scope (the ecosystem cut of 2026-07-29, amended 2026-07-30):
-// this package is the LIBRARY — syntax, engines, corpus, cold pipeline, warm
+// This package is the LIBRARY — syntax, engines, corpus, cold pipeline, warm
 // resident core, the FM-index + shelf, the analytic api, and its own C ABI
 // (`libirgx`: the `ffi` zone below plus `include/irgx.h`), which is the
-// substrate the siblings' ABIs return. The compression-kinship tiers (and the
-// cento quoter over this package's FM-index) live in `relate`; the daemon
-// transport and the `gist` CLI face live in `gist`; the composed face lives in
-// `blast`. Each carries its own `charter.zone`.
+// substrate the siblings' ABIs return.
 
 package irregex {
     // root.zig is the module's public face: it re-exports every tier (and the
