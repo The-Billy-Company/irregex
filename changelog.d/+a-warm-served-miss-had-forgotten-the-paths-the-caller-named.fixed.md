@@ -9,6 +9,6 @@ written for a normal one. The information was sitting in the `Request` the
 classifier had already parsed; it just was not being passed.
 
 `shapeWarm` takes both, so the two tiers say the same thing about the same query.
-This is what lets the new scope-versus-corpus sighting reach the warm path at all
-- an evidence probe against roots that were dropped on the floor has nothing to
-compare against.
+This is what lets the new scope-versus-corpus sighting reach the warm path at
+all - an evidence probe against roots that were dropped on the floor has nothing
+to compare against.
