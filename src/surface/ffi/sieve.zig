@@ -152,7 +152,7 @@ pub const State = enum(i32) {
 };
 
 /// Open the persisted narrowing tier. `dir_len == 0` means the artifact home
-/// (`GIST_DIR`, else `.gist`); any other directory is a deliberate override and
+/// (`GIST_DIR`, else the tree's `.gist`); any other directory is a deliberate override and
 /// costs freshness — see `Sieve.homed`.
 ///
 /// `.stale` when no index has been built: a declinature, not a fault. There is

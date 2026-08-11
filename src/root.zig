@@ -495,6 +495,7 @@ test {
     _ = @import("corpus/index/trigrams/lapse_test.zig"); // generation retention: each publish fence asserted alone
     _ = @import("corpus/index/trigrams/trigram_fuzz.zig"); // T0 loader long fuzz (seeds + mutations; GIST_FUZZ_ITERS)
     _ = @import("corpus/index/frame/frame_test.zig"); // shared artifact-load protocol: tree binding + future-anchor refusal, no leak on reject
+    _ = @import("corpus/index/frame/home_test.zig"); // artifact home: one tree one home, worktree edges, adopted placements, the climb ceiling
     _ = @import("corpus/index/phantom/treemap_test.zig"); // phantom tree.map layout: round-trip, root resolve, torn blobs fail closed
     _ = @import("corpus/index/content/shard.zig"); // content shard: body round-trip, freshness gate, torn blobs fail closed
     _ = @import("kernel/codex/codex_test.zig"); // SA-IS/RRR/wavelet/FM-index differential vs naive oracles

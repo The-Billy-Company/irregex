@@ -68,12 +68,19 @@ const PathLookup = struct {
         return t;
     }
 
+    /// Resolve a WALK-relative path against this CHECKOUT-relative table — the
+    /// same rebase, and for the same reason, as `elide.IndexedPaths.get`. It
+    /// matters more here: the elide side spends a wrong doc id on a skipped
+    /// read, this side spends it on BYTES, and `slice` hands those bytes to the
+    /// matcher as if they came off disk. `home.inTree` is the one translation.
     fn get(self: *const PathLookup, paths: []const []const u8, path: []const u8) ?u32 {
-        var pos = self.slot(path);
+        var buf: [portal.max_path]u8 = undefined;
+        const key = home.inTree(&buf, path) orelse return null;
+        var pos = self.slot(key);
         while (true) : (pos = (pos + 1) & self.mask) {
             const doc = self.slots[pos];
             if (doc == empty) return null;
-            if (std.mem.eql(u8, paths[doc], path)) return doc;
+            if (std.mem.eql(u8, paths[doc], key)) return doc;
         }
     }
 

@@ -11,6 +11,8 @@ const assay = @import("../../assay/assay.zig");
 const charter = @import("../scope/charter.zig");
 const drain = @import("drain.zig");
 const fault = @import("../../fault.zig");
+const home = @import("../index/frame/home.zig");
+const path_utils = @import("../scope/paths.zig");
 const ward = @import("../../kernel/math/lease.zig");
 const portal = @import("../../portal.zig");
 
@@ -32,9 +34,14 @@ pub const per_file_cap: usize = 4 << 20; // 4 MiB
 ///   2. the tree's committed charter (`.irregex.toml roots`), already resolved
 ///      against the charter's own directory, so the answer does not depend on
 ///      which subdirectory the command happened to run from;
-///   3. `.` — the whole tree (the skip-dir policy still prunes VCS/build
-///      output). No tree layout is ever assumed; a corpus that wants a
-///      narrower scope declares it, passes roots positionally, or sets the env.
+///   3. the whole tree (the skip-dir policy still prunes VCS/build output) —
+///      the CHECKOUT, not the working directory, which is the same principle
+///      rung 2 states: the corpus is a property of the tree, so the answer must
+///      not depend on which subdirectory the command happened to run from.
+///      `gist index` in `services/ai` indexes the repository, exactly as it
+///      does from the root, and publishes into the one home they share. No tree
+///      layout is ever assumed; a corpus that wants a narrower scope declares
+///      it, passes roots positionally, or sets the env.
 /// Every returned string is owned by `gpa`; release with `freeRoots`.
 pub fn resolveRoots(gpa: std.mem.Allocator) ![]const []const u8 {
     var roots: std.ArrayList([]const u8) = .empty;
@@ -54,8 +61,66 @@ pub fn resolveRoots(gpa: std.mem.Allocator) ![]const []const u8 {
         return roots.toOwnedSlice(gpa);
     };
 
-    try roots.append(gpa, try gpa.dupe(u8, "."));
+    const tree = home.treePrefix();
+    try roots.append(gpa, try gpa.dupe(u8, if (tree.len == 0) "." else tree));
     return roots.toOwnedSlice(gpa);
+}
+
+/// What a BUILD verb calls instead of `resolveRoots`: the corpus roots in
+/// CHECKOUT coordinates, with the process moved to the checkout root so that
+/// its walk speaks those coordinates too. `explicit` is the roots named on the
+/// command line, empty for none. Result is owned by `gpa` (`freeRoots`).
+///
+/// Every artifact a build publishes — the trigram path table, the content
+/// shard's document names, the directory-membership snapshot, `roots.list` —
+/// is addressed from the tree root, because that is the one address every
+/// later query can share (`home.station`). A build run from `services/ai`
+/// without this writes `notes.md` where the tree holds `services/ai/notes.md`,
+/// stamps it with the tree's binding, and the next query at the root opens a
+/// file that isn't there. So the move is not an optimization; it is what makes
+/// the artifacts mean what they claim.
+///
+/// Roots are re-expressed through the filesystem rather than by editing path
+/// text: resolved to absolute BEFORE the move, relativized to the tree root
+/// AFTER it. A charter's roots already carry `../..` to reach the tree, an
+/// explicit root is relative to wherever the user typed it, and a lexical
+/// `..`-collapse would answer both wrong through a symlinked directory. One
+/// root that resolves outside the tree simply stays absolute, which the walk
+/// already accepts.
+pub fn enterTree(gpa: std.mem.Allocator, io: std.Io, explicit: []const []const u8) ![]const []const u8 {
+    const walk_roots = if (explicit.len > 0) try dupeAll(gpa, explicit) else try resolveRoots(gpa);
+    defer freeRoots(gpa, walk_roots);
+
+    var absolute: std.ArrayList([]const u8) = .empty;
+    defer freeRoots(gpa, absolute.items);
+    errdefer absolute.deinit(gpa);
+    for (walk_roots) |r| {
+        const abs = path_utils.realpathAlloc(gpa, r) orelse try gpa.dupe(u8, r);
+        try absolute.append(gpa, abs);
+    }
+
+    _ = home.standAtRoot(io);
+
+    var here: std.ArrayList([]const u8) = .empty;
+    errdefer {
+        freeRoots(gpa, here.items);
+        here.deinit(gpa);
+    }
+    for (absolute.items) |abs| {
+        const rel = path_utils.cwdRelative(gpa, io, abs);
+        try here.append(gpa, try gpa.dupe(u8, if (rel.len == 0) "." else rel));
+    }
+    return here.toOwnedSlice(gpa);
+}
+
+fn dupeAll(gpa: std.mem.Allocator, in: []const []const u8) ![]const []const u8 {
+    var out: std.ArrayList([]const u8) = .empty;
+    errdefer {
+        freeRoots(gpa, out.items);
+        out.deinit(gpa);
+    }
+    for (in) |s| try out.append(gpa, try gpa.dupe(u8, s));
+    return out.toOwnedSlice(gpa);
 }
 
 /// Free a `resolveRoots` result (each string + the outer slice).

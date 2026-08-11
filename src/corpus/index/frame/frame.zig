@@ -68,10 +68,34 @@ pub fn boundHere() bool {
 /// `boundHere` against an explicit binding file — the injected seam the unit
 /// suite drives (production rides the memoized whole-directory answer).
 pub fn bindingHolds(path: []const u8) bool {
-    var recorded_buf: [std.fs.max_path_bytes]u8 = undefined;
-    var live_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const recorded = readSmall(path, &recorded_buf) orelse return false;
-    const live = thisTree(&live_buf) orelse return false;
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    return recordedIs(path, thisTree(&buf) orelse return false);
+}
+
+/// The rendezvous twin of `bindingHolds`: does the daemon behind this socket
+/// stand where I stand?
+///
+/// A persisted artifact and a resident session are bound to different things,
+/// and conflating them serves wrong answers. An index is written in checkout
+/// coordinates, so any directory under the checkout may ride it — that is what
+/// makes `thisTree` the tree root. A daemon's mirror is a CORPUS, walked from
+/// the directory the daemon was started in, and its rendered answers are that
+/// walk's output. There is one socket per artifact home and now one artifact
+/// home per checkout, so a session that went resident in `services/ai` sits on
+/// the same rendezvous a query at the tree root dials — and it would hand back
+/// the subtree's results, byte-perfect and missing most of the tree.
+///
+/// So the standing is the working directory, resolved, which is the thing that
+/// actually has to agree. A client that stands elsewhere reads the rendezvous
+/// as not its own and answers cold.
+pub fn standingHolds(path: []const u8) bool {
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    return recordedIs(path, portal.realpath(".", &buf) orelse return false);
+}
+
+fn recordedIs(path: []const u8, live: []const u8) bool {
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const recorded = readSmall(path, &buf) orelse return false;
     return std.mem.eql(u8, std.mem.trimEnd(u8, recorded, "\n"), live);
 }
 
@@ -83,8 +107,20 @@ pub fn bindingHolds(path: []const u8) bool {
 /// relative to, and it is the one identity `gist status` can print back. A
 /// moved or renamed tree therefore reads as unbound — right answers, no
 /// acceleration — until the next `gist index`.
+///
+/// It is the CHECKOUT that is asked, not the working directory. The two were
+/// the same thing back when the artifact home was resolved per-directory, and
+/// making them the same thing again is the whole reason a search from a
+/// subdirectory can reach the tree's index at all: standing in `services/ai`
+/// used to read as a different tree than standing at the root, so every
+/// accelerator switched itself off. What the artifacts are written in
+/// (`home.station`) and what proves they are ours have to be one answer.
 pub fn thisTree(buf: *[std.fs.max_path_bytes]u8) ?[]const u8 {
-    return portal.realpath(".", buf);
+    const pre = home.treePrefix();
+    if (pre.len == 0) return portal.realpath(".", buf);
+    var prez: [portal.max_path]u8 = undefined;
+    const p = std.fmt.bufPrintZ(&prez, "{s}", .{pre}) catch return portal.realpath(".", buf);
+    return portal.realpath(p, buf);
 }
 
 /// The tree a published binding names, or null when there is none. Copied out
@@ -99,20 +135,27 @@ pub fn treeBinding(gpa: std.mem.Allocator) ?[]u8 {
 }
 
 /// Record `thisTree()` at `path` — the write side of `bindingHolds`, used by
-/// `gist index` for the artifact directory and by `gist serve` for its socket.
-/// Atomic (temp + rename) so a concurrent reader sees the old tree or the new
-/// one, never a torn path. Best effort: a binding that can't be written simply
-/// reads as unbound, which costs acceleration and never correctness.
+/// `gist index` for the artifact directory. Atomic (temp + rename) so a
+/// concurrent reader sees the old tree or the new one, never a torn path. Best
+/// effort: a binding that can't be written simply reads as unbound, which costs
+/// acceleration and never correctness.
 pub fn publishBinding(io: std.Io, path: []const u8) void {
-    fault.spare("publish the tree binding", publishBindingFallible(io, path));
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    fault.spare("publish the tree binding", record(io, path, thisTree(&buf)));
 }
 
-fn publishBindingFallible(io: std.Io, path: []const u8) !void {
+/// The write side of `standingHolds` — what `gist serve` records beside its
+/// socket. Same file, same atomicity, different question (see `standingHolds`).
+pub fn publishStanding(io: std.Io, path: []const u8) void {
     var buf: [std.fs.max_path_bytes]u8 = undefined;
-    const tree = thisTree(&buf) orelse return;
+    fault.spare("publish the rendezvous standing", record(io, path, portal.realpath(".", &buf)));
+}
+
+fn record(io: std.Io, path: []const u8, what: ?[]const u8) !void {
+    const value = what orelse return;
     var af = try std.Io.Dir.cwd().createFileAtomic(io, path, .{ .make_path = true, .replace = true });
     defer af.deinit(io);
-    try af.file.writeStreamingAll(io, tree);
+    try af.file.writeStreamingAll(io, value);
     try af.replace(io);
 }
 
@@ -123,7 +166,8 @@ fn publishBindingFallible(io: std.Io, path: []const u8) !void {
 /// at one directory aims them at one RENDEZVOUS: without this, a daemon warm
 /// over the other tree answers the dial and its resident bytes are served,
 /// silently, as if they were this tree's. The default artifact directory is
-/// CWD-relative and can't collide; an absolute one can.
+/// anchored at the checkout (`home.anchor`) and so is one per tree, which is
+/// exactly what cannot collide; an absolute `GIST_DIR` can.
 ///
 /// DOTTED deliberately: a socket may be placed anywhere, including inside the
 /// corpus itself (embedders and the daemon suite do exactly that), and the

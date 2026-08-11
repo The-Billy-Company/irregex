@@ -45,6 +45,7 @@ const std = @import("std");
 const assay = @import("../../assay/assay.zig");
 const misread = @import("../../kernel/math/misread.zig");
 const portal = @import("../../portal.zig");
+const home = @import("../index/frame/home.zig");
 
 /// The charter's filename, searched for from the working directory upward.
 pub const filename = ".irregex.toml";
@@ -53,7 +54,10 @@ pub const filename = ".irregex.toml";
 /// careless commit can do to everyone who clones the tree.
 const max_bytes: usize = 64 << 10;
 const max_entries: usize = 1024;
-const max_climb: usize = 40;
+/// Shared with the artifact home's own climb — one tree boundary, found one way,
+/// so a charter and the `.gist` beside it can never disagree about which
+/// checkout they belong to.
+const max_climb: usize = home.max_climb;
 
 /// What a charter is allowed to declare. Every key is a `Reach.corpus` fact:
 /// which files the engine sees, never what matches inside them.
@@ -367,7 +371,7 @@ fn discover(gpa: std.mem.Allocator) !?*const Charter {
     var buf: [max_climb * 3 + 32]u8 = undefined;
     var up: usize = 0;
     while (up <= max_climb) : (up += 1) {
-        const dir = prefix(buf[0 .. max_climb * 3], up);
+        const dir = home.ascent(buf[0 .. max_climb * 3], up);
         const path = std.fmt.bufPrint(buf[max_climb * 3 ..], "{s}{s}", .{ dir, filename }) catch return null;
         if (slurp(gpa, path)) |src| {
             defer gpa.free(src);
@@ -376,25 +380,9 @@ fn discover(gpa: std.mem.Allocator) !?*const Charter {
         } else |_| {}
         // A repo boundary with no charter in it is an answer: stop, rather than
         // adopt whatever a parent directory outside the tree happens to say.
-        if (exists(buf[max_climb * 3 ..], dir, ".git")) return null;
+        if (home.probe(portal.cwd(), buf[max_climb * 3 ..], dir, ".git")) return null;
     }
     return null;
-}
-
-/// `""`, `"../"`, `"../../"`, … — `up` levels of relative ascent.
-fn prefix(buf: []u8, up: usize) []const u8 {
-    for (0..up) |i| @memcpy(buf[i * 3 ..][0..3], "../");
-    return buf[0 .. up * 3];
-}
-
-/// Is `<dir><name>` there? Probed by opening rather than by `access`, so a
-/// `.git` FILE (a worktree or submodule pointer) counts as a boundary exactly
-/// like a `.git` directory does — both are the edge of a checkout.
-fn exists(buf: []u8, dir: []const u8, name: []const u8) bool {
-    const path = std.fmt.bufPrint(buf, "{s}{s}", .{ dir, name }) catch return false;
-    const fd = portal.openFile(portal.cwd(), path) catch return false;
-    portal.close(fd);
-    return true;
 }
 
 /// Read a whole persisted-configuration file, refusing one too large to be one.

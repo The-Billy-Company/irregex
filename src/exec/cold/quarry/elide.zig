@@ -32,7 +32,9 @@ const bulkstat = @import("../../../corpus/tree/bulkstat.zig");
 const crest = @import("../../../kernel/math/crest.zig");
 const fault = @import("../../../fault.zig");
 const fresh = @import("../../../corpus/fresh/fresh.zig");
+const home = @import("../../../corpus/index/frame/home.zig");
 const persist = @import("../../../corpus/index/trigrams/persist.zig");
+const portal = @import("../../../portal.zig");
 const trigram = @import("../../../corpus/index/trigrams/trigram.zig");
 
 const Dir = std.Io.Dir;
@@ -79,12 +81,28 @@ pub const IndexedPaths = struct {
         return table;
     }
 
+    /// Resolve a WALK-relative path (what the descent hands us, and what rg
+    /// prints) against a CHECKOUT-relative table (what the index persisted).
+    ///
+    /// The rebase lives here rather than at the three call sites because the
+    /// coordinate mismatch is a property of this lookup — a table keyed at the
+    /// tree root, questioned by a walk rooted wherever the user is standing —
+    /// and a caller that forgot would not fail loudly. It would ask for
+    /// `README.md` from `services/ai` and be handed the root's doc id: a real
+    /// answer about the wrong file. Two callers elide reads off that id and one
+    /// serves bytes off it, so the cost of forgetting is a wrong result, not a
+    /// slow one. Nothing above this line has to know a coordinate system exists.
+    ///
+    /// A search run at the tree root — the overwhelmingly common case — pays an
+    /// acquire load and a length test.
     pub fn get(self: *const IndexedPaths, paths: []const []const u8, path: []const u8) ?u32 {
-        var pos = self.slot(path);
+        var buf: [portal.max_path]u8 = undefined;
+        const key = home.inTree(&buf, path) orelse return null;
+        var pos = self.slot(key);
         while (true) {
             const doc = self.slots[pos];
             if (doc == empty) return null;
-            if (std.mem.eql(u8, paths[doc], path)) return doc;
+            if (std.mem.eql(u8, paths[doc], key)) return doc;
             pos = (pos + 1) & self.mask;
         }
     }

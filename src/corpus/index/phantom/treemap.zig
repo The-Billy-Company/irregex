@@ -159,11 +159,19 @@ pub fn decode(_: void, map: frame.Mapping) !View {
 }
 
 /// Resolve a positional root to its snapshot record by walking name
-/// components from dir 0 (the CWD root). Null — root outside the snapshot's
-/// path space (absolute, `..`), a component the build never saw, or a dir it
-/// recorded but never descended — means that root simply walks live.
-pub fn resolve(v: *const View, root: []const u8) ?u32 {
-    if (root.len > 0 and root[0] == '/') return null;
+/// components from dir 0 (the CHECKOUT root). Null — root outside the
+/// snapshot's path space (absolute, `..`), a component the build never saw, or
+/// a dir it recorded but never descended — means that root simply walks live.
+///
+/// `root` arrives in WALK coordinates and dir 0 is the tree root, so the
+/// station is prepended before the descent (`home.inTree`) — searching from
+/// `services/ai` has to enter the snapshot at `services/ai`, not at the tree
+/// top, or every component name would be looked for in the wrong directory.
+/// This is the snapshot's only door: past it everything is record indices.
+pub fn resolve(v: *const View, walk_root: []const u8) ?u32 {
+    if (walk_root.len > 0 and walk_root[0] == '/') return null;
+    var buf: [portal.max_path]u8 = undefined;
+    const root = home.inTree(&buf, walk_root) orelse return null;
     var ix: u32 = 0;
     var it = std.mem.tokenizeScalar(u8, root, '/');
     while (it.next()) |comp| {

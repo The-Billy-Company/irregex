@@ -42,8 +42,9 @@ pub const Brand = struct {
     /// Namespace for environment knobs, trailing separator included, so
     /// `TRACE` resolves as `<env_prefix>TRACE`. Per-ecosystem.
     env_prefix: []const u8 = "GIST_",
-    /// Where the index, atlas, shelf, freshness anchor, and daemon socket live,
-    /// relative to the working directory. Per-ecosystem.
+    /// What the directory holding the index, atlas, shelf, freshness anchor, and
+    /// daemon socket is CALLED; `corpus.home` decides which directory wears the
+    /// name (the checkout's, not the caller's). Per-ecosystem.
     artifact_dir: []const u8 = ".gist",
 };
 
