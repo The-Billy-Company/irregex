@@ -14,8 +14,9 @@ what rg prints and output parity is not up for negotiation. So an index-keyed
 lookup crosses between them, and a lookup that forgets does not fail loudly: it
 asks for `notes.md`, finds a real doc for a real file, and that file is a
 different one. Two callers spend that doc id on skipping a read and one spends
-it on serving bytes, so the cost of forgetting is a wrong answer, not a slow one
-- a subtree file that matches, elided because its namesake at the root doesn't.
+it on serving bytes, so the cost of forgetting is a wrong answer, not a slow
+one - a subtree file that matches, elided because its namesake at the root
+doesn't.
 
 The offset between the two is `home.station`, and the rebase lives in the three
 lookups themselves rather than at their call sites: the elide oracle's path
