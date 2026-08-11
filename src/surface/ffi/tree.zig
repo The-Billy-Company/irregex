@@ -60,6 +60,7 @@ const api = @import("../api.zig");
 const contract = @import("contract.zig");
 const fault = @import("../../fault.zig");
 const pat = @import("pattern.zig");
+const portal = @import("../../portal.zig");
 const rows = @import("rows.zig");
 
 const Status = contract.Status;
@@ -295,7 +296,7 @@ fn plant(arena: std.mem.Allocator, seed: u32) ![]const u8 {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const root = try std.fmt.allocPrint(arena, "/tmp/irgx_tree_{x}_{d}", .{ seed, std.c.getpid() });
+    const root = try std.fmt.allocPrint(arena, "/tmp/irgx_tree_{x}_{d}", .{ seed, portal.processId() });
     try Dir.cwd().createDirPath(io, root);
     for (fixture) |f| {
         const p = try std.fmt.allocPrint(arena, "{s}/{s}", .{ root, f[0] });
