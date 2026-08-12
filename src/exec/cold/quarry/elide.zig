@@ -30,6 +30,7 @@ const args = @import("../argv/args.zig");
 const assay = @import("../../../assay/assay.zig");
 const bulkstat = @import("../../../corpus/tree/bulkstat.zig");
 const crest = @import("../../../kernel/math/crest.zig");
+const crest_runtime = @import("../../../corpus/index/crest/runtime.zig");
 const fault = @import("../../../fault.zig");
 const fresh = @import("../../../corpus/fresh/fresh.zig");
 const home = @import("../../../corpus/index/frame/home.zig");
@@ -363,9 +364,8 @@ fn assemble(gpa: std.mem.Allocator, io: std.Io, filters: []const []const u8, pla
     // describes live bytes.
     if (sieve.active()) {
         if (p.crest) |table| {
-            for (table, 0..) |v, d| {
-                if (sieve.prunes(v)) candidates.unset(d);
-            }
+            const ranked = sieve.ranked();
+            _ = try crest_runtime.apply(gpa, table, &candidates, ranked);
         } else if (cand == null) {
             // No table to sieve with and no trigram filter either — nothing
             // can be elided; decline rather than build a can't-prune oracle.

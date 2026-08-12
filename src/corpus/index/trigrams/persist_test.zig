@@ -7,6 +7,7 @@ const std = @import("std");
 const persist = @import("persist.zig");
 const frame = @import("../frame/frame.zig");
 const crest = @import("../../../kernel/math/crest.zig");
+const crest_builder = @import("../crest/builder.zig");
 const crest_sidecar = @import("../crest/sidecar.zig");
 const Index = @import("trigram.zig").Index;
 const Dir = std.Io.Dir;
@@ -66,7 +67,7 @@ test "persistIndexAndPathsAt: generation publish keeps readers off a torn pair" 
     const paths_a = [_][]const u8{ "a.txt", "b.txt" };
     var idx_a = try Index.build(gpa, &docs_a);
     defer idx_a.deinit();
-    const crest_a = try crest_sidecar.build(gpa, &docs_a);
+    const crest_a = try crest_builder.build(gpa, &docs_a);
     defer gpa.free(crest_a);
     _ = try persist.persistIndexAndPathsAt(gpa, io, root, &idx_a, &paths_a, &.{"src"}, crest_a, std.Io.Clock.now(.real, io).nanoseconds);
 
@@ -75,7 +76,8 @@ test "persistIndexAndPathsAt: generation publish keeps readers off a torn pair" 
     try std.testing.expectEqual(@as(u32, 2), loaded_a.idx.doc_count);
     try std.testing.expectEqualStrings("a.txt", loaded_a.paths.items[0]);
     // Crest sidecar rides the same generation: mapped back doc-for-doc.
-    try std.testing.expectEqualSlices(crest.Vector, crest_a, loaded_a.crest.?);
+    for (crest_a, 0..) |spectrum, document|
+        try std.testing.expectEqual(spectrum, loaded_a.crest.?.row(document));
     // Build roots round-trip beside the pair (the un-hardcoded corpus scope).
     try std.testing.expectEqual(@as(usize, 1), loaded_a.roots.items.len);
     try std.testing.expectEqualStrings("src", loaded_a.roots.items[0]);
@@ -126,7 +128,7 @@ test "persistIndexAndPathsAt: generation publish keeps readers off a torn pair" 
     try std.testing.expectEqual(@as(u32, 3), loaded_b.idx.doc_count);
     try std.testing.expectEqual(@as(usize, 3), loaded_b.paths.items.len);
     try std.testing.expectEqualStrings("c.txt", loaded_b.paths.items[0]);
-    try std.testing.expectEqual(@as(?[]const crest.Vector, null), loaded_b.crest);
+    try std.testing.expect(loaded_b.crest == null);
 }
 
 test "loadAt: a crest table whose records rotted is refused, so nothing it says can prune" {
@@ -144,14 +146,15 @@ test "loadAt: a crest table whose records rotted is refused, so nothing it says 
     const paths = [_][]const u8{ "a.txt", "b.txt" };
     var idx = try Index.build(gpa, &docs);
     defer idx.deinit();
-    const vectors = try crest_sidecar.build(gpa, &docs);
+    const vectors = try crest_builder.build(gpa, &docs);
     defer gpa.free(vectors);
     _ = try persist.persistIndexAndPathsAt(gpa, io, root, &idx, &paths, &.{"."}, vectors, std.Io.Clock.now(.real, io).nanoseconds);
 
     {
         var pristine = (try persist.loadAt(gpa, io, root, false)).?;
         defer pristine.deinit();
-        try std.testing.expectEqualSlices(crest.Vector, vectors, pristine.crest.?);
+        for (vectors, 0..) |spectrum, document|
+            try std.testing.expectEqual(spectrum, pristine.crest.?.row(document));
     }
 
     // Rot ONE class of ONE record downward, in the generation directory the
@@ -168,11 +171,13 @@ test "loadAt: a crest table whose records rotted is refused, so nothing it says 
     const blob = try Dir.cwd().readFileAlloc(io, blob_path, gpa, .limited(1 << 20));
     defer gpa.free(blob);
     const rotted_doc = 0;
-    const klass = for (vectors[rotted_doc], 0..) |run, k| {
+    const vector = crest.crest(docs[rotted_doc]);
+    const klass = for (vector, 0..) |run, k| {
         if (run > 0) break k;
     } else return error.FixtureHasNoRunToLose;
-    const at = crest_sidecar.header_len + rotted_doc * @sizeOf(crest.Vector) + klass * @sizeOf(u16);
-    std.mem.writeInt(u16, blob[at..][0..2], vectors[rotted_doc][klass] - 1, .little);
+    const base: usize = std.mem.readInt(u64, blob[crest_sidecar.Offset.base..][0..8], .little);
+    const at = base + klass * crest.max_rank * docs.len + rotted_doc;
+    blob[at] -= 1;
     try Dir.cwd().writeFile(io, .{ .sub_path = blob_path, .data = blob });
 
     // Why that is a soundness bug and not a cosmetic one: a query whose forced
@@ -180,17 +185,17 @@ test "loadAt: a crest table whose records rotted is refused, so nothing it says 
     // in one class is enough to flip that. So an unverified table's failure mode
     // is a LOST match — which is what the seal is spent on.
     var sieve: crest.Swell = .{ .len = 1 };
-    sieve.crests[0] = vectors[rotted_doc];
-    var rotted = vectors[rotted_doc];
+    sieve.crests[0] = vector;
+    var rotted = vector;
     rotted[klass] -= 1;
-    try std.testing.expect(!sieve.prunes(vectors[rotted_doc]));
+    try std.testing.expect(!sieve.prunes(vector));
     try std.testing.expect(sieve.prunes(rotted));
 
     var loaded = (try persist.loadAt(gpa, io, root, false)).?;
     defer loaded.deinit();
     // The pair still loads and still answers — only the sieve stands down.
     try std.testing.expectEqual(@as(u32, 2), loaded.idx.doc_count);
-    try std.testing.expectEqual(@as(?[]const crest.Vector, null), loaded.crest);
+    try std.testing.expect(loaded.crest == null);
     // `short_docs` is derived from the same bytes, so it must fall with them:
     // an upward rot there would hide a short document from the sliver tier.
     try std.testing.expectEqual(@as(?[]u32, null), loaded.short_docs);

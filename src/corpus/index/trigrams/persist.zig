@@ -29,6 +29,7 @@ const ngram = @import("ngram.zig");
 const sliver = @import("sliver.zig");
 const lapse = @import("lapse.zig");
 const frame = @import("../frame/frame.zig");
+const signet = @import("../frame/signet.zig");
 const assay = @import("../../../assay/assay.zig");
 const portal = @import("../../../portal.zig");
 const home = @import("../frame/home.zig");
@@ -89,9 +90,8 @@ pub const Persisted = struct {
     /// queries without it just lose the sieve, never correctness. When a
     /// codicil is live this is instead an OWNED merged table (`crest_allocation`).
     cmap: ?Mapping = null,
-    crest: ?[]const crest.Vector = null,
-    /// Mutable owner retained separately when `crest` views a merged allocation.
-    crest_allocation: ?[]crest.Vector = null,
+    crest: ?crest_sidecar.View = null,
+    crest_allocation: ?[]u8 = null,
     /// Base-index documents this loader could NOT prove are ≥ 3 bytes long, and
     /// which therefore own no trigram and appear in no posting list. The sliver
     /// tier (`sliver.zig`) unions them in unconditionally, which is the whole
@@ -123,7 +123,7 @@ pub const Persisted = struct {
         if (self.roots_blob) |b| self.gpa.free(b);
         self.paths.deinit(self.gpa);
         self.idx.deinit(); // borrowed ⇒ frees nothing
-        if (self.crest_allocation) |table| self.gpa.free(table);
+        if (self.crest_allocation) |bytes| self.gpa.free(bytes);
         if (self.short_docs) |s| self.gpa.free(s);
         if (self.codmap) |m| portal.unmap(m);
         if (self.cmap) |m| portal.unmap(m);
@@ -399,7 +399,10 @@ fn loadMappedPair(gpa: std.mem.Allocator, io: std.Io, pf: *const PairFiles, gen:
     // broken seal costs only the sieve (the query still answers exactly), so
     // all three read as null.
     var cmap: ?Mapping = mmapFile(io, pf.crest) catch null;
-    var crest_view: ?[]const crest.Vector = if (cmap) |m| sealedCrest(m, idx.doc_count) else null;
+    var crest_view: ?crest_sidecar.View = if (cmap) |m|
+        sealedCrest(m, idx.doc_count, crestBinding(imap, pmap))
+    else
+        null;
     if (cmap != null and crest_view == null) {
         portal.unmap(cmap.?);
         cmap = null;
@@ -420,7 +423,8 @@ fn loadMappedPair(gpa: std.mem.Allocator, io: std.Io, pf: *const PairFiles, gen:
     errdefer if (gen_owned) |g| gpa.free(g);
     var codmap: ?Mapping = null;
     var cod: ?codicil_mod.Decoded = null;
-    var crest_allocation: ?[]crest.Vector = null;
+    var crest_allocation: ?[]u8 = null;
+    errdefer if (crest_allocation) |bytes| gpa.free(bytes);
     errdefer if (codmap) |m| portal.unmap(m);
     if (gen) |g| blk: {
         const m = mmapFile(io, pf.codicil) catch break :blk;
@@ -428,25 +432,37 @@ fn loadMappedPair(gpa: std.mem.Allocator, io: std.Io, pf: *const PairFiles, gen:
             portal.unmap(m);
             break :blk;
         };
+        errdefer portal.unmap(m);
         const new_paths = frame.splitNulExact(gpa, d.new_paths_blob, d.n_new, true) catch {
             portal.unmap(m);
             break :blk;
         };
         defer gpa.free(new_paths);
         try paths.appendSlice(gpa, new_paths); // slices alias the codicil map
-        codmap = m;
-        cod = d;
         if (crest_view) |base_table| {
-            const merged = try gpa.alloc(crest.Vector, paths.items.len);
-            @memcpy(merged[0..base_table.len], base_table);
-            for (merged[base_table.len..]) |*v| v.* = codicil_mod.never_prune;
-            for (d.ids, d.rows) |gid, row| merged[gid] = row;
-            for (d.tombs) |gid| merged[gid] = codicil_mod.never_prune;
+            const merged = try gpa.alloc(crest.Spectrum, paths.items.len);
+            defer gpa.free(merged);
+            for (merged[0..base_table.document_count], 0..) |*row, document|
+                row.* = base_table.row(document);
+            for (merged[base_table.document_count..]) |*row| row.* = codicil_mod.never_prune;
+            for (d.ids, d.rows) |global_id, row| merged[global_id] = row;
+            for (d.tombs) |global_id| merged[global_id] = codicil_mod.never_prune;
+
+            const owned = try gpa.alloc(u8, try crest_sidecar.encodedSize(merged, crest.max_rank));
+            errdefer gpa.free(owned);
+            const binding = crestBinding(imap, pmap);
+            _ = try crest_sidecar.writeInto(merged, .{ .q = crest.max_rank, .binding = binding }, owned);
+            crest_view = crest_sidecar.decode(owned, .{
+                .document_count = @intCast(merged.len),
+                .q = crest.max_rank,
+                .binding = binding,
+            }) orelse return fault.Persist.Corrupt;
             portal.unmap(cmap.?);
             cmap = null;
-            crest_view = merged;
-            crest_allocation = merged;
+            crest_allocation = owned;
         }
+        codmap = m;
+        cod = d;
     }
 
     return .{ .imap = imap, .pmap = pmap, .idx = idx, .cmap = cmap, .crest = crest_view, .crest_allocation = crest_allocation, .short_docs = short_docs, .codmap = codmap, .cod = cod, .paths = paths, .roots_blob = roots_blob, .roots = roots, .gen = gen_owned, .gpa = gpa };
@@ -469,13 +485,23 @@ fn loadMappedPair(gpa: std.mem.Allocator, io: std.Io, pf: *const PairFiles, gen:
 /// digesting it, and only a table claiming to describe THIS doc space pays the
 /// BLAKE3 pass (0.18 ms over the 345 KB / 21.6k-doc production sidecar, on the
 /// pages `shortDocs` walks immediately after).
-fn sealedCrest(bytes: []const u8, doc_count: u32) ?[]const crest.Vector {
-    const view = crest_sidecar.decode(bytes, doc_count) orelse return null;
-    crest_sidecar.verify(bytes) catch {
-        assay.trace(.index, assay.tag ++ "crest sidecar seal broken — sieve stands down for this load\n", .{});
+fn sealedCrest(bytes: []const u8, doc_count: u32, binding: crest_sidecar.Binding) ?crest_sidecar.View {
+    return crest_sidecar.decode(bytes, .{
+        .document_count = doc_count,
+        .q = crest.max_rank,
+        .binding = binding,
+    }) orelse {
+        assay.trace(.index, assay.tag ++ "crest sidecar refused — sieve stands down for this load\n", .{});
         return null;
     };
-    return view;
+}
+
+fn crestBinding(index_bytes: []const u8, path_bytes: []const u8) crest_sidecar.Binding {
+    var scribe = signet.Scribe.init(.rollup);
+    scribe.update("irregex/crest-build-binding\x00");
+    scribe.update(index_bytes);
+    scribe.update(path_bytes);
+    return crest_sidecar.Binding.forBuild(scribe.finish());
 }
 
 /// Documents a crest table cannot prove are ≥ 3 bytes long, ascending.
@@ -486,16 +512,20 @@ fn sealedCrest(bytes: []const u8, doc_count: u32) ?[]const crest.Vector {
 /// with no 3-run — so a document that fails the test is merely *unproven*, not
 /// known short, and is admitted. That asymmetry is the sound direction: this
 /// list may be a superset of the truly-short documents, never a subset.
-fn shortDocs(gpa: std.mem.Allocator, table: []const crest.Vector) ![]u32 {
+fn shortDocs(gpa: std.mem.Allocator, table: crest_sidecar.View) ![]u32 {
     var n: usize = 0;
-    for (table) |v| {
-        if (@reduce(.Max, @as(@Vector(crest.K, u16), v)) < 3) n += 1;
+    for (0..table.document_count) |document| {
+        var widest: u16 = 0;
+        for (0..crest.K) |predicate| widest = @max(widest, table.value(predicate, 0, document));
+        if (widest < 3) n += 1;
     }
     const out = try gpa.alloc(u32, n);
     var w: usize = 0;
-    for (table, 0..) |v, d| {
-        if (@reduce(.Max, @as(@Vector(crest.K, u16), v)) < 3) {
-            out[w] = @intCast(d);
+    for (0..table.document_count) |document| {
+        var widest: u16 = 0;
+        for (0..crest.K) |predicate| widest = @max(widest, table.value(predicate, 0, document));
+        if (widest < 3) {
+            out[w] = @intCast(document);
             w += 1;
         }
     }
@@ -546,7 +576,7 @@ pub fn persistIndexAndPathsAt(
     idx: *const Index,
     paths: []const []const u8,
     roots: []const []const u8,
-    crest_vectors: ?[]const crest.Vector,
+    crest_spectra: ?[]const crest.Spectrum,
     built_ns: i128,
 ) !usize {
     try Dir.cwd().createDirPath(io, out_dir);
@@ -571,10 +601,13 @@ pub fn persistIndexAndPathsAt(
     try frame.joinNul(gpa, &rl, roots);
 
     // Crest sidecar bytes (empty when the builder skipped the pass).
-    const cblob: []u8 = if (crest_vectors) |cv| blk: {
-        const b = try gpa.alloc(u8, try crest_sidecar.encodedSize(cv.len));
+    const cblob: []u8 = if (crest_spectra) |spectra| blk: {
+        const b = try gpa.alloc(u8, try crest_sidecar.encodedSize(spectra, crest.max_rank));
         errdefer gpa.free(b);
-        _ = try crest_sidecar.writeInto(cv, b);
+        _ = try crest_sidecar.writeInto(spectra, .{
+            .q = crest.max_rank,
+            .binding = crestBinding(blob, pl.items),
+        }, b);
         break :blk b;
     } else &.{};
     defer if (cblob.len > 0) gpa.free(cblob);
@@ -676,10 +709,10 @@ pub fn persistIndexAndPaths(
     idx: *const Index,
     paths: []const []const u8,
     roots: []const []const u8,
-    crest_vectors: ?[]const crest.Vector,
+    crest_spectra: ?[]const crest.Spectrum,
     built_ns: i128,
 ) !usize {
-    return persistIndexAndPathsAt(gpa, io, home.outDir(), idx, paths, roots, crest_vectors, built_ns);
+    return persistIndexAndPathsAt(gpa, io, home.outDir(), idx, paths, roots, crest_spectra, built_ns);
 }
 
 /// The base build instant of generation `gen` (`gens/<gen>/base.ns`), or null

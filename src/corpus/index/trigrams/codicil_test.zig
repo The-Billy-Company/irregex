@@ -10,7 +10,7 @@
 const std = @import("std");
 const codicil = @import("codicil.zig");
 const persist = @import("persist.zig");
-const crest_sidecar = @import("../crest/sidecar.zig");
+const crest_builder = @import("../crest/builder.zig");
 const Index = @import("trigram.zig").Index;
 const fault = @import("../../../fault.zig");
 const Dir = std.Io.Dir;
@@ -213,7 +213,7 @@ test "codicil end-to-end: publish + layered load answer soundly for dirty, new, 
     const base_paths = [_][]const u8{ fx.f[0], fx.f[1], fx.f[2] };
     var idx = try Index.build(gpa, &base_docs);
     defer idx.deinit();
-    const cv = try crest_sidecar.build(gpa, &base_docs);
+    const cv = try crest_builder.build(gpa, &base_docs);
     defer gpa.free(cv);
     _ = try persist.persistIndexAndPathsAt(gpa, io, out_dir, &idx, &base_paths, &.{fx.root}, cv, 777);
 
@@ -240,9 +240,9 @@ test "codicil end-to-end: publish + layered load answer soundly for dirty, new, 
     // Paths extended with the appended doc; base ids untouched.
     try std.testing.expectEqual(@as(usize, 4), p.paths.items.len);
     try std.testing.expectEqualStrings(fx.f[3], p.paths.items[3]);
-    // Merged crest overlay: one row per path, tomb row can never prune.
-    try std.testing.expectEqual(@as(usize, 4), p.crest.?.len);
-    try std.testing.expectEqual(codicil.never_prune, p.crest.?[2]);
+    // Merged q4 overlay: one row per path, tomb row can never prune.
+    try std.testing.expectEqual(@as(usize, 4), p.crest.?.len());
+    try std.testing.expectEqual(codicil.never_prune, p.crest.?.row(2));
 
     // SOUNDNESS (the direction that may never fail): every doc whose LIVE
     // bytes contain the probe is a candidate. Stale-base false positives are

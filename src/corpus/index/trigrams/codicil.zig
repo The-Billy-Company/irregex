@@ -48,7 +48,7 @@ const std = @import("std");
 const corpus_mod = @import("../../tree/corpus.zig");
 const crest = @import("../../../kernel/math/crest.zig");
 const fault = @import("../../../fault.zig");
-const crest_sidecar = @import("../crest/sidecar.zig");
+const crest_builder = @import("../crest/builder.zig");
 const signet = @import("../frame/signet.zig");
 const trigram = @import("trigram.zig");
 const Index = trigram.Index;
@@ -64,7 +64,7 @@ pub const base_ns_name = "base.ns";
 /// v2 = v1's sections plus the trailing artifact seal. A v1 blob decodes as
 /// null and the generation lifecycle rebuilds it, exactly as the crest sidecar's
 /// retired magics do — an amend is cheap, so there is nothing to migrate.
-const magic = "GISTCOD2";
+const magic = "GISTCOD3";
 /// magic(8) + base_ns i64 + base_doc_count u32 + n_docs u32 + n_new u32 +
 /// n_tomb u32 + gen_len u32 + pad u32 + new_paths_len u64 + idx_len u64.
 const header_len = 56;
@@ -73,7 +73,7 @@ const max_gen_len = 128;
 /// The sieve row that can never manufacture a prune: `pruned(v, ĝ)` is
 /// `∃C: v[C] < ĝ[C]`, and a saturated vector is ≥ every ĝ component
 /// (saturation is monotone on both compare sides — crest.zig's own posture).
-pub const never_prune: crest.Vector = @splat(std.math.maxInt(u16));
+pub const never_prune: crest.Spectrum = @splat(std.math.maxInt(u16));
 
 fn pad8(n: usize) usize {
     return (n + 7) & ~@as(usize, 7);
@@ -89,8 +89,8 @@ pub const Decoded = struct {
     /// Ascending subset of `ids` (< base_doc_count): docs whose live re-read
     /// left the corpus — always candidates, never crest-pruned.
     tombs: []const u32,
-    /// Recomputed crest vectors, `ids` order (tomb rows are `never_prune`).
-    rows: []const crest.Vector,
+    /// Recomputed ranked spectra, `ids` order (tomb rows are `never_prune`).
+    rows: []const crest.Spectrum,
     /// NUL-joined paths for the `n_new` appended docs (ids `base_doc_count..`),
     /// ascending-id order; the loader splits them via `frame.splitNulExact`.
     new_paths_blob: []const u8,
@@ -126,7 +126,7 @@ pub fn decode(bytes: []const u8, expected_base_docs: u32, expected_gen: []const 
     const map_off = gen_off + pad8(gen_len);
     const tomb_off = map_off + pad8(@as(usize, n_docs) * 4);
     const rows_off = tomb_off + pad8(@as(usize, n_tomb) * 4);
-    const paths_off = rows_off + @as(usize, n_docs) * @sizeOf(crest.Vector);
+    const paths_off = rows_off + @as(usize, n_docs) * @sizeOf(crest.Spectrum);
     const idx_off = paths_off + pad8(@as(usize, @intCast(paths_len)));
     const total = idx_off + @as(usize, @intCast(idx_len));
     if (bytes.len != total + signet.len) return null;
@@ -139,7 +139,7 @@ pub fn decode(bytes: []const u8, expected_base_docs: u32, expected_gen: []const 
 
     const ids = std.mem.bytesAsSlice(u32, @as([]align(4) const u8, @alignCast(bytes[map_off..][0 .. @as(usize, n_docs) * 4])));
     const tombs = std.mem.bytesAsSlice(u32, @as([]align(4) const u8, @alignCast(bytes[tomb_off..][0 .. @as(usize, n_tomb) * 4])));
-    const rows = std.mem.bytesAsSlice(crest.Vector, @as([]align(2) const u8, @alignCast(bytes[rows_off..][0 .. @as(usize, n_docs) * @sizeOf(crest.Vector)])));
+    const rows = std.mem.bytesAsSlice(crest.Spectrum, @as([]align(2) const u8, @alignCast(bytes[rows_off..][0 .. @as(usize, n_docs) * @sizeOf(crest.Spectrum)])));
     if (comptime @import("builtin").cpu.arch.endian() != .little) return null; // LE views only, like the crest sidecar
 
     // doc_map: strictly ascending; the new ids are exactly the contiguous tail.
@@ -254,7 +254,7 @@ pub fn build(
     // Delta index + crest rows over the live bytes (tombs never prune).
     var idx = try Index.build(gpa, docs.items);
     defer idx.deinit();
-    const rows = try crest_sidecar.build(gpa, docs.items);
+    const rows = try crest_builder.build(gpa, docs.items);
     defer gpa.free(rows);
     var ti: usize = 0;
     for (ids.items, rows) |id, *row| {
@@ -274,7 +274,7 @@ fn encode(
     base_docs: u32,
     ids: []const u32,
     tombs: []const u32,
-    rows: []const crest.Vector,
+    rows: []const crest.Spectrum,
     new_paths: []const []const u8,
     idx: *const Index,
 ) ![]u8 {
@@ -286,7 +286,7 @@ fn encode(
     const map_off = gen_off + pad8(publish_gen.len);
     const tomb_off = map_off + pad8(ids.len * 4);
     const rows_off = tomb_off + pad8(tombs.len * 4);
-    const paths_off = rows_off + rows.len * @sizeOf(crest.Vector);
+    const paths_off = rows_off + rows.len * @sizeOf(crest.Spectrum);
     const idx_off = paths_off + pad8(paths_len);
 
     const buf = try gpa.alloc(u8, idx_off + idx_len + signet.len);

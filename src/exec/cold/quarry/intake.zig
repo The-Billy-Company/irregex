@@ -21,6 +21,7 @@ const portal = @import("../../../portal.zig");
 const args = @import("../argv/args.zig");
 const corpus_mod = @import("../../../corpus/tree/corpus.zig");
 const crest = @import("../../../kernel/math/crest.zig");
+const crest_sidecar = @import("../../../corpus/index/crest/sidecar.zig");
 const elide = @import("elide.zig");
 const fault = @import("../../../fault.zig");
 const fresh = @import("../../../corpus/fresh/fresh.zig");
@@ -269,14 +270,14 @@ const IndexSkip = struct {
     fresh_set: std.DynamicBitSet,
     /// The persisted crest table — null disables the sieve (legacy cache,
     /// rejected blob, inactive ĝ, or no trustworthy anchor).
-    table: ?[]const crest.Vector,
+    table: ?crest_sidecar.View,
     sieve: crest.Swell,
 
     fn skip(self: *const IndexSkip, rel: []const u8) bool {
         const doc = self.indexed.get(self.p.paths.items[0..self.indexed_count], rel) orelse return false;
         if (!self.candidates.isSet(doc)) return true;
         if (self.table) |t| {
-            if (doc < t.len and !self.fresh_set.isSet(doc) and self.sieve.prunes(t[doc])) return true;
+            if (doc < t.len() and !self.fresh_set.isSet(doc) and t.prunesDoc(doc, self.sieve.ranked())) return true;
         }
         return false;
     }
@@ -358,14 +359,14 @@ fn assembleIndexSkip(gpa: std.mem.Allocator, io: std.Io, parsed: args.Parsed, fi
     // The sieve engages only when there is a ĝ to enforce, a persisted table
     // bound to this doc space, AND a trustworthy anchor (without one, no doc's
     // persisted vector provably describes its live bytes).
-    const table: ?[]const crest.Vector = if (sieve.active() and cand.anchored) p.crest else null;
+    const table: ?crest_sidecar.View = if (sieve.active() and cand.anchored) p.crest else null;
     var indexed_candidates: usize = 0;
     for (cand.ids) |d| {
         candidates.set(d);
         if (d >= n_indexed) continue;
         // Count only docs that will actually be read — the crest sieve's
         // provable prunes are savings, so they inform the worth heuristic too.
-        if (table) |t| if (d < t.len and !fresh_set.isSet(d) and sieve.prunes(t[d])) continue;
+        if (table) |t| if (d < t.len() and !fresh_set.isSet(d) and t.prunesDoc(d, sieve.ranked())) continue;
         indexed_candidates += 1;
     }
     if (!elide.indexSavingsWorthTable(n_indexed, indexed_candidates)) return error.NotWorthwhile;
