@@ -837,7 +837,7 @@ evidence only and must not be presented as measurements of this revision.
 | index corpus       | `O(total input bytes · K · q)` with fixed `K=48`, `q≤4`; documents shard across cores                |
 | sieve one document | `O(touched columns · m)`, `m ≤ 8` Pareto alternatives — early-exit on the first branch that admits    |
 | index space        | `N·K·q` dense bytes plus sparse u16 overflow, a column directory, and the fixed v6 header              |
-| query-time `ĝ`     | `O(|R|·K·B·log n)` worst case for bounded Pareto compilation (`B=8`, counted powers by squaring)       |
+| query-time `ĝ`     | `O(\|R\|·K·B·log n)` worst case for bounded Pareto compilation (`B=8`, counted powers by squaring)     |
 | sieve whole corpus | sparse gather over candidates or dense SIMD over each demanded physical column                         |
 | incremental update | recompute changed documents' spectra; generation-atomic codicil overlay preserves ranked rows          |
 

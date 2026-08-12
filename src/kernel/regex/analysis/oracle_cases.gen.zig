@@ -6,7 +6,7 @@
 // by (sha256(repr(node)), repr(node)), then evaluate order statistics 1..4 for {a}.
 // All 15 contract projections map a to the least member and b to the least nonmember.
 // The consuming family contains no assertion, and none is generated here.
-pub const source_sha256 = "5de9eda5eb774ae9cd9fdf893a6f5470babd0b62ccd5af2f097ae0b444d6351e";
+pub const source_sha256 = "a1b20026009cb37b904608f6a5ae54e089aaa14b30434766f777767a92fda4f8";
 pub const family_sha256 = "424f10fbc14e1b7ca30106fb2ee9b775c6ff2866d141db6e92269c48b7669209";
 pub const contract_sha256 = "d47a7bf851030c8809e3920c8b3f9cc3a6d79974ce4eeed877f9611360cd6aa6";
 pub const family_count: usize = 532;

@@ -90,10 +90,8 @@ def selected_cases() -> tuple[Case, ...]:
 def generate() -> bytes:
     """Return the canonical Zig fixture bytes."""
     contract = load_contract()
-    if ORDER_STATISTICS != tuple(range(1, max(contract.supported_ranks) + 1)):
-        raise ValueError(
-            "order statistics must exactly fill the largest production rank"
-        )
+    if tuple(range(1, max(contract.supported_ranks) + 1)) != ORDER_STATISTICS:
+        raise ValueError("order statistics must exactly fill the largest production rank")
     nodes = finite_asts()
     cases = selected_cases()
     projections = _projections(contract)
