@@ -11,9 +11,13 @@ from pathlib import Path
 MONOGRAPH = "CREST-MONOGRAPH.md"
 DETACHED = "CREST-MONOGRAPH.sha256"
 _ZERO_SHA = "0" * 64
-_CANONICAL_LINE = re.compile(r"(?m)^- Monograph SHA-256 \(canonical content\): `([0-9a-f]{64})`$")
+_CANONICAL_LINE = re.compile(
+    r"(?m)^- Monograph SHA-256 \(canonical content\): `([0-9a-f]{64})`$"
+)
 
-type _JsonValue = None | bool | int | float | str | list[_JsonValue] | dict[str, _JsonValue]
+type _JsonValue = (
+    None | bool | int | float | str | list[_JsonValue] | dict[str, _JsonValue]
+)
 type _JsonObject = dict[str, _JsonValue]
 
 
@@ -38,7 +42,9 @@ def git_show(repo: Path, commit: str, path: str) -> str:
         )
     except (OSError, subprocess.CalledProcessError) as error:
         detail = getattr(error, "stderr", b"").decode(errors="replace").strip()
-        raise ValueError(f"cannot read pinned source {commit}:{path}: {detail}") from error
+        raise ValueError(
+            f"cannot read pinned source {commit}:{path}: {detail}"
+        ) from error
     return raw.decode("utf-8")
 
 
@@ -52,7 +58,9 @@ def measured_table(run: _JsonObject) -> str:
         full = query["full_ns"] / 1_000_000
         sieve = query["sieve_ns"] / 1_000_000
         speedup = full / sieve if sieve else 0.0
-        mode = ("(?i) " if query["caseless"] else "") + ("Unicode" if query["unicode"] else "ASCII")
+        mode = ("(?i) " if query["caseless"] else "") + (
+            "Unicode" if query["unicode"] else "ASCII"
+        )
         rows.append(
             f"| {query['label']} | `{query['pattern']}` | {mode} | {diff['pruned_files']} | "
             f"{diff['matched']} | {full:.3f} | {sieve:.3f} | {speedup:.3f}× |"

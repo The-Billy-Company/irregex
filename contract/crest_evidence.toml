@@ -3,15 +3,15 @@
 
 [meta]
 name = "crest-release-evidence"
-schema_version = 2
+schema_version = 5
 artifact_kind = "crest-production-proof"
 
 [paths]
 raw_dir = ".local/crest-evidence"
 kernel_root = "."
 harness = "bench/rungs/crest/bench.zig"
-run_json = ".local/crest-evidence/crest-run.json"
-aggregate_csv = ".local/crest-evidence/crest.csv"
+run_json = ".local/crest-evidence/crest-run-q1-b8.json"
+aggregate_csv = ".local/crest-evidence/crest-q1-b8.csv"
 corpus_manifest = ".local/crest-evidence/corpus-manifest.tsv"
 source_archive_paths = [ "." ]
 monograph_sources = [
@@ -23,6 +23,9 @@ monograph_sources = [
 [benchmark]
 runs = 20
 warmup = 3
+rank = 1
+budget = 8
+profile = "q1-b8"
 timing_clock = "awake-monotonic-nanoseconds"
 aggregation = "upper-median"
 ascii_seed = 12648430                        # 0xC0FFEE
@@ -30,6 +33,21 @@ unicode_seed = 3203386110                    # 0xBEEFCAFE
 caseless_seed_mask = 1511115358              # 0x5A11CA5E
 random_patterns_per_mode = 400
 random_files_per_pattern = 60
+
+[benchmark.capability]
+comparable_profiles = ["q1-b8", "q4-b8"]
+frozen_manifest = "corpus-manifest.tsv"
+
+[benchmark.promotion]
+authorized_profiles = ["q1-b8"]
+blocked_profiles = ["q4-b8"]
+
+[benchmark.production]
+sidecar_format_version = 6
+sidecar_q = 4
+builder = "gist.index.crest.buildSpectra"
+runtime = "gist.index.crest_runtime.apply"
+uncalibrated_policy = "always-sieve"
 
 [[benchmark.query]]
 label = "hex-8  (uuid/sha)"
@@ -97,6 +115,48 @@ pattern = "[A-Za-z]{5}"
 caseless = false
 unicode = false
 
+[[benchmark.query]]
+label = "alt hex-12|rule-60"
+pattern = "[0-9a-f]{12}|~{60}"
+caseless = false
+unicode = false
+
+[[benchmark.query]]
+label = "alt digit-6|CONST-6"
+pattern = "[0-9]{6}|[A-Z]{6}"
+caseless = false
+unicode = false
+
+[[benchmark.query]]
+label = "\\d{6}  -u default"
+pattern = "\\d{6}"
+caseless = false
+unicode = true
+
+[[benchmark.query]]
+label = "\\d{4}  -u default"
+pattern = "\\d{4}"
+caseless = false
+unicode = true
+
+[[benchmark.query]]
+label = "\\w{8}  -u (wide)"
+pattern = "\\w{8}"
+caseless = false
+unicode = true
+
+[[benchmark.query]]
+label = "\\s{4}  -u"
+pattern = "\\s{4}"
+caseless = false
+unicode = true
+
+[[benchmark.query]]
+label = "[0-9]{6} -u (twin)"
+pattern = "[0-9]{6}"
+caseless = false
+unicode = true
+
 [[fixed_regression]]
 pattern = "[0-9][a-z]?[0-9]"
 document = "1a2"
@@ -111,10 +171,17 @@ matched = false
 pruned = true
 digit_threshold = 2
 
+[[fixed_regression]]
+pattern = "[0-9]{3}|~{3}"
+document = "1a2"
+matched = false
+pruned = true
+digit_threshold = 3
+
 [commands]
 cwd = "."
-benchmark = [ "zig", "build", "crest", "--", "--runs", "{runs}", "--warmup", "{warmup}" ]
-test = [ "zig", "build", "test", "--summary", "all" ]
+benchmark = [ "mise", "exec", "--", "zig", "build", "crest", "--", "--rank", "{rank}", "--budget", "{budget}", "--runs", "{runs}", "--warmup", "{warmup}" ]
+test = [ "python3", "bench/rungs/crest/evidence/publication_tests.py" ]
 
 [publication]
 require_clean_tree = true

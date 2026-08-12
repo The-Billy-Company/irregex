@@ -1,0 +1,17 @@
+{
+  "schema": "crest-validation-settings-v1",
+  "settings": [
+    {
+      "name": "predicate-prefix-2",
+      "predicate_k": 2
+    },
+    {
+      "name": "predicate-prefix-4",
+      "predicate_k": 4
+    },
+    {
+      "name": "predicate-prefix-8",
+      "predicate_k": 8
+    }
+  ]
+}

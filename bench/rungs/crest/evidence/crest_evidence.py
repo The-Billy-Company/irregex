@@ -12,6 +12,7 @@ import plistlib
 import shutil
 import socket
 import subprocess
+import sys
 import tempfile
 import time
 from datetime import date, datetime, timezone
@@ -27,7 +28,9 @@ KERNEL = HERE.parents[3]  # evidence → crest → rungs → bench → repo root
 CONTRACT = KERNEL / "contract/crest_evidence.toml"
 UTC = timezone.utc
 
-type _JsonValue = None | bool | int | float | str | list[_JsonValue] | dict[str, _JsonValue]
+type _JsonValue = (
+    None | bool | int | float | str | list[_JsonValue] | dict[str, _JsonValue]
+)
 type _JsonObject = dict[str, _JsonValue]
 type _TomlValue = (
     bool
@@ -83,7 +86,9 @@ def _clean_commit() -> str:
     dirty = _git("status", "--porcelain", "--untracked-files=all")
     if dirty:
         count = len(str(dirty).splitlines())
-        raise ValueError(f"publish requires a clean worktree; found {count} dirty path(s)")
+        raise ValueError(
+            f"publish requires a clean worktree; found {count} dirty path(s)"
+        )
     commit = str(_git("rev-parse", "HEAD"))
     if len(commit) not in range(40, 65):
         raise ValueError("cannot resolve a full source commit")
@@ -102,7 +107,7 @@ def _contract_at(commit: str) -> _TomlTable:
 
 def _expand(argv: list[str], contract: _TomlTable) -> list[str]:
     benchmark = contract["benchmark"]
-    values = {"runs": benchmark["runs"], "warmup": benchmark["warmup"]}
+    values = {key: benchmark[key] for key in ("rank", "budget", "runs", "warmup")}
     return [part.format_map(values) for part in argv]
 
 
@@ -137,7 +142,9 @@ def _run(
         "transcript_sha256": _sha256(transcript),
     }
     if completed.returncode:
-        raise ValueError(f"{label} failed with exit {completed.returncode}; see {transcript}")
+        raise ValueError(
+            f"{label} failed with exit {completed.returncode}; see {transcript}"
+        )
     return receipt
 
 
@@ -177,7 +184,9 @@ def _archive(
 
 def _probe(*argv: str) -> str | None:
     try:
-        value = subprocess.check_output(argv, text=True, stderr=subprocess.DEVNULL).strip()
+        value = subprocess.check_output(
+            argv, text=True, stderr=subprocess.DEVNULL
+        ).strip()
     except (OSError, subprocess.CalledProcessError):
         return None
     return value or None
@@ -209,7 +218,12 @@ def _cpu_model() -> tuple[str | None, str | None]:
     except OSError:
         pass
     value = platform.processor() or None
-    return value, None if value else "host exposed no CPU model through sysctl, procfs, or platform"
+    return (
+        value,
+        None
+        if value
+        else "host exposed no CPU model through sysctl, procfs, or platform",
+    )
 
 
 def _memory_bytes() -> tuple[int | None, str | None]:
@@ -267,7 +281,8 @@ def _power() -> tuple[_JsonObject | None, str | None]:
     if paths:
         return {
             "supplies": {
-                str(path.parent.name): path.read_text(errors="replace").strip() for path in paths
+                str(path.parent.name): path.read_text(errors="replace").strip()
+                for path in paths
             }
         }, None
     return None, "host exposed no supported power-state probe"
@@ -295,6 +310,12 @@ def _machine(contract: _TomlTable) -> _JsonObject:
             "warmup_runs": contract["benchmark"]["warmup"],
             "storage_cache_drop_attempted": False,
             "condition": "warmup-conditioned page cache; storage caches not forcibly dropped",
+        },
+        "toolchain": {
+            "python": sys.version.replace("\n", " "),
+            "git": _probe("git", "--version"),
+            "zig": _probe("zig", "version")
+            or _probe("mise", "exec", "--", "zig", "version"),
         },
     }
     for key, note in (
@@ -324,7 +345,8 @@ def _copy_benchmark_artifacts(stage: Path, contract: _TomlTable) -> None:
 
 def _reseal(stage: Path, contract: _TomlTable, manifest: _JsonObject) -> None:
     manifest["files"] = {
-        name: _sha256(stage / name) for name in contract["artifacts"]["payload_required"]
+        name: _sha256(stage / name)
+        for name in contract["artifacts"]["payload_required"]
     }
     _json_write(stage / verify.MANIFEST, manifest)
     digest = _sha256(stage / verify.MANIFEST)
@@ -341,14 +363,18 @@ def package(output: Path | None = None) -> Path:
     if not destination.is_relative_to(raw_dir.resolve()):
         raise ValueError(f"evidence packages must stay under {raw_dir}")
     if destination.exists():
-        raise ValueError(f"refusing to overwrite existing evidence package: {destination}")
+        raise ValueError(
+            f"refusing to overwrite existing evidence package: {destination}"
+        )
 
     stage = Path(tempfile.mkdtemp(prefix=".package-", dir=raw_dir))
     try:
         commands: list[_JsonObject] = []
         benchmark_argv = _expand(contract["commands"]["benchmark"], contract)
         commands.append(
-            _run("benchmark", benchmark_argv, KERNEL, stage / "benchmark-transcript.txt")
+            _run(
+                "benchmark", benchmark_argv, KERNEL, stage / "benchmark-transcript.txt"
+            )
         )
         _copy_benchmark_artifacts(stage, contract)
 
@@ -366,9 +392,12 @@ def package(output: Path | None = None) -> Path:
 
         (stage / "source-commit.txt").write_text(f"{commit}\n")
         commands.append(
-            _archive(commit, contract["paths"]["source_archive_paths"], stage / "source.tar")
+            _archive(
+                commit, contract["paths"]["source_archive_paths"], stage / "source.tar"
+            )
         )
-        _json_write(stage / "machine.json", _machine(contract))
+        machine = _machine(contract)
+        _json_write(stage / "machine.json", machine)
         _json_write(
             stage / "command-log.json",
             {
@@ -393,6 +422,25 @@ def package(output: Path | None = None) -> Path:
             source_paths=contract["paths"]["monograph_sources"],
         )
 
+        environment = {
+            "toolchain": machine["toolchain"],
+            "platform": {
+                key: machine[key]
+                for key in (
+                    "hostname",
+                    "os",
+                    "kernel",
+                    "architecture",
+                    "cpu_model",
+                    "logical_cpu_count",
+                    "memory_bytes",
+                    "filesystem",
+                    "storage",
+                    "power",
+                    "cache_condition",
+                )
+            },
+        }
         manifest = {
             "schema_version": contract["meta"]["schema_version"],
             "artifact_kind": contract["meta"]["artifact_kind"],
@@ -402,6 +450,17 @@ def package(output: Path | None = None) -> Path:
             "benchmark_artifact_sha256": benchmark_sha,
             "test_artifact_sha256": test_sha,
             "corpus_manifest_sha256": _sha256(stage / "corpus-manifest.tsv"),
+            "machine_artifact_sha256": _sha256(stage / "machine.json"),
+            "command_log_sha256": _sha256(stage / "command-log.json"),
+            "environment": environment,
+            "environment_sha256": hashlib.sha256(
+                json.dumps(
+                    environment,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    ensure_ascii=True,
+                ).encode()
+            ).hexdigest(),
             "matcher_results": {
                 "fixed_regression": run["fixed_regression"],
                 "randomized_soundness": run["randomized_soundness"],
@@ -444,7 +503,9 @@ def regenerate_monograph(package_dir: Path) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
-    create = sub.add_parser("package", help="run proofs and create a clean-tree package")
+    create = sub.add_parser(
+        "package", help="run proofs and create a clean-tree package"
+    )
     create.add_argument("--output", type=Path)
     check = sub.add_parser("verify", help="verify every hash, receipt, and revision")
     check.add_argument("package", type=Path)

@@ -1,0 +1,129 @@
+# Frozen, self-contained projection of irregex's byte CREST family.
+# Production authority: src/kernel/math/crest.zig (Class, classify, q/B policy).
+
+[meta]
+name = "irregex-crest-exact-oracle"
+schema_version = 1
+artifact_kind = "crest-exact-byte-oracle"
+
+[projection]
+source_module = "src/kernel/math/crest.zig"
+source_symbols = [ "Class", "classify", "supported_ranks", "supported_budgets" ]
+class_order = [
+  "digit",
+  "hex",
+  "upper",
+  "lower",
+  "alpha",
+  "word",
+  "space",
+  "punct",
+  "literal_space",
+  "dot",
+  "quote",
+  "lparen",
+  "slash",
+  "underscore",
+  "assign_sep",
+]
+
+[crest]
+default_rank = 1
+supported_ranks = [ 1, 2, 4 ]
+default_budget = 8
+supported_budgets = [ 1, 2, 4, 8 ]
+oracle_assertions = "refuse"
+transition_semantics = "maximal-byte-run; reset=nonmember; increment=member; epsilon=hold"
+
+[crest.dictionary]
+alphabet = "byte"
+
+[[crest.dictionary.byte_predicate]]
+id = "digit"
+label = "digit"
+ranges = [ "30-39" ]
+source = "Class.digit"
+
+[[crest.dictionary.byte_predicate]]
+id = "hex"
+label = "hex"
+ranges = [ "30-39", "41-46", "61-66" ]
+source = "Class.hex"
+
+[[crest.dictionary.byte_predicate]]
+id = "upper"
+label = "upper"
+ranges = [ "41-5a" ]
+source = "Class.upper"
+
+[[crest.dictionary.byte_predicate]]
+id = "lower"
+label = "lower"
+ranges = [ "61-7a" ]
+source = "Class.lower"
+
+[[crest.dictionary.byte_predicate]]
+id = "alpha"
+label = "alpha"
+ranges = [ "41-5a", "61-7a" ]
+source = "Class.alpha"
+
+[[crest.dictionary.byte_predicate]]
+id = "word"
+label = "word"
+ranges = [ "30-39", "41-5a", "5f", "61-7a" ]
+source = "Class.word"
+
+[[crest.dictionary.byte_predicate]]
+id = "space"
+label = "space"
+ranges = [ "09-0d", "20" ]
+source = "Class.space"
+
+[[crest.dictionary.byte_predicate]]
+id = "punct"
+label = "punct"
+ranges = [ "21-2f", "3a-40", "5b-5e", "60", "7b-7e" ]
+source = "Class.punct"
+
+[[crest.dictionary.byte_predicate]]
+id = "literal_space"
+label = "literal-space"
+ranges = [ "20" ]
+source = "Class.literal_space"
+
+[[crest.dictionary.byte_predicate]]
+id = "dot"
+label = "dot"
+ranges = [ "2e" ]
+source = "Class.dot"
+
+[[crest.dictionary.byte_predicate]]
+id = "quote"
+label = "quote"
+ranges = [ "22", "27" ]
+source = "Class.quote"
+
+[[crest.dictionary.byte_predicate]]
+id = "lparen"
+label = "left-parenthesis"
+ranges = [ "28" ]
+source = "Class.lparen"
+
+[[crest.dictionary.byte_predicate]]
+id = "slash"
+label = "slash"
+ranges = [ "2f", "5c" ]
+source = "Class.slash"
+
+[[crest.dictionary.byte_predicate]]
+id = "underscore"
+label = "underscore"
+ranges = [ "5f" ]
+source = "Class.underscore"
+
+[[crest.dictionary.byte_predicate]]
+id = "assign_sep"
+label = "assignment-separator"
+ranges = [ "3a", "3d" ]
+source = "Class.assign_sep"

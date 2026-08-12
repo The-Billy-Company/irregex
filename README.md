@@ -1082,6 +1082,10 @@ carries the calculus, lineage, and soundness argument.
 The implementation remains deliberately split across the seam it proves: the
 kernel is [`src/kernel/math/crest.zig`](src/kernel/math/crest.zig), the query
 half is `analysis/swell.zig`, and the production harness is `zig build crest`.
+The persisted v6 sidecar carries q=4 run spectra in compressed columns, while
+the production compiler remains conservatively q=1 by default; bounded Pareto
+compilation, exact pinned-UCD lanes, and the calibrated planner can be promoted
+only through held-out evidence.
 
 The theorem, calculus, refereed prior-art review, and falsification strategy are
 in [`research/crest/`](research/crest).
