@@ -85,8 +85,6 @@ pub const Jaws = struct {
     fwd: ?automaton.Cache = null,
     bwd: ?automaton.Cache = null,
     gpa: std.mem.Allocator,
-    /// The last thing the prefilter was asked, and what it said (`hunt`).
-    recall: Recall = .{},
 
     pub fn init(gpa: std.mem.Allocator, cal: *const Caliper) Jaws {
         return .{ .cal = cal, .gpa = gpa };
@@ -112,38 +110,6 @@ pub const Jaws = struct {
         @branchHint(.cold);
         which.* = automaton.Cache.init(j.gpa, m) catch return null;
         return &which.*.?;
-    }
-
-    /// The prefilter, asked through one span's worth of memory.
-    ///
-    /// A span asks the first-byte set two questions — *where does the next
-    /// candidate begin* (to stand on one) and *where does the one after it
-    /// begin* (to bound the glide, so the seeding decision holds for the whole
-    /// run) — and on a match-dense line those are the same question one span
-    /// apart. The second scan of a span crosses exactly the bytes the next
-    /// span's first scan would cross again, because a match ends before the
-    /// candidate that bounded it. Remembering one answer collapses the pair, so
-    /// the walk reads the haystack once rather than twice.
-    ///
-    /// The memo is a claim about bytes, not about a call: *the first candidate
-    /// at index ≥ `from` is `at`*. It answers a later question only when that
-    /// question's floor lies in `[from, at]` — where the recorded scan already
-    /// proved there is nothing — over the same haystack, the same prefilter, and
-    /// a region still long enough to contain `at`.
-    const Recall = struct {
-        hay: ?[*]const u8 = null,
-        pre: ?*const prefilter.Prefilter = null,
-        from: usize = 0,
-        at: usize = 0,
-    };
-
-    fn hunt(j: *Jaws, p: *const prefilter.Prefilter, region: []const u8, from: usize) ?usize {
-        const r = &j.recall;
-        if (r.hay == region.ptr and r.pre == p and from >= r.from and from <= r.at and r.at < region.len)
-            return r.at;
-        const at = p.nextStart(region, from) orelse return null;
-        r.* = .{ .hay = region.ptr, .pre = p, .from = from, .at = at };
-        return at;
     }
 };
 
@@ -277,6 +243,42 @@ pub fn measure(j: *Jaws, win: Window, skip: ?*const prefilter.Prefilter) Verdict
 /// did not decline before.
 const Reach = struct { end: usize, start: ?usize };
 
+/// One walk's worth of prefilter memory, and not one byte more.
+///
+/// A walk asks the first-byte set two questions — *where does the next candidate
+/// begin* (to stand on one) and *where does the one after it begin* (to bound
+/// the glide, so the seeding decision holds for the whole run) — and every
+/// landing asks the second again from one gap further on. The scan answering the
+/// second crosses exactly the bytes the next landing's would cross again,
+/// because a glide stops short of the candidate that bounded it. Remembering one
+/// answer collapses the pair, so a run of landings reads each stretch once.
+///
+/// The memo is a claim about BYTES, not about a call: *the first candidate at
+/// index ≥ `from` is `at`*, which answers a later question only when that
+/// question's floor lies in `[from, at]` — the stretch the recorded scan already
+/// proved empty. So it may be trusted exactly as long as the bytes it was proven
+/// over are still the bytes being read, and that is this walk: `forwardEnd` pins
+/// one region and one prefilter for its whole length.
+///
+/// Hence a local, and not a field on `Jaws`. A memo that outlives its haystack
+/// has no way to recognize the next one — a host allocator hands a freed block
+/// straight back, so two haystacks that never coexist share a base address, and
+/// an answer proven over the first would be re-read over the second's bytes and
+/// skip a candidate that is really there. Being a local is what makes that
+/// unrepresentable rather than merely unlikely; `caliper_test.zig` walks the
+/// shape a recycling allocator produces.
+const Recall = struct {
+    from: usize = 0,
+    at: ?usize = null,
+};
+
+fn hunt(r: *Recall, p: *const prefilter.Prefilter, region: []const u8, from: usize) ?usize {
+    if (r.at) |at| if (from >= r.from and from <= at) return at;
+    const at = p.nextStart(region, from) orelse return null;
+    r.* = .{ .from = from, .at = at };
+    return at;
+}
+
 const End = union(enum) { none, at: Reach, quit };
 
 /// Jaw one: the last position a match completes, scanning right from `from`.
@@ -319,6 +321,8 @@ fn forwardEnd(j: *Jaws, w: Window, pre: ?*const prefilter.Prefilter) ?End {
     // Candidate starts are hunted inside the bound: a match must END by `w.to`,
     // so a start at or past it cannot consume anything.
     const region = w.region();
+    // Pinned for this walk, which is exactly how long its answer stays true.
+    var recall: Recall = .{};
 
     // Stand on a candidate BEFORE paying for a start closure. Nothing is live
     // at `w.from` yet, so the license is the loop's own: a prefilter is offered
@@ -328,7 +332,7 @@ fn forwardEnd(j: *Jaws, w: Window, pre: ?*const prefilter.Prefilter) ?End {
     // its first byte — three quarters of a span's fixed cost on a match-dense
     // line, spent to rediscover what the prefilter was about to say.
     var i = w.from;
-    if (skip) |s| i = j.hunt(s, region, i) orelse return .none;
+    if (skip) |s| i = hunt(&recall, s, region, i) orelse return .none;
     var st = c.enter(gapAt(cal, line, i) orelse return null) orelse return null;
     var last: ?usize = if (st.matched()) i else null;
     // The gap the live threads were seeded at, and whether anything has been
@@ -348,7 +352,7 @@ fn forwardEnd(j: *Jaws, w: Window, pre: ?*const prefilter.Prefilter) ?End {
             // it doesn't.
             if (last != null) break;
             if (skip) |s| {
-                i = j.hunt(s, region, i) orelse return .none;
+                i = hunt(&recall, s, region, i) orelse return .none;
                 st = c.enter(gapAt(cal, line, i) orelse return null) orelse return null;
                 origin = i;
                 reseeded = false;
@@ -368,7 +372,7 @@ fn forwardEnd(j: *Jaws, w: Window, pre: ?*const prefilter.Prefilter) ?End {
         // simply the stretch before the next candidate.
         const ceiling = @min(w.to, line.len -| 1);
         const lim = if (skip != null and last == null)
-            @min(ceiling, (j.hunt(skip.?, region, i + 1) orelse ceiling) -| 1)
+            @min(ceiling, (hunt(&recall, skip.?, region, i + 1) orelse ceiling) -| 1)
         else
             ceiling;
         if (i < lim) {

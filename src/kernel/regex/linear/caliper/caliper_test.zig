@@ -158,6 +158,40 @@ test "caliper: edges — empty, zero-width, no match, whole line" {
 
 // A deterministic sweep over generated pattern/haystack pairs. Cheap enough to
 // run on every build, wide enough that a reversal or priority bug shows up as a
+// A memo keyed on a bare base address proves "same haystack" by provenance,
+// and provenance is what an allocator recycles: two haystacks that never
+// coexist can share a pointer, so the second must not inherit the first's
+// answer. Every case above walks ONE haystack per jaw, which is the one shape
+// that cannot see this. Both sims below are driven over the same bytes and must
+// agree — a reused jaw is an accelerator, so its answer is the fresh one's or
+// it is a bug.
+test "caliper: a recycled haystack does not inherit the last one's candidate" {
+    const gpa = t.allocator;
+    var re = try Regex.compile(gpa, "\\bcat\\b");
+    defer re.deinit();
+    // The preconditions for the path under test: a pattern the caliper claims,
+    // and no pure-literal reduction above it to answer first.
+    try t.expect(re.caliper != null);
+    try t.expect(re.lits.len == 0);
+
+    // One buffer, two tenants — a freed 5-byte haystack's block handed back for
+    // a 9-byte one. The candidate remembered at 3 is PAST the real one at 2.
+    var buf: [16]u8 = undefined;
+    const stale = buf[0..5];
+    @memcpy(stale, "ab\ncd");
+    var reused = try Regex.SpanSim.init(gpa, &re);
+    defer reused.deinit();
+    try t.expectEqual(@as(?caliper.Span, null), pike.matchWindow(&re, &reused, caliper.Window.whole(stale, 0)));
+
+    const live = buf[0..9];
+    @memcpy(live, "a cat sat");
+    var fresh = try Regex.SpanSim.init(gpa, &re);
+    defer fresh.deinit();
+    const want = pike.matchWindow(&re, &fresh, caliper.Window.whole(live, 0));
+    try t.expectEqual(@as(?caliper.Span, .{ .start = 2, .end = 5 }), want);
+    try t.expectEqual(want, pike.matchWindow(&re, &reused, caliper.Window.whole(live, 0)));
+}
+
 // concrete divergence rather than a benchmark that quietly lies.
 test "caliper: differential sweep against the Pike VM" {
     const gpa = t.allocator;

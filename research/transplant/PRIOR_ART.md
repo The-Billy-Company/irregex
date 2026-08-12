@@ -188,7 +188,7 @@ after a reproduction, one more time.
 ### Bazel — the mirror image, and it *added* ctime
 
 I asserted above, from memory and flagged as unverified, that Bazel avoids clocks
-in favour of digests and has no ctime leg. That was wrong in exactly the way I
+in favor of digests and has no ctime leg. That was wrong in exactly the way I
 said would force a reframing, so here is the correction.
 
 Bazel **added** ctime to its file-digest cache key in April 2023
