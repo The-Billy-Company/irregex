@@ -80,18 +80,14 @@ def _opened_archive(archive_path: Path):
     try:
         opened = os.fstat(descriptor)
         if not stat.S_ISREG(opened.st_mode):
-            raise CorpusArchiveError(
-                "corpus input must be an explicit regular ZIP file"
-            )
+            raise CorpusArchiveError("corpus input must be an explicit regular ZIP file")
         if not hasattr(os, "O_NOFOLLOW"):
             linked = os.lstat(archive_path)
             if stat.S_ISLNK(linked.st_mode) or (linked.st_dev, linked.st_ino) != (
                 opened.st_dev,
                 opened.st_ino,
             ):
-                raise CorpusArchiveError(
-                    "corpus archive changed while it was being opened"
-                )
+                raise CorpusArchiveError("corpus archive changed while it was being opened")
         source = os.fdopen(descriptor, "rb")
         descriptor = -1
         with source:
@@ -143,19 +139,14 @@ def _zip_end_record(source: BinaryIO) -> tuple[int, int, int]:
                     total_entries == 0xFFFF
                     or central_size == 0xFFFFFFFF
                     or central_offset == 0xFFFFFFFF
-                    or (
-                        offset >= 20
-                        and tail[offset - 20 : offset - 16] == b"PK\x06\x07"
-                    )
+                    or (offset >= 20 and tail[offset - 20 : offset - 16] == b"PK\x06\x07")
                 ):
                     raise CorpusArchiveError("ZIP64 archives are forbidden")
                 if total_entries > MAX_ARCHIVE_MEMBERS:
                     raise CorpusArchiveError("ZIP exceeds CREST member-count limit")
                 eocd_offset = archive_size - len(tail) + offset
                 if central_offset + central_size != eocd_offset:
-                    raise CorpusArchiveError(
-                        "ZIP central directory exceeds archive bounds"
-                    )
+                    raise CorpusArchiveError("ZIP central directory exceeds archive bounds")
                 return total_entries, central_offset, central_size
         offset = tail.rfind(b"PK\x05\x06", 0, offset)
     raise CorpusArchiveError("corpus input is not a canonical ZIP archive")
@@ -179,9 +170,7 @@ def _preflight_zip(source: BinaryIO) -> None:
         if len(name) != name_length:
             raise CorpusArchiveError("ZIP central directory name is truncated")
         source.seek(extra_length + comment_length, os.SEEK_CUR)
-        consumed += (
-            _CENTRAL_DIRECTORY.size + name_length + extra_length + comment_length
-        )
+        consumed += _CENTRAL_DIRECTORY.size + name_length + extra_length + comment_length
         is_directory = name.endswith(b"/")
         directories += is_directory
         zero_bytes += not is_directory and uncompressed_size == 0
@@ -266,9 +255,7 @@ def inspect_archive(archive_path: Path) -> dict[str, object]:
             with zipfile.ZipFile(source) as archive:
                 receipt = _inspect_zip(archive, archive_sha256)
         except zipfile.BadZipFile as error:
-            raise CorpusArchiveError(
-                "corpus input is not a readable ZIP file"
-            ) from error
+            raise CorpusArchiveError("corpus input is not a readable ZIP file") from error
         if _sha256_source(source) != archive_sha256:
             raise CorpusArchiveError("corpus archive changed during inspection")
         return receipt
@@ -304,20 +291,14 @@ def staged_archive(archive_path: Path):
         try:
             with zipfile.ZipFile(source) as archive:
                 receipt = _inspect_zip(archive, archive_sha256)
-                with tempfile.TemporaryDirectory(
-                    prefix="irregex-crest-corpus-"
-                ) as temporary:
+                with tempfile.TemporaryDirectory(prefix="irregex-crest-corpus-") as temporary:
                     root = Path(temporary)
                     _extract_members(archive, root, receipt["members"])
                     if _sha256_source(source) != archive_sha256:
-                        raise CorpusArchiveError(
-                            "corpus archive changed during staging"
-                        )
+                        raise CorpusArchiveError("corpus archive changed during staging")
                     yield root, receipt
         except zipfile.BadZipFile as error:
-            raise CorpusArchiveError(
-                "corpus input is not a readable ZIP file"
-            ) from error
+            raise CorpusArchiveError("corpus input is not a readable ZIP file") from error
 
 
 def _artifact_paths(profile: str) -> dict[str, Path]:
@@ -353,24 +334,18 @@ def _opened_artifact(path: Path, name: str):
     try:
         descriptor = os.open(path, flags)
     except OSError as error:
-        raise CorpusArchiveError(
-            f"CREST benchmark did not produce {name}: {path.name}"
-        ) from error
+        raise CorpusArchiveError(f"CREST benchmark did not produce {name}: {path.name}") from error
     try:
         opened = os.fstat(descriptor)
         if not stat.S_ISREG(opened.st_mode):
-            raise CorpusArchiveError(
-                f"CREST benchmark did not produce regular {name}: {path.name}"
-            )
+            raise CorpusArchiveError(f"CREST benchmark did not produce regular {name}: {path.name}")
         if not hasattr(os, "O_NOFOLLOW"):
             linked = os.lstat(path)
             if stat.S_ISLNK(linked.st_mode) or (linked.st_dev, linked.st_ino) != (
                 opened.st_dev,
                 opened.st_ino,
             ):
-                raise CorpusArchiveError(
-                    f"CREST benchmark replaced {name} while it was opened"
-                )
+                raise CorpusArchiveError(f"CREST benchmark replaced {name} while it was opened")
         source = os.fdopen(descriptor, "rb")
         descriptor = -1
         with source:
@@ -399,9 +374,7 @@ def _immutable_artifacts(paths: dict[str, Path]):
                     digest.update(chunk)
                     target.write(chunk)
             if _file_stamp(os.fstat(source.fileno())) != _file_stamp(metadata):
-                raise CorpusArchiveError(
-                    f"CREST benchmark changed {name} while it was snapshotted"
-                )
+                raise CorpusArchiveError(f"CREST benchmark changed {name} while it was snapshotted")
             snapshots[name], hashes[name], opened[name] = (
                 snapshot,
                 digest.hexdigest(),
@@ -420,13 +393,10 @@ def _immutable_artifacts(paths: dict[str, Path]):
                     ) from error
                 if (
                     stat.S_ISLNK(linked.st_mode)
-                    or (linked.st_dev, linked.st_ino)
-                    != (metadata.st_dev, metadata.st_ino)
+                    or (linked.st_dev, linked.st_ino) != (metadata.st_dev, metadata.st_ino)
                     or _file_stamp(os.fstat(source.fileno())) != _file_stamp(metadata)
                 ):
-                    raise CorpusArchiveError(
-                        f"CREST benchmark changed {name} during verification"
-                    )
+                    raise CorpusArchiveError(f"CREST benchmark changed {name} during verification")
 
 
 def _verify_artifacts(
@@ -441,9 +411,7 @@ def _verify_artifacts(
     with _immutable_artifacts(paths) as (snapshots, hashes):
         for name in ("aggregate_csv", "run_json"):
             if before[name] == hashes[name]:
-                raise CorpusArchiveError(
-                    f"CREST benchmark left stale {name}: {paths[name].name}"
-                )
+                raise CorpusArchiveError(f"CREST benchmark left stale {name}: {paths[name].name}")
         contract = verify.load_contract(CONTRACT)
         benchmark = contract["benchmark"]
         expected_names = {name: path.name for name, path in paths.items()}
@@ -467,12 +435,10 @@ def _verify_artifacts(
         )
         if problems:
             raise CorpusArchiveError(
-                "CREST benchmark artifacts are inconsistent:\n- "
-                + "\n- ".join(problems)
+                "CREST benchmark artifacts are inconsistent:\n- " + "\n- ".join(problems)
             )
         return {
-            name: {"filename": path.name, "sha256": hashes[name]}
-            for name, path in paths.items()
+            name: {"filename": path.name, "sha256": hashes[name]} for name, path in paths.items()
         }
 
 
@@ -488,14 +454,8 @@ def run(
     if runs <= 0 or warmup < 0:
         raise CorpusArchiveError("runs must be positive and warmup non-negative")
     profile = profile_name(rank, budget)
-    if (
-        not receipt_path.parent.is_dir()
-        or receipt_path.exists()
-        or receipt_path.is_symlink()
-    ):
-        raise CorpusArchiveError(
-            "receipt parent must exist and destination must be new"
-        )
+    if not receipt_path.parent.is_dir() or receipt_path.exists() or receipt_path.is_symlink():
+        raise CorpusArchiveError("receipt parent must exist and destination must be new")
     artifact_paths = _artifact_paths(profile)
     before = _artifact_snapshot(artifact_paths)
     with staged_archive(archive_path) as (root, archive_receipt):
@@ -576,9 +536,7 @@ def run(
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
-    inspect = commands.add_parser(
-        "inspect", help="validate and fingerprint without benchmarking"
-    )
+    inspect = commands.add_parser("inspect", help="validate and fingerprint without benchmarking")
     inspect.add_argument("--archive", required=True, type=Path)
     execute = commands.add_parser("run", help="stage the ZIP and run one ranked proof")
     execute.add_argument("--archive", required=True, type=Path)

@@ -112,14 +112,10 @@ def run_cli(*arguments: str) -> tuple[int, str, dict]:
     return code, rendered, json.loads(rendered)
 
 
-def assert_class_language(
-    test: unittest.TestCase, pattern: str, expected: frozenset[int]
-) -> None:
+def assert_class_language(test: unittest.TestCase, pattern: str, expected: frozenset[int]) -> None:
     machine = compile_nfa(parse(pattern))
     for byte in range(256):
-        test.assertEqual(
-            byte in expected, accepts_word(machine, bytes([byte])), (pattern, byte)
-        )
+        test.assertEqual(byte in expected, accepts_word(machine, bytes([byte])), (pattern, byte))
 
 
 def project_pattern(pattern: str, member: int, nonmember: int) -> str:
@@ -165,15 +161,9 @@ class ContractBindingTests(unittest.TestCase):
     def test_policy_class_or_range_drift_invalidates_projection(self) -> None:
         source = CONTRACT_PATH.read_text(encoding="utf-8")
         mutations = (
-            source.replace(
-                'oracle_assertions = "refuse"', 'oracle_assertions = "erase"'
-            ),
-            source.replace(
-                "supported_ranks = [ 1, 2, 4 ]", "supported_ranks = [ 1, 4 ]"
-            ),
-            source.replace(
-                "supported_budgets = [ 1, 2, 4, 8 ]", "supported_budgets = [ 1, 2, 8 ]"
-            ),
+            source.replace('oracle_assertions = "refuse"', 'oracle_assertions = "erase"'),
+            source.replace("supported_ranks = [ 1, 2, 4 ]", "supported_ranks = [ 1, 4 ]"),
+            source.replace("supported_budgets = [ 1, 2, 4, 8 ]", "supported_budgets = [ 1, 2, 8 ]"),
             source.replace('ranges = [ "22", "27" ]', 'ranges = [ "22" ]'),
             source.replace('  "quote",\n  "lparen",', '  "lparen",\n  "quote",'),
         )
@@ -209,9 +199,7 @@ class ZigExportTests(unittest.TestCase):
         cases = selected_cases()
         projections = _projections(CONTRACT)
         self.assertEqual(32, len(cases))
-        self.assertEqual(
-            EXPECTED_CLASS_ORDER, tuple(item.predicate for item in projections)
-        )
+        self.assertEqual(EXPECTED_CLASS_ORDER, tuple(item.predicate for item in projections))
         self.assertEqual(15, len(projections))
         self.assertEqual(480, len(cases) * len(projections))
         for case in cases:
@@ -220,9 +208,7 @@ class ZigExportTests(unittest.TestCase):
                 definition = CONTRACT.predicates[projection.predicate]
                 self.assertIn(projection.member, definition.bytes)
                 self.assertNotIn(projection.nonmember, definition.bytes)
-                pattern = project_pattern(
-                    case.pattern, projection.member, projection.nonmember
-                )
+                pattern = project_pattern(case.pattern, projection.member, projection.nonmember)
                 with self.subTest(pattern=pattern, predicate=projection.predicate):
                     self.assertIsNotNone(parse(pattern))
 
@@ -234,9 +220,7 @@ class ExactThresholdTests(unittest.TestCase):
         predicate: str | frozenset[int],
         rank: int = 1,
     ) -> int:
-        byte_set = (
-            NAMED_PREDICATES[predicate] if isinstance(predicate, str) else predicate
-        )
+        byte_set = NAMED_PREDICATES[predicate] if isinstance(predicate, str) else predicate
         return analyze(pattern, byte_set, rank).threshold
 
     def test_hand_computed_consuming_grammar(self) -> None:
@@ -429,9 +413,7 @@ class IndependentFiniteDifferentialTests(unittest.TestCase):
                     )
             self.assertFalse(accepts_word(machine, b"c" * (max_length + 1)))
             for predicate, rank in itertools.product(predicates, range(1, 5)):
-                expected = min(
-                    ranked_run(word, predicate, rank) for word in expected_language
-                )
+                expected = min(ranked_run(word, predicate, rank) for word in expected_language)
                 result = (
                     analyze(pattern, predicate, rank)
                     if rank in SUPPORTED_RANKS
@@ -476,12 +458,8 @@ class CLITests(unittest.TestCase):
             "2",
         )
         cwd = tempfile.gettempdir()
-        first = subprocess.run(
-            command, check=False, capture_output=True, text=True, cwd=cwd
-        )
-        second = subprocess.run(
-            command, check=False, capture_output=True, text=True, cwd=cwd
-        )
+        first = subprocess.run(command, check=False, capture_output=True, text=True, cwd=cwd)
+        second = subprocess.run(command, check=False, capture_output=True, text=True, cwd=cwd)
         self.assertEqual(0, first.returncode)
         self.assertEqual(first.stdout, second.stdout)
         self.assertEqual("", first.stderr)

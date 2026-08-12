@@ -44,20 +44,10 @@ CSV_FIELDS = [
     "speedup",
 ]
 
-type _JsonValue = (
-    None | bool | int | float | str | list[_JsonValue] | dict[str, _JsonValue]
-)
+type _JsonValue = None | bool | int | float | str | list[_JsonValue] | dict[str, _JsonValue]
 type _JsonObject = dict[str, _JsonValue]
 type _TomlValue = (
-    bool
-    | int
-    | float
-    | str
-    | date
-    | datetime
-    | time
-    | list[_TomlValue]
-    | dict[str, _TomlValue]
+    bool | int | float | str | date | datetime | time | list[_TomlValue] | dict[str, _TomlValue]
 )
 type _TomlTable = dict[str, _TomlValue]
 
@@ -91,9 +81,7 @@ def _json(path: Path, problems: list[str]) -> _JsonObject:
     return value
 
 
-def _verify_envelope(
-    package: Path, contract: _TomlTable, problems: list[str]
-) -> _JsonObject:
+def _verify_envelope(package: Path, contract: _TomlTable, problems: list[str]) -> _JsonObject:
     expected = set(contract["artifacts"]["payload_required"])
     expected.update(contract["artifacts"]["envelope_required"])
     observed = {path.name for path in package.iterdir() if path.is_file()}
@@ -164,9 +152,7 @@ def _verify_revision(
                     f"<!-- end git show {commit}:{path} -->"
                 )
                 if block not in monograph_text:
-                    problems.append(
-                        f"monograph source block differs from archive: {path}"
-                    )
+                    problems.append(f"monograph source block differs from archive: {path}")
     except (OSError, tarfile.TarError) as error:
         problems.append(f"source.tar is not a readable Git archive: {error}")
         return
@@ -174,9 +160,7 @@ def _verify_revision(
         problems.append(
             f"source archive revision {archived_commit!r} differs from source_commit {commit}"
         )
-    _verify_git_archive(
-        archive, repo, commit, contract["paths"]["source_archive_paths"], problems
-    )
+    _verify_git_archive(archive, repo, commit, contract["paths"]["source_archive_paths"], problems)
 
 
 def _verify_git_archive(
@@ -206,9 +190,7 @@ def _verify_git_archive(
         )
         if completed.returncode:
             detail = completed.stderr.decode(errors="replace").strip()
-            problems.append(
-                f"claimed Git object is unavailable or unarchivable: {detail}"
-            )
+            problems.append(f"claimed Git object is unavailable or unarchivable: {detail}")
             return
         if sha256_file(archive) != sha256_file(Path(expected.name)):
             problems.append(
@@ -234,11 +216,7 @@ def _verify_corpus(path: Path, run: _JsonObject, problems: list[str]) -> None:
     total = 0
     for line, row in enumerate(rows, 2):
         name, size, digest = row["path"], row["size_bytes"], row["sha256"]
-        if (
-            not isinstance(name, str)
-            or not isinstance(size, str)
-            or not isinstance(digest, str)
-        ):
+        if not isinstance(name, str) or not isinstance(size, str) or not isinstance(digest, str):
             problems.append(f"corpus manifest line {line}: malformed row")
             continue
         paths.append(name)
@@ -278,9 +256,7 @@ def _verify_fixed(run: _JsonObject, contract: _TomlTable, problems: list[str]) -
         return
     for index, (got, want) in enumerate(zip(actual, expected, strict=True)):
         fields = ("pattern", "document", "matched", "pruned", "digit_threshold")
-        if not isinstance(got, dict) or any(
-            got.get(field) != want[field] for field in fields
-        ):
+        if not isinstance(got, dict) or any(got.get(field) != want[field] for field in fields):
             problems.append(f"fixed matcher regression {index} differs from contract")
         elif not all(
             _strict_int(got.get(field), 1)
@@ -349,9 +325,7 @@ def _verify_queries(
             or query["run_survivors"] != diff["survivors"]
             or diff["survivors"] + diff["pruned_files"] != query["files"]
         ):
-            problems.append(
-                f"{label}: benchmark pruned a matched document or counts disagree"
-            )
+            problems.append(f"{label}: benchmark pruned a matched document or counts disagree")
         for field in ("full_samples_ns", "sieve_samples_ns"):
             samples = query.get(field)
             if (
@@ -433,9 +407,7 @@ def _verify_csv(
                 "cnt_prune_pct": (1 - query["cnt_survivors"] / max(files, 1)) * 100,
                 "full_ms": query["full_ns"] / 1_000_000,
                 "sieve_ms": query["sieve_ns"] / 1_000_000,
-                "speedup": query["full_ns"] / query["sieve_ns"]
-                if query["sieve_ns"]
-                else 0,
+                "speedup": query["full_ns"] / query["sieve_ns"] if query["sieve_ns"] else 0,
             }
         except (KeyError, TypeError):
             problems.append(f"{path.name} cannot be reconciled with query {pattern}")
@@ -476,23 +448,15 @@ def _verify_production(
             problems.append(f"crest-run production {key} differs from contract")
     sidecar_q = production.get("sidecar_q")
     query_rank = production.get("query_rank")
-    if (
-        not _strict_int(sidecar_q, 1)
-        or sidecar_q != 4
-        or sidecar_q != expected.get("sidecar_q")
-    ):
-        problems.append(
-            "crest-run production sidecar_q must be the q4 persisted layout"
-        )
+    if not _strict_int(sidecar_q, 1) or sidecar_q != 4 or sidecar_q != expected.get("sidecar_q"):
+        problems.append("crest-run production sidecar_q must be the q4 persisted layout")
     if (
         not _strict_int(query_rank, 1)
         or query_rank != config.get("rank")
         or not _strict_int(sidecar_q, 1)
         or query_rank > sidecar_q
     ):
-        problems.append(
-            "crest-run production query_rank differs from config or sidecar"
-        )
+        problems.append("crest-run production query_rank differs from config or sidecar")
     if "q" in production:
         problems.append("crest-run production uses ambiguous legacy q metadata")
     if production.get("validated") is not True:
@@ -571,10 +535,7 @@ def _verify_production(
                     )
         if calibration == "absent" and (
             planner["decision_available"]
-            or (
-                planner["reason"] == "uncalibrated-always-sieve"
-                and planner["ran"] is not True
-            )
+            or (planner["reason"] == "uncalibrated-always-sieve" and planner["ran"] is not True)
         ):
             problems.append(f"{label}: uncalibrated planner behavior is inconsistent")
         if calibration == "environment" and (
@@ -612,9 +573,7 @@ def verify_benchmark_artifacts(
             ):
                 problems.append(f"crest-run config {key} must be a non-Boolean integer")
             elif observed != value:
-                problems.append(
-                    f"crest-run config {key} differs from requested benchmark"
-                )
+                problems.append(f"crest-run config {key} differs from requested benchmark")
     if run.get("artifacts") != expected_artifacts:
         problems.append("crest-run artifact names differ from requested benchmark")
     _verify_queries(run, expected_config.get("runs"), problems)
@@ -639,10 +598,7 @@ def _profile_set(
     value = table.get(key) if isinstance(table, dict) else None
     if (
         not isinstance(value, list)
-        or any(
-            not isinstance(item, str) or PROFILE.fullmatch(item) is None
-            for item in value
-        )
+        or any(not isinstance(item, str) or PROFILE.fullmatch(item) is None for item in value)
         or len(value) != len(set(value))
     ):
         problems.append(f"{label} must be a unique string array")
@@ -686,9 +642,7 @@ def _verify_promotion(bench: _TomlTable, profile: object, problems: list[str]) -
         problems.append("crest-run profile is blocked from promotion")
 
 
-def _verify_run(
-    package: Path, contract: _TomlTable, problems: list[str]
-) -> _JsonObject:
+def _verify_run(package: Path, contract: _TomlTable, problems: list[str]) -> _JsonObject:
     bench = contract["benchmark"]
     expected_artifacts = {
         "aggregate_csv": Path(contract["paths"]["aggregate_csv"]).name,
@@ -716,9 +670,7 @@ def _verify_run(
         expected_artifacts=expected_artifacts,
         expected_production=bench["production"],
     )
-    problems.extend(
-        problem.replace("requested benchmark", "contract") for problem in common
-    )
+    problems.extend(problem.replace("requested benchmark", "contract") for problem in common)
     config = run.get("config")
     profile = config.get("profile") if isinstance(config, dict) else None
     _verify_promotion(bench, profile, problems)
@@ -751,9 +703,7 @@ def _verify_run(
     if not isinstance(random, dict):
         problems.append("crest-run randomized_soundness must be an object")
         return run
-    expected_checks = (
-        bench["random_patterns_per_mode"] * bench["random_files_per_pattern"]
-    )
+    expected_checks = bench["random_patterns_per_mode"] * bench["random_files_per_pattern"]
     mask = bench["caseless_seed_mask"]
     for mode, unicode, caseless, seed in (
         ("ascii", False, False, bench["ascii_seed"]),
@@ -793,13 +743,9 @@ def _verify_receipts(
         problems.append("test artifact command differs from contract")
     if test.get("transcript_sha256") != sha256_file(package / "test-transcript.txt"):
         problems.append("test transcript hash differs from test artifact")
-    if manifest.get("test_artifact_sha256") != sha256_file(
-        package / "test-artifact.json"
-    ):
+    if manifest.get("test_artifact_sha256") != sha256_file(package / "test-artifact.json"):
         problems.append("test artifact hash differs from evidence manifest")
-    if manifest.get("benchmark_artifact_sha256") != sha256_file(
-        package / "crest-run.json"
-    ):
+    if manifest.get("benchmark_artifact_sha256") != sha256_file(package / "crest-run.json"):
         problems.append("benchmark artifact hash differs from evidence manifest")
 
     log = _json(package / "command-log.json", problems)
@@ -808,9 +754,7 @@ def _verify_receipts(
         problems.append("command log has no command receipts")
         return
     by_label = {
-        item.get("label"): item
-        for item in commands
-        if isinstance(item, dict) and item.get("label")
+        item.get("label"): item for item in commands if isinstance(item, dict) and item.get("label")
     }
     for label in ("benchmark", "test", "source_archive"):
         if label not in by_label or by_label[label].get("exit_code") != 0:
@@ -859,15 +803,12 @@ def _verify_receipts(
             or manifest.get("source_commit") not in archive_argv
             or not any(str(arg).startswith("--output=") for arg in archive_argv)
             or separator < 0
-            or archive_argv[separator + 1 :]
-            != contract["paths"]["source_archive_paths"]
+            or archive_argv[separator + 1 :] != contract["paths"]["source_archive_paths"]
         ):
             problems.append("source archive command differs from contract")
 
 
-def _verify_machine(
-    package: Path, contract: _TomlTable, problems: list[str]
-) -> _JsonObject:
+def _verify_machine(package: Path, contract: _TomlTable, problems: list[str]) -> _JsonObject:
     machine = _json(package / "machine.json", problems)
     for key in contract["machine"]["required_keys"]:
         if key not in machine:
@@ -933,9 +874,7 @@ def _verify_environment(
         problems.append("evidence manifest environment SHA-256 mismatch")
 
 
-def verify_package(
-    package: Path, contract_path: Path, repo: Path | None = None
-) -> list[str]:
+def verify_package(package: Path, contract_path: Path, repo: Path | None = None) -> list[str]:
     problems: list[str] = []
     if not package.is_dir():
         return [f"package directory does not exist: {package}"]
@@ -957,15 +896,12 @@ def verify_package(
             )
         except (OSError, subprocess.CalledProcessError) as error:
             detail = getattr(error, "stderr", "").strip()
-            return [
-                f"cannot locate Git object database for source verification: {detail}"
-            ]
+            return [f"cannot locate Git object database for source verification: {detail}"]
     manifest = _verify_envelope(package, contract, problems)
     if not manifest:
         return problems
     required = (
-        contract["artifacts"]["payload_required"]
-        + contract["artifacts"]["envelope_required"]
+        contract["artifacts"]["payload_required"] + contract["artifacts"]["envelope_required"]
     )
     if any(not (package / name).is_file() for name in required):
         return problems
@@ -975,9 +911,7 @@ def verify_package(
         problems.append("evidence manifest artifact kind differs from contract")
     _verify_revision(package, manifest, contract, repo, problems)
     run = _verify_run(package, contract, problems)
-    if manifest.get("corpus_manifest_sha256") != sha256_file(
-        package / "corpus-manifest.tsv"
-    ):
+    if manifest.get("corpus_manifest_sha256") != sha256_file(package / "corpus-manifest.tsv"):
         problems.append("corpus manifest hash differs from evidence manifest")
     matcher = manifest.get("matcher_results")
     if matcher != {

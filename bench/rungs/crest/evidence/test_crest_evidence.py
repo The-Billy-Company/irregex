@@ -32,9 +32,7 @@ def _source_bytes(path: str) -> bytes:
     return f"# Pinned source: {path}\n".encode()
 
 
-def _write_archive(
-    path: Path, repo: Path, commit: str, source_paths: list[str]
-) -> None:
+def _write_archive(path: Path, repo: Path, commit: str, source_paths: list[str]) -> None:
     subprocess.run(
         [
             "git",
@@ -80,9 +78,7 @@ def _rewrite_archive(
         ) as archive:
             for member, payload in entries:
                 member, payload = mutate(member, payload)
-                archive.addfile(
-                    member, io.BytesIO(payload) if payload is not None else None
-                )
+                archive.addfile(member, io.BytesIO(payload) if payload is not None else None)
         replacement.replace(path)
     finally:
         replacement.unlink(missing_ok=True)
@@ -114,9 +110,7 @@ def _init_repo(path: Path, source_paths: list[str]) -> str:
         ],
         check=True,
     )
-    return subprocess.check_output(
-        ["git", "-C", str(path), "rev-parse", "HEAD"], text=True
-    ).strip()
+    return subprocess.check_output(["git", "-C", str(path), "rev-parse", "HEAD"], text=True).strip()
 
 
 def _write_monograph(
@@ -396,9 +390,7 @@ def _fixture(package: Path, repo: Path, commit: str) -> tuple[dict, dict[str, ob
                     "cwd": contract["commands"]["cwd"],
                     "exit_code": 0,
                     "transcript": "benchmark-transcript.txt",
-                    "transcript_sha256": verify.sha256_file(
-                        package / "benchmark-transcript.txt"
-                    ),
+                    "transcript_sha256": verify.sha256_file(package / "benchmark-transcript.txt"),
                 },
                 {
                     "label": "test",
@@ -406,9 +398,7 @@ def _fixture(package: Path, repo: Path, commit: str) -> tuple[dict, dict[str, ob
                     "cwd": contract["commands"]["cwd"],
                     "exit_code": 0,
                     "transcript": "test-transcript.txt",
-                    "transcript_sha256": verify.sha256_file(
-                        package / "test-transcript.txt"
-                    ),
+                    "transcript_sha256": verify.sha256_file(package / "test-transcript.txt"),
                 },
                 {
                     "label": "source_archive",
@@ -619,9 +609,7 @@ class EvidenceVerificationTest(unittest.TestCase):
 
     def test_tampered_payload_hash_fails(self) -> None:
         (self.package / "crest.csv").write_text("tampered\n")
-        self.assertTrue(
-            any("payload SHA-256 mismatch" in problem for problem in self.problems())
-        )
+        self.assertTrue(any("payload SHA-256 mismatch" in problem for problem in self.problems()))
 
     def test_resealed_environment_substitution_fails_machine_binding(self) -> None:
         environment = self.manifest["environment"]
@@ -714,9 +702,7 @@ class EvidenceVerificationTest(unittest.TestCase):
             self.package / "test-artifact.json"
         )
         _seal(self.package, self.contract, self.manifest)
-        self.assertTrue(
-            any("archive revision" in problem for problem in self.problems())
-        )
+        self.assertTrue(any("archive revision" in problem for problem in self.problems()))
 
     def test_resealed_source_byte_substitution_fails_git_object_binding(self) -> None:
         def forge(member: tarfile.TarInfo, payload: bytes | None):
@@ -727,9 +713,7 @@ class EvidenceVerificationTest(unittest.TestCase):
 
         _rewrite_archive(self.package / "source.tar", forge)
         _reseal_archive_forgery(self.package, self.contract, self.manifest)
-        self.assertTrue(
-            any("claimed Git object" in problem for problem in self.problems())
-        )
+        self.assertTrue(any("claimed Git object" in problem for problem in self.problems()))
 
     def test_resealed_source_mode_substitution_fails_git_object_binding(self) -> None:
         def forge(member: tarfile.TarInfo, payload: bytes | None):
@@ -739,9 +723,7 @@ class EvidenceVerificationTest(unittest.TestCase):
 
         _rewrite_archive(self.package / "source.tar", forge)
         _reseal_archive_forgery(self.package, self.contract, self.manifest)
-        self.assertTrue(
-            any("claimed Git object" in problem for problem in self.problems())
-        )
+        self.assertTrue(any("claimed Git object" in problem for problem in self.problems()))
 
     def test_resealed_source_path_substitution_fails_git_object_binding(self) -> None:
         def forge(member: tarfile.TarInfo, payload: bytes | None):
@@ -751,9 +733,7 @@ class EvidenceVerificationTest(unittest.TestCase):
 
         _rewrite_archive(self.package / "source.tar", forge)
         _reseal_archive_forgery(self.package, self.contract, self.manifest)
-        self.assertTrue(
-            any("claimed Git object" in problem for problem in self.problems())
-        )
+        self.assertTrue(any("claimed Git object" in problem for problem in self.problems()))
 
     def test_resealed_commit_substitution_fails_git_object_binding(self) -> None:
         (self.repo / "payload.bin").write_bytes(b"second revision\n")
@@ -792,21 +772,15 @@ class EvidenceVerificationTest(unittest.TestCase):
         )
         log = json.loads((self.package / "command-log.json").read_text())
         log["source_commit"] = changed
-        archive = next(
-            item for item in log["commands"] if item["label"] == "source_archive"
-        )
+        archive = next(item for item in log["commands"] if item["label"] == "source_archive")
         archive["argv"][archive["argv"].index(self.commit)] = changed
         _write_json(self.package / "command-log.json", log)
         _reseal_archive_forgery(self.package, self.contract, self.manifest)
-        self.assertTrue(
-            any("claimed Git object" in problem for problem in self.problems())
-        )
+        self.assertTrue(any("claimed Git object" in problem for problem in self.problems()))
 
     def test_missing_required_file_fails_closed(self) -> None:
         (self.package / "machine.json").unlink()
-        self.assertTrue(
-            any("missing required files" in problem for problem in self.problems())
-        )
+        self.assertTrue(any("missing required files" in problem for problem in self.problems()))
 
     def test_monograph_reads_pinned_revision_not_worktree(self) -> None:
         repo = self.package / "repo"

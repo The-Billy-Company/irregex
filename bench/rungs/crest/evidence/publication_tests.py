@@ -99,9 +99,7 @@ GATES = (
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--list", action="store_true", help="print the frozen gate slate"
-    )
+    parser.add_argument("--list", action="store_true", help="print the frozen gate slate")
     arguments = parser.parse_args()
     if arguments.list:
         for name, command, _ in GATES:

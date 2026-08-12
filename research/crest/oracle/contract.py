@@ -40,9 +40,7 @@ EXPECTED_CLASS_ORDER = (
     "assign_sep",
 )
 EXPECTED_SOURCE_SYMBOLS = ("Class", "classify", "supported_ranks", "supported_budgets")
-EXPECTED_TRANSITIONS = (
-    "maximal-byte-run; reset=nonmember; increment=member; epsilon=hold"
-)
+EXPECTED_TRANSITIONS = "maximal-byte-run; reset=nonmember; increment=member; epsilon=hold"
 EXPECTED_RANGE_SPECS = {
     "digit": ("30-39",),
     "hex": ("30-39", "41-46", "61-66"),
@@ -165,9 +163,7 @@ def load_contract(path: Path | None = None) -> CrestContract:
         _invalid("default budget is outside supported_budgets", "crest.default_budget")
     assertions = _string(crest, "oracle_assertions")
     if assertions != "refuse":
-        _invalid(
-            "assertion policy must remain exactly 'refuse'", "crest.oracle_assertions"
-        )
+        _invalid("assertion policy must remain exactly 'refuse'", "crest.oracle_assertions")
     transitions = _string(crest, "transition_semantics")
     if transitions != EXPECTED_TRANSITIONS:
         _invalid(
@@ -175,9 +171,7 @@ def load_contract(path: Path | None = None) -> CrestContract:
             "crest.transition_semantics",
         )
     if _string(dictionary, "alphabet") != "byte":
-        _invalid(
-            "oracle alphabet must remain exactly 'byte'", "crest.dictionary.alphabet"
-        )
+        _invalid("oracle alphabet must remain exactly 'byte'", "crest.dictionary.alphabet")
 
     raw_predicates = dictionary.get("byte_predicate")
     if not isinstance(raw_predicates, list) or not raw_predicates:
@@ -283,10 +277,7 @@ def _integer_tuple(parent: Mapping[str, object], key: str) -> tuple[int, ...]:
     if not isinstance(value, list) or not value:
         _invalid(f"{key!r} must be a non-empty integer array", key)
     result = tuple(value)
-    if any(
-        not isinstance(item, int) or isinstance(item, bool) or item < 1
-        for item in result
-    ):
+    if any(not isinstance(item, int) or isinstance(item, bool) or item < 1 for item in result):
         _invalid(f"{key!r} must contain positive integers", key)
     if len(result) != len(set(result)):
         _invalid(f"{key!r} contains duplicates", key)

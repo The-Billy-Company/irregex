@@ -161,8 +161,7 @@ def render_report(outcomes: list[Outcome], provenance: SourceIdentity) -> str:
     eligible = counts["killed"] + counts["survived"]
     payload = {
         "mutants": [
-            outcome.as_json()
-            for outcome in sorted(outcomes, key=lambda item: item.mutation.name)
+            outcome.as_json() for outcome in sorted(outcomes, key=lambda item: item.mutation.name)
         ],
         "provenance": provenance.as_json(),
         "schema_version": 3,
@@ -255,10 +254,7 @@ def verify_report(report: dict[str, object], provenance: SourceIdentity) -> None
         "survived": counts["survived"],
         "total": len(mutants),
     }
-    if (
-        set(counts) > {"killed", "survived", "invalid"}
-        or report.get("summary") != summary
-    ):
+    if set(counts) > {"killed", "survived", "invalid"} or report.get("summary") != summary:
         raise ReportDrift("mutation report summary is inconsistent")
 
 
@@ -378,16 +374,12 @@ def run_suite(
             if result.returncode != 0:
                 return SuiteResult(invalid_all("publication_failed"), provenance)
 
-        baselines: dict[
-            tuple[str, str], tuple[CommandResult, CommandResult | None]
-        ] = {}
+        baselines: dict[tuple[str, str], tuple[CommandResult, CommandResult | None]] = {}
         for mutation in MUTATIONS:
             key = (mutation.test_path, mutation.test_filter)
             if key in baselines:
                 continue
-            compiled, tested = run_focused_test(
-                executable, workspace, mutation, timeout
-            )
+            compiled, tested = run_focused_test(executable, workspace, mutation, timeout)
             baselines[key] = compiled, tested
             diagnostic(f"baseline compile: {mutation.test_filter}", compiled, verbose)
             if tested is not None:
@@ -395,9 +387,7 @@ def run_suite(
 
         outcomes: list[Outcome] = []
         for mutation in MUTATIONS:
-            baseline_compile, baseline_test = baselines[
-                (mutation.test_path, mutation.test_filter)
-            ]
+            baseline_compile, baseline_test = baselines[(mutation.test_path, mutation.test_filter)]
             baseline = classify(
                 mutation,
                 0,
@@ -429,9 +419,7 @@ def run_suite(
 
             path.write_text(mutant)
             try:
-                compiled, tested = run_focused_test(
-                    executable, workspace, mutation, timeout
-                )
+                compiled, tested = run_focused_test(executable, workspace, mutation, timeout)
                 diagnostic(f"compile: {mutation.name}", compiled, verbose)
                 if tested is not None:
                     diagnostic(f"test: {mutation.name}", tested, verbose)
@@ -469,9 +457,7 @@ def main() -> int:
     try:
         executable = find_zig()
         if args.verify:
-            with tempfile.TemporaryDirectory(
-                prefix="irregex-crest-mutation-verify-"
-            ) as raw:
+            with tempfile.TemporaryDirectory(prefix="irregex-crest-mutation-verify-") as raw:
                 provenance = capture_source(
                     REPO,
                     Path(raw) / "irregex",

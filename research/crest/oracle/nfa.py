@@ -229,8 +229,7 @@ class _Builder:
             mandatory.append(self._star(self.compile(node.child)))
         else:
             mandatory.extend(
-                self._optional(self.compile(node.child))
-                for _ in range(node.maximum - node.minimum)
+                self._optional(self.compile(node.child)) for _ in range(node.maximum - node.minimum)
             )
         return self._concatenate(mandatory)
 

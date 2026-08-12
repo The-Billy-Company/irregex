@@ -33,14 +33,10 @@ def _read_json(path: str | Path, label: str) -> tuple[dict[str, object], str]:
     return value, sha256_bytes(raw)
 
 
-def _write_json(
-    path: str | Path, artifact: dict[str, object], package_source: str | Path
-) -> None:
+def _write_json(path: str | Path, artifact: dict[str, object], package_source: str | Path) -> None:
     destination = Path(path)
     if not destination.parent.is_dir() or destination.is_symlink():
-        raise InputSafetyError(
-            "output parent must exist and output must not be a symlink"
-        )
+        raise InputSafetyError("output parent must exist and output must not be a symlink")
     package = Path(package_source)
     resolved = destination.resolve()
     if package.is_dir():
@@ -49,9 +45,7 @@ def _write_json(
         except ValueError:
             pass
         else:
-            raise InputSafetyError(
-                "refusing to write generated output into the data package"
-            )
+            raise InputSafetyError("refusing to write generated output into the data package")
     elif package.is_file() and resolved == package.resolve():
         raise InputSafetyError("refusing to overwrite the data package")
     destination.write_bytes(canonical_json_bytes(artifact))
@@ -60,22 +54,16 @@ def _write_json(
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
-    propose = commands.add_parser(
-        "propose", help="rank research candidates from training only"
-    )
+    propose = commands.add_parser("propose", help="rank research candidates from training only")
     propose.add_argument("--package", required=True)
     propose.add_argument("--k", required=True, type=int)
     propose.add_argument("--output", required=True)
-    validate = commands.add_parser(
-        "validate", help="score frozen prefixes on held-out validation"
-    )
+    validate = commands.add_parser("validate", help="score frozen prefixes on held-out validation")
     validate.add_argument("--package", required=True)
     validate.add_argument("--proposal", required=True)
     validate.add_argument("--settings", default=str(DEFAULT_SETTINGS))
     validate.add_argument("--output", required=True)
-    inspect = commands.add_parser(
-        "fingerprint", help="print the immutable dataset fingerprint"
-    )
+    inspect = commands.add_parser("fingerprint", help="print the immutable dataset fingerprint")
     inspect.add_argument("--package", required=True)
     return parser
 

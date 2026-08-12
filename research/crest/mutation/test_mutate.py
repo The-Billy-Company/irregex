@@ -53,9 +53,7 @@ def provenance(**overrides: object) -> SourceIdentity:
         "working_tree": "dirty",
         "dirty_tree_sha256": "c" * 64,
         "source_snapshot_sha256": "d" * 64,
-        "mutation_catalog_sha256": catalog_digest(
-            asdict(mutation) for mutation in MUTATIONS
-        ),
+        "mutation_catalog_sha256": catalog_digest(asdict(mutation) for mutation in MUTATIONS),
         "toolchain": ToolchainIdentity("0.16.0", "test-target", "e" * 64),
     }
     values.update(overrides)
@@ -223,9 +221,7 @@ class ClassificationTest(unittest.TestCase):
             CommandResult(0),
             test_result(mutation, "failed", ASSERTION_EXIT, "OutOfMemory"),
         )
-        self.assertEqual(
-            (wrong.classification, wrong.reason), ("invalid", "test_evidence")
-        )
+        self.assertEqual((wrong.classification, wrong.reason), ("invalid", "test_evidence"))
         self.assertEqual(
             (unrelated.classification, unrelated.reason),
             ("invalid", "test_evidence"),
@@ -242,9 +238,7 @@ class ClassificationTest(unittest.TestCase):
             CommandResult(0),
             CommandResult(None, timed_out=True),
         )
-        self.assertEqual(
-            (outcome.classification, outcome.reason), ("invalid", "test_timeout")
-        )
+        self.assertEqual((outcome.classification, outcome.reason), ("invalid", "test_timeout"))
 
     def test_report_is_stable_sorted_json(self) -> None:
         zulu_mutation = fixture(name="zulu")

@@ -60,9 +60,7 @@ def _promotion_gate() -> dict[str, object]:
 
 
 def canonical_json_bytes(value: object) -> bytes:
-    return (
-        json.dumps(value, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
-    ).encode()
+    return (json.dumps(value, indent=2, sort_keys=True, ensure_ascii=False) + "\n").encode()
 
 
 def artifact_sha256(value: object) -> str:
@@ -75,9 +73,7 @@ def _units(extractions: list[Extraction]) -> list[frozenset[int]]:
 
 def _extraction_counts(extractions: list[Extraction]) -> dict[str, object]:
     reasons = Counter(
-        candidate.reason
-        for extraction in extractions
-        for candidate in extraction.non_byte
+        candidate.reason for extraction in extractions for candidate in extraction.non_byte
     )
     return {
         "top_level_branches": sum(item.branch_count for item in extractions),
@@ -101,9 +97,7 @@ def greedy_select(
 ) -> list[tuple[frozenset[int], int, int]]:
     """Maximize trace-atom coverage with a frozen deterministic ordering."""
     coverage = {
-        byte_set_digest(candidate): {
-            index for index, atom in enumerate(units) if atom <= candidate
-        }
+        byte_set_digest(candidate): {index for index, atom in enumerate(units) if atom <= candidate}
         for candidate in universe
     }
     selected: list[tuple[frozenset[int], int, int]] = []
@@ -142,9 +136,7 @@ def _selected_records(
     }
     records: list[dict[str, object]] = []
     for rank, (candidate, marginal, cumulative) in enumerate(selections, 1):
-        spellings = sorted(
-            exact_spellings[candidate].items(), key=lambda item: (-item[1], item[0])
-        )
+        spellings = sorted(exact_spellings[candidate].items(), key=lambda item: (-item[1], item[0]))
         records.append(
             {
                 "research_rank": rank,
@@ -245,10 +237,7 @@ def build_proposal(package: DataPackage, k: int) -> dict[str, object]:
 
 
 def validate_settings(document: object) -> list[dict[str, object]]:
-    if (
-        not isinstance(document, dict)
-        or document.get("schema") != "crest-validation-settings-v1"
-    ):
+    if not isinstance(document, dict) or document.get("schema") != "crest-validation-settings-v1":
         raise SchemaError("settings schema must be crest-validation-settings-v1")
     settings = document.get("settings")
     if not isinstance(settings, list) or not settings:
@@ -265,9 +254,7 @@ def validate_settings(document: object) -> list[dict[str, object]]:
             or setting["predicate_k"] <= 0
             or setting["name"] in names
         ):
-            raise SchemaError(
-                "each setting requires unique name and positive predicate_k"
-            )
+            raise SchemaError("each setting requires unique name and positive predicate_k")
         names.add(setting["name"])
         result.append(setting)
     return result
@@ -314,9 +301,7 @@ def build_validation_report(
     if not is_strict_int(requested_k) or requested_k <= 0:
         raise SchemaError("proposal has no valid requested K")
     if proposal != build_proposal(package, requested_k):
-        raise IntegrityError(
-            "proposal differs from deterministic training reproduction"
-        )
+        raise IntegrityError("proposal differs from deterministic training reproduction")
     manifest = load_manifest(package)
     candidates = _validated_candidates(proposal, manifest)
     settings = validate_settings(settings_document)
@@ -330,10 +315,7 @@ def build_validation_report(
         {
             **setting,
             "covered_validation_atom_units": sum(
-                any(
-                    atom <= predicate
-                    for predicate in candidates[: setting["predicate_k"]]
-                )
+                any(atom <= predicate for predicate in candidates[: setting["predicate_k"]])
                 for atom in units
             ),
             "total_validation_atom_units": len(units),

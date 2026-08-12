@@ -205,9 +205,7 @@ def expected_test_name(test_path: str, test_name: str) -> str:
 
 
 def machine_evidence(stderr: str) -> tuple[str, ...]:
-    return tuple(
-        line for line in stderr.splitlines() if line.startswith(EVIDENCE_PREFIX)
-    )
+    return tuple(line for line in stderr.splitlines() if line.startswith(EVIDENCE_PREFIX))
 
 
 def test_evidence(
@@ -218,10 +216,7 @@ def test_evidence(
 ) -> TestEvidence:
     """Validate the dedicated runner's exact-test terminal record."""
     expected = expected_test_name(test_path, test_name)
-    records = [
-        line.removeprefix(EVIDENCE_PREFIX).split("\t")
-        for line in machine_evidence(stderr)
-    ]
+    records = [line.removeprefix(EVIDENCE_PREFIX).split("\t") for line in machine_evidence(stderr)]
     if len(records) != 2 or records[0] != ["selected", expected]:
         return TestEvidence("invalid", "test_evidence")
     terminal = records[1]
@@ -285,9 +280,7 @@ def _git_paths(repo: Path) -> tuple[str, ...] | None:
     )
     if result.returncode != 0:
         return None
-    return tuple(
-        sorted(os.fsdecode(path) for path in result.stdout.split(b"\0") if path)
-    )
+    return tuple(sorted(os.fsdecode(path) for path in result.stdout.split(b"\0") if path))
 
 
 def _fallback_paths(source: Path) -> tuple[str, ...]:
@@ -418,6 +411,4 @@ def verify_provenance(
 ) -> None:
     actual = report.get("provenance")
     if actual != expected.as_json():
-        raise ReportDrift(
-            "report provenance does not match the current source snapshot"
-        )
+        raise ReportDrift("report provenance does not match the current source snapshot")

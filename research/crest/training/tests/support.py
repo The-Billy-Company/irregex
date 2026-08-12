@@ -22,8 +22,7 @@ def row(index: int, pattern: str, *, unicode: bool = True) -> dict[str, object]:
 
 def jsonl(rows: list[dict[str, object]]) -> bytes:
     return b"".join(
-        json.dumps(item, sort_keys=True, separators=(",", ":")).encode() + b"\n"
-        for item in rows
+        json.dumps(item, sort_keys=True, separators=(",", ":")).encode() + b"\n" for item in rows
     )
 
 
@@ -100,11 +99,7 @@ class TraceFixture:
             self.write_checksums()
 
     def archive(self, destination: Path) -> Path:
-        with zipfile.ZipFile(
-            destination, "w", compression=zipfile.ZIP_DEFLATED
-        ) as archive:
+        with zipfile.ZipFile(destination, "w", compression=zipfile.ZIP_DEFLATED) as archive:
             for path in sorted(item for item in self.root.rglob("*") if item.is_file()):
-                archive.write(
-                    path, f"synthetic-v1/{path.relative_to(self.root).as_posix()}"
-                )
+                archive.write(path, f"synthetic-v1/{path.relative_to(self.root).as_posix()}")
         return destination

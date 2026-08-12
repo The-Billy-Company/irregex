@@ -105,16 +105,12 @@ class TrainingEvidenceTest(unittest.TestCase):
             fixture.write_partition("validation")
             with self.subTest(key=key), self.assertRaisesRegex(IntegrityError, key):
                 package = DataPackage(fixture.root)
-                build_validation_report(
-                    package, build_proposal(package, 2), fixture.settings
-                )
+                build_validation_report(package, build_proposal(package, 2), fixture.settings)
 
         report = build_validation_report(self.package, proposal, self.fixture.settings)
         self.assertEqual(report["split_guard"]["call_key_overlap"], 0)
         self.assertEqual(report["split_guard"]["session_key_overlap"], 0)
-        self.assertTrue(
-            report["split_guard"]["validation_opened_after_dictionary_frozen"]
-        )
+        self.assertTrue(report["split_guard"]["validation_opened_after_dictionary_frozen"])
 
     def test_outputs_cannot_claim_q4_or_dictionary_promotion(self) -> None:
         proposal = build_proposal(self.package, 2)
@@ -127,9 +123,7 @@ class TrainingEvidenceTest(unittest.TestCase):
 
         forged = copy.deepcopy(proposal)
         forged["promotion_gate"]["q4_promotion_eligible"] = True
-        with self.assertRaisesRegex(
-            IntegrityError, "deterministic training reproduction"
-        ):
+        with self.assertRaisesRegex(IntegrityError, "deterministic training reproduction"):
             build_validation_report(self.package, forged, self.fixture.settings)
 
     def test_sealed_partitions_and_unsafe_archive_members_are_rejected(self) -> None:

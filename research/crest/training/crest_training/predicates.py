@@ -30,9 +30,7 @@ TRACE_FIELDS = frozenset(
     }
 )
 TRACE_COUNT_FIELDS = frozenset({"calls", "sessions", "distinct_patterns"})
-PARTITION_FILENAMES = {
-    role: str(member.name) for role, member in PARTITION_MEMBERS.items()
-}
+PARTITION_FILENAMES = {role: str(member.name) for role, member in PARTITION_MEMBERS.items()}
 HEX_KEY = {
     "call_key": re.compile(r"[0-9a-f]{24}\Z"),
     "session_key": re.compile(r"[0-9a-f]{20}\Z"),
@@ -119,10 +117,7 @@ def load_manifest(package: DataPackage) -> TraceManifest:
         manifest = json.loads(raw)
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise SchemaError(f"invalid trace manifest JSON: {error}") from error
-    if (
-        not isinstance(manifest, dict)
-        or manifest.get("schema") != "crest-query-trace-split-v1"
-    ):
+    if not isinstance(manifest, dict) or manifest.get("schema") != "crest-query-trace-split-v1":
         raise SchemaError("trace manifest schema must be crest-query-trace-split-v1")
     hashes, counts = manifest.get("sha256"), manifest.get("counts")
     if not isinstance(hashes, dict) or not isinstance(counts, dict):
@@ -147,9 +142,7 @@ def load_manifest(package: DataPackage) -> TraceManifest:
             TraceCounts(count["calls"], count["sessions"], count["distinct_patterns"]),
         )
         if digest != package.verified_checksum(PARTITION_MEMBERS[role]):
-            raise IntegrityError(
-                f"trace manifest digest differs from verified {role} member"
-            )
+            raise IntegrityError(f"trace manifest digest differs from verified {role} member")
     fingerprint = canonical_json_sha256(
         {
             "schema": "crest-dataset-fingerprint-v1",
@@ -182,23 +175,17 @@ def _validate_row(row: object, line_number: int) -> dict[str, object]:
     if not isinstance(row["caseless"], bool) or not isinstance(row["unicode"], bool):
         raise SchemaError(f"line {line_number}: caseless/unicode must be booleans")
     if row["source_tool"] not in {"Grep", "rg", "irregex"}:
-        raise SchemaError(
-            f"line {line_number}: source_tool is not a supported search trace"
-        )
+        raise SchemaError(f"line {line_number}: source_tool is not a supported search trace")
     return row
 
 
-def load_trace(
-    package: DataPackage, role: str, manifest: TraceManifest
-) -> list[dict[str, object]]:
+def load_trace(package: DataPackage, role: str, manifest: TraceManifest) -> list[dict[str, object]]:
     if role not in {"train", "validation"}:
         raise SchemaError("analysis role must be train or validation")
     raw = package.read_partition(role)
     observed, expected = sha256_bytes(raw), manifest.partition_sha256(role)
     if observed != expected:
-        raise IntegrityError(
-            f"{role} digest mismatch: expected {expected}, got {observed}"
-        )
+        raise IntegrityError(f"{role} digest mismatch: expected {expected}, got {observed}")
     rows: list[dict[str, object]] = []
     for line_number, line in enumerate(raw.splitlines(keepends=True), 1):
         try:
@@ -291,9 +278,7 @@ def _escape_set(
     return None, index + 2, "non_ascii_escape"
 
 
-def _class_set(
-    body: str, unicode_mode: bool
-) -> tuple[frozenset[int] | None, str | None]:
+def _class_set(body: str, unicode_mode: bool) -> tuple[frozenset[int] | None, str | None]:
     if not body:
         return None, "empty_or_malformed_class"
     negated = body.startswith("^")
@@ -360,17 +345,11 @@ def _class_end(branch: str, start: int) -> int:
 def extract_predicates(pattern: str, caseless: bool, unicode_mode: bool) -> Extraction:
     branches = _split_top_level(pattern)
     if caseless or "(?" in pattern:
-        reason = (
-            "caseless_fold_semantics"
-            if caseless
-            else "inline_or_extended_group_semantics"
-        )
+        reason = "caseless_fold_semantics" if caseless else "inline_or_extended_group_semantics"
         return Extraction(
             len(branches),
             (),
-            tuple(
-                NonByteCandidate(i, branch, reason) for i, branch in enumerate(branches)
-            ),
+            tuple(NonByteCandidate(i, branch, reason) for i, branch in enumerate(branches)),
         )
     atoms: list[Atom] = []
     rejected: list[NonByteCandidate] = []
@@ -414,18 +393,13 @@ def extract_predicates(pattern: str, caseless: bool, unicode_mode: bool) -> Extr
                 atoms.append(Atom(branch_index, ordinal, frozenset({ord(char)}), char))
                 ordinal += 1
             elif ord(char) >= 0x80:
-                rejected.append(
-                    NonByteCandidate(branch_index, char, "non_ascii_literal")
-                )
+                rejected.append(NonByteCandidate(branch_index, char, "non_ascii_literal"))
             index += 1
     return Extraction(len(branches), tuple(atoms), tuple(rejected))
 
 
 def trace_extractions(rows: Iterable[dict[str, object]]) -> list[Extraction]:
-    return [
-        extract_predicates(row["pattern"], row["caseless"], row["unicode"])
-        for row in rows
-    ]
+    return [extract_predicates(row["pattern"], row["caseless"], row["unicode"]) for row in rows]
 
 
 def encode_byte_set(byte_set: frozenset[int]) -> str:
@@ -454,9 +428,7 @@ def byte_ranges(byte_set: frozenset[int]) -> list[str]:
         if value is not None and value == previous + 1:
             previous = value
             continue
-        ranges.append(
-            f"{start:02x}" if start == previous else f"{start:02x}-{previous:02x}"
-        )
+        ranges.append(f"{start:02x}" if start == previous else f"{start:02x}-{previous:02x}")
         if value is not None:
             start = previous = value
     return ranges

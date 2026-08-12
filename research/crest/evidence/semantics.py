@@ -47,11 +47,7 @@ def _safe_name(name: str) -> bool:
 
 
 def _is_count(value: object, *, positive: bool = False) -> bool:
-    return (
-        isinstance(value, int)
-        and not isinstance(value, bool)
-        and value >= int(positive)
-    )
+    return isinstance(value, int) and not isinstance(value, bool) and value >= int(positive)
 
 
 def _corpus_manifest(raw: bytes, problems: list[str]) -> tuple[int, int, str] | None:
@@ -96,9 +92,7 @@ def _corpus_manifest(raw: bytes, problems: list[str]) -> tuple[int, int, str] | 
     return len(names), total_bytes, hashlib.sha256(raw).hexdigest()
 
 
-def _json_artifact(
-    raw: bytes, name: str, problems: list[str]
-) -> dict[str, object] | None:
+def _json_artifact(raw: bytes, name: str, problems: list[str]) -> dict[str, object] | None:
     try:
         if len(raw) > MAX_ARTIFACT_BYTES:
             problems.append(f"{name} exceeds semantic verification limit")
@@ -210,9 +204,7 @@ def _native_mutation_problems(
         else not isinstance(dirty, str) or not SHA256.fullmatch(dirty)
     ):
         problems.append(f"{label} working-tree provenance is invalid")
-    expected_catalog = contract.catalog_digest(
-        asdict(mutation) for mutation in contract.MUTATIONS
-    )
+    expected_catalog = contract.catalog_digest(asdict(mutation) for mutation in contract.MUTATIONS)
     if provenance.get("mutation_catalog_sha256") != expected_catalog:
         problems.append(f"{label} mutation catalog digest mismatch")
     toolchain = provenance.get("toolchain")
@@ -291,9 +283,7 @@ def corpus_status(
                 )
             )
     corpus_reports = {
-        name: report
-        for name, report in reports.items()
-        if name != "mutation-report.json"
+        name: report for name, report in reports.items() if name != "mutation-report.json"
     }
     expected_profile = {
         "q1-report.json": (1, None),
@@ -314,9 +304,7 @@ def corpus_status(
             and violations == 0
             and report.get("passed") is True
         ):
-            problems.append(
-                f"{name} does not prove zero false negatives and violations"
-            )
+            problems.append(f"{name} does not prove zero false negatives and violations")
         if rank is not None:
             observed_rank, budget = report.get("rank"), report.get("budget")
             if not (
@@ -326,10 +314,7 @@ def corpus_status(
                 and budget == 8
             ):
                 problems.append(f"{name} rank/budget mismatch")
-        if (
-            dictionary_mode is not None
-            and report.get("dictionary_mode") != dictionary_mode
-        ):
+        if dictionary_mode is not None and report.get("dictionary_mode") != dictionary_mode:
             problems.append(f"{name} dictionary mode mismatch")
     if manifest is not None:
         file_count, total_bytes, manifest_sha256 = manifest
@@ -352,9 +337,7 @@ def corpus_status(
                 report.get("query_workload_sha256"),
                 report.get("query_count"),
             )
-            if not isinstance(current_workload, str) or not SHA256.fullmatch(
-                current_workload
-            ):
+            if not isinstance(current_workload, str) or not SHA256.fullmatch(current_workload):
                 problems.append(f"{name} query workload fingerprint is invalid")
             elif workload is None:
                 workload = current_workload

@@ -38,9 +38,7 @@ class CorpusArchiveTest(unittest.TestCase):
         self.assertEqual(first["total_bytes"], 11)
         self.assertFalse(first["benchmark_policy"]["promotion_eligible"])
         self.assertTrue(first["benchmark_policy"]["q4_promotion_blocked"])
-        self.assertEqual(
-            first["benchmark_policy"]["capable_profiles"], ["q1-b8", "q4-b8"]
-        )
+        self.assertEqual(first["benchmark_policy"]["capable_profiles"], ["q1-b8", "q4-b8"])
 
     def test_staging_preserves_bytes_and_is_temporary(self) -> None:
         archive = self.archive()
@@ -210,25 +208,19 @@ class CorpusArchiveTest(unittest.TestCase):
                 for path in paths:
                     os.utime(path)
                 if stale_artifact == "aggregate_csv":
-                    (output / run_name).write_text(
-                        (output / run_name).read_text() + "\n"
-                    )
+                    (output / run_name).write_text((output / run_name).read_text() + "\n")
                 elif stale_artifact == "run_json":
                     (output / csv_name).write_text(
                         (output / csv_name).read_text() + "# refreshed\n"
                     )
                 calls.append((command, env))
-                return subprocess.CompletedProcess(
-                    command, 0, stdout=b"benchmark passed\n"
-                )
+                return subprocess.CompletedProcess(command, 0, stdout=b"benchmark passed\n")
             runs = int(command[command.index("--runs") + 1])
             warmup = int(command[command.index("--warmup") + 1])
             payload = b"alpha\n"
             manifest = (
                 b"path\tsize_bytes\tsha256\n"
-                b"dataset/a.txt\t6\t"
-                + hashlib.sha256(payload).hexdigest().encode()
-                + b"\n"
+                b"dataset/a.txt\t6\t" + hashlib.sha256(payload).hexdigest().encode() + b"\n"
             )
             (output / "corpus-manifest.tsv").write_bytes(manifest)
             survivors = 1 - matched_and_pruned
@@ -335,9 +327,7 @@ class CorpusArchiveTest(unittest.TestCase):
             for rank in (1, 4):
                 receipt_path = self.root / f"archive-q{rank}-b8-receipt.json"
                 profile = {} if rank == 1 else {"rank": rank, "budget": 8}
-                receipts.append(
-                    corpus_archive.run(archive, 2, 0, receipt_path, **profile)
-                )
+                receipts.append(corpus_archive.run(archive, 2, 0, receipt_path, **profile))
                 self.assertEqual(json.loads(receipt_path.read_text()), receipts[-1])
 
         for expected_rank, run_receipt, (argv, environment) in zip(
@@ -349,24 +339,18 @@ class CorpusArchiveTest(unittest.TestCase):
             self.assertEqual(run_receipt["run"]["profile"], f"q{expected_rank}-b8")
             self.assertEqual(run_receipt["run"]["rank"], expected_rank)
             self.assertEqual(run_receipt["run"]["budget"], 8)
-            self.assertIn(
-                f"crest-run-q{expected_rank}-b8.json", json.dumps(run_receipt)
-            )
+            self.assertIn(f"crest-run-q{expected_rank}-b8.json", json.dumps(run_receipt))
             self.assertEqual(argv[argv.index("--rank") + 1], str(expected_rank))
             self.assertEqual(argv[argv.index("--budget") + 1], "8")
             self.assertFalse(run_receipt["run"]["promotion"]["eligible"])
-            self.assertEqual(
-                run_receipt["run"]["promotion"]["q4_blocked"], expected_rank == 4
-            )
+            self.assertEqual(run_receipt["run"]["promotion"]["q4_blocked"], expected_rank == 4)
             self.assertFalse(Path(environment["GIST_ROOTS"]).exists())
         self.assertEqual(
             receipts[0]["run"]["artifacts"]["corpus_manifest"]["sha256"],
             receipts[1]["run"]["artifacts"]["corpus_manifest"]["sha256"],
         )
         for rank in (1, 4):
-            report = json.loads(
-                (evidence_dir / f"crest-run-q{rank}-b8.json").read_text()
-            )
+            report = json.loads((evidence_dir / f"crest-run-q{rank}-b8.json").read_text())
             self.assertEqual(report["production"]["query_rank"], rank)
             self.assertEqual(report["production"]["sidecar_q"], 4)
 
@@ -379,9 +363,7 @@ class CorpusArchiveTest(unittest.TestCase):
                 with (
                     mock.patch.object(corpus_archive, "REPO", self.root),
                     mock.patch.object(corpus_archive, "EVIDENCE_DIR", evidence),
-                    mock.patch.object(
-                        corpus_archive.subprocess, "run", side_effect=initial
-                    ),
+                    mock.patch.object(corpus_archive.subprocess, "run", side_effect=initial),
                 ):
                     corpus_archive.run(
                         archive,
@@ -393,12 +375,8 @@ class CorpusArchiveTest(unittest.TestCase):
                 with (
                     mock.patch.object(corpus_archive, "REPO", self.root),
                     mock.patch.object(corpus_archive, "EVIDENCE_DIR", evidence),
-                    mock.patch.object(
-                        corpus_archive.subprocess, "run", side_effect=touched
-                    ),
-                    self.assertRaisesRegex(
-                        corpus_archive.CorpusArchiveError, f"stale {stale}"
-                    ),
+                    mock.patch.object(corpus_archive.subprocess, "run", side_effect=touched),
+                    self.assertRaisesRegex(corpus_archive.CorpusArchiveError, f"stale {stale}"),
                 ):
                     corpus_archive.run(
                         archive,
@@ -520,9 +498,7 @@ class CorpusArchiveTest(unittest.TestCase):
                 with (
                     mock.patch.object(corpus_archive, "REPO", self.root),
                     mock.patch.object(corpus_archive, "EVIDENCE_DIR", evidence),
-                    mock.patch.object(
-                        corpus_archive.subprocess, "run", side_effect=benchmark
-                    ),
+                    mock.patch.object(corpus_archive.subprocess, "run", side_effect=benchmark),
                     self.assertRaisesRegex(corpus_archive.CorpusArchiveError, expected),
                 ):
                     corpus_archive.run(
@@ -631,9 +607,7 @@ class CorpusArchiveTest(unittest.TestCase):
                 self.root / "invalid-csv",
             ),
             mock.patch.object(corpus_archive.subprocess, "run", side_effect=benchmark),
-            self.assertRaisesRegex(
-                corpus_archive.CorpusArchiveError, "aggregate identity"
-            ),
+            self.assertRaisesRegex(corpus_archive.CorpusArchiveError, "aggregate identity"),
         ):
             corpus_archive.run(
                 archive,

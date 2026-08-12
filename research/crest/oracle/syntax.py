@@ -209,13 +209,9 @@ class _Parser:
             elif _is_decimal(fields[1]):
                 maximum = int(fields[1])
             else:
-                raise PatternSyntaxError(
-                    "repetition bound is not an integer", position=start
-                )
+                raise PatternSyntaxError("repetition bound is not an integer", position=start)
         if maximum is not None and minimum > maximum:
-            raise PatternSyntaxError(
-                "repetition lower bound exceeds upper bound", position=start
-            )
+            raise PatternSyntaxError("repetition lower bound exceeds upper bound", position=start)
         largest = minimum if maximum is None else maximum
         if largest > MAX_REPEAT:
             raise ResourceLimitExceeded(
@@ -245,9 +241,7 @@ class _Parser:
                 construct=f"anchor {ch}",
             )
         if ch in "*+?{":
-            raise PatternSyntaxError(
-                "quantifier has no preceding atom", position=position
-            )
+            raise PatternSyntaxError("quantifier has no preceding atom", position=position)
         return Atom(self._literal_byte(ch, position))
 
     def _group(self, position: int) -> Node:
@@ -364,9 +358,7 @@ class _Parser:
                 low = next(iter(item))
                 high = next(iter(endpoint))
                 if low > high:
-                    raise PatternSyntaxError(
-                        "descending byte-class range", position=dash
-                    )
+                    raise PatternSyntaxError("descending byte-class range", position=dash)
                 values.update(range(low, high + 1))
             else:
                 values.update(item)
@@ -445,9 +437,7 @@ class _Parser:
             end = self.pattern.find("}", self.i)
             digits = self.pattern[self.i : end] if end >= 0 else ""
             if end < 0 or not digits or any(ch not in _HEX for ch in digits):
-                raise PatternSyntaxError(
-                    "invalid braced hexadecimal escape", position=position
-                )
+                raise PatternSyntaxError("invalid braced hexadecimal escape", position=position)
             self.i = end + 1
         else:
             digits = self.pattern[self.i : self.i + 2]

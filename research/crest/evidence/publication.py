@@ -49,9 +49,7 @@ def sha256_bytes(data: bytes) -> str:
 
 
 def canonical_bytes(value: object) -> bytes:
-    return (
-        json.dumps(value, indent=2, sort_keys=True, ensure_ascii=True) + "\n"
-    ).encode()
+    return (json.dumps(value, indent=2, sort_keys=True, ensure_ascii=True) + "\n").encode()
 
 
 def _probe(*argv: str) -> str | None:
@@ -78,8 +76,7 @@ def environment_metadata() -> dict[str, object]:
         "toolchain": {
             "python": sys.version.replace("\n", " "),
             "git": _probe("git", "--version"),
-            "zig": _probe("zig", "version")
-            or _probe("mise", "exec", "--", "zig", "version"),
+            "zig": _probe("zig", "version") or _probe("mise", "exec", "--", "zig", "version"),
         },
         "platform": {
             "hostname": socket.gethostname(),
@@ -230,14 +227,10 @@ def _verify_snapshot(snapshot: Mapping[str, bytes]) -> list[str]:
     if manifest["schema"] != SCHEMA:
         problems.append("publication manifest schema mismatch")
     source_commit = manifest.get("source_commit")
-    if not isinstance(source_commit, str) or not re.fullmatch(
-        r"[0-9a-f]{40,64}", source_commit
-    ):
+    if not isinstance(source_commit, str) or not re.fullmatch(r"[0-9a-f]{40,64}", source_commit):
         problems.append("publication source commit is not a full object id")
     dataset_fingerprint = manifest.get("dataset_fingerprint")
-    if not isinstance(dataset_fingerprint, str) or not SHA256.fullmatch(
-        dataset_fingerprint
-    ):
+    if not isinstance(dataset_fingerprint, str) or not SHA256.fullmatch(dataset_fingerprint):
         problems.append("publication dataset fingerprint is not SHA-256")
     environment = manifest.get("environment")
     if (
@@ -256,9 +249,7 @@ def _verify_snapshot(snapshot: Mapping[str, bytes]) -> list[str]:
         }
     ):
         problems.append("publication toolchain/platform metadata shape is invalid")
-    if manifest["environment_sha256"] != sha256_bytes(
-        canonical_bytes(manifest["environment"])
-    ):
+    if manifest["environment_sha256"] != sha256_bytes(canonical_bytes(manifest["environment"])):
         problems.append("environment metadata hash mismatch")
     files = manifest["files"]
     if not isinstance(files, dict):
@@ -281,25 +272,17 @@ def _verify_snapshot(snapshot: Mapping[str, bytes]) -> list[str]:
     missing, semantic = corpus_status(
         payload,
         source_commit=source_commit if isinstance(source_commit, str) else "",
-        dataset_fingerprint=(
-            dataset_fingerprint if isinstance(dataset_fingerprint, str) else ""
-        ),
+        dataset_fingerprint=(dataset_fingerprint if isinstance(dataset_fingerprint, str) else ""),
     )
     expected_status = (
-        "corpus_runs_pending"
-        if missing
-        else "corpus_runs_error"
-        if semantic
-        else "complete"
+        "corpus_runs_pending" if missing else "corpus_runs_error" if semantic else "complete"
     )
     if (
         manifest["corpus_runs_pending"] != missing
         or manifest["corpus_evidence_errors"] != semantic
         or manifest["evidence_status"] != expected_status
     ):
-        problems.append(
-            "corpus evidence status differs from semantic payload verification"
-        )
+        problems.append("corpus evidence status differs from semantic payload verification")
     if semantic:
         problems.extend(f"corpus evidence invalid: {problem}" for problem in semantic)
     if manifest["promotion_authorization"] != PROMOTION_AUTHORIZATION:

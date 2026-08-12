@@ -133,19 +133,14 @@ class PublicationEvidenceTest(unittest.TestCase):
             publication.sha256_bytes(publication.canonical_bytes(self.metadata)),
         )
         self.assertFalse(manifest["promotion_authorization"]["q4"])
-        self.assertFalse(
-            manifest["promotion_authorization"]["adaptive_predicate_dictionary"]
-        )
+        self.assertFalse(manifest["promotion_authorization"]["adaptive_predicate_dictionary"])
         self.assertEqual(publication.verify(self.root), [])
 
     def test_payload_tamper_fails(self) -> None:
         self.seal()
         (self.root / "training-proposal.json").write_text('{"proposal": false}\n')
         self.assertTrue(
-            any(
-                "payload hash mismatch" in problem
-                for problem in publication.verify(self.root)
-            )
+            any("payload hash mismatch" in problem for problem in publication.verify(self.root))
         )
 
     def test_seal_rejects_concurrent_artifact_replacement(self) -> None:
@@ -207,9 +202,7 @@ class PublicationEvidenceTest(unittest.TestCase):
         manifest = json.loads(path.read_text())
         manifest["environment"]["toolchain"]["zig"] = "forged"
         self.rewrite_manifest(manifest)
-        self.assertIn(
-            "environment metadata hash mismatch", publication.verify(self.root)
-        )
+        self.assertIn("environment metadata hash mismatch", publication.verify(self.root))
 
     def test_resealed_automatic_promotion_claim_fails(self) -> None:
         self.seal()
@@ -229,9 +222,7 @@ class PublicationEvidenceTest(unittest.TestCase):
         self.assertEqual(manifest["corpus_runs_pending"], [])
         self.assertEqual(manifest["corpus_evidence_errors"], [])
         self.assertFalse(manifest["promotion_authorization"]["q4"])
-        self.assertFalse(
-            manifest["promotion_authorization"]["adaptive_predicate_dictionary"]
-        )
+        self.assertFalse(manifest["promotion_authorization"]["adaptive_predicate_dictionary"])
         self.assertEqual(publication.verify(self.root), [])
 
     def test_arbitrary_required_filenames_remain_semantic_errors(self) -> None:
@@ -241,10 +232,7 @@ class PublicationEvidenceTest(unittest.TestCase):
         self.assertEqual(manifest["evidence_status"], "corpus_runs_error")
         self.assertTrue(manifest["corpus_evidence_errors"])
         self.assertTrue(
-            any(
-                "corpus evidence invalid" in problem
-                for problem in publication.verify(self.root)
-            )
+            any("corpus evidence invalid" in problem for problem in publication.verify(self.root))
         )
 
     def test_cross_source_dataset_and_profile_reports_are_rejected(self) -> None:
@@ -267,10 +255,7 @@ class PublicationEvidenceTest(unittest.TestCase):
                 manifest = self.seal()
                 self.assertEqual(manifest["evidence_status"], "corpus_runs_error")
                 self.assertTrue(
-                    any(
-                        field in problem
-                        for problem in manifest["corpus_evidence_errors"]
-                    )
+                    any(field in problem for problem in manifest["corpus_evidence_errors"])
                 )
                 self.root = original
 
@@ -283,10 +268,7 @@ class PublicationEvidenceTest(unittest.TestCase):
         manifest = self.seal()
         self.assertEqual(manifest["evidence_status"], "corpus_runs_error")
         self.assertTrue(
-            any(
-                "q4-report.json" in problem
-                for problem in manifest["corpus_evidence_errors"]
-            )
+            any("q4-report.json" in problem for problem in manifest["corpus_evidence_errors"])
         )
         self.assertTrue(
             any(
@@ -312,10 +294,7 @@ class PublicationEvidenceTest(unittest.TestCase):
             )
         )
         self.assertTrue(
-            any(
-                "workload differs" in problem
-                for problem in manifest["corpus_evidence_errors"]
-            )
+            any("workload differs" in problem for problem in manifest["corpus_evidence_errors"])
         )
 
     def test_native_mutation_provenance_is_enforced(self) -> None:
@@ -323,23 +302,17 @@ class PublicationEvidenceTest(unittest.TestCase):
         mutation = reports["mutation-report.json"]
         mutation["provenance"]["commit"] = "9" * 40
         mutation["provenance"]["mutation_catalog_sha256"] = "0" * 64
-        (self.root / "mutation-report.json").write_bytes(
-            publication.canonical_bytes(mutation)
-        )
+        (self.root / "mutation-report.json").write_bytes(publication.canonical_bytes(mutation))
         manifest = self.seal()
         self.assertEqual(manifest["evidence_status"], "corpus_runs_error")
         errors = manifest["corpus_evidence_errors"]
-        self.assertTrue(
-            any("provenance commit mismatch" in problem for problem in errors)
-        )
+        self.assertTrue(any("provenance commit mismatch" in problem for problem in errors))
         self.assertTrue(any("catalog digest mismatch" in problem for problem in errors))
 
     def test_v2_mutation_report_is_rejected(self) -> None:
         reports = self.write_corpus_artifacts()
         report = {**reports["mutation-report.json"], "schema_version": 2}
-        (self.root / "mutation-report.json").write_bytes(
-            publication.canonical_bytes(report)
-        )
+        (self.root / "mutation-report.json").write_bytes(publication.canonical_bytes(report))
         manifest = self.seal()
         self.assertEqual(manifest["evidence_status"], "corpus_runs_error")
         self.assertTrue(
@@ -362,9 +335,7 @@ class PublicationEvidenceTest(unittest.TestCase):
                 "total": 11,
             },
         }
-        (self.root / "mutation-report.json").write_bytes(
-            publication.canonical_bytes(report)
-        )
+        (self.root / "mutation-report.json").write_bytes(publication.canonical_bytes(report))
         manifest = self.seal()
         self.assertEqual(manifest["evidence_status"], "corpus_runs_error")
         self.assertTrue(
@@ -379,9 +350,7 @@ class PublicationEvidenceTest(unittest.TestCase):
         mutation = reports["mutation-report.json"]
         evidence = mutation["mutants"][0]["machine_evidence"]
         evidence[-1] = evidence[-1].replace("TestUnexpectedResult", "OutOfMemory")
-        (self.root / "mutation-report.json").write_bytes(
-            publication.canonical_bytes(mutation)
-        )
+        (self.root / "mutation-report.json").write_bytes(publication.canonical_bytes(mutation))
         manifest = self.seal()
         self.assertEqual(manifest["evidence_status"], "corpus_runs_error")
         self.assertTrue(

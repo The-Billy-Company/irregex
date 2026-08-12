@@ -84,9 +84,7 @@ def is_strict_int(value: object) -> bool:
 
 
 def canonical_json_sha256(value: object) -> str:
-    raw = json.dumps(
-        value, sort_keys=True, separators=(",", ":"), ensure_ascii=True
-    ).encode()
+    raw = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()
     return sha256_bytes(raw)
 
 
@@ -134,9 +132,7 @@ def _zip_end_record(source: BinaryIO) -> tuple[int, int, int]:
                 if total_entries > MAX_PACKAGE_MEMBERS:
                     raise InputSafetyError("archive exceeds member-count limit")
                 if central_offset + central_size > size:
-                    raise InputSafetyError(
-                        "ZIP central directory exceeds archive bounds"
-                    )
+                    raise InputSafetyError("ZIP central directory exceeds archive bounds")
                 return total_entries, central_offset, central_size
         offset = tail.rfind(b"PK\x05\x06", 0, offset)
     raise InputSafetyError("package is not a canonical ZIP archive")
@@ -160,9 +156,7 @@ def _preflight_zip(source: BinaryIO) -> None:
         if len(name) != name_length:
             raise InputSafetyError("ZIP central directory name is truncated")
         source.seek(extra_length + comment_length, os.SEEK_CUR)
-        consumed += (
-            _CENTRAL_DIRECTORY.size + name_length + extra_length + comment_length
-        )
+        consumed += _CENTRAL_DIRECTORY.size + name_length + extra_length + comment_length
         is_directory = name.endswith(b"/")
         directories += is_directory
         zero_bytes += not is_directory and uncompressed_size == 0
@@ -192,9 +186,7 @@ def _validate_archive_members(
             raise InputSafetyError("archive member path is not canonical")
         lowered = canonical.casefold()
         if canonical in names or lowered in folded:
-            raise InputSafetyError(
-                "archive contains duplicate or case-colliding members"
-            )
+            raise InputSafetyError("archive contains duplicate or case-colliding members")
         names.add(canonical)
         folded.add(lowered)
         mode = (info.external_attr >> 16) & 0o170000
@@ -245,9 +237,7 @@ def _validate_directory(root: Path) -> frozenset[str]:
         try:
             entries = os.scandir(directory)
         except OSError as error:
-            raise InputSafetyError(
-                "package directory cannot be inspected safely"
-            ) from error
+            raise InputSafetyError("package directory cannot be inspected safely") from error
         with entries:
             for entry in entries:
                 path = Path(entry.path)
@@ -339,9 +329,7 @@ class DataPackage:
         try:
             source = open_regular(self._source)
         except SourceOpenError as error:
-            raise InputSafetyError(
-                "package source must be a directory or ZIP archive"
-            ) from error
+            raise InputSafetyError("package source must be a directory or ZIP archive") from error
         try:
             _preflight_zip(source)
             source.seek(0)
@@ -351,9 +339,7 @@ class DataPackage:
             root, names, files = _validate_archive_members(archive.filelist)
         except (zipfile.BadZipFile, zipfile.LargeZipFile, OSError) as error:
             source.close()
-            raise InputSafetyError(
-                "package source is not a safe ZIP archive"
-            ) from error
+            raise InputSafetyError("package source is not a safe ZIP archive") from error
         except (InputSafetyError, SchemaError):
             source.close()
             raise
@@ -374,9 +360,7 @@ class DataPackage:
             with open_beneath(self._source, member.parts) as source:
                 yield source
         except SourceOpenError as error:
-            raise InputSafetyError(
-                f"package member is missing or not regular: {member}"
-            ) from error
+            raise InputSafetyError(f"package member is missing or not regular: {member}") from error
 
     @contextmanager
     def _member_stream(
@@ -422,9 +406,7 @@ class DataPackage:
     def verify_integrity(self) -> None:
         """Stream every declared member, including sealed partitions."""
         current_files = (
-            self._member_files
-            if self._kind == "zip"
-            else _validate_directory(self._source)
+            self._member_files if self._kind == "zip" else _validate_directory(self._source)
         )
         if current_files != self._member_files:
             raise IntegrityError("package member set changed after inspection")
@@ -438,9 +420,7 @@ class DataPackage:
         required = {MANIFEST_MEMBER, *PARTITION_MEMBERS.values()}
         missing = sorted(str(member) for member in required - set(self._checksums))
         if missing:
-            raise SchemaError(
-                f"checksum manifest does not bind required member: {missing[0]}"
-            )
+            raise SchemaError(f"checksum manifest does not bind required member: {missing[0]}")
         for member, expected in self._checksums.items():
             with self._member_stream(member, allow_sealed=True) as source:
                 observed = _sha256_stream(source)

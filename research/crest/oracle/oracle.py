@@ -57,23 +57,17 @@ except ContractError as error:
     CONTRACT_LOAD_ERROR = error
 
 NAMED_PREDICATES: dict[str, frozenset[int]] = (
-    {name: predicate.bytes for name, predicate in CONTRACT.predicates.items()}
-    if CONTRACT
-    else {}
+    {name: predicate.bytes for name, predicate in CONTRACT.predicates.items()} if CONTRACT else {}
 )
 
 
-def analyze(
-    pattern: str, predicate: Iterable[int], rank: int | None = None
-) -> ExactResult:
+def analyze(pattern: str, predicate: Iterable[int], rank: int | None = None) -> ExactResult:
     """Compute exact g_rank(R,C), independently of irregex's CREST calculus."""
     contract = _contract_or_raise()
     selected_rank = contract.default_rank if rank is None else rank
     if selected_rank not in contract.supported_ranks:
         choices = ", ".join(map(str, contract.supported_ranks))
-        raise CLIUsageError(
-            f"rank must be one of the contract-supported values: {choices}"
-        )
+        raise CLIUsageError(f"rank must be one of the contract-supported values: {choices}")
     return analyze_order_statistic(pattern, predicate, selected_rank)
 
 
@@ -85,15 +79,9 @@ def analyze_order_statistic(
     """Compute one statistic represented inside the largest supported top-q."""
     contract = _contract_or_raise()
     if not 1 <= rank <= max(contract.supported_ranks):
-        raise CLIUsageError(
-            f"order statistic must be in 1..{max(contract.supported_ranks)}"
-        )
+        raise CLIUsageError(f"order statistic must be in 1..{max(contract.supported_ranks)}")
     byte_set = frozenset(predicate)
-    invalid = [
-        value
-        for value in byte_set
-        if not isinstance(value, int) or not 0 <= value <= 255
-    ]
+    invalid = [value for value in byte_set if not isinstance(value, int) or not 0 <= value <= 255]
     if invalid:
         rendered = ", ".join(sorted(map(repr, invalid))[:3])
         raise CLIUsageError(f"predicate contains non-byte values: {rendered}")
@@ -122,9 +110,7 @@ def _parse_byte(text: str) -> int:
     try:
         value = int(text, 0)
     except ValueError as error:
-        raise CLIUsageError(
-            f"byte {text!r} must be decimal or 0x-prefixed hexadecimal"
-        ) from error
+        raise CLIUsageError(f"byte {text!r} must be decimal or 0x-prefixed hexadecimal") from error
     if not 0 <= value <= 255:
         raise CLIUsageError(f"byte {text!r} is outside 0..255")
     return value
@@ -269,9 +255,7 @@ def _contract_or_raise() -> CrestContract:
     if CONTRACT_LOAD_ERROR is not None:
         raise CONTRACT_LOAD_ERROR
     if CONTRACT is None:
-        raise ContractError(
-            "CREST oracle contract did not load", construct="contract document"
-        )
+        raise ContractError("CREST oracle contract did not load", construct="contract document")
     return CONTRACT
 
 

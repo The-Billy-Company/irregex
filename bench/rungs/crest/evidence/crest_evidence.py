@@ -28,9 +28,7 @@ KERNEL = HERE.parents[3]  # evidence → crest → rungs → bench → repo root
 CONTRACT = KERNEL / "contract/crest_evidence.toml"
 UTC = timezone.utc
 
-type _JsonValue = (
-    None | bool | int | float | str | list[_JsonValue] | dict[str, _JsonValue]
-)
+type _JsonValue = None | bool | int | float | str | list[_JsonValue] | dict[str, _JsonValue]
 type _JsonObject = dict[str, _JsonValue]
 type _TomlValue = (
     bool
@@ -86,9 +84,7 @@ def _clean_commit() -> str:
     dirty = _git("status", "--porcelain", "--untracked-files=all")
     if dirty:
         count = len(str(dirty).splitlines())
-        raise ValueError(
-            f"publish requires a clean worktree; found {count} dirty path(s)"
-        )
+        raise ValueError(f"publish requires a clean worktree; found {count} dirty path(s)")
     commit = str(_git("rev-parse", "HEAD"))
     if len(commit) not in range(40, 65):
         raise ValueError("cannot resolve a full source commit")
@@ -142,9 +138,7 @@ def _run(
         "transcript_sha256": _sha256(transcript),
     }
     if completed.returncode:
-        raise ValueError(
-            f"{label} failed with exit {completed.returncode}; see {transcript}"
-        )
+        raise ValueError(f"{label} failed with exit {completed.returncode}; see {transcript}")
     return receipt
 
 
@@ -184,9 +178,7 @@ def _archive(
 
 def _probe(*argv: str) -> str | None:
     try:
-        value = subprocess.check_output(
-            argv, text=True, stderr=subprocess.DEVNULL
-        ).strip()
+        value = subprocess.check_output(argv, text=True, stderr=subprocess.DEVNULL).strip()
     except (OSError, subprocess.CalledProcessError):
         return None
     return value or None
@@ -220,9 +212,7 @@ def _cpu_model() -> tuple[str | None, str | None]:
     value = platform.processor() or None
     return (
         value,
-        None
-        if value
-        else "host exposed no CPU model through sysctl, procfs, or platform",
+        None if value else "host exposed no CPU model through sysctl, procfs, or platform",
     )
 
 
@@ -281,8 +271,7 @@ def _power() -> tuple[_JsonObject | None, str | None]:
     if paths:
         return {
             "supplies": {
-                str(path.parent.name): path.read_text(errors="replace").strip()
-                for path in paths
+                str(path.parent.name): path.read_text(errors="replace").strip() for path in paths
             }
         }, None
     return None, "host exposed no supported power-state probe"
@@ -314,8 +303,7 @@ def _machine(contract: _TomlTable) -> _JsonObject:
         "toolchain": {
             "python": sys.version.replace("\n", " "),
             "git": _probe("git", "--version"),
-            "zig": _probe("zig", "version")
-            or _probe("mise", "exec", "--", "zig", "version"),
+            "zig": _probe("zig", "version") or _probe("mise", "exec", "--", "zig", "version"),
         },
     }
     for key, note in (
@@ -345,8 +333,7 @@ def _copy_benchmark_artifacts(stage: Path, contract: _TomlTable) -> None:
 
 def _reseal(stage: Path, contract: _TomlTable, manifest: _JsonObject) -> None:
     manifest["files"] = {
-        name: _sha256(stage / name)
-        for name in contract["artifacts"]["payload_required"]
+        name: _sha256(stage / name) for name in contract["artifacts"]["payload_required"]
     }
     _json_write(stage / verify.MANIFEST, manifest)
     digest = _sha256(stage / verify.MANIFEST)
@@ -363,18 +350,14 @@ def package(output: Path | None = None) -> Path:
     if not destination.is_relative_to(raw_dir.resolve()):
         raise ValueError(f"evidence packages must stay under {raw_dir}")
     if destination.exists():
-        raise ValueError(
-            f"refusing to overwrite existing evidence package: {destination}"
-        )
+        raise ValueError(f"refusing to overwrite existing evidence package: {destination}")
 
     stage = Path(tempfile.mkdtemp(prefix=".package-", dir=raw_dir))
     try:
         commands: list[_JsonObject] = []
         benchmark_argv = _expand(contract["commands"]["benchmark"], contract)
         commands.append(
-            _run(
-                "benchmark", benchmark_argv, KERNEL, stage / "benchmark-transcript.txt"
-            )
+            _run("benchmark", benchmark_argv, KERNEL, stage / "benchmark-transcript.txt")
         )
         _copy_benchmark_artifacts(stage, contract)
 
@@ -392,9 +375,7 @@ def package(output: Path | None = None) -> Path:
 
         (stage / "source-commit.txt").write_text(f"{commit}\n")
         commands.append(
-            _archive(
-                commit, contract["paths"]["source_archive_paths"], stage / "source.tar"
-            )
+            _archive(commit, contract["paths"]["source_archive_paths"], stage / "source.tar")
         )
         machine = _machine(contract)
         _json_write(stage / "machine.json", machine)
@@ -503,9 +484,7 @@ def regenerate_monograph(package_dir: Path) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
-    create = sub.add_parser(
-        "package", help="run proofs and create a clean-tree package"
-    )
+    create = sub.add_parser("package", help="run proofs and create a clean-tree package")
     create.add_argument("--output", type=Path)
     check = sub.add_parser("verify", help="verify every hash, receipt, and revision")
     check.add_argument("package", type=Path)
