@@ -50,6 +50,7 @@
 //! nothing, so under-pruning is the only failure mode.
 
 const std = @import("std");
+const fault = @import("../../../fault.zig");
 const syn = @import("../syntax/syntax.zig");
 const unicode_tables = @import("../unicode/tables.zig");
 const crest = @import("../../math/crest.zig");
@@ -59,10 +60,7 @@ const ByteSet = syn.ByteSet;
 const K = crest.K;
 const Vector = crest.Vector;
 
-pub const CompileError = std.mem.Allocator.Error || error{
-    UnsupportedCrestBudget,
-    UnsupportedCrestRank,
-};
+pub const CompileError = std.mem.Allocator.Error || fault.Pattern;
 
 const Memo = std.AutoHashMap(*const Node, Basis);
 
@@ -74,8 +72,8 @@ pub fn forcedRanked(
     budget: u8,
     rank: u8,
 ) CompileError!crest.RankedSwell {
-    if (!crest.supportsRank(rank)) return error.UnsupportedCrestRank;
-    if (!crest.supportsBudget(budget)) return error.UnsupportedCrestBudget;
+    if (!crest.supportsRank(rank) or !crest.supportsBudget(budget))
+        return fault.Pattern.Unsupported;
 
     var memo = Memo.init(allocator);
     defer memo.deinit();

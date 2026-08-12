@@ -8,6 +8,7 @@ const std = @import("std");
 const builder = @import("builder.zig");
 const columnar = @import("columnar.zig");
 const crest = @import("../../../kernel/math/crest.zig");
+const fault = @import("../../../fault.zig");
 const planner = @import("planner.zig");
 const portal = @import("../../../portal.zig");
 const signet = @import("../frame/signet.zig");
@@ -55,13 +56,7 @@ pub const Expected = struct {
     binding: Binding,
 };
 
-pub const EncodeError = error{
-    BufferTooSmall,
-    InvalidBinding,
-    Overflow,
-    TooManyDocuments,
-    UnsupportedRank,
-};
+pub const EncodeError = fault.Persist || fault.Pattern;
 
 pub const Offset = struct {
     pub const version = 8;
@@ -102,17 +97,17 @@ pub fn supportsQ(q: u8) bool {
 }
 
 pub fn encodedSize(rows: []const Spectrum, q: u8) EncodeError!usize {
-    if (rows.len > std.math.maxInt(u32)) return error.TooManyDocuments;
+    if (rows.len > std.math.maxInt(u32)) return fault.Persist.Oversized;
     const overflows = try countOverflows(rows, q);
-    return (shape(@intCast(rows.len), q, overflows) orelse return error.Overflow).total;
+    return (shape(@intCast(rows.len), q, overflows) orelse return fault.Persist.Oversized).total;
 }
 
 pub fn writeInto(rows: []const Spectrum, options: EncodeOptions, buffer: []u8) EncodeError!usize {
-    if (!options.binding.valid()) return error.InvalidBinding;
-    if (rows.len > std.math.maxInt(u32)) return error.TooManyDocuments;
+    if (!options.binding.valid()) return fault.Persist.GenerationMismatch;
+    if (rows.len > std.math.maxInt(u32)) return fault.Persist.Oversized;
     const overflow_count = try countOverflows(rows, options.q);
-    const layout = shape(@intCast(rows.len), options.q, overflow_count) orelse return error.Overflow;
-    if (buffer.len < layout.total) return error.BufferTooSmall;
+    const layout = shape(@intCast(rows.len), options.q, overflow_count) orelse return fault.Persist.Oversized;
+    if (buffer.len < layout.total) return fault.Persist.Oversized;
     const out = buffer[0..layout.total];
     @memset(out, 0);
 
@@ -390,11 +385,11 @@ pub fn build(gpa: std.mem.Allocator, docs: []const []const u8) ![]crest.Vector {
 }
 
 fn countOverflows(rows: []const Spectrum, q: u8) EncodeError!u32 {
-    if (!supportsQ(q)) return error.UnsupportedRank;
+    if (!supportsQ(q)) return fault.Pattern.Unsupported;
     var count: u32 = 0;
     for (rows) |row| for (0..q) |rank| for (0..predicate_count) |predicate| {
         if (row[crest.spectrumLane(predicate, rank)] > base_saturation)
-            count = std.math.add(u32, count, 1) catch return error.Overflow;
+            count = std.math.add(u32, count, 1) catch return fault.Persist.Oversized;
     };
     return count;
 }

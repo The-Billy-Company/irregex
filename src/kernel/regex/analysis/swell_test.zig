@@ -576,8 +576,8 @@ test "Unicode classes certify exact pinned-UCD lanes" {
 }
 
 test "ranked compiler refuses unsupported q and B" {
-    try testing.expectError(error.UnsupportedCrestRank, rankedOf("[0-9]", ascii, 3, 8));
-    try testing.expectError(error.UnsupportedCrestBudget, rankedOf("[0-9]", ascii, 1, 3));
+    try testing.expectError(error.Unsupported, rankedOf("[0-9]", ascii, 3, 8));
+    try testing.expectError(error.Unsupported, rankedOf("[0-9]", ascii, 1, 3));
 }
 
 fn oracleClass(predicate: oracle_cases.Predicate) crest.Class {
