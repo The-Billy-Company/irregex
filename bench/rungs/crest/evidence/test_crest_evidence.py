@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import re
 import subprocess
 import sys
 import tarfile
@@ -502,13 +503,17 @@ class EvidenceVerificationTest(unittest.TestCase):
 
     def promotion_problems(self, authorized: str, blocked: str) -> list[str]:
         text = CONTRACT.read_text()
-        text = text.replace(
-            'authorized_profiles = ["q1-b8"]',
-            f"authorized_profiles = {authorized}",
-        ).replace(
-            'blocked_profiles = ["q4-b8"]',
-            f"blocked_profiles = {blocked}",
-        )
+        for field, value in (
+            ("authorized_profiles", authorized),
+            ("blocked_profiles", blocked),
+        ):
+            text, replacements = re.subn(
+                rf"(?m)^{field}\s*=.*$",
+                f"{field} = {value}",
+                text,
+                count=1,
+            )
+            self.assertEqual(replacements, 1)
         contract = self.root / f"promotion-{hash((authorized, blocked))}.toml"
         contract.write_text(text)
         return verify.verify_package(self.package, contract, self.repo)
