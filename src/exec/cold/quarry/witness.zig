@@ -196,7 +196,7 @@ fn trimRoot(raw: []const u8) []const u8 {
 
 /// Bytes of leading path shared by two paths, truncated to a whole segment so
 /// `attrs.py` and `attrs.gen.py` score their directory rather than a partial
-/// filename — affinity is about neighbourhood, not spelling.
+/// filename — affinity is about neighborhood, not spelling.
 fn shared(a_path: []const u8, b_path: []const u8) usize {
     var i: usize = 0;
     while (i < @min(a_path.len, b_path.len) and a_path[i] == b_path[i]) i += 1;

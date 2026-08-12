@@ -35,12 +35,13 @@ import sys
 import tempfile
 import time
 
-
 PATTERN = r"pgxpool\.\w+"
 RUNS = 5
 
 
-def run(corpus: pathlib.Path, env: dict[str, str], *argv: str, trace: str = "") -> tuple[float, float, str]:
+def run(
+    corpus: pathlib.Path, env: dict[str, str], *argv: str, trace: str = ""
+) -> tuple[float, float, str]:
     """One child: wall seconds, its own CPU seconds, and its stderr."""
     child = env | ({"GIST_TRACE": trace} if trace else {})
     with open(os.devnull, "wb") as null:
@@ -53,7 +54,10 @@ def run(corpus: pathlib.Path, env: dict[str, str], *argv: str, trace: str = "") 
 
 
 def measure(corpus: pathlib.Path, env: dict[str, str], label: str, *argv: str) -> None:
-    walls, cpus = zip(*((w, c) for w, c, _ in (run(corpus, env, *argv) for _ in range(RUNS))))
+    walls, cpus = zip(
+        *((w, c) for w, c, _ in (run(corpus, env, *argv) for _ in range(RUNS))),
+        strict=True,
+    )
     print(
         f"  {label:<38} wall {min(walls):5.3f}s   cpu {statistics.median(cpus):5.3f}s"
         f"   (cpu spread {min(cpus):.3f}–{max(cpus):.3f})"
@@ -106,7 +110,11 @@ def main(argv: list[str]) -> int:
     if not source.is_dir():
         print(f"not a directory: {source}", file=sys.stderr)
         return 1
-    work = pathlib.Path(argv[2]).expanduser() if len(argv) > 2 else pathlib.Path(tempfile.mkdtemp(prefix="transplant-"))
+    work = (
+        pathlib.Path(argv[2]).expanduser()
+        if len(argv) > 2
+        else pathlib.Path(tempfile.mkdtemp(prefix="transplant-"))
+    )
     corpus, gistdir = work / "corpus", work / "gistdir"
     env = os.environ | {"GIST_DIR": str(gistdir), "GIST_HINTS": "0", "GIST_NO_AUTOSERVE": "1"}
 
