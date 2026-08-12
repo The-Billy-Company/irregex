@@ -35,12 +35,12 @@ random_patterns_per_mode = 400
 random_files_per_pattern = 60
 
 [benchmark.capability]
-comparable_profiles = ["q1-b8", "q4-b8"]
+comparable_profiles = [ "q1-b8", "q4-b8" ]
 frozen_manifest = "corpus-manifest.tsv"
 
 [benchmark.promotion]
-authorized_profiles = ["q1-b8"]
-blocked_profiles = ["q4-b8"]
+authorized_profiles = [ "q1-b8" ]
+blocked_profiles = [ "q4-b8" ]
 
 [benchmark.production]
 sidecar_format_version = 6
@@ -180,7 +180,23 @@ digit_threshold = 3
 
 [commands]
 cwd = "."
-benchmark = [ "mise", "exec", "--", "zig", "build", "crest", "--", "--rank", "{rank}", "--budget", "{budget}", "--runs", "{runs}", "--warmup", "{warmup}" ]
+benchmark = [
+  "mise",
+  "exec",
+  "--",
+  "zig",
+  "build",
+  "crest",
+  "--",
+  "--rank",
+  "{rank}",
+  "--budget",
+  "{budget}",
+  "--runs",
+  "{runs}",
+  "--warmup",
+  "{warmup}",
+]
 test = [ "python3", "bench/rungs/crest/evidence/publication_tests.py" ]
 
 [publication]
