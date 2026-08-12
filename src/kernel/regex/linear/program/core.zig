@@ -189,6 +189,7 @@ pub const Regex = struct {
     /// lowers, by the same parse, so the sieve cannot disagree with this engine
     /// about what a construct means.
     pub const forcedSwell = lower.forcedSwell;
+    pub const forcedRankedSwell = lower.forcedRankedSwell;
 
     /// Reusable Pike-simulation scratch (`pike/scratch.zig`), sized to the
     /// program once; `SpanSim` adds the per-state start-offset maps `-o` needs.

@@ -110,10 +110,25 @@ pub fn parse(arena: std.mem.Allocator, pattern: []const u8, opts: Options) Parse
 /// nothing, whenever the pattern does not parse: an unsupported construct can
 /// only cost pruning, never a match.
 pub fn forcedSwell(allocator: std.mem.Allocator, pattern: []const u8, opts: Options) crest.Swell {
+    return forcedRankedSwell(allocator, pattern, opts, crest.default_budget, crest.default_rank).projectQ1();
+}
+
+pub fn forcedRankedSwell(
+    allocator: std.mem.Allocator,
+    pattern: []const u8,
+    opts: Options,
+    budget: u8,
+    rank: u8,
+) crest.RankedSwell {
     var arena_state = std.heap.ArenaAllocator.init(allocator);
     defer arena_state.deinit();
-    const ast = parse(arena_state.allocator(), pattern, opts) catch return crest.no_sieve;
-    return analysis.forcedSwell(ast);
+    const ast = parse(arena_state.allocator(), pattern, opts) catch return .{};
+    return analysis.forcedRanked(
+        arena_state.allocator(),
+        ast,
+        budget,
+        rank,
+    ) catch .{};
 }
 
 pub fn compileOpts(allocator: std.mem.Allocator, pattern: []const u8, opts: Options) ParseError!Regex {

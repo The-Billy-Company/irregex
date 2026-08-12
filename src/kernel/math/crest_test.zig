@@ -43,7 +43,7 @@ fn referenceCrest(doc: []const u8) crest.Vector {
     for (doc) |b| {
         const m = crest.membership[b];
         const hold = crest.isContinuation(b);
-        for (0..crest.K) |i| {
+        for (0..crest.approximate_k) |i| {
             const is_cp = i >= 2 * crest.base_k;
             if (m & (@as(crest.Mask, 1) << @intCast(i)) != 0) {
                 cur[i] += 1;
@@ -76,7 +76,9 @@ test "the scan is the byte-at-a-time definition, exactly" {
     for (pools) |pool| {
         for (0..doc.len) |len| {
             for (doc[0..len]) |*b| b.* = pool[rng.uintLessThan(usize, pool.len)];
-            try testing.expectEqual(referenceCrest(doc[0..len]), crest.crest(doc[0..len]));
+            const want = referenceCrest(doc[0..len]);
+            const got = crest.crest(doc[0..len]);
+            try testing.expectEqualSlices(u16, want[0..crest.approximate_k], got[0..crest.approximate_k]);
         }
     }
 
@@ -84,7 +86,9 @@ test "the scan is the byte-at-a-time definition, exactly" {
     for (0..2000) |_| {
         const len = rng.uintLessThan(usize, doc.len + 1);
         rng.bytes(doc[0..len]);
-        try testing.expectEqual(referenceCrest(doc[0..len]), crest.crest(doc[0..len]));
+        const want = referenceCrest(doc[0..len]);
+        const got = crest.crest(doc[0..len]);
+        try testing.expectEqualSlices(u16, want[0..crest.approximate_k], got[0..crest.approximate_k]);
     }
 }
 
@@ -110,13 +114,17 @@ test "cutting the document into pieces rejoins to the same answer" {
         // Every piece unbroken: `whole` propagates end to end, and the answer
         // is the whole document rather than any one piece.
         @memset(d, 'a');
-        try testing.expectEqual(referenceCrest(d), crest.crest(d));
+        const want_whole = referenceCrest(d);
+        const got_whole = crest.crest(d);
+        try testing.expectEqualSlices(u16, want_whole[0..crest.approximate_k], got_whole[0..crest.approximate_k]);
 
         // One break, walked onto and around each cut — the joins' seam.
         for ([_]usize{ 0, 1, len / 4 - 1, len / 4, len / 4 + 1, len / 2, 3 * len / 4, len - 1 }) |cut| {
             @memset(d, 'a');
             d[cut] = ' ';
-            try testing.expectEqual(referenceCrest(d), crest.crest(d));
+            const want_cut = referenceCrest(d);
+            const got_cut = crest.crest(d);
+            try testing.expectEqualSlices(u16, want_cut[0..crest.approximate_k], got_cut[0..crest.approximate_k]);
         }
 
         for ([_][]const u8{
@@ -126,11 +134,15 @@ test "cutting the document into pieces rejoins to the same answer" {
             "aaaaaaaaaaaaaaaa ", // long runs, rare breaks: `whole` pieces appear
         }) |pool| {
             for (d) |*b| b.* = pool[rng.uintLessThan(usize, pool.len)];
-            try testing.expectEqual(referenceCrest(d), crest.crest(d));
+            const want_pool = referenceCrest(d);
+            const got_pool = crest.crest(d);
+            try testing.expectEqualSlices(u16, want_pool[0..crest.approximate_k], got_pool[0..crest.approximate_k]);
         }
 
         rng.bytes(d);
-        try testing.expectEqual(referenceCrest(d), crest.crest(d));
+        const want_random = referenceCrest(d);
+        const got_random = crest.crest(d);
+        try testing.expectEqualSlices(u16, want_random[0..crest.approximate_k], got_random[0..crest.approximate_k]);
     }
 }
 
@@ -166,68 +178,59 @@ test "scalar-closed members measure runs the ASCII half cannot see" {
 }
 
 test "semantic schema pins class order and byte-boundary memberships" {
-    const order = [_]crest.Class{ .digit, .hex, .upper, .lower, .alpha, .word, .space, .punct };
+    const order = [_]crest.Class{
+        .digit,
+        .hex,
+        .upper,
+        .lower,
+        .alpha,
+        .word,
+        .space,
+        .punct,
+        .literal_space,
+        .dot,
+        .quote,
+        .lparen,
+        .slash,
+        .underscore,
+        .assign_sep,
+    };
     try testing.expectEqual(crest.base_k, order.len);
-    try testing.expectEqual(crest.K, 3 * order.len);
+    try testing.expectEqual(crest.K, 3 * order.len + crest.exact_k);
     for (order, 0..) |class, i| try testing.expectEqual(i, @intFromEnum(class));
-    // The ASCII half keeps its historical lane indices; scalar and codepoint follow.
     for (order) |class| {
         try testing.expectEqual(@intFromEnum(class), crest.lane(class, .ascii));
         try testing.expectEqual(@intFromEnum(class) + crest.base_k, crest.lane(class, .scalar));
         try testing.expectEqual(@intFromEnum(class) + 2 * crest.base_k, crest.lane(class, .codepoint));
     }
-    try testing.expectEqualStrings(
-        "digit\x00hex\x00upper\x00lower\x00alpha\x00word\x00space\x00punct" ++
-            "\x00digit+u\x00hex+u\x00upper+u\x00lower+u\x00alpha+u\x00word+u\x00space+u\x00punct+u" ++
-            "\x00digit+cp\x00hex+cp\x00upper+cp\x00lower+cp\x00alpha+cp\x00word+cp\x00space+cp\x00punct+cp",
-        crest.SidecarSchema.class_order,
-    );
+    try testing.expectEqualStrings("digit", crest.className(crest.lane(.digit, .ascii)));
+    try testing.expectEqualStrings("assign_sep+cp", crest.className(crest.lane(.assign_sep, .codepoint)));
+    try testing.expectEqualStrings("exact:nd", crest.className(crest.exactLane(.nd)));
 
-    // An ASCII byte is in a scalar AND a codepoint twin exactly when it is in
-    // the base class, so its mask is the base byte tripled; a bare UTF-8
-    // continuation byte is in NO base class, in EVERY scalar twin, and in NO
-    // codepoint twin (Lemma 2c's refusal); a UTF-8 lead byte is in every twin
-    // of BOTH families. Spelled out rather than derived — deriving it would
-    // only restate `crest.zig`'s own closure rule back at itself. Written as
-    // (codepoint << 16) | (scalar << 8) | ascii so each 8-bit group reads as
-    // the same byte the pre-codepoint table already pinned.
-    const cases = [_]struct { byte: u8, bits: u24 }{
-        .{ .byte = '/', .bits = 0x808080 },
-        .{ .byte = '0', .bits = 0x232323 },
-        .{ .byte = '9', .bits = 0x232323 },
-        .{ .byte = ':', .bits = 0x808080 },
-        .{ .byte = 'A', .bits = 0x363636 },
-        .{ .byte = 'F', .bits = 0x363636 },
-        .{ .byte = 'G', .bits = 0x343434 },
-        .{ .byte = '_', .bits = 0x202020 },
-        .{ .byte = '`', .bits = 0x808080 },
-        .{ .byte = 'a', .bits = 0x3a3a3a },
-        .{ .byte = 'f', .bits = 0x3a3a3a },
-        .{ .byte = 'g', .bits = 0x383838 },
-        .{ .byte = '\t', .bits = 0x404040 },
-        .{ .byte = '\n', .bits = 0x404040 },
-        .{ .byte = 0x0B, .bits = 0x404040 },
-        .{ .byte = 0x0C, .bits = 0x404040 },
-        .{ .byte = '\r', .bits = 0x404040 },
-        .{ .byte = ' ', .bits = 0x404040 },
-        .{ .byte = 0x7F, .bits = 0 },
-        // The alphabet boundary: 0x80 is the first byte no ASCII class may
-        // claim, the first every scalar twin must, and — being a bare
-        // continuation, not a lead — the first NO codepoint twin may.
-        .{ .byte = 0x80, .bits = 0x00FF00 },
-        .{ .byte = 0xC3, .bits = 0xFFFF00 }, // a 2-byte UTF-8 LEAD: codepoint twins claim it too
-        .{ .byte = 0xA9, .bits = 0x00FF00 }, // …its continuation does not
-        .{ .byte = 0xFF, .bits = 0xFFFF00 },
+    const Member = struct {
+        fn has(byte: u8, class: crest.Class, alphabet: crest.Alphabet) bool {
+            const bit = @as(crest.Mask, 1) << @intCast(crest.lane(class, alphabet));
+            return crest.membership[byte] & bit != 0;
+        }
     };
-    for (cases) |case| try testing.expectEqual(@as(crest.Mask, case.bits), crest.membership[case.byte]);
+    try testing.expect(Member.has('0', .digit, .ascii));
+    try testing.expect(Member.has('.', .dot, .ascii));
+    try testing.expect(Member.has('/', .slash, .ascii));
+    try testing.expect(Member.has('_', .underscore, .ascii));
+    try testing.expect(Member.has('=', .assign_sep, .ascii));
+    try testing.expect(!Member.has('x', .digit, .ascii));
+    try testing.expect(!Member.has(0x80, .digit, .ascii));
+    try testing.expect(Member.has(0x80, .digit, .scalar));
+    try testing.expect(!Member.has(0x80, .digit, .codepoint));
+    try testing.expect(Member.has(0xC3, .digit, .codepoint));
 }
 
 test "semantic hash binds cap, interpretation, and full membership table" {
     const canonical = &crest.SidecarSchema.canonical_bytes;
     try testing.expect(std.mem.endsWith(u8, canonical, &crest.SidecarSchema.membership_le));
-    try testing.expectEqual(4 * crest.membership.len, crest.SidecarSchema.membership_le.len);
+    try testing.expectEqual(8 * crest.membership.len, crest.SidecarSchema.membership_le.len);
     try testing.expectEqual(std.math.maxInt(u16), crest.SidecarSchema.saturation_cap);
-    try testing.expectEqual(@as(u16, 4), crest.SidecarSchema.format_version);
+    try testing.expectEqual(@as(u16, 6), crest.SidecarSchema.format_version);
 
     // A captured golden, and only that: it trips the moment this schema's
     // identity moves, which is exactly when every persisted sidecar must be
@@ -236,7 +239,7 @@ test "semantic hash binds cap, interpretation, and full membership table" {
     // vector — this pin is not the place to relitigate the hash function.
     const original = crest.SidecarSchema.hash();
     try testing.expectEqualStrings(
-        "5ad9e75b72492c0fca6692362beeb2dcd276d44e7ee86625f7bf27d5bb397efb",
+        "5004e9a43933a65f17b6fc38e3f7ac37f5774e3a74e33412fc1c0d4d2a9270e7",
         &original.hex(),
     );
 
@@ -311,12 +314,10 @@ test "a swell prunes only what clears none of its alternatives" {
     // therefore weakly more selective on EVERY document, never less sound —
     // checked here over random crest vectors rather than argued.
     //
-    // Demands are drawn shorter than documents on purpose. Both are dense over
-    // all K members, which is already far harsher than a real ĝ (a pattern
-    // forces one or two classes, not sixteen); drawing them from the SAME range
-    // on top of that makes the fold prune ~99% of samples, and the sweep stops
-    // reaching the region it exists to measure. The two counters below are the
-    // guard that this re-aiming stayed honest.
+    // Demands are drawn shorter than documents on purpose and confined to the
+    // base dictionary. Filling all q/UCD lanes independently would describe no
+    // realizable pattern and make the fold prune almost every sample, rendering
+    // the strict-improvement side vacuous. The two counters guard both regions.
     var prng = std.Random.DefaultPrng.init(0xC4E5_0F0D);
     const rng = prng.random();
     var strictly_better: usize = 0;
@@ -324,7 +325,11 @@ test "a swell prunes only what clears none of its alternatives" {
     for (0..8192) |_| {
         var pair: crest.Swell = .{ .len = 2 };
         var min_of_pair = crest.zero_vector;
-        for (&pair.crests[0], &pair.crests[1], &min_of_pair) |*a, *b, *m| {
+        for (
+            pair.crests[0][0..crest.base_k],
+            pair.crests[1][0..crest.base_k],
+            min_of_pair[0..crest.base_k],
+        ) |*a, *b, *m| {
             a.* = rng.uintLessThan(u16, 4);
             b.* = rng.uintLessThan(u16, 4);
             m.* = @min(a.*, b.*);
@@ -363,4 +368,50 @@ test "saturation is monotone on both sides of the compare" {
     try testing.expect(!crest.pruned(long_crest, saturated));
     // A run that merely ends the document still counts (no off-by-one at EOF).
     try testing.expectEqual(@as(u16, 3), crest.crest("xy 123")[@intFromEnum(crest.Class.digit)]);
+}
+
+test "rank-one spectrum is exactly the legacy crest" {
+    const docs = [_][]const u8{
+        "",
+        "ab  12ff  ABCD_ef00",
+        "\u{0660}\u{0661}\u{0662} alpha \u{3000}",
+        &[_]u8{ 0x80, 0xC3, 0xA9, '7' },
+    };
+    for (docs) |doc| {
+        const vector = crest.crest(doc);
+        const ridge = crest.spectrum(doc, 1);
+        for (0..crest.K) |predicate|
+            try testing.expectEqual(vector[predicate], ridge[crest.spectrumLane(predicate, 0)]);
+    }
+}
+
+test "rank-four spectrum keeps the longest disjoint maximal runs" {
+    const ridge = crest.spectrum("111a22222b333c44", 4);
+    const digit = crest.lane(.digit, .ascii);
+    try testing.expectEqualSlices(u16, &.{ 5, 3, 3, 2 }, &.{
+        ridge[crest.spectrumLane(digit, 0)],
+        ridge[crest.spectrumLane(digit, 1)],
+        ridge[crest.spectrumLane(digit, 2)],
+        ridge[crest.spectrumLane(digit, 3)],
+    });
+}
+
+test "exact UCD lanes count decoded scalars" {
+    const vector = crest.crest("\u{0660}\u{0661}\u{0662}abc\u{3000}\u{2003}");
+    try testing.expectEqual(@as(u16, 3), vector[crest.exactLane(.nd)]);
+    try testing.expectEqual(@as(u16, 3), vector[crest.exactLane(.letter)]);
+    try testing.expectEqual(@as(u16, 2), vector[crest.exactLane(.white_space)]);
+}
+
+test "adaptive byte predicates are independent lanes" {
+    const vector = crest.crest("x = foo/bar(\"quoted.name\")");
+    try testing.expectEqual(@as(u16, 1), vector[crest.lane(.assign_sep, .ascii)]);
+    try testing.expectEqual(@as(u16, 1), vector[crest.lane(.slash, .ascii)]);
+    try testing.expectEqual(@as(u16, 1), vector[crest.lane(.lparen, .ascii)]);
+    try testing.expectEqual(@as(u16, 1), vector[crest.lane(.dot, .ascii)]);
+    try testing.expectEqual(@as(u16, 1), vector[crest.lane(.quote, .ascii)]);
+}
+
+test "unsupported rank refuses to manufacture a spectrum" {
+    try testing.expectEqual(crest.zero_spectrum, crest.spectrum("123", 3));
 }

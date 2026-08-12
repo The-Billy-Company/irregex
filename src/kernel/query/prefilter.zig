@@ -231,9 +231,15 @@ pub fn winnow(
     plan_limits: ?cover.Limits,
 ) Winnow {
     const ast = lower.parse(arena, pattern, opts) catch return .{};
+    const ranked = analysis.forcedRanked(
+        arena,
+        ast,
+        crest.default_budget,
+        crest.default_rank,
+    ) catch crest.RankedSwell{};
     return .{
         .plan = if (plan_limits) |lim| (cover.plan(arena, ast, lim) catch null) else null,
-        .sieve = analysis.forcedSwell(ast),
+        .sieve = ranked.projectQ1(),
     };
 }
 
