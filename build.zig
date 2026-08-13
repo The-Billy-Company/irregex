@@ -3,13 +3,13 @@
 //! This package is the engine: syntax → automata ladder → scan/verify → the
 //! cold walk-and-emit pipeline → the warm resident core, plus the trigram /
 //! crest / phantom persisted index tiers. It ships as a **Zig module**
-//! (`@import("irregex")`) that the product packages (`relate`, `gist`,
-//! `blast`) consume as siblings, plus its own C-ABI artifact — `libirgx` +
+//! (`@import("irregex")`) that the product packages consume as
+//! siblings, plus its own C-ABI artifact — `libirgx` +
 //! `include/irgx.h`: the regex-over-text plane (compile · is_match ·
 //! find_all · captures) and the status/fault substrate all four ABIs share.
 //! It installs no executables. The session-shaped ABI over a corpus lives in
-//! `gist`; the kinship engine (and the cento quoter over this library's
-//! FM-index) lives in `relate`.
+//! the exact-search face; the kinship engine (and the cento quoter over this
+//! library's FM-index) lives in the kinship face.
 //!
 //! The test chassis comes from the `brigade` package, as it does in every
 //! sibling: one ReleaseSafe brigade-sharded unit-test binary (`test` /
@@ -341,7 +341,7 @@ pub fn build(b: *std.Build) void {
     // The package name rides along so this generated file differs from the one
     // every sibling generates. Zig content-addresses it, and two packages whose
     // only option was an identical version string produced the SAME file — which
-    // it then refuses as the root of two modules the moment `gist` links
+    // it then refuses as the root of two modules the moment a face links
     // `irregex`. Naming the package keeps them distinct and reads better anyway.
     const zon = @import("build.zig.zon");
     const version = b.addOptions();
@@ -349,9 +349,9 @@ pub fn build(b: *std.Build) void {
     version.addOption([:0]const u8, "package", @tagName(zon.name));
 
     // ── the public module (`@import("irregex")`) ──
-    // What `relate`/`gist`/`blast` consume as a sibling-path dependency. PIC
-    // because the product packages link it into PIE binaries and (in gist) a
-    // shared C-ABI object.
+    // What every product face consumes as a sibling-path dependency. PIC
+    // because the product packages link it into PIE binaries and, in one of
+    // them, a shared C-ABI object.
     const engine = codegen.module(b.addModule("irregex", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
@@ -417,6 +417,40 @@ pub fn build(b: *std.Build) void {
     dynamic_lib.installHeader(b.path("include/irgx.h"), "irgx.h");
     b.installArtifact(dynamic_lib);
 
+    // ── the header's own compile gate (`zig build header`) ──
+    // The header the line above installs is written by hand, and the only
+    // compiler that ever read it here was cgo's, at whatever default the
+    // toolchain picked. So the standards it claims to speak were never asked of
+    // it. Two probes ask: C99 with `-pedantic-errors`, because a warning nobody
+    // reads is not a gate, and C++17, because a C++ host is the ordinary case
+    // for this ABI and it is the one a C-only probe cannot speak for.
+    //
+    // Objects, never linked — the question is whether the text parses and
+    // whether every struct is a complete type, which is exactly what a host
+    // needs and what a declaration-only check cannot see.
+    const header_step = b.step("header", "parse include/irgx.h as C99 and as C++17");
+    const c99 = b.addObject(.{
+        .name = "irgx-header-c99",
+        .root_module = b.createModule(.{ .target = target, .optimize = .Debug, .link_libc = true }),
+    });
+    c99.root_module.addIncludePath(b.path("include"));
+    c99.root_module.addCSourceFile(.{
+        .file = b.path("quality/header/parse.c"),
+        .flags = &.{ "-std=c99", "-pedantic-errors", "-Wall", "-Wextra", "-Werror" },
+    });
+    header_step.dependOn(&c99.step);
+
+    const cpp17 = b.addObject(.{
+        .name = "irgx-header-cpp17",
+        .root_module = b.createModule(.{ .target = target, .optimize = .Debug, .link_libcpp = true }),
+    });
+    cpp17.root_module.addIncludePath(b.path("include"));
+    cpp17.root_module.addCSourceFile(.{
+        .file = b.path("quality/header/parse.cpp"),
+        .flags = &.{ "-std=c++17", "-pedantic-errors", "-Wall", "-Wextra", "-Werror" },
+    });
+    header_step.dependOn(&cpp17.step);
+
     // The archive carries its own C floor on every target, so it links standing
     // alone. Everywhere a partial link exists that is done by packing a
     // partially-linked OBJECT. That is not symmetry for its own sake:
@@ -475,8 +509,8 @@ pub fn build(b: *std.Build) void {
     b.getInstallStep().dependOn(&b.addInstallLibFile(merged, "libirgx.a").step);
     // Because it installs as a file, the archive is invisible to a dependent's
     // `dep.artifact("irgx")`, and the three faces need it: their own archives
-    // deliberately do not fold the substrate in, so a static consumer of gist,
-    // relate, or blast links the pair. gist used to reach for it with a `cp`
+    // deliberately do not fold the substrate in, so a static consumer of any
+    // face links the pair. A face used to reach for it with a `cp`
     // from `../irregex/zig-out/lib`, which is a different build than the one it
     // is being built against — on a cross-compile it copied this laptop's
     // Mach-O archive into a Linux prefix. Naming it here hands over the archive
@@ -684,8 +718,8 @@ pub fn build(b: *std.Build) void {
 
     // ── the shared measurement instruments ──
     // Published as named modules rather than kept private, because the lanes
-    // that read them do not all live here: `gist`'s `gist-bench` reaches these
-    // three through its dependency on this package, the same way it reaches
+    // that read them do not all live here: a face's own bench harness reaches
+    // these three through its dependency on this package, the same way it reaches
     // `brigade.zig`. That is the whole reason `bench/apparatus/harness` is in
     // `.paths`. Keeping ONE probe registry across both repos is what lets a
     // competitor race over there and an engine rung over here be compared by
@@ -727,10 +761,10 @@ pub fn build(b: *std.Build) void {
     // documented `sudo zig-out/bin/<exe>` re-runs keep working after e.g.
     // `zig build portbound`; `zig build lab` installs all of them at once.
     //
-    // Only ENGINE lanes live here. The `gist-bench` harness moved to the `gist`
+    // Only ENGINE lanes live here. The product bench harness moved to the face
     // package with the binary it measures: its session mode drives a live
-    // `gist serve` daemon, and this package cannot depend on the one downstream
-    // of it. See gist/bench/README.md.
+    // resident daemon, and this package cannot depend on the one downstream
+    // of it. See that package's own `bench/README.md`.
     const lab_step = b.step("lab", "Build + install the measurement-lab executables → zig-out/bin");
 
     // A rung that races an accelerator against the shipped ladder has to be
@@ -771,11 +805,11 @@ pub fn build(b: *std.Build) void {
     };
     for ([_]Lane{
         // Certificate layers — each answers "how far is this from a stated limit".
-        .{ .step = "roofline", .exe = "gist-roofline", .root = "bench/bounds/roofline/bandwidth.zig", .posture = .asked, .instrument = "pmu", .libc = true, .tested = true, .blurb = "Layer-C optimality cert: STREAM read-bandwidth ceiling vs gist's scan" },
-        .{ .step = "portbound", .exe = "gist-portbound", .root = "bench/bounds/port/measure.zig", .posture = .asked, .instrument = "pmu", .libc = true, .tested = true, .blurb = "Layer-B′ optimality cert: measured on-machine port bound (sudo for cycles)" },
-        .{ .step = "lowerbound", .exe = "gist-lowerbound", .root = "bench/bounds/lowerbound/audit.zig", .posture = .asked, .instrument = "probes", .blurb = "Layer-D optimality cert: fail-closed algorithmic-floor byte-touch audit" },
-        .{ .step = "scale", .exe = "gist-scale", .root = "bench/rungs/sliver/scale.zig", .posture = .asked, .instrument = "probes", .blurb = "Layer-J: fail-closed sub-trigram candidate-byte audit (directory vs sliver tier)" },
-        .{ .step = "indexq", .exe = "gist-indexq", .root = "bench/rungs/sieve/indexq.zig", .posture = .asked, .instrument = "probes", .blurb = "Layer-L optimality cert: candidate-byte selectivity head-to-head vs csearch's own formula" },
+        .{ .step = "roofline", .exe = "roofline", .root = "bench/bounds/roofline/bandwidth.zig", .posture = .asked, .instrument = "pmu", .libc = true, .tested = true, .blurb = "Layer-C optimality cert: STREAM read-bandwidth ceiling vs this engine's scan" },
+        .{ .step = "portbound", .exe = "portbound", .root = "bench/bounds/port/measure.zig", .posture = .asked, .instrument = "pmu", .libc = true, .tested = true, .blurb = "Layer-B′ optimality cert: measured on-machine port bound (sudo for cycles)" },
+        .{ .step = "lowerbound", .exe = "lowerbound", .root = "bench/bounds/lowerbound/audit.zig", .posture = .asked, .instrument = "probes", .blurb = "Layer-D optimality cert: fail-closed algorithmic-floor byte-touch audit" },
+        .{ .step = "scale", .exe = "scale", .root = "bench/rungs/sliver/scale.zig", .posture = .asked, .instrument = "probes", .blurb = "Layer-J: fail-closed sub-trigram candidate-byte audit (directory vs sliver tier)" },
+        .{ .step = "indexq", .exe = "indexq", .root = "bench/rungs/sieve/indexq.zig", .posture = .asked, .instrument = "probes", .blurb = "Layer-L optimality cert: candidate-byte selectivity head-to-head vs csearch's own formula" },
         // Production rungs — each races one real accelerator against the real ladder.
         .{ .step = "crest", .exe = "crest", .root = "bench/rungs/crest/bench.zig", .blurb = "Crest production proof: sound forced-class-run sieve — pruning + speed vs the real matcher" },
         .{ .step = "sieve", .exe = "sieve", .root = "bench/rungs/sieve/bench.zig", .blurb = "Quotient-sieve production proof: per-position soundness, measured selectivity, kernel speed vs the shipped DFA" },

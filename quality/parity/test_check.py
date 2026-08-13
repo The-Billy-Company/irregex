@@ -435,5 +435,132 @@ class StampedArchiveTest(unittest.TestCase):
             self.assertIn(want, versions, f"{name} came out of a different build")
 
 
+class SignatureTest(unittest.TestCase):
+    """The lane that reads arguments rather than names.
+
+    Coverage says a binding can call `irgx_codex_locate`. It cannot say the call
+    passes four arguments where the engine reads five, and the one binding where
+    that mattered — hand-transcribed declarations over a statically linked
+    archive — is the one where the mistake is a call through a signature nobody
+    agreed to instead of a link error.
+    """
+
+    HEADER = """
+        int32_t irgx_codex_locate(const irgx_codex *cx, const uint8_t *pat, size_t len);
+        size_t irgx_codex_len(const irgx_codex *cx);
+        void irgx_codex_free(irgx_codex *cx);
+        const char *irgx_version(void);
+    """
+
+    def shapes(self, src):
+        return check.transcribed([src])
+
+    def test_a_correct_transcription_reports_nothing(self) -> None:
+        src = """unsafe extern "C" {
+            pub fn irgx_codex_locate(cx: *const sys::Codex, pat: *const u8, len: usize) -> i32;
+            pub fn irgx_codex_len(cx: *const sys::Codex) -> usize;
+            pub fn irgx_codex_free(cx: *mut sys::Codex);
+            pub fn irgx_version() -> *const c_char;
+        }"""
+        drift = check.signature_drift("rust", check.prototypes(self.HEADER), self.shapes(src))
+        self.assertEqual(drift, [])
+
+    def test_a_path_qualified_type_is_still_a_pointer(self) -> None:
+        # The bug this lane shipped with: splitting on the last colon read
+        # `*mut sys::Text` as the type `Text`, and seven correct declarations
+        # were reported as passing a struct by value.
+        self.assertEqual(check.rust_shape("out: *mut sys::Text"), ("Text", 1))
+        self.assertEqual(check.rust_shape("len: usize"), ("usize", 0))
+
+    def test_a_dropped_argument_is_drift(self) -> None:
+        src = 'unsafe extern "C" { pub fn irgx_codex_locate(cx: *const sys::Codex, pat: *const u8) -> i32; }'
+        drift = check.signature_drift("rust", check.prototypes(self.HEADER), self.shapes(src))
+        self.assertEqual(len(drift), 1)
+        self.assertIn("3 argument(s)", drift[0])
+
+    def test_a_pointer_passed_by_value_is_drift(self) -> None:
+        src = 'unsafe extern "C" { pub fn irgx_codex_free(cx: sys::Codex); }'
+        drift = check.signature_drift("rust", check.prototypes(self.HEADER), self.shapes(src))
+        self.assertEqual(len(drift), 1)
+        self.assertIn("0 pointer(s)", drift[0])
+
+    def test_a_narrowed_scalar_is_drift(self) -> None:
+        # The mistake that has no visible symptom until a corpus crosses 2^32.
+        src = 'unsafe extern "C" { pub fn irgx_codex_locate(cx: *const sys::Codex, pat: *const u8, len: u32) -> i32; }'
+        drift = check.signature_drift("rust", check.prototypes(self.HEADER), self.shapes(src))
+        self.assertEqual(len(drift), 1)
+        self.assertIn("argument 3", drift[0])
+
+    def test_a_narrowed_pointee_is_drift(self) -> None:
+        # `*const u32` where the header says bytes reads a quarter of them.
+        src = 'unsafe extern "C" { pub fn irgx_codex_locate(cx: *const sys::Codex, pat: *const u32, len: usize) -> i32; }'
+        drift = check.signature_drift("rust", check.prototypes(self.HEADER), self.shapes(src))
+        self.assertEqual(len(drift), 1)
+        self.assertIn("`uint8_t`*", drift[0])
+
+    def test_a_dropped_return_is_drift(self) -> None:
+        # A `size_t` read as nothing is Python's `restype` bug in Rust spelling.
+        src = 'unsafe extern "C" { pub fn irgx_codex_len(cx: *const sys::Codex); }'
+        drift = check.signature_drift("rust", check.prototypes(self.HEADER), self.shapes(src))
+        self.assertEqual(len(drift), 1)
+        self.assertIn("returns `size_t`", drift[0])
+
+    def test_an_opaque_handle_is_the_hosts_own_type_to_name(self) -> None:
+        # Depth has to match; the pointee's spelling is the binding's business.
+        src = 'unsafe extern "C" { pub fn irgx_codex_free(cx: *mut CodexHandle); }'
+        drift = check.signature_drift("rust", check.prototypes(self.HEADER), self.shapes(src))
+        self.assertEqual(drift, [])
+
+    def test_a_dialect_no_parser_reads_is_a_contract_fault(self) -> None:
+        # A lane that parses nothing approves everything, so an unknown dialect
+        # fails the contract rather than passing the binding.
+        c = contract(("rust",))
+        c["bindings"]["rust"]["declares"] = "haskell"
+        self.assertTrue(any("no parser" in f for f in contract_faults(c)))
+
+    def test_the_committed_rust_declarations_have_the_headers_shapes(self) -> None:
+        # The lane wired to the tree. Ninety declarations against the real header.
+        repo = Path(__file__).resolve().parents[2]
+        header = (repo / "include" / "irgx.h").read_text(encoding="utf-8")
+        sources = [
+            p.read_text(encoding="utf-8")
+            for p in (repo / "bindings" / "rust" / "src").rglob("*.rs")
+        ]
+        decls = check.transcribed(sources)
+        self.assertGreater(len(decls), 80, "the Rust binding declares the ABI by hand")
+        self.assertEqual(check.signature_drift("rust", check.prototypes(header), decls), [])
+
+
+class VendoredHeaderTest(unittest.TestCase):
+    """The copy cgo actually compiles, held to the one that ships."""
+
+    def test_a_missing_declaration_in_the_copy_is_drift(self) -> None:
+        drift = check.stale_headers(WHOLE, {"go": "int32_t irgx_compile();"}, contract(("go",)))
+        self.assertEqual(len(drift), 1)
+        self.assertIn("vendor_libraries.py", drift[0])
+
+    def test_a_struct_field_only_the_engine_grew_is_drift(self) -> None:
+        # The dangerous case: it links, and then it reads the wrong bytes.
+        canonical = "typedef struct { uint32_t kind; uint64_t len; } irgx_stats;"
+        drift = check.stale_headers(
+            canonical, {"go": "typedef struct { uint32_t kind; } irgx_stats;"}, contract(("go",))
+        )
+        self.assertEqual(len(drift), 1)
+
+    def test_prose_may_diverge_because_nobody_links_a_paragraph(self) -> None:
+        # The copy is scrubbed of the sibling libraries' names on purpose.
+        copy = "/* a different paragraph entirely */\n" + WHOLE
+        self.assertEqual(check.stale_headers(WHOLE, {"go": copy}, contract(("go",))), [])
+
+    def test_whitespace_is_not_a_declaration(self) -> None:
+        self.assertEqual(check.stale_headers(WHOLE, {"go": WHOLE.replace(" ", "\n  ")}), [])
+
+    def test_the_committed_go_copy_declares_what_ships(self) -> None:
+        repo = Path(__file__).resolve().parents[2]
+        canonical = (repo / "include" / "irgx.h").read_text(encoding="utf-8")
+        copy = (repo / "bindings" / "go" / "irgx.h").read_text(encoding="utf-8")
+        self.assertEqual(check.stale_headers(canonical, {"go": copy}), [])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -64,10 +64,30 @@
 # `go get` would have installed a module claiming a release it did not contain.
 # `tools/version_parity.py` cannot reach either, because it holds marked lines in
 # manifests to the number and an archive has no line to mark.
+# `declares` is the fourth lane, and the one the three lanes above cannot see:
+# a binding that reaches every symbol with the wrong ARGUMENTS. Only Rust
+# declares it, because only Rust is unwatched. Go hands `include/irgx.h` to a C
+# compiler through cgo, so its signatures are judged on every build, and the
+# Python suite parses the same header and audits all hundred ctypes prototypes
+# against it — which is where the lesson came from, since an unset `restype`
+# truncates a `size_t` on any 64-bit host and no test under 2^31 can see it.
+# Rust transcribes ninety `extern "C"` declarations by hand, links a vendored
+# archive statically, and therefore turns a mistranscribed parameter into a call
+# the engine never agreed to rather than into a link error.
+#
+# `header` is the fifth. cgo compiles the copy at `bindings/go/irgx.h`, not the
+# published header — build output under version control, exactly like the
+# archives beside it, and it had none of the lanes they got. A missing
+# declaration in a copy fails loud at the compiler; a struct that grew a field
+# in the engine and not in the copy links fine and reads the wrong bytes, which
+# is the hazard the header's own "gate on the ABI integer, never on a struct
+# size" note is about. Declarations are compared and comments are not: the copy
+# is deliberately scrubbed of the sibling libraries' names, and nobody links
+# against a paragraph. Rust needs no row — its `build.rs` compiles no C at all.
 [bindings]
-go = { sources = "bindings/go", suffix = ".go", archives = "bindings/go/libirgx_*.a", rebuild = "python3 bindings/go/scripts/vendor_libraries.py", why = "cgo — the symbol appears as `C.irgx_…`" }
+go = { sources = "bindings/go", suffix = ".go", archives = "bindings/go/libirgx_*.a", header = "bindings/go/irgx.h", rebuild = "python3 bindings/go/scripts/vendor_libraries.py", why = "cgo — the symbol appears as `C.irgx_…`" }
 python = { sources = "bindings/python/irgx", suffix = ".py", why = "ctypes — the symbol appears as an attribute or a name string" }
-rust = { sources = "bindings/rust/src", suffix = ".rs", archives = "bindings/rust/vendor/*/libirgx.a", rebuild = "python3 bindings/rust/scripts/vendor_libraries.py", why = "`extern \"C\"` — the symbol appears as a declaration" }
+rust = { sources = "bindings/rust/src", suffix = ".rs", archives = "bindings/rust/vendor/*/libirgx.a", declares = "rust", rebuild = "python3 bindings/rust/scripts/vendor_libraries.py", why = "`extern \"C\"` — the symbol appears as a declaration" }
 
 # ── waivers: a symbol a binding deliberately does not bind ──
 #

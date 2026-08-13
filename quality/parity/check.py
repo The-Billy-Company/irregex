@@ -128,6 +128,184 @@ ZON_VERSION = re.compile(r"\.version\s*=\s*\"([^\"]+)\"")
 STAMP = re.compile(rb"\x00(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)(?=\x00)")
 
 
+# ── the signature lane ──
+#
+# The lanes above ask which names a binding reaches. Nothing asked whether it
+# reaches them with the right ARGUMENTS, and only one binding was ever holding
+# that line for itself. Go compiles the real header through cgo, so its
+# signatures are checked by a C compiler. Python's suite parses the header and
+# audits all hundred ctypes prototypes against it — which is where the lesson
+# came from: an unset `restype` truncates a `size_t` on every 64-bit host, a
+# wrong answer no test under 2^31 can see.
+#
+# Rust hand-transcribes ninety `extern "C"` declarations and nothing compared
+# them to anything. It is also the binding that links a vendored archive
+# statically, so a mistranscribed parameter is not a link error, it is a call
+# through a signature the engine never agreed to.
+#
+# What this proves is SHAPE: the number of parameters, how many levels of
+# indirection each one has, and the width of every scalar. Not names, which are
+# documentation, and not the pointee of an opaque handle, which each host is
+# entitled to spell in its own types.
+C_DECL = re.compile(r"\b([A-Za-z_][\w \*]*?)\b(irgx_\w+)\s*\(([^;]*?)\)\s*;", re.S)
+RUST_DECL = re.compile(r"\bfn (irgx_\w+)\s*\(([^;]*?)\)\s*(?:->\s*([^;{]+?))?\s*;", re.S)
+STARS = re.compile(r"\*")
+WORD = re.compile(r"[A-Za-z_]\w*")
+
+# One C scalar, and every Rust spelling of it this crate is allowed to use. A
+# pointer to one of these is checked to its pointee too, because `*const u32`
+# where the header says `const uint8_t *` reads a quarter of the bytes it should.
+SCALARS = {
+    "uint8_t": {"u8"},
+    "uint16_t": {"u16"},
+    "uint32_t": {"u32"},
+    "uint64_t": {"u64"},
+    "int32_t": {"i32"},
+    "int64_t": {"i64"},
+    "size_t": {"usize"},
+    "int": {"c_int", "i32"},
+    "char": {"c_char", "i8", "u8"},
+    "void": {"c_void"},
+}
+
+
+def split_params(text: str) -> list[str]:
+    """One C or Rust parameter list, split on the commas that separate arguments."""
+    body = " ".join(text.replace("\n", " ").split()).strip().rstrip(",")
+    if body in ("", "void"):
+        return []
+    return [p for p in re.split(r",(?![^<(]*[>)])", body) if p.strip()]
+
+
+def c_shape(decl: str) -> tuple[str, int]:
+    """A C type as (base, indirections). The base of a `const irgx_walk *` is its struct."""
+    words = WORD.findall(re.sub(r"\bconst\b|\bstruct\b", " ", decl))
+    return (words[0] if words else "", len(STARS.findall(decl)))
+
+
+# The binding-name separator, and not the `::` of a path. Splitting on the last
+# colon instead read `out: *mut sys::Text` as the type `Text`, which is depth 0 —
+# so the lane reported seven correct declarations as passing a struct by value.
+BINDS = re.compile(r":(?!:)")
+
+
+def rust_shape(decl: str) -> tuple[str, int]:
+    """A Rust type as (base, indirections), reading the type half of `name: type`."""
+    parts = BINDS.split(decl, maxsplit=1)
+    typed = parts[1] if len(parts) > 1 else parts[0]
+    words = WORD.findall(re.sub(r"\bconst\b|\bmut\b|\bdyn\b", " ", typed))
+    return (words[-1] if words else "", len(STARS.findall(typed)))
+
+
+def agrees(c: tuple[str, int], rust: tuple[str, int]) -> bool:
+    """Whether one Rust type could be the C type it stands for."""
+    if c == rust:
+        return True
+    if c[1] != rust[1]:
+        return False
+    # An opaque handle is the host's own type to name; a scalar never is.
+    allowed = SCALARS.get(c[0])
+    return allowed is None or rust[0] in allowed
+
+
+Shapes = dict[str, tuple[tuple[str, int], list[tuple[str, int]]]]
+
+
+def prototypes(header: str) -> Shapes:
+    """Every function the header declares, as (return shape, parameter shapes)."""
+    body = COMMENT.sub(" ", header)
+    return {
+        m.group(2): (c_shape(m.group(1)), [c_shape(p) for p in split_params(m.group(3))])
+        for m in C_DECL.finditer(body)
+    }
+
+
+def transcribed(sources: list[str]) -> Shapes:
+    """Every `extern "C"` function a Rust binding declares, in the same shape."""
+    found: Shapes = {}
+    for src in sources:
+        for m in RUST_DECL.finditer(code(src, ".rs")):
+            ret = rust_shape(m.group(3)) if m.group(3) else ("void", 0)
+            found[m.group(1)] = (
+                ("void", 0) if ret == ("", 0) else ret,
+                [rust_shape(p) for p in split_params(m.group(2))],
+            )
+    return found
+
+
+def signature_drift(binding: str, protos: Shapes, decls: Shapes) -> list[str]:
+    """Every declaration whose shape is not the shape the header publishes.
+
+    Only names both sides have: coverage is the lane above, and a symbol the
+    header does not declare is already a failure there.
+    """
+    drift = []
+    for name in sorted(decls):
+        want = protos.get(name)
+        if want is None:
+            continue
+        got = decls[name]
+        if len(want[1]) != len(got[1]):
+            drift.append(
+                f"{binding}: `{name}` takes {len(want[1])} argument(s) in "
+                f"include/irgx.h and is declared with {len(got[1])}"
+            )
+            continue
+        for i, (c, rust) in enumerate(zip(want[1], got[1], strict=True), start=1):
+            if not agrees(c, rust):
+                drift.append(
+                    f"{binding}: `{name}` argument {i} is `{c[0]}`{'*' * c[1]} in "
+                    f"include/irgx.h and is declared `{rust[0]}` behind "
+                    f"{rust[1]} pointer(s)"
+                )
+        # A declaration with no `->` reads as `void`, which is the one pair that
+        # agrees by absence — both sides arrive here as ("void", 0).
+        if not agrees(want[0], got[0]):
+            drift.append(
+                f"{binding}: `{name}` returns `{want[0][0]}`{'*' * want[0][1]} in "
+                f"include/irgx.h and is declared to return `{got[0][0]}` behind "
+                f"{got[0][1]} pointer(s)"
+            )
+    return drift
+
+
+# ── the vendored-header lane ──
+#
+# Go's cgo compiles `bindings/go/irgx.h`, not `include/irgx.h`. That copy is
+# build output under version control, exactly like the archives beside it, and it
+# had none of the two lanes they got. A copy that misses a declaration fails loud
+# at the compiler; a copy whose STRUCT grew a field in the engine and not here
+# links fine and reads the wrong bytes, which is the hazard this header's own
+# "gate on the ABI integer, never on a struct size" note is about.
+#
+# Declarations only. The prose diverges on purpose — the vendored copy is scrubbed
+# of the sibling libraries' names — and a lane that read comments would fail on a
+# paragraph nobody links against.
+def declarations(header: str) -> str:
+    """One header reduced to what a compiler reads: no comments, one space."""
+    return " ".join(COMMENT.sub(" ", header).split())
+
+
+def stale_headers(
+    canonical: str, copies: dict[str, str], contract: dict | None = None
+) -> list[str]:
+    """Any committed header copy whose declarations are not the published ones."""
+    want = declarations(canonical)
+    rows = (contract or {}).get("bindings", {})
+    drift = []
+    for binding in sorted(copies):
+        if declarations(copies[binding]) == want:
+            continue
+        fix = str(rows.get(binding, {}).get("rebuild", "")).strip()
+        how = f"; refresh it with `{fix}`" if fix else ""
+        drift.append(
+            f"{binding}: the committed header copy declares something other than "
+            f"include/irgx.h does — it is the text this binding actually compiles "
+            f"against{how}"
+        )
+    return drift
+
+
 def code(src: str, suffix: str) -> str:
     """`src` with its comments blanked, newlines kept so nothing else shifts."""
     body = COMMENT.sub(lambda m: "\n" * m.group().count("\n"), src)
@@ -209,6 +387,25 @@ def contract_faults(contract: dict) -> list[str]:
                 f"[bindings] {name}: declares `archives` and no `rebuild` — "
                 f"a staleness this gate cannot tell you how to fix"
             )
+        # A dialect nothing can parse is the same false pass as a glob matching
+        # nothing: the lane reads no declarations and approves them all.
+        dialect = str(row.get("declares", "")).strip()
+        if dialect and dialect not in DIALECTS:
+            faults.append(
+                f"[bindings] {name}: `declares` is {dialect!r}, which no parser here "
+                f"reads — known dialects are {', '.join(sorted(DIALECTS))}"
+            )
+        copy = str(row.get("header", "")).strip()
+        if copy and not (REPO / copy).is_file():
+            faults.append(
+                f"[bindings] {name}: `header` names {copy!r}, which is not a file — "
+                f"a lane that reads nothing passes everything"
+            )
+        if copy and not str(row.get("rebuild", "")).strip():
+            faults.append(
+                f"[bindings] {name}: declares `header` and no `rebuild` — "
+                f"a staleness this gate cannot tell you how to fix"
+            )
     waived = contract.get("waived", {})
     if not isinstance(waived, dict):
         return [*faults, "[waived] is not a table"]
@@ -226,6 +423,14 @@ def contract_faults(contract: dict) -> list[str]:
             if not isinstance(row, dict) or not str(row.get("why", "")).strip()
         ]
     return faults
+
+
+# Which languages this gate can read declarations out of. Go is absent on
+# purpose: cgo compiles `include/irgx.h` itself, so a C compiler already holds
+# its signatures to the header on every build, and Python's own suite audits all
+# hundred ctypes prototypes against the same file. Rust is the binding that
+# transcribes them by hand with nothing watching.
+DIALECTS = {"rust": lambda sources: transcribed(sources)}
 
 
 def stale_archives(
@@ -304,16 +509,20 @@ def audit(
     shipped: dict[str, dict[str, set[str]]] | None = None,
     stamps: dict[str, dict[str, set[str]]] | None = None,
     version: str = "",
+    declares: dict[str, Shapes] | None = None,
+    copies: dict[str, str] | None = None,
 ) -> list[str]:
     """Every way the ABI and its bindings currently disagree.
 
-    Five questions, in the order a symbol travels: does the header declare what
+    Seven questions, in the order a symbol travels: does the header declare what
     the linker publishes, does every binding reach it, does every waiver still
-    name a real gap, and — for a binding that ships its own engine — does that
-    engine carry the whole ABI, and did it come out of the build this tree
-    declares. The stale waiver matters as much as the first — a waiver kept after
-    the gap closed reads as a live design decision and is a stale note, which is
-    how a reviewer learns to skim the block.
+    name a real gap, does a hand-transcribed declaration have the shape the
+    header publishes, does a committed header copy still declare it, and — for a
+    binding that ships its own engine — does that engine carry the whole ABI, and
+    did it come out of the build this tree declares. The stale waiver matters as
+    much as the first — a waiver kept after the gap closed reads as a live design
+    decision and is a stale note, which is how a reviewer learns to skim the
+    block.
 
     The version lane runs only when a version is given, so a caller holding a
     fixture rather than a tree still gets the other four.
@@ -345,6 +554,10 @@ def audit(
             f"delete the [waived.{binding}] row"
             for name in gone
         ]
+    protos = prototypes(header)
+    for binding, decls in sorted((declares or {}).items()):
+        drift += signature_drift(binding, protos, decls)
+    drift += stale_headers(header, copies or {}, contract)
     drift += stale_archives(abi, shipped or {}, contract)
     return drift + (stale_stamps(version, stamps or {}, contract) if version else [])
 
@@ -411,13 +624,31 @@ def main() -> int:
     stamps = {
         name: found for name, row in contract["bindings"].items() if (found := versions_of(row))
     }
+    declares = {
+        name: DIALECTS[str(row["declares"]).strip()](sources_of(row))
+        for name, row in contract["bindings"].items()
+        if str(row.get("declares", "")).strip()
+    }
+    copies = {
+        name: (REPO / str(row["header"]).strip()).read_text(encoding="utf-8")
+        for name, row in contract["bindings"].items()
+        if str(row.get("header", "")).strip()
+    }
     version = declared_version()
     if not version:
         print(f"parity: {ZON.name} declares no version — the authority is broken", file=sys.stderr)
         return 2
 
     drift = audit(
-        abi, HEADER.read_text(encoding="utf-8"), per_binding, contract, shipped, stamps, version
+        abi,
+        HEADER.read_text(encoding="utf-8"),
+        per_binding,
+        contract,
+        shipped,
+        stamps,
+        version,
+        declares,
+        copies,
     )
     for line in drift:
         print(f"parity: {line}", file=sys.stderr)
@@ -430,7 +661,13 @@ def main() -> int:
     )
     carrying = sum(len(found) for found in shipped.values())
     ships = f", {carrying} committed archive(s) whole and stamped {version}" if carrying else ""
-    print(f"parity: {len(abi)} ABI symbols reached by every binding ({per}){ships}")
+    shaped = sum(len(d) for d in declares.values())
+    shapes = f", {shaped} transcribed declaration(s) shaped like the header" if shaped else ""
+    plural = "" if len(copies) == 1 else "s"
+    vendored = f", {len(copies)} vendored header{plural} current" if copies else ""
+    print(
+        f"parity: {len(abi)} ABI symbols reached by every binding ({per}){shapes}{vendored}{ships}"
+    )
     return 0
 
 

@@ -8,11 +8,11 @@
 # itself something CI proves every run — this is the base of the ecosystem's
 # dependency graph and it must not need the things that depend on it. The
 # bindings are the exception, and only just: they mirror four contract TOMLs and
-# two of those are authored next door. `kinship.toml` is relate's and is
-# vendored here, because relate is internal and a public package the public
-# cannot test is not really public. `surface.toml` is gist's, and gist is
-# public, so those jobs check it out and read the original rather than keeping a
-# copy that can go stale.
+# two of those are authored next door. `kinship.toml` is the kinship package's
+# and is vendored here, because that package is internal and a public package the
+# public cannot test is not really public. `surface.toml` is the exact-search
+# face's, and that face is public, so those jobs check it out and read the
+# original rather than keeping a copy that can go stale.
 name: ci
 
 on:
@@ -53,13 +53,18 @@ jobs:
       # the failure is one line rather than a suite's worth of scrollback.
       - run: zig build check
       - run: zig build test
+      # The header this package installs, read as the standards it claims to
+      # speak rather than as whatever cgo's default forgives. Two objects, both
+      # thrown away, on both operating systems.
+      - name: header parses as C99 and C++17
+        run: zig build header
 
   hermetic:
     # The same suite, run by an operator whose environment disagrees with it.
     #
     # A fixture that builds a tree under /tmp and then queries it is making a
     # claim about a corpus it never declared: the skip overlay resolves from
-    # `GIST_SKIP`, the tree's charter, and `<GIST_DIR>/skips.list`, so an
+    # `<PREFIX>_SKIP`, the tree's charter, and `<PREFIX>_DIR/skips.list`, so an
     # ambient value naming `src` prunes the fixture's own directory and the
     # engine correctly declines a root it was told to ignore. That shape once
     # accounted for fourteen tests at once, every one of them green on a clean
@@ -111,13 +116,15 @@ jobs:
       #
       # Everything the suite reads, this repository publishes: its own
       # `include/irgx.h` for the cffi mirror gate, its own `analytic.toml` and
-      # `engine.toml`, and relate's `kinship.toml` vendored into `contract/` by
-      # `tools/sync_contract.py` and drift-gated from relate's own CI.
+      # `engine.toml`, and the kinship package's `kinship.toml` vendored into
+      # `contract/` by `tools/sync_contract.py` and drift-gated from that
+      # package's own CI.
       #
       # It used to clone all four packages, because the mirror declared every
       # face's symbols and the gate needed every face's header to check them.
-      # Those declarations now live with the libraries that export them —
-      # `gist_run` in gist.h, mirrored in `gist._native` — so each package gates
+      # Those declarations now live with the libraries that export them — each
+      # face's own `*_run` entry, in its own header and its own native module —
+      # so each package gates
       # its own surface in its own CI. A substrate whose tests need its
       # consumers checked out is a substrate its consumers cannot be released
       # without, and this is a public repository that anyone should be able to
@@ -159,9 +166,10 @@ jobs:
     # own reasoning — tier introspection, the FFI escape hatch, seam refusals,
     # cancellation, the digest policy — none of which spawns a child. The two
     # that did moved to the repositories that build one: the row-and-stats
-    # comparison to gist's `exact`, the kinship oracle to relate's bindings. This
-    # repository builds no binary, so asking for one here was asking for a
-    # consumer's, which is a public suite the public cannot run.
+    # comparison to the exact-search face's `exact`, the kinship oracle to the
+    # kinship package's bindings. This repository builds no binary, so asking for
+    # one here was asking for a consumer's, which is a public suite the public
+    # cannot run.
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -193,10 +201,10 @@ jobs:
         working-directory: bindings/rust
     steps:
       # One checkout, like the python job: every contract the parity gate reads
-      # is committed here, gist's `surface.toml` having gone back to gist along
-      # with the constants that mirrored it. No Zig and no ecosystem build
-      # either — the archive cargo links is committed to this repository, which
-      # is the rung a consumer actually takes.
+      # is committed here, the exact-search face's `surface.toml` having gone
+      # back to that package along with the constants that mirrored it. No Zig
+      # and no ecosystem build either — the archive cargo links is committed to
+      # this repository, which is the rung a consumer actually takes.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
