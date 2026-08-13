@@ -3,6 +3,10 @@
 # tree is not under that package. Two trees of Python in one repo formatting to
 # two different widths would be churn nobody chose.
 line-length = 100
+# The version every checkout pins in .mise.toml. Undeclared, ruff assumes a
+# floor old enough to call tomllib a third-party import, which sorts the shared
+# certificate tooling into a block the siblings' formatters reject.
+target-version = "py312"
 
 # A generated table is its generator's output, not authored code. ruff would
 # rewrite `schema.gen.py` into double quotes and exploded literals, which is a
