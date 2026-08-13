@@ -128,7 +128,11 @@ jobs:
             <<<"${STEPS_VERSION_OUTPUTS_RESULT}")
           uv run --no-project --python 3.12 --with towncrier==25.8.0 \
             towncrier build --yes --version "$version"
-          if git diff --quiet -- CHANGELOG.md changelog.d; then
+          # Against HEAD, not the index: towncrier stages its own work — it
+          # adds the newsfile and retires each fragment with `git rm` — so a
+          # bare `git diff` compares a tree that already matches the index and
+          # reports a correct fold as nothing to do.
+          if git diff --quiet HEAD -- CHANGELOG.md changelog.d; then
             echo "nothing new to fold at $version"
             exit 0
           fi
