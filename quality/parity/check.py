@@ -44,6 +44,19 @@ it actually carries, by scanning its bytes: the symbol table spells them in ASCI
 in ELF, Mach-O and COFF alike, which keeps this a stdlib check rather than an
 `nm` that would have to exist and understand three object formats.
 
+A third lane asks the other half of that question. Symbols say whether a plane is
+compiled into the archive; they cannot say which BUILD compiled it, and a release
+is exactly when those two answers come apart. Cutting 2.1.0 moved the declared
+version and left all twelve committed archives stamped with the one before it —
+every symbol present, every one of them the previous engine. Rust caught its six
+at test time, because its own contract test asserts the linked engine's version
+equals the crate's; Go asserted no such thing, so `go get` would have installed a
+module claiming a release it did not contain, and the tests would have agreed.
+`tools/version_parity.py` cannot reach either, because it reads marked lines in
+manifests and an archive has no line to mark. So the archives are held to the
+same authority a different way: `build.zig.zon` declares the number, and every
+committed archive has to spell it in its own string table.
+
 Exit 0 clean, 1 on drift, 2 on a malformed contract.
 """
 
@@ -59,6 +72,7 @@ REPO = Path(__file__).resolve().parents[2]
 CONTRACT = REPO / "contract" / "bindings.toml"
 EXPORTS = REPO / "src" / "surface" / "ffi" / "exports.zig"
 HEADER = REPO / "include" / "irgx.h"
+ZON = REPO / "build.zig.zon"
 
 # The linker's own list. `export fn` is the only thing that produces a C symbol,
 # so this is the ABI by construction rather than by description.
@@ -99,6 +113,20 @@ CGO_PREAMBLE = re.compile(r"/\*(.*?)\*/\s*import\s+\"C\"", re.S)
 # symbols as absent. ELF and COFF carry no prefix, so `_?` costs them nothing.
 SHIPPED = re.compile(rb"\b_?(irgx_\w+)")
 
+# The version authority for the whole package — the number every marked manifest
+# mirrors and `tools/version_parity.py` holds them to. An archive cannot carry a
+# marked line, so it is held to that number a different way: by the copy the engine
+# bakes into its own string table.
+ZON_VERSION = re.compile(r"\.version\s*=\s*\"([^\"]+)\"")
+# NUL-delimited on both sides, because a loose match reads numbers that are nobody's
+# release: every one of the twelve archives carries LLVM's `16.0.0`, and three carry
+# a loose `21.1.0`. Delimiting is what separates an entry in the engine's string
+# table — where its version sits beside PCRE2's `10.47` — from a version-shaped
+# substring of something longer. The trailing NUL is a LOOKAHEAD because adjacent
+# entries share one: the Linux archives spell `\0 16.0.0 \0 2.0.0 \0`, so consuming
+# the delimiter reads every other entry and misses the engine's own behind LLVM's.
+STAMP = re.compile(rb"\x00(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)(?=\x00)")
+
 
 def code(src: str, suffix: str) -> str:
     """`src` with its comments blanked, newlines kept so nothing else shifts."""
@@ -131,6 +159,24 @@ def carried(blob: bytes) -> set[str]:
     holding.
     """
     return {m.group(1).decode() for m in SHIPPED.finditer(blob)}
+
+
+def stamped(blob: bytes) -> set[str]:
+    """Every version a committed archive spells in its own string table.
+
+    A set rather than one value, because an archive is a partial link of many
+    objects and several of them name a version: PCRE2's, the C compiler's, and the
+    engine's own. Which entry is this package's release is not something the bytes
+    can say, so the only claim worth making of the set is whether the declared
+    version is in it.
+    """
+    return {m.group(1).decode() for m in STAMP.finditer(blob)}
+
+
+def declared_version() -> str:
+    """The number `build.zig.zon` declares, or empty if it declares none."""
+    found = ZON_VERSION.search(ZON.read_text(encoding="utf-8"))
+    return found.group(1) if found else ""
 
 
 def contract_faults(contract: dict) -> list[str]:
@@ -216,21 +262,61 @@ def stale_archives(
     return drift
 
 
+def stale_stamps(
+    want: str,
+    stamps: dict[str, dict[str, set[str]]],
+    contract: dict | None = None,
+) -> list[str]:
+    """Any committed archive that came out of a build before the declared version.
+
+    The complement of `stale_archives`, and the half that release nearly shipped
+    without: symbols say whether a PLANE is compiled in, the version says WHICH
+    BUILD compiled it. An archive re-minted mid-cycle carries every symbol and the
+    previous number, so it passes the symbol lane and fails this one — which is the
+    exact state a release branch is in after the bot moves the number and nothing
+    re-mints the build output that number describes.
+    """
+    rows = (contract or {}).get("bindings", {})
+    drift = []
+    for binding in sorted(stamps):
+        fix = str(rows.get(binding, {}).get("rebuild", "")).strip()
+        how = f"; rebuild it with `{fix}`" if fix else ""
+        for name in sorted(stamps[binding]):
+            found = stamps[binding][name]
+            if want in found:
+                continue
+            # What it does carry, not what it was built at: the set holds the C
+            # compiler's version too, and guessing which entry is the engine's is
+            # how a report starts being wrong.
+            said = ", ".join(sorted(found)) or "no version string at all"
+            drift.append(
+                f"{binding}: the committed `{name}` does not carry {want} — it carries "
+                f"{said}. It is build output the release bot cannot rewrite{how}"
+            )
+    return drift
+
+
 def audit(
     abi: set[str],
     header: str,
     per_binding: dict[str, set[str]],
     contract: dict,
     shipped: dict[str, dict[str, set[str]]] | None = None,
+    stamps: dict[str, dict[str, set[str]]] | None = None,
+    version: str = "",
 ) -> list[str]:
     """Every way the ABI and its bindings currently disagree.
 
-    Four questions, in the order a symbol travels: does the header declare what
+    Five questions, in the order a symbol travels: does the header declare what
     the linker publishes, does every binding reach it, does every waiver still
-    name a real gap, and does a binding that ships its own engine ship a current
-    one. The stale waiver matters as much as the first — a waiver kept after the
-    gap closed reads as a live design decision and is a stale note, which is how
-    a reviewer learns to skim the block.
+    name a real gap, and — for a binding that ships its own engine — does that
+    engine carry the whole ABI, and did it come out of the build this tree
+    declares. The stale waiver matters as much as the first — a waiver kept after
+    the gap closed reads as a live design decision and is a stale note, which is
+    how a reviewer learns to skim the block.
+
+    The version lane runs only when a version is given, so a caller holding a
+    fixture rather than a tree still gets the other four.
     """
     drift = [
         f"`{name}` is exported but `include/irgx.h` never declares it — no C host "
@@ -259,7 +345,8 @@ def audit(
             f"delete the [waived.{binding}] row"
             for name in gone
         ]
-    return drift + stale_archives(abi, shipped or {}, contract)
+    drift += stale_archives(abi, shipped or {}, contract)
+    return drift + (stale_stamps(version, stamps or {}, contract) if version else [])
 
 
 def sources_of(row: dict) -> list[str]:
@@ -271,8 +358,8 @@ def sources_of(row: dict) -> list[str]:
     ]
 
 
-def archives_of(row: dict) -> dict[str, set[str]]:
-    """What each archive a binding commits actually carries, keyed by path.
+def archive_paths(row: dict) -> list[Path]:
+    """Every archive a binding commits, or none at all if it ships no engine.
 
     By PATH, not by filename: Go names its six for their platforms, but Rust puts
     six identically-named `libirgx.a` under `vendor/<target>/`, so a filename key
@@ -280,9 +367,17 @@ def archives_of(row: dict) -> dict[str, set[str]]:
     says which target is stale, which is the thing you need to know next.
     """
     glob = str(row.get("archives", "")).strip()
-    if not glob:
-        return {}
-    return {str(p.relative_to(REPO)): carried(p.read_bytes()) for p in sorted(REPO.glob(glob))}
+    return sorted(REPO.glob(glob)) if glob else []
+
+
+def archives_of(row: dict) -> dict[str, set[str]]:
+    """Which ABI names each archive a binding commits actually carries."""
+    return {str(p.relative_to(REPO)): carried(p.read_bytes()) for p in archive_paths(row)}
+
+
+def versions_of(row: dict) -> dict[str, set[str]]:
+    """Which build each archive a binding commits came out of."""
+    return {str(p.relative_to(REPO)): stamped(p.read_bytes()) for p in archive_paths(row)}
 
 
 def main() -> int:
@@ -313,7 +408,17 @@ def main() -> int:
     shipped = {
         name: found for name, row in contract["bindings"].items() if (found := archives_of(row))
     }
-    drift = audit(abi, HEADER.read_text(encoding="utf-8"), per_binding, contract, shipped)
+    stamps = {
+        name: found for name, row in contract["bindings"].items() if (found := versions_of(row))
+    }
+    version = declared_version()
+    if not version:
+        print(f"parity: {ZON.name} declares no version — the authority is broken", file=sys.stderr)
+        return 2
+
+    drift = audit(
+        abi, HEADER.read_text(encoding="utf-8"), per_binding, contract, shipped, stamps, version
+    )
     for line in drift:
         print(f"parity: {line}", file=sys.stderr)
     if drift:
@@ -324,7 +429,7 @@ def main() -> int:
         f"{name} {len(abi) - len(waived.get(name, {}))}/{len(abi)}" for name in sorted(per_binding)
     )
     carrying = sum(len(found) for found in shipped.values())
-    ships = f", {carrying} committed archive(s) current" if carrying else ""
+    ships = f", {carrying} committed archive(s) whole and stamped {version}" if carrying else ""
     print(f"parity: {len(abi)} ABI symbols reached by every binding ({per}){ships}")
     return 0
 

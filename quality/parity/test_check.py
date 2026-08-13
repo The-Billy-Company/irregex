@@ -348,5 +348,92 @@ class ShippedArchiveTest(unittest.TestCase):
             self.assertEqual(abi - names, set(), f"{name} is behind the engine")
 
 
+class StampedArchiveTest(unittest.TestCase):
+    """The third lane: the engine it ships must be the build this tree declares."""
+
+    STALE = {"go": {"libirgx_darwin_arm64.a": {"16.0.0", "2.0.0"}}}
+
+    def test_the_release_state_itself_fails_and_says_which_build_it_carries(self) -> None:
+        # Exactly what cutting 2.1.0 did: the bot moved the declared version and
+        # every committed archive stayed the build before it. Whole ABI, wrong
+        # engine — so the lane beside this one has nothing to say about it.
+        drift = audit(
+            {"irgx_compile"},
+            WHOLE,
+            {"go": {"irgx_compile"}},
+            contract(bindings=("go",)),
+            {"go": {"libirgx_darwin_arm64.a": {"irgx_compile"}}},
+            self.STALE,
+            "2.1.0",
+        )
+        self.assertEqual(len(drift), 1)
+        self.assertIn("does not carry 2.1.0", drift[0])
+        # What it DOES carry, so the reader can tell a stale mint from a bad read.
+        self.assertIn("2.0.0", drift[0])
+        self.assertIn("python3 bindings/go/scripts/vendor_libraries.py", drift[0])
+
+    def test_a_whole_archive_is_not_a_current_one(self) -> None:
+        # The false pass this lane exists for, and Go really had it: its archives
+        # carried all 100 symbols and its oracle corpus agreed with them, so both
+        # the symbol lane and its own tests passed a module whose engine was a
+        # release behind. Rust only escaped because its contract test asserts the
+        # linked version, which is the assertion Go never had.
+        whole = {"go": {"libirgx_darwin_arm64.a": {"irgx_compile"}}}
+        for version, faults in (("", 0), ("2.0.0", 0), ("2.1.0", 1)):
+            with self.subTest(version=version or "not given"):
+                drift = audit(
+                    {"irgx_compile"},
+                    WHOLE,
+                    {"go": {"irgx_compile"}},
+                    contract(bindings=("go",)),
+                    whole,
+                    self.STALE,
+                    version,
+                )
+                self.assertEqual(len(drift), faults)
+
+    def test_adjacent_entries_share_a_delimiter(self) -> None:
+        # The false NEGATIVE, found by this gate reporting four archives stale
+        # that were not. A string table packs entries `\0a\0b\0`, so consuming
+        # the trailing NUL leaves the next entry without a leading one and reads
+        # every other string. The Linux archives spell LLVM's version immediately
+        # before the engine's, so the engine's went unread on exactly the two
+        # platforms CI builds — a gate that fails clean trees and passes stale
+        # ones. A lookahead keeps the delimiter available to the next match.
+        self.assertEqual(check.stamped(b"\x0016.0.0\x002.0.0\x00"), {"16.0.0", "2.0.0"})
+
+    def test_a_version_shaped_substring_is_not_a_stamp(self) -> None:
+        # Why the delimiters are load-bearing at all: every archive carries a
+        # loose `21.1.0` in a clang banner, and reading those would let any
+        # archive prove any version.
+        self.assertEqual(check.stamped(b"clang version 21.1.0 (git sha)"), set())
+        self.assertEqual(check.stamped(b"\x00v2.0.0\x00"), set())
+        # PCRE2's `10.47` sits beside the engine's entry and is not a release of
+        # this package; two-part numbers are nobody's version here.
+        self.assertEqual(check.stamped(b"\x0010.47\x00"), set())
+        # A prerelease is one, though, so a `-rc.1` cut is still readable.
+        self.assertEqual(check.stamped(b"\x002.1.0-rc.1\x00"), {"2.1.0-rc.1"})
+
+    def test_an_archive_carrying_no_version_cannot_prove_it_is_current(self) -> None:
+        # Fail closed: a stripped or truncated archive is unproven, not passing.
+        drift = check.stale_stamps("2.1.0", {"go": {"libirgx.a": set()}}, contract(("go",)))
+        self.assertEqual(len(drift), 1)
+        self.assertIn("no version string at all", drift[0])
+
+    def test_the_real_committed_archives_carry_the_declared_version(self) -> None:
+        # The lane wired to the tree rather than to a fixture, which is the one
+        # that would have failed the release branch. Twelve archives across two
+        # bindings, every one of them held to `build.zig.zon`.
+        want = check.declared_version()
+        self.assertTrue(want, "build.zig.zon must declare a version")
+        found = {
+            **check.versions_of({"archives": "bindings/go/libirgx_*.a"}),
+            **check.versions_of({"archives": "bindings/rust/vendor/*/libirgx.a"}),
+        }
+        self.assertEqual(len(found), 12, "two bindings ship six platforms each")
+        for name, versions in sorted(found.items()):
+            self.assertIn(want, versions, f"{name} came out of a different build")
+
+
 if __name__ == "__main__":
     unittest.main()

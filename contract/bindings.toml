@@ -53,6 +53,17 @@
 #
 # `rebuild` is required beside `archives`, because a gate that reports a stale
 # archive without naming the command that refreshes it has told you half of it.
+#
+# A declared archive is read twice, because "stale" has two meanings and only one
+# of them is about symbols. `stale_archives()` asks whether the plane is compiled
+# in; `stale_stamps()` asks whether it came out of the build `build.zig.zon`
+# declares, by reading the version the engine bakes into its own string table.
+# Cutting a release is when those answers diverge: the bot moves the number, the
+# archives keep the previous engine, and every symbol is still present. Rust's own
+# contract test caught that for its six; Go asserted nothing about the version, so
+# `go get` would have installed a module claiming a release it did not contain.
+# `tools/version_parity.py` cannot reach either, because it holds marked lines in
+# manifests to the number and an archive has no line to mark.
 [bindings]
 go = { sources = "bindings/go", suffix = ".go", archives = "bindings/go/libirgx_*.a", rebuild = "python3 bindings/go/scripts/vendor_libraries.py", why = "cgo — the symbol appears as `C.irgx_…`" }
 python = { sources = "bindings/python/irgx", suffix = ".py", why = "ctypes — the symbol appears as an attribute or a name string" }
