@@ -49,6 +49,9 @@ jobs:
     # run (no tag) passes through as a no-op and the build/verify matrix below
     # still runs unpublished.
     runs-on: ubuntu-latest
+    # Sized for the wait below, not for the work: everything this job does takes
+    # seconds, and then it sits on `release-ready`.
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -71,11 +74,22 @@ jobs:
         with:
           command: tag-ancestor
           args: ${{ github.repository }} ${{ github.sha }} --branch main
+      # This one waits, and it has to wait longer than a CI run. The tag arrives
+      # within a minute of the release PR merging, so `release-ready` does not
+      # exist yet on this commit — the slate that produces it takes 31 minutes on
+      # `main` today, and the check does not even appear until the jobs it
+      # aggregates finish. The shared action's default 15-minute patience is a
+      # race it loses every time: v2.1.0 gave up fifteen minutes into a slate
+      # that needed thirty-one. An hour is that measurement with room for a
+      # queued runner, and still bounded, so a genuinely stuck slate fails the
+      # release instead of publishing without a verdict.
       - if: startsWith(github.ref, 'refs/tags/v')
         uses: The-Billy-Company/.github/actions/package-release@deb135f046122a10cabc861e96eb9941c2d09ddc # main
         with:
           command: ci-status
-          args: ${{ github.repository }} ${{ github.sha }}
+          args: >-
+            ${{ github.repository }} ${{ github.sha }}
+            --timeout-seconds 3600 --interval-seconds 30
 
   wheels:
     needs: preflight
