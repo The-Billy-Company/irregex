@@ -336,6 +336,14 @@ jobs:
         name: Re-mint whatever the bump left behind, and commit it
         run: |
           set -euo pipefail
+          # Parsed here rather than as `fromJson(...).version` in the env below,
+          # which is the shape that reads better and fails the job: a step's env
+          # is evaluated even when its `if` skips the step, so on a PR that was
+          # already current the version step above never ran and the empty output
+          # took the whole job down with `The template is not valid ... Error
+          # reading JToken`. The cheap path has to be the reliable one.
+          version=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["version"])' \
+            <<<"${STEPS_VERSION_OUTPUTS_RESULT}")
           # Refreshes only the stale artifacts, and re-reads every one of them
           # afterwards: a rebuild that succeeds and emits the same stale bytes is
           # the one failure a mint cannot self-report.
@@ -351,7 +359,7 @@ jobs:
           git config user.name 'billy-company-release[bot]'
           git config user.email 'billy-company-release[bot]@users.noreply.github.com'
           git add -A
-          git commit -m "chore(release): re-mint committed artifacts at v$VERSION"
+          git commit -m "chore(release): re-mint committed artifacts at v$version"
           # The checkout above declined to persist its credential, so this write
           # carries its own auth rather than relying on git's credential store.
           git push "https://x-access-token:${APP_TOKEN}@github.com/${{ github.repository }}.git" \
@@ -359,4 +367,4 @@ jobs:
         env:
           APP_TOKEN: ${{ steps.app-token.outputs.token }}
           HEAD_BRANCH: ${{ needs.release-please.outputs.head }}
-          VERSION: ${{ fromJson(steps.version.outputs.result).version }}
+          STEPS_VERSION_OUTPUTS_RESULT: ${{ steps.version.outputs.result }}
