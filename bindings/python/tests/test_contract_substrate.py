@@ -24,8 +24,8 @@ checkout is now an error that names the file.
 from __future__ import annotations
 
 import functools
-
 import tomllib
+
 from irgx.contract import abi as contract
 from irgx.contract import table
 from irgx.request import SearchRequest

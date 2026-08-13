@@ -43,10 +43,9 @@ from __future__ import annotations
 import argparse
 import re
 import sys
+import tomllib
 from collections.abc import Iterator
 from pathlib import Path
-
-import tomllib
 
 # The Go module root. pkg.go.dev shows the README it finds there, verbatim, and
 # resolves its links against the repository - so that one is not corrected here,

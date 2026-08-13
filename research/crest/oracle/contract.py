@@ -4,12 +4,11 @@ from __future__ import annotations
 
 import hashlib
 import re
+import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
-
-import tomllib
 
 if __package__:
     from .syntax import OracleError

@@ -46,11 +46,10 @@ Run: python3 tools/build_schema_tables.py           # write
 from __future__ import annotations
 
 import sys
+import tomllib
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
-
-import tomllib
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent

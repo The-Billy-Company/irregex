@@ -15,18 +15,17 @@ import subprocess
 import sys
 import tempfile
 import time
-from datetime import date, datetime, timezone
+import tomllib
+from datetime import UTC, date, datetime
 from datetime import time as datetime_time
 from pathlib import Path
 
 import monograph
-import tomllib
 import verify
 
 HERE = Path(__file__).resolve().parent
 KERNEL = HERE.parents[3]  # evidence → crest → rungs → bench → repo root
 CONTRACT = KERNEL / "contract/crest_evidence.toml"
-UTC = timezone.utc
 
 type _JsonValue = None | bool | int | float | str | list[_JsonValue] | dict[str, _JsonValue]
 type _JsonObject = dict[str, _JsonValue]

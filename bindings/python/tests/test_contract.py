@@ -26,10 +26,10 @@ skipping on an unresolvable path for a whole release.
 from __future__ import annotations
 
 import re
+import tomllib
 from pathlib import Path
 
 import pytest
-import tomllib
 from irgx import _abi
 
 
