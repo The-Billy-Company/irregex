@@ -29,3 +29,9 @@ artifact. `--check` reports staleness and touches nothing, which is what lets th
 job skip installing a toolchain at all on a PR that is already current; after
 minting it re-reads every artifact, because a rebuild that succeeds and emits the
 same stale bytes is the one failure a mint cannot self-report.
+
+A corpus is generated against the library **this tree** built, pinned rather than
+left to the binding's own search order. That order honors an `IRGX_LIB` already
+in the environment, so a maintainer pointed at a second checkout would otherwise
+record that engine's version here - the same silently-wrong artifact, arrived at
+from the other direction.

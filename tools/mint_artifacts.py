@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import pathlib
 import shlex
 import subprocess
@@ -74,6 +75,10 @@ class Chore(NamedTuple):
     said: str
     fix: str
     cwd: pathlib.Path
+    # Resolved when the command runs, never while detecting staleness: `--check`
+    # has to answer on a tree nobody has built yet, which is exactly the state the
+    # release PR's guard reads before it decides whether to install a toolchain.
+    needs_engine: bool = False
 
 
 def rel(path: pathlib.Path) -> str:
@@ -128,10 +133,29 @@ def corpora(version: str) -> list[Chore]:
             raise SystemExit(f"mint: {rel(corpus)} has no generator at {rel(generator)}")
         chores.append(
             Chore(
-                rel(corpus), said or "no engine version", f"python3 {rel(generator)}", parity.REPO
+                rel(corpus),
+                said or "no engine version",
+                f"python3 {rel(generator)}",
+                parity.REPO,
+                needs_engine=True,
             )
         )
     return chores
+
+
+def engine() -> pathlib.Path:
+    """The library this tree built, which a corpus has to be generated against.
+
+    Pinned rather than left to the binding's own search order. That order honors
+    an `IRGX_LIB` already in the environment, so a maintainer pointed at another
+    checkout would record THAT engine's version in THIS tree's corpus - a
+    silently wrong artifact, which is the whole failure this file exists to
+    prevent. Absent is a fault with an instruction, not a fallback.
+    """
+    for name in ("libirgx.dylib", "libirgx.so", "irgx.dll"):
+        if (found := parity.REPO / "zig-out" / "lib" / name).is_file():
+            return found
+    raise SystemExit("mint: no zig-out/lib/libirgx.* — run `zig build` first")
 
 
 def locks(version: str) -> list[Chore]:
@@ -190,7 +214,10 @@ def main() -> int:
 
     for chore in chores:
         print(f"mint: {chore.fix} (in {rel(chore.cwd)})", flush=True)
-        if code := subprocess.run(shlex.split(chore.fix), cwd=chore.cwd, check=False).returncode:
+        env = {**os.environ, "IRGX_LIB": str(engine())} if chore.needs_engine else None
+        if code := subprocess.run(
+            shlex.split(chore.fix), cwd=chore.cwd, env=env, check=False
+        ).returncode:
             print(f"mint: `{chore.fix}` exited {code} — nothing further was run", file=sys.stderr)
             return 2
 
