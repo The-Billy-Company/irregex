@@ -34,7 +34,10 @@ Both of the jobs that maintain the release PR - this one and the changelog fold 
 now run for as long as the PR is open, rather than only on the push where
 release-please rewrote it. A `ci:` commit or a late fragment leaves the PR
 untouched, and that used to skip them silently: the PR sat there unfolded and
-unminted with nothing saying so, until the preflight refused to publish it.
+unminted with nothing saying so, until the preflight refused to publish it. Both
+are idempotent as a consequence - the mint reads what the artifacts say before it
+installs anything, and the fold reports an already-folded branch rather than
+handing towncrier a version it has already written.
 
 A corpus is generated against the library **this tree** built, pinned rather than
 left to the binding's own search order. That order honors an `IRGX_LIB` already

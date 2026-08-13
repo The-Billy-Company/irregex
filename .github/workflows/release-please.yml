@@ -163,6 +163,21 @@ jobs:
           set -euo pipefail
           version=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["version"])' \
             <<<"${STEPS_VERSION_OUTPUTS_RESULT}")
+          # Decided before towncrier is asked, because now that this job runs for
+          # as long as the PR is open, meeting a branch it already folded is the
+          # ordinary case — and towncrier's answer to being asked twice is
+          # `ValueError: It seems you've already produced newsfiles for this
+          # version?`. A fragment cannot be stranded in that gap: a new one lands
+          # on main, release-please then has something to change, and it recreates
+          # this branch from main with the fold commit gone.
+          if grep -qF "## [$version]" CHANGELOG.md; then
+            echo "CHANGELOG.md already carries a $version section — nothing to fold"
+            exit 0
+          fi
+          if [ -z "$(find changelog.d -maxdepth 1 -name '*.md' ! -name 'README.md')" ]; then
+            echo "no fragments under changelog.d — nothing to fold at $version"
+            exit 0
+          fi
           uv run --no-project --python 3.12 --with towncrier==25.8.0 \
             towncrier build --yes --version "$version"
           # towncrier closes the new section with a blank line, and the blank
