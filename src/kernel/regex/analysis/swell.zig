@@ -50,13 +50,233 @@
 //! nothing, so under-pruning is the only failure mode.
 
 const std = @import("std");
+const fault = @import("../../../fault.zig");
 const syn = @import("../syntax/syntax.zig");
+const unicode_tables = @import("../unicode/tables.zig");
 const crest = @import("../../math/crest.zig");
 
 const Node = syn.Node;
 const ByteSet = syn.ByteSet;
 const K = crest.K;
 const Vector = crest.Vector;
+
+pub const CompileError = std.mem.Allocator.Error || fault.Pattern;
+
+const Memo = std.AutoHashMap(*const Node, Basis);
+
+/// Compile the production AST into a bounded Pareto disjunction. Overflow
+/// merges the least-loss pair through `Profile.alt`, a sound weakening.
+pub fn forcedRanked(
+    allocator: std.mem.Allocator,
+    root: *const Node,
+    budget: u8,
+    rank: u8,
+) CompileError!crest.RankedSwell {
+    if (!crest.supportsRank(rank) or !crest.supportsBudget(budget))
+        return fault.Pattern.Unsupported;
+
+    var memo = Memo.init(allocator);
+    defer memo.deinit();
+    var basis = try visit(root, &memo);
+    basis.coarsen(budget);
+    return basis.swell(rank, budget);
+}
+
+fn visit(node: *const Node, memo: *Memo) std.mem.Allocator.Error!Basis {
+    const Frame = struct { node: *const Node, expanded: bool = false };
+    var stack: std.ArrayList(Frame) = .empty;
+    defer stack.deinit(memo.allocator);
+    try stack.append(memo.allocator, .{ .node = node });
+
+    while (stack.pop()) |frame| {
+        if (memo.contains(frame.node)) continue;
+        if (frame.expanded) {
+            try memo.put(frame.node, foldBasis(frame.node, memo));
+            continue;
+        }
+        try stack.append(memo.allocator, .{ .node = frame.node, .expanded = true });
+        switch (frame.node.*) {
+            .concat, .alt => |kids| {
+                try stack.append(memo.allocator, .{ .node = kids[0] });
+                try stack.append(memo.allocator, .{ .node = kids[1] });
+            },
+            .plus, .star, .quest => |rep| try stack.append(memo.allocator, .{ .node = rep.node }),
+            .capture => |group| try stack.append(memo.allocator, .{ .node = group.child }),
+            else => {},
+        }
+    }
+    return memo.get(node).?;
+}
+
+fn foldBasis(node: *const Node, memo: *const Memo) Basis {
+    return switch (node.*) {
+        .empty,
+        .anchor_start,
+        .anchor_end,
+        .anchor_buf_start,
+        .anchor_buf_end,
+        .word,
+        => Basis.one(Profile.epsilon()),
+        .class => |set| Basis.one(Profile.atomByte(set)),
+        .uclass => |ranges| blk: {
+            const e = encoded(ranges);
+            break :blk Basis.one(Profile.atomUnicode(e.set, e.min_len, e.cp_set, ranges));
+        },
+        .concat => |kids| Basis.concat(memo.get(kids[0]).?, memo.get(kids[1]).?),
+        .alt => |kids| Basis.either(memo.get(kids[0]).?, memo.get(kids[1]).?),
+        .plus => |rep| memo.get(rep.node).?,
+        .star, .quest => |rep| memo.get(rep.node).?.nullable(),
+        .capture => |group| memo.get(group.child).?,
+    };
+}
+
+const Basis = struct {
+    cells: [crest.RankedSwell.capacity]Profile = undefined,
+    len: u8 = 0,
+
+    fn one(cell: Profile) Basis {
+        var out: Basis = .{};
+        out.insert(cell);
+        return out;
+    }
+
+    fn either(left: Basis, right: Basis) Basis {
+        var out: Basis = .{};
+        for (left.slice()) |cell| out.insert(cell);
+        for (right.slice()) |cell| out.insert(cell);
+        return out;
+    }
+
+    fn concat(left: Basis, right: Basis) Basis {
+        var out: Basis = .{};
+        for (left.slice()) |a| for (right.slice()) |b| out.insert(Profile.concat(a, b));
+        return out;
+    }
+
+    fn nullable(self: Basis) Basis {
+        var out: Basis = .{};
+        for (self.slice()) |cell| out.insert(Profile.nullable(cell));
+        return out;
+    }
+
+    fn slice(self: *const Basis) []const Profile {
+        return self.cells[0..self.len];
+    }
+
+    fn insert(self: *Basis, candidate: Profile) void {
+        var i: usize = 0;
+        while (i < self.len) {
+            if (self.cells[i].absorbs(candidate)) return;
+            if (candidate.absorbs(self.cells[i])) {
+                self.remove(i);
+                continue;
+            }
+            i += 1;
+        }
+        if (self.len < self.cells.len) {
+            self.cells[self.len] = candidate;
+            self.len += 1;
+            return;
+        }
+
+        var expanded: [crest.RankedSwell.capacity + 1]Profile = undefined;
+        @memcpy(expanded[0..self.len], self.slice());
+        expanded[self.len] = candidate;
+        var n: usize = self.len + 1;
+        mergeOne(&expanded, &n);
+        self.len = 0;
+        for (expanded[0..n]) |cell| self.insert(cell);
+    }
+
+    fn coarsen(self: *Basis, budget: u8) void {
+        while (self.len > budget) {
+            var n: usize = self.len;
+            mergeOne(&self.cells, &n);
+            var merged: [crest.RankedSwell.capacity]Profile = undefined;
+            @memcpy(merged[0..n], self.cells[0..n]);
+            self.len = 0;
+            for (merged[0..n]) |cell| self.insert(cell);
+        }
+    }
+
+    fn remove(self: *Basis, index: usize) void {
+        self.len -= 1;
+        if (index < self.len) self.cells[index] = self.cells[self.len];
+    }
+
+    fn swell(self: *const Basis, rank: u8, budget: u8) crest.RankedSwell {
+        var out: crest.RankedSwell = .{ .rank = rank, .budget = budget };
+        for (self.slice()) |cell| {
+            const candidate = cell.requirement(rank);
+            var i: usize = 0;
+            while (i < out.len) {
+                if (requirementAbsorbs(out.requirements[i], candidate, rank)) break;
+                if (requirementAbsorbs(candidate, out.requirements[i], rank)) {
+                    out.len -= 1;
+                    if (i < out.len) out.requirements[i] = out.requirements[out.len];
+                    continue;
+                }
+                i += 1;
+            } else {
+                out.requirements[out.len] = candidate;
+                out.len += 1;
+            }
+        }
+        return out;
+    }
+};
+
+fn mergeOne(cells: []Profile, len: *usize) void {
+    std.debug.assert(len.* >= 2);
+    var best_i: usize = 0;
+    var best_j: usize = 1;
+    var best_loss = mergeLoss(cells[0], cells[1]);
+    for (0..len.*) |i| for (i + 1..len.*) |j| {
+        const loss = mergeLoss(cells[i], cells[j]);
+        if (loss < best_loss) {
+            best_i = i;
+            best_j = j;
+            best_loss = loss;
+        }
+    };
+    cells[best_i] = Profile.alt(cells[best_i], cells[best_j]);
+    len.* -= 1;
+    if (best_j < len.*) cells[best_j] = cells[len.*];
+}
+
+fn mergeLoss(a: Profile, b: Profile) u64 {
+    const envelope = Profile.alt(a, b);
+    var loss = delta(a.min_len, envelope.min_len) +
+        delta(b.min_len, envelope.min_len) +
+        delta(a.min_cp, envelope.min_cp) +
+        delta(b.min_cp, envelope.min_cp);
+    inline for (0..K) |i| {
+        loss += delta(a.F[i], envelope.F[i]) +
+            delta(b.F[i], envelope.F[i]) +
+            delta(a.P[i], envelope.P[i]) +
+            delta(b.P[i], envelope.P[i]) +
+            delta(a.S[i], envelope.S[i]) +
+            delta(b.S[i], envelope.S[i]);
+        inline for (0..crest.max_rank) |rank| {
+            const column = crest.spectrumLane(i, rank);
+            loss += delta(a.I[column], envelope.I[column]) + delta(b.I[column], envelope.I[column]);
+        }
+        loss += @intFromBool(a.only_c_cert[i] != envelope.only_c_cert[i]);
+        loss += @intFromBool(b.only_c_cert[i] != envelope.only_c_cert[i]);
+        loss += @intFromBool(a.break_c_cert[i] != envelope.break_c_cert[i]);
+        loss += @intFromBool(b.break_c_cert[i] != envelope.break_c_cert[i]);
+    }
+    return loss;
+}
+
+fn delta(strong: u16, weak: u16) u64 {
+    return @as(u64, strong) - weak;
+}
+
+fn requirementAbsorbs(a: crest.Requirement, b: crest.Requirement, rank: u8) bool {
+    for (0..@as(usize, rank) * K) |i| if (a[i] > b[i]) return false;
+    return true;
+}
 
 /// The swell of one already-parsed (and, under `-i`, already-folded) AST: ĝ per
 /// TOP-LEVEL ALTERNATIVE, because `R₁|R₂` obliges a match to satisfy only one
@@ -116,10 +336,10 @@ fn profile(n: *const Node) Profile {
         // kills the codepoint lanes) falls out of `atom`'s shared-membership
         // intersect for free, since `crest.membership` already clears those
         // lanes' bits on a continuation byte.
-        .class => |set| Profile.atom(set, 1, set, 1),
+        .class => |set| Profile.atomByte(set),
         .uclass => |ranges| blk: {
             const e = encoded(ranges);
-            break :blk Profile.atom(e.set, e.min_len, e.cp_set, 1);
+            break :blk Profile.atomUnicode(e.set, e.min_len, e.cp_set, ranges);
         },
         .concat => |kids| Profile.concat(profile(kids[0]), profile(kids[1])),
         .alt => |kids| Profile.alt(profile(kids[0]), profile(kids[1])),
@@ -133,6 +353,15 @@ fn profile(n: *const Node) Profile {
 
 fn satAdd(a: u16, b: u16) u16 {
     return @intCast(@min(@as(u32, a) + @as(u32, b), std.math.maxInt(u16)));
+}
+
+fn insertRun(runs: *[crest.max_rank]u16, run: u16) void {
+    var candidate = run;
+    inline for (0..crest.max_rank) |rank| {
+        const displaced = @min(runs[rank], candidate);
+        runs[rank] = @max(runs[rank], candidate);
+        candidate = displaced;
+    }
 }
 
 /// What a CODEPOINT class spends in the document's alphabet: the bytes its
@@ -182,6 +411,47 @@ fn utf8Len(cp: u21) u16 {
     return if (cp < 0x80) 1 else if (cp < 0x800) 2 else if (cp < 0x10000) 3 else 4;
 }
 
+fn rangesSubsetOfProperty(ranges: []const [2]u21, property: crest.ExactProperty) bool {
+    const allowed = unicode_tables.property(exactPropertyName(property)) orelse return false;
+    for (ranges) |range| {
+        var cursor: u32 = range[0];
+        const hi: u32 = range[1];
+        for (allowed) |candidate| {
+            if (candidate[1] < cursor) continue;
+            if (candidate[0] > cursor) return false;
+            if (candidate[1] >= hi) {
+                cursor = hi + 1;
+                break;
+            }
+            cursor = @as(u32, candidate[1]) + 1;
+        }
+        if (cursor <= hi) return false;
+    }
+    return true;
+}
+
+fn rangesDisjointFromProperty(ranges: []const [2]u21, property: crest.ExactProperty) bool {
+    const allowed = unicode_tables.property(exactPropertyName(property)) orelse return false;
+    var i: usize = 0;
+    var j: usize = 0;
+    while (i < ranges.len and j < allowed.len) {
+        if (ranges[i][1] < allowed[j][0]) {
+            i += 1;
+        } else if (allowed[j][1] < ranges[i][0]) {
+            j += 1;
+        } else return false;
+    }
+    return true;
+}
+
+fn exactPropertyName(property: crest.ExactProperty) []const u8 {
+    return switch (property) {
+        .nd => "Nd",
+        .letter => "L",
+        .white_space => "White_Space",
+    };
+}
+
 /// A sub-expression's forced run summary (PROOF.md §3). Every numeric field is
 /// a sound LOWER bound over the sub-language; `only_c_cert` is one-sided — true
 /// obliges every accepted string to be class-C bytes end to end, false claims
@@ -189,11 +459,13 @@ fn utf8Len(cp: u21) u16 {
 /// entirely in the document's saturated u16 domain.
 pub const Profile = struct {
     F: Vector, // forced longest run:  F ≤ min_{w∈L} ρ(w,C)
+    I: crest.Requirement, // forced internal disjoint runs, rank-major
     P: Vector, // forced leading run
     S: Vector, // forced trailing run
     min_len: u16, // forced minimum BYTE length (saturating) — byte + scalar-closed lanes
     min_cp: u16, // forced minimum CODEPOINT length (saturating) — codepoint-run lanes only
     only_c_cert: [K]bool, // ⇒ every w∈L is composed solely of class-C bytes
+    break_c_cert: [K]bool, // ⇒ every w∈L contains a proven C-breaking gap
 
     /// True for a codepoint-run lane — the boundary `concat` reads to pick
     /// `min_len` (bytes) or `min_cp` (codepoints) as the unit a seam extends
@@ -205,12 +477,12 @@ pub const Profile = struct {
 
     /// Language {ε}: the concatenation identity, certified for every class.
     pub fn epsilon() Profile {
-        return .{ .F = @splat(0), .P = @splat(0), .S = @splat(0), .min_len = 0, .min_cp = 0, .only_c_cert = @splat(true) };
+        return .{ .F = @splat(0), .I = @splat(0), .P = @splat(0), .S = @splat(0), .min_len = 0, .min_cp = 0, .only_c_cert = @splat(true), .break_c_cert = @splat(false) };
     }
 
     /// No usable semantics: numerically harmless and never licenses a seam.
     pub fn unknown() Profile {
-        return .{ .F = @splat(0), .P = @splat(0), .S = @splat(0), .min_len = 0, .min_cp = 0, .only_c_cert = @splat(false) };
+        return .{ .F = @splat(0), .I = @splat(0), .P = @splat(0), .S = @splat(0), .min_len = 0, .min_cp = 0, .only_c_cert = @splat(false), .break_c_cert = @splat(false) };
     }
 
     /// One mandatory atom, priced twice: `byte_len` bytes drawn from
@@ -237,8 +509,47 @@ pub const Profile = struct {
         p.min_len = byte_len;
         p.min_cp = cp_len;
         fillShared(&p, byte_set, byte_len, 0, 2 * crest.base_k);
-        fillShared(&p, cp_set, cp_len, 2 * crest.base_k, K);
+        fillShared(&p, cp_set, cp_len, 2 * crest.base_k, crest.approximate_k);
         return p;
+    }
+
+    pub fn atomByte(set: ByteSet) Profile {
+        var p = atom(set, 1, set, 1);
+        // Exact lanes decode UCD scalars; a raw high byte is not the
+        // same-valued scalar, so byte sets certify them only inside ASCII.
+        if (set.count() == 0 or set.bits[2] != 0 or set.bits[3] != 0) return p;
+        inline for (std.enums.values(crest.ExactProperty)) |property| {
+            var subset = true;
+            var disjoint = true;
+            for (0..256) |byte| {
+                if (set.has(@intCast(byte))) {
+                    const member = crest.exactMember(property, @intCast(byte));
+                    subset = subset and member;
+                    disjoint = disjoint and !member;
+                }
+            }
+            const i = crest.exactLane(property);
+            if (subset) certify(&p, i, 1) else if (disjoint) p.break_c_cert[i] = true;
+        }
+        return p;
+    }
+
+    pub fn atomUnicode(byte_set: ByteSet, byte_len: u16, cp_set: ByteSet, ranges: []const [2]u21) Profile {
+        var p = atom(byte_set, byte_len, cp_set, 1);
+        inline for (std.enums.values(crest.ExactProperty)) |property| {
+            const i = crest.exactLane(property);
+            if (rangesSubsetOfProperty(ranges, property)) {
+                certify(&p, i, 1);
+            } else if (rangesDisjointFromProperty(ranges, property)) p.break_c_cert[i] = true;
+        }
+        return p;
+    }
+
+    fn certify(p: *Profile, i: usize, len: u16) void {
+        p.F[i] = len;
+        p.P[i] = len;
+        p.S[i] = len;
+        p.only_c_cert[i] = true;
     }
 
     /// Certify every lane in `[lo, hi)` whose membership bit is shared across
@@ -248,18 +559,59 @@ pub const Profile = struct {
     fn fillShared(p: *Profile, set: ByteSet, len: u16, lo: usize, hi: usize) void {
         if (set.count() == 0) return;
         var shared: crest.Mask = std.math.maxInt(crest.Mask);
+        var may_keep: crest.Mask = 0;
         for (0..256) |b| {
-            if (shared == 0) break; // a wide set shares nothing; stop reading
-            if (set.has(@intCast(b))) shared &= crest.membership[b];
+            if (set.has(@intCast(b))) {
+                shared &= crest.membership[b];
+                may_keep |= crest.membership[b];
+                if (crest.isContinuation(@intCast(b))) {
+                    for (2 * crest.base_k..crest.approximate_k) |i|
+                        may_keep |= @as(crest.Mask, 1) << @intCast(i);
+                }
+            }
         }
         for (lo..hi) |i| {
-            if ((shared & (@as(crest.Mask, 1) << @intCast(i))) != 0) {
+            const bit = @as(crest.Mask, 1) << @intCast(i);
+            if ((shared & bit) != 0) {
                 p.F[i] = len;
                 p.P[i] = len;
                 p.S[i] = len;
                 p.only_c_cert[i] = true;
-            }
+            } else if (may_keep & bit == 0) p.break_c_cert[i] = true;
         }
+    }
+
+    fn absorbs(self: Profile, other: Profile) bool {
+        if (self.min_len > other.min_len or self.min_cp > other.min_cp) return false;
+        inline for (0..K) |i| {
+            if (self.F[i] > other.F[i] or self.P[i] > other.P[i] or self.S[i] > other.S[i]) return false;
+            inline for (0..crest.max_rank) |rank| {
+                const column = crest.spectrumLane(i, rank);
+                if (self.I[column] > other.I[column]) return false;
+            }
+            if (self.only_c_cert[i] and !other.only_c_cert[i]) return false;
+            if (self.break_c_cert[i] and !other.break_c_cert[i]) return false;
+        }
+        return true;
+    }
+
+    fn requirement(self: Profile, rank: u8) crest.Requirement {
+        var out = crest.zero_spectrum;
+        inline for (0..K) |i| {
+            out[crest.spectrumLane(i, 0)] = self.F[i];
+            var runs: [crest.max_rank]u16 = undefined;
+            inline for (0..crest.max_rank) |r|
+                runs[r] = self.I[crest.spectrumLane(i, r)];
+            if (self.break_c_cert[i]) {
+                insertRun(&runs, self.P[i]);
+                insertRun(&runs, self.S[i]);
+            } else {
+                insertRun(&runs, @max(self.P[i], self.S[i]));
+            }
+            for (1..@as(usize, rank)) |r|
+                out[crest.spectrumLane(i, r)] = runs[r];
+        }
+        return out;
     }
 
     /// E₁·E₂: S₁+P₂ is the only seam term; certificates alone license
@@ -267,7 +619,7 @@ pub const Profile = struct {
     /// scalar-closed lane, codepoints for a codepoint-run one (§3.7c) — so a
     /// 3-byte CJK atom seams a byte lane by 3 and a codepoint lane by 1.
     pub fn concat(a: Profile, b: Profile) Profile {
-        var r: Profile = .{ .F = undefined, .P = undefined, .S = undefined, .min_len = satAdd(a.min_len, b.min_len), .min_cp = satAdd(a.min_cp, b.min_cp), .only_c_cert = undefined };
+        var r: Profile = .{ .F = undefined, .I = @splat(0), .P = undefined, .S = undefined, .min_len = satAdd(a.min_len, b.min_len), .min_cp = satAdd(a.min_cp, b.min_cp), .only_c_cert = undefined, .break_c_cert = undefined };
         inline for (0..K) |i| {
             const a_unit = if (isCodepointLane(i)) a.min_cp else a.min_len;
             const b_unit = if (isCodepointLane(i)) b.min_cp else b.min_len;
@@ -275,18 +627,34 @@ pub const Profile = struct {
             r.P[i] = if (a.only_c_cert[i]) satAdd(a_unit, b.P[i]) else a.P[i];
             r.S[i] = if (b.only_c_cert[i]) satAdd(b_unit, a.S[i]) else b.S[i];
             r.only_c_cert[i] = a.only_c_cert[i] and b.only_c_cert[i];
+            r.break_c_cert[i] = a.break_c_cert[i] or b.break_c_cert[i];
+
+            var runs: [crest.max_rank]u16 = @splat(0);
+            inline for (0..crest.max_rank) |rank| {
+                insertRun(&runs, a.I[crest.spectrumLane(i, rank)]);
+                insertRun(&runs, b.I[crest.spectrumLane(i, rank)]);
+            }
+            if (a.break_c_cert[i] and b.break_c_cert[i])
+                insertRun(&runs, satAdd(a.S[i], b.P[i]));
+            inline for (0..crest.max_rank) |rank|
+                r.I[crest.spectrumLane(i, rank)] = runs[rank];
         }
         return r;
     }
 
     /// E₁|E₂ — the adversary picks the branch minimizing each field.
     pub fn alt(a: Profile, b: Profile) Profile {
-        var r: Profile = .{ .F = undefined, .P = undefined, .S = undefined, .min_len = @min(a.min_len, b.min_len), .min_cp = @min(a.min_cp, b.min_cp), .only_c_cert = undefined };
+        var r: Profile = .{ .F = undefined, .I = undefined, .P = undefined, .S = undefined, .min_len = @min(a.min_len, b.min_len), .min_cp = @min(a.min_cp, b.min_cp), .only_c_cert = undefined, .break_c_cert = undefined };
         inline for (0..K) |i| {
             r.F[i] = @min(a.F[i], b.F[i]);
             r.P[i] = @min(a.P[i], b.P[i]);
             r.S[i] = @min(a.S[i], b.S[i]);
             r.only_c_cert[i] = a.only_c_cert[i] and b.only_c_cert[i];
+            r.break_c_cert[i] = a.break_c_cert[i] and b.break_c_cert[i];
+            inline for (0..crest.max_rank) |rank| {
+                const column = crest.spectrumLane(i, rank);
+                r.I[column] = @min(a.I[column], b.I[column]);
+            }
         }
         return r;
     }

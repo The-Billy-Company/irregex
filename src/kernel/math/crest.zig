@@ -35,6 +35,8 @@
 const std = @import("std");
 
 const signet = @import("../../corpus/index/frame/signet.zig");
+const unicode = @import("../regex/unicode/decode.zig");
+const unicode_tables = @import("../regex/unicode/tables.zig");
 
 /// The eight base classes. Order is load-bearing: a crest vector is indexed in
 /// exactly this order and the persisted sidecar stores it verbatim. Chosen for
@@ -49,6 +51,21 @@ pub const Class = enum(u8) {
     word,
     space,
     punct,
+    literal_space,
+    dot,
+    quote,
+    lparen,
+    slash,
+    underscore,
+    assign_sep,
+};
+
+/// Exact Unicode properties already carried by irregex's pinned UCD tables.
+/// These lanes decode scalars rather than approximating them from UTF-8 bytes.
+pub const ExactProperty = enum(u8) {
+    nd,
+    letter,
+    white_space,
 };
 
 /// Each class is measured over three alphabets. `scalar` is why `\d` prunes
@@ -95,7 +112,15 @@ pub fn isContinuation(b: u8) bool {
 }
 
 pub const base_k: usize = @typeInfo(Class).@"enum".fields.len;
-pub const K: usize = base_k * @typeInfo(Alphabet).@"enum".fields.len;
+pub const approximate_k: usize = base_k * @typeInfo(Alphabet).@"enum".fields.len;
+pub const exact_k: usize = @typeInfo(ExactProperty).@"enum".fields.len;
+pub const K: usize = approximate_k + exact_k;
+pub const max_rank: usize = 4;
+pub const spectrum_k: usize = K * max_rank;
+pub const default_rank: u8 = 1;
+pub const default_budget: u8 = 8;
+pub const supported_ranks = [_]u8{ 1, 2, 4 };
+pub const supported_budgets = [_]u8{ 1, 2, 4, 8 };
 
 /// Index of one family member. ASCII lanes stay at their historical indices,
 /// so the eight base classes read exactly where they always did.
@@ -103,13 +128,38 @@ pub fn lane(c: Class, a: Alphabet) usize {
     return @intFromEnum(a) * base_k + @intFromEnum(c);
 }
 
+pub fn exactLane(property: ExactProperty) usize {
+    return approximate_k + @intFromEnum(property);
+}
+
+/// Logical query shape: rank-major, then predicate. Persistence transposes it
+/// to predicate-major columns so one demanded lane streams contiguously.
+pub fn spectrumLane(predicate: usize, rank: usize) usize {
+    std.debug.assert(predicate < K and rank < max_rank);
+    return rank * K + predicate;
+}
+
+pub fn supportsRank(rank: u8) bool {
+    inline for (supported_ranks) |supported| if (rank == supported) return true;
+    return false;
+}
+
+pub fn supportsBudget(budget: u8) bool {
+    inline for (supported_budgets) |supported| if (budget == supported) return true;
+    return false;
+}
+
 /// One crest vector: the longest per-member run, saturated at `maxInt(u16)`.
 pub const Vector = [K]u16;
+pub const Spectrum = [spectrum_k]u16;
+pub const Requirement = Spectrum;
 
 /// One bit per family member — the shape `membership` and the ⊆-test share.
 pub const Mask = std.meta.Int(.unsigned, K);
+pub const ColumnMask = std.meta.Int(.unsigned, spectrum_k);
 
 pub const zero_vector: Vector = @splat(0);
+pub const zero_spectrum: Spectrum = @splat(0);
 
 /// The query's forced crest, as the DISJUNCTION the grammar actually hands us:
 /// one ĝ per top-level alternative of the pattern. `R₁|R₂` obliges a match to
@@ -150,6 +200,77 @@ pub const Swell = struct {
         for (s.crests[0..s.len]) |ghat| if (@reduce(.Max, @as(@Vector(K, u16), ghat)) == 0) return false;
         return true;
     }
+
+    pub fn ranked(s: *const Swell) RankedSwell {
+        var out: RankedSwell = .{ .len = s.len };
+        for (s.crests[0..s.len], out.requirements[0..s.len]) |vector, *requirement| {
+            for (0..K) |predicate| {
+                requirement[spectrumLane(predicate, 0)] = vector[predicate];
+            }
+        }
+        return out;
+    }
+};
+
+/// Rank-aware forced summaries used by the strongest CREST profile. The
+/// existing `Swell` remains the q=1 ABI projection used by resident and FFI
+/// paths; `projectQ1` is exact because rank zero is the ordinary crest.
+pub const RankedSwell = struct {
+    pub const capacity = 8;
+
+    requirements: [capacity]Requirement = @splat(zero_spectrum),
+    len: u8 = 0,
+    rank: u8 = default_rank,
+    budget: u8 = default_budget,
+
+    pub fn active(self: *const RankedSwell) bool {
+        if (self.len == 0 or !supportsRank(self.rank)) return false;
+        for (self.requirements[0..self.len]) |requirement| {
+            var any = false;
+            for (0..K) |predicate| {
+                for (0..self.rank) |r| any = any or requirement[spectrumLane(predicate, r)] != 0;
+            }
+            if (!any) return false;
+        }
+        return true;
+    }
+
+    pub fn demandedColumns(self: *const RankedSwell) ColumnMask {
+        var demanded: ColumnMask = 0;
+        for (self.requirements[0..self.len]) |requirement| {
+            for (0..K) |predicate| {
+                for (0..self.rank) |r| {
+                    const i = spectrumLane(predicate, r);
+                    if (requirement[i] != 0) demanded |= @as(ColumnMask, 1) << @intCast(i);
+                }
+            }
+        }
+        return demanded;
+    }
+
+    pub fn prunesSpectrum(self: *const RankedSwell, doc: Spectrum) bool {
+        if (!self.active()) return false;
+        for (self.requirements[0..self.len]) |requirement| {
+            var clears = true;
+            for (0..K) |predicate| {
+                for (0..self.rank) |r| {
+                    const i = spectrumLane(predicate, r);
+                    clears = clears and doc[i] >= requirement[i];
+                }
+            }
+            if (clears) return false;
+        }
+        return true;
+    }
+
+    pub fn projectQ1(self: *const RankedSwell) Swell {
+        if (self.rank != 1 or self.len == 0) return no_sieve;
+        var out: Swell = .{ .len = self.len };
+        for (self.requirements[0..self.len], out.crests[0..self.len]) |requirement, *vector| {
+            for (0..K) |predicate| vector[predicate] = requirement[spectrumLane(predicate, 0)];
+        }
+        return out;
+    }
 };
 
 /// The one spelling of "this run proves nothing about any document": a pattern
@@ -157,10 +278,9 @@ pub const Swell = struct {
 /// byte. Every stand-down names it rather than open-coding an empty swell.
 pub const no_sieve: Swell = .{};
 
-/// The seven INDEPENDENT byte predicates. Every class in the family is a
-/// boolean combination of these, and `classes` below is that combination —
-/// written once, so the four derived classes cannot drift from the three they
-/// are derived from.
+/// Primitive byte tests used to mint the fixed workload dictionary. Derived
+/// superclass and exact-token lanes are assembled once in `classes`, so query
+/// certification and document summaries cannot drift.
 const Prims = struct {
     digit: u1,
     upper: u1,
@@ -169,12 +289,34 @@ const Prims = struct {
     under: u1,
     space: u1,
     graph: u1,
+    literal_space: u1,
+    dot: u1,
+    quote: u1,
+    lparen: u1,
+    slash: u1,
+    assign_sep: u1,
 
-    /// The eight base classes, in `Class` order. THE definition of the family.
+    /// The workload dictionary, in `Class` order. THE definition of the family.
     fn classes(p: Prims) [base_k]u1 {
         const alpha = p.upper | p.lower;
         const word = alpha | p.digit | p.under;
-        return .{ p.digit, p.digit | p.hexalpha, p.upper, p.lower, alpha, word, p.space, p.graph & ~word };
+        return .{
+            p.digit,
+            p.digit | p.hexalpha,
+            p.upper,
+            p.lower,
+            alpha,
+            word,
+            p.space,
+            p.graph & ~word,
+            p.literal_space,
+            p.dot,
+            p.quote,
+            p.lparen,
+            p.slash,
+            p.under,
+            p.assign_sep,
+        };
     }
 };
 
@@ -194,6 +336,12 @@ fn classify(b: u8) Prims {
         .under = @intFromBool(b == '_'),
         .space = @intFromBool(b == ' ') | in(b, '\t', '\r'),
         .graph = in(b, '!', '~'),
+        .literal_space = @intFromBool(b == ' '),
+        .dot = @intFromBool(b == '.'),
+        .quote = @intFromBool(b == '"' or b == '\''),
+        .lparen = @intFromBool(b == '('),
+        .slash = @intFromBool(b == '/' or b == '\\'),
+        .assign_sep = @intFromBool(b == '=' or b == ':'),
     };
 }
 
@@ -293,6 +441,8 @@ const lane_names: [K][]const u8 = blk: {
         out[lane(c, .scalar)] = @tagName(c) ++ "+u";
         out[lane(c, .codepoint)] = @tagName(c) ++ "+cp";
     }
+    for (std.enums.values(ExactProperty)) |property|
+        out[exactLane(property)] = "exact:" ++ @tagName(property);
     break :blk out;
 };
 
@@ -300,9 +450,9 @@ const lane_names: [K][]const u8 = blk: {
 /// signet over `canonical_bytes` invalidates a cache whenever the class family
 /// or meaning of one stored u16 changes, even if its physical width stays fixed.
 pub const SidecarSchema = struct {
-    pub const format_version: u16 = 4; // v3 -> v4: the codepoint-run alphabet, Mask widened past u16
+    pub const format_version: u16 = 6;
     pub const saturation_cap: u16 = std.math.maxInt(u16);
-    pub const element_interpretation = "longest consecutive input-byte run belonging to the class, per document, saturated at the numeric cap";
+    pub const element_interpretation = "q longest disjoint maximal runs per predicate and document; exact UCD lanes count decoded scalars; saturated at the numeric cap";
 
     /// Every member's label, in lane order — derived, so a family that grows
     /// or reorders cannot leave a stale name in the preimage.
@@ -314,14 +464,12 @@ pub const SidecarSchema = struct {
 
     const domain = "irregex/crest-sidecar-semantic-schema\x00";
 
-    /// The membership table as canonical little-endian bytes. Three alphabets
-    /// widened `Mask` past `u16` (K=24 ⇒ `u24`), so this is `u32` per byte now
-    /// rather than `u16` — the width the preimage claims (`membership-table/
-    /// u32le-x256` below) must move in lockstep with `Mask`'s actual width or
-    /// the schema would silently mis-describe itself the next time K grows.
+    /// The byte-membership table as canonical little-endian words. Exact UCD
+    /// lanes are zero here because their membership is scalar-decoded.
     pub const membership_le = blk: {
-        var out: [membership.len * 4]u8 = undefined;
-        for (membership, 0..) |m, i| out[4 * i ..][0..4].* = le32(@as(u32, m));
+        @setEvalBranchQuota(10_000);
+        var out: [membership.len * 8]u8 = undefined;
+        for (membership, 0..) |m, i| out[8 * i ..][0..8].* = le64(@as(u64, m));
         break :blk out;
     };
 
@@ -331,11 +479,12 @@ pub const SidecarSchema = struct {
     pub const canonical_bytes = (domain ++
         "format-version/u16le\x00" ++ le16(format_version) ++
         "class-count/u8\x00" ++ [_]u8{@intCast(K)} ++
+        "max-rank/u8\x00" ++ [_]u8{@intCast(max_rank)} ++
         "element-width/u8\x00" ++ [_]u8{@sizeOf(u16)} ++
         "class-order/nul-separated\x00" ++ le16(class_order.len) ++ class_order ++
         "saturation-cap/u16le\x00" ++ le16(saturation_cap) ++
         "element-interpretation/utf8\x00" ++ le16(element_interpretation.len) ++ element_interpretation ++
-        "membership-table/u32le-x256\x00" ++ le16(membership_le.len) ++ membership_le).*;
+        "membership-table/u64le-x256\x00" ++ le16(membership_le.len) ++ membership_le).*;
 
     /// The schema's identity. `domain` above names WHICH schema; signet's
     /// `.schema` label names what KIND of statement this is, so the sidecar's
@@ -348,8 +497,24 @@ pub const SidecarSchema = struct {
         return .{ @truncate(value), @truncate(value >> 8) };
     }
 
-    fn le32(comptime value: u32) [4]u8 {
-        return .{ @truncate(value), @truncate(value >> 8), @truncate(value >> 16), @truncate(value >> 24) };
+    fn le64(comptime value: u64) [8]u8 {
+        var out: [8]u8 = undefined;
+        for (&out, 0..) |*byte, shift| byte.* = @truncate(value >> @intCast(shift * 8));
+        return out;
+    }
+};
+
+/// Identity of the adaptive predicate dictionary independent of the physical
+/// sidecar layout. A dictionary-only change invalidates persisted columns even
+/// when the v6 framing itself is unchanged.
+pub const DictionarySchema = struct {
+    const canonical_bytes = ("irregex/crest-dictionary\x00" ++
+        "unicode-version\x00" ++ unicode_tables.version ++ "\x00" ++
+        "class-order\x00" ++ SidecarSchema.class_order ++ "\x00" ++
+        "membership/u64le-x256\x00" ++ SidecarSchema.membership_le).*;
+
+    pub fn hash() signet.Signet {
+        return signet.of(.schema, &canonical_bytes);
     }
 };
 
@@ -445,8 +610,8 @@ const Piece = struct {
     }
 };
 
-/// The crest vector ρ(d): the longest run of each family member, in one pass.
-pub fn crest(doc: []const u8) Vector {
+/// Approximate byte/scalar/codepoint lanes, in one SIMD pass.
+fn approximateCrest(doc: []const u8) Vector {
     if (doc.len < interleave_floor) return truncate(solo(doc).best);
 
     const span = doc.len / ways; // the last piece also takes the remainder
@@ -473,6 +638,107 @@ pub fn crest(doc: []const u8) Vector {
         acc = if (w == 0) p else acc.join(p);
     }
     return truncate(acc.best);
+}
+
+/// The q=1 crest vector ρ(d), including the exact pinned-UCD lanes.
+pub fn crest(doc: []const u8) Vector {
+    var out = approximateCrest(doc);
+    applyExactRankOne(doc, &out);
+    return out;
+}
+
+/// The q-ranked ridge spectrum. Rank zero is byte-for-byte the q=1 crest;
+/// higher ranks keep the next-longest disjoint maximal runs.
+pub fn spectrum(doc: []const u8, rank: u8) Spectrum {
+    if (!supportsRank(rank)) return zero_spectrum;
+
+    var out = zero_spectrum;
+    if (rank == 1) {
+        const q1 = approximateCrest(doc);
+        for (0..approximate_k) |predicate| out[spectrumLane(predicate, 0)] = q1[predicate];
+    } else {
+        var current: [approximate_k]u16 = @splat(0);
+        for (doc) |byte| {
+            const cls = classify(byte).classes();
+            for (0..base_k) |c| {
+                updateApproximateSpectrum(&out, &current, lane(@enumFromInt(c), .ascii), cls[c] != 0, false, rank);
+                updateApproximateSpectrum(&out, &current, lane(@enumFromInt(c), .scalar), cls[c] != 0 or byte >= 0x80, false, rank);
+                updateApproximateSpectrum(&out, &current, lane(@enumFromInt(c), .codepoint), cls[c] != 0 or byte >= 0xC0, isContinuation(byte), rank);
+            }
+        }
+        for (0..approximate_k) |predicate| insertRun(&out, predicate, current[predicate], rank);
+    }
+
+    applyExactSpectrum(doc, &out, rank);
+    return out;
+}
+
+fn updateApproximateSpectrum(out: *Spectrum, current: *[approximate_k]u16, predicate: usize, member: bool, transparent: bool, rank: u8) void {
+    if (transparent) return;
+    if (member) {
+        current[predicate] +|= 1;
+    } else {
+        insertRun(out, predicate, current[predicate], rank);
+        current[predicate] = 0;
+    }
+}
+
+fn insertRun(out: *Spectrum, predicate: usize, value: u16, rank: u8) void {
+    if (value == 0) return;
+    var candidate = value;
+    for (0..rank) |r| {
+        const i = spectrumLane(predicate, r);
+        if (candidate > out[i]) {
+            const displaced = out[i];
+            out[i] = candidate;
+            candidate = displaced;
+        }
+    }
+}
+
+pub fn exactMember(property: ExactProperty, cp: u21) bool {
+    const ranges = switch (property) {
+        .nd => unicode_tables.property("Nd"),
+        .letter => unicode_tables.property("L"),
+        .white_space => unicode_tables.property("White_Space"),
+    } orelse return false;
+    return unicode_tables.inRanges(ranges, cp);
+}
+
+fn applyExactRankOne(doc: []const u8, out: *Vector) void {
+    var current: [exact_k]u16 = @splat(0);
+    var i: usize = 0;
+    while (i < doc.len) {
+        const decoded = unicode.decode(doc[i..]);
+        const cp: ?u21 = if (decoded) |d| d.cp else null;
+        i += if (decoded) |d| d.len else 1;
+        inline for (std.enums.values(ExactProperty), 0..) |property, p| {
+            if (cp != null and exactMember(property, cp.?)) {
+                current[p] +|= 1;
+            } else current[p] = 0;
+            out[exactLane(property)] = @max(out[exactLane(property)], current[p]);
+        }
+    }
+}
+
+fn applyExactSpectrum(doc: []const u8, out: *Spectrum, rank: u8) void {
+    var current: [exact_k]u16 = @splat(0);
+    var i: usize = 0;
+    while (i < doc.len) {
+        const decoded = unicode.decode(doc[i..]);
+        const cp: ?u21 = if (decoded) |d| d.cp else null;
+        i += if (decoded) |d| d.len else 1;
+        inline for (std.enums.values(ExactProperty), 0..) |property, p| {
+            if (cp != null and exactMember(property, cp.?)) {
+                current[p] +|= 1;
+            } else {
+                insertRun(out, exactLane(property), current[p], rank);
+                current[p] = 0;
+            }
+        }
+    }
+    inline for (std.enums.values(ExactProperty), 0..) |property, p|
+        insertRun(out, exactLane(property), current[p], rank);
 }
 
 /// One piece, scanned whole — the shape `crest` degenerates to for a short

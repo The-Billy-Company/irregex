@@ -250,6 +250,18 @@ forbid cycles across directories
 // matching is a hard failure, so paying the debt forces deleting the entry —
 // they shrink instead of accreting as folklore.
 
+variance zone kernel/math/crest.zig -> kernel/regex/unicode/decode.zig
+    because "Exact CREST lanes must decode scalars exactly as the matcher does. Retire by extracting the generic Unicode primitives below math for both consumers."
+
+variance zone kernel/math/crest.zig -> kernel/regex/unicode/tables.zig
+    because "CREST's dictionary identity and exact lanes bind the matcher's pinned UCD. Retire by extracting that data below math for both consumers."
+
+variance seal kernel/math/crest.zig -> kernel/regex/unicode/decode.zig
+    because "The shared decoder is leaf data, not regex grammar or execution. Retire when the generic Unicode primitives move below the regex seal."
+
+variance seal kernel/math/crest.zig -> kernel/regex/unicode/tables.zig
+    because "The pinned UCD table is leaf data, not regex grammar or execution. Retire when the generic Unicode primitives move below the regex seal."
+
 variance cycle {
     kernel/regex/linear/ladder/verdict.zig
     kernel/regex/linear/pike/closure.zig

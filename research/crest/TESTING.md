@@ -19,7 +19,7 @@ Hand-computed oracles against the calculus, one test per load-bearing rule:
 
 | test                  | pins                                                                                                                                                                                                                            |
 | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| document crest        | hand-counted runs for all sixteen family members — the eight ASCII classes and their scalar-closed twins                                                                                                                        |
+| document spectrum     | hand-counted q1/q4 maximal runs over the 48-predicate dictionary, including exact decoded-scalar UCD lanes                                                                                                                       |
 | vectorized scan       | the SIMD pass equals the byte-at-a-time definition exactly, at every length, over ASCII / non-ASCII / mixed pools and uniform-random bytes                                                                                      |
 | interleaved pieces    | past the interleave floor the four-piece split rejoins to the single-piece answer: breaks walked onto and around every cut, whole pieces that must carry a run through, and a run past the u16 cap so saturation crosses a join |
 | scalar-closed twins   | non-ASCII runs the ASCII half cannot see are measured by the twins, and the ASCII lanes stay 0 while every twin runs                                                                                                            |
@@ -40,14 +40,16 @@ The persistence layer is where silent corruption would become a wrong answer
 years later, so it gets the adversarial treatment the trigram loader gets:
 
 - **Round-trip identity** — `build → writeInto → decode` reproduces every
-  vector bit-for-bit.
+  q4 spectrum bit-for-bit, with q1 exactly equal to the legacy crest projection.
 - **Fail-closed decode** — every malformed blob (truncated header, wrong
-  magic/version/schema hash, wrong K/width/doc count, nonzero reserved byte,
-  torn/padded tail, misaligned body) decodes to `null`, which the loader treats
-  as "no sidecar": the sieve disables rather than pruning on garbage.
-- **Semantic identity** — the pinned hash preimage includes class order, all
-  256 membership masks, the 65,535 cap, element interpretation, and format
-  version; `GISTCRS1` is rejected rather than guessed compatible.
+  magic/version/schema/dictionary/build identity, wrong q/K/doc count,
+  malformed offsets, unsorted overflow, or broken seal) decodes to `null`.
+- **Column parity** — allocation-free row pruning and sparse/dense columnar
+  retain produce exactly the same candidate set; long runs exercise u16
+  overflow recovery rather than only the dense u8 base.
+- **Semantic identity** — the pinned schema and dictionary preimages include
+  class order, all 256 membership masks, pinned UCD version, saturation cap,
+  rank policy, and format version; pre-v6 magics are refused.
 
 ## 3. Production proof harness — `bench/rungs/crest/bench.zig` (`zig build crest`)
 
@@ -96,6 +98,12 @@ The sieve rides both read-elision oracles (`serial.zig` `IndexSkip`,
   (`fresh_ids` from the freshness overlay).
 - **Missing/invalid sidecar**: `decode` → null → sieve off. An old index
   without `crest.bin` keeps working, just without the new pruning.
+- **Incremental index**: `GISTCOD3` stores q4 spectra; dirty/new rows replace
+  their base rows, tombstones saturate to never-prune, and the merged owned v6
+  view is revalidated before use.
+- **Cost gate**: integer planner tests pin profitable/unprofitable boundaries,
+  absolute/relative margins, malformed selectivity estimates, and overflow.
+  Missing calibration preserves the always-sieve behavior.
 - **Content transforms** (`-z`/`--pre`/`-E`): the sieve is computed from the
   _effective_ pattern only when no transform rewrites the bytes the matcher
   sees; otherwise disabled.
@@ -111,28 +119,29 @@ check the **Artifact theorem**; filesystem freshness suites check the
 conditional **Freshness theorem**. Only their conjunction authorizes read
 elision (`PROOF.md` §2.1).
 
-## 5. Independent exact-automaton oracle (a Python spike, not shipped here)
+## 5. Independent exact-automaton oracle
 
-The tightness measurement (PROOF.md §3.6) is refereed, not asserted, by an
-**independent** implementation of the exact forced run `g(R,C)` — built from a
-_separate_ Thompson NFA compiler, so the AST calculus never grades itself. That
-referee was a pre-production Python harness (`ridge.py`) and it is **not part of
-this repository**; the section records what it established, not a command you
-can run. Everything below is a dated measurement, not a reproduction:
+`research/crest/oracle/` ships a Python 3.13 stdlib referee that imports no
+irregex parser, matcher, CREST calculus, or production automaton. It parses a
+documented consuming byte-regex subset, builds a separate Thompson epsilon-NFA,
+and decides `g_i(R,C)` by reachability in the product with a capped ranked-run
+monitor. Assertions, lookarounds, backreferences, and unsupported extensions
+are typed refusals, never erased approximations.
 
-- `g_exact` decides `g_i(R,C)` by emptiness of `NFA(R) × monitor(C,r,i)` (the
-  monitor DFA counts maximal C-runs reaching length `r`), binary-searched over
-  `r` — a textbook min-over-a-max-automaton value (Kuperberg–Vanden Boom;
-  Mohri–Riley N-best for the rank), claimed by neither Crest nor Ridge.
-- `ridge.py --oracle` asserts `ĝ_i ≤ g_i` on thousands of random (regex, class,
-  rank) triples. Its 2026-07-19 pre-repair run was sound on every case and
-  98.0% tight (mean gap 0.043); rerun it before assigning that percentage to
-  the repaired epsilon/optional-certificate calculus.
-- `ridge.py --selftest` runs the Spectrum Sieve property suite — **160,000**
-  (regex, text) pairs, oracle = Python `re`, `matched ⇒ ¬pruned`, 0 false
-  negatives.
-- `ridge.py --bench` is the base-vs-ridge ablation (q=1 = shipped Crest vs
-  q=4), soundness re-asserted per row.
+Its tests include hand-derived adversaries and an independent finite-language
+denotational interpreter over `{a,b}`. They exhaust language acceptance and
+q=1/q=2/q=4 run thresholds for five predicates. A generated fixture then feeds
+those exact results into the real Zig parser/compiler and checks
+`ĝ_i ≤ g_i` (equality on the finite exact subset), so neither implementation
+grades itself.
+
+```bash
+uv run --project bindings/python --python 3.13 --only-group dev \
+  python -m pytest research/crest/oracle/tests -q
+```
+
+Historical spike tightness percentages remain lineage only. New percentages
+must come from the revision-bound evidence package.
 
 ## 6. Lineage — the Python spikes
 
@@ -163,8 +172,6 @@ python3 bench/rungs/crest/evidence/crest_evidence.py package
 # clean committed HEAD only: source archive + manifests + samples + monograph
 ```
 
-§5 is the exception, and it is worth saying plainly rather than leaving a
-command that cannot run: the exact-automaton oracle was a pre-production Python
-harness and is not in this tree. Its results stand as dated measurements. To
-re-referee tightness against the repaired calculus, someone has to build the
-independent oracle again.
+Corpus-dependent q1/q4 selectivity, planner calibration, and adaptive-
+dictionary promotion remain pending; the oracle and every other
+corpus-independent gate are reproducible from this tree.

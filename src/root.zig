@@ -124,6 +124,8 @@ pub const index = struct {
     /// The sieve's persisted half — the kernel is `math.crest`. Rides the same
     /// generation-atomic publish as the trigram pair. Proof: `research/crest/`.
     pub const crest = @import("corpus/index/crest/sidecar.zig");
+    /// Cost-gated columnar execution over a validated CREST sidecar view.
+    pub const crest_runtime = @import("corpus/index/crest/runtime.zig");
     /// The seal every artifact carries, and the digest an embedder needs to
     /// speak the same integrity language as the index it maps. Deliberately NOT
     /// hash-table keys or sketch hashes — see the module header.
@@ -527,6 +529,7 @@ test {
     _ = @import("corpus/index/frame/signet_test.zig"); // BLAKE3 identity: domain separation, seal round-trip, torn-write detection
     _ = @import("kernel/math/lease_test.zig"); // reader/writer lease guards + double-checked readReconciled dance
     _ = @import("corpus/index/crest/sidecar_test.zig"); // crest sidecar codec: round-trip + fail-closed adversarial
+    _ = @import("corpus/index/crest/planner_test.zig"); // calibrated cost gate: margins, overflow, and profitability boundary
     _ = @import("kernel/slate/patterns_test.zig"); // match half: set ≡ N single-pattern oracles (gate off/on)
     _ = @import("kernel/slate/trawl_test.zig"); // wide-slate tier: Aho–Corasick vs substring oracle; striped ≡ serial
     _ = @import("kernel/slate/loom_test.zig"); // weave: closed op set — total, deterministic, hand-tallied

@@ -70,6 +70,7 @@ const rows = @import("rows.zig");
 const pat = @import("pattern.zig");
 
 const crest = @import("../../kernel/math/crest.zig");
+const crest_sidecar = @import("../../corpus/index/crest/sidecar.zig");
 const fresh = @import("../../corpus/fresh/fresh.zig");
 const frame = @import("../../corpus/index/frame/frame.zig");
 const home = @import("../../corpus/index/frame/home.zig");
@@ -649,15 +650,15 @@ fn benign(e: trigram.QueryError) trigram.QueryError!void {
 
 /// Does the crest sieve rule `d` out? False whenever there is no table, no
 /// vector for this id, or the swell is inert — every uncertainty admits.
-fn prunes(w: *const Winnow, table: ?[]const crest.Vector, d: u32) bool {
-    const vectors = table orelse return false;
-    if (d >= vectors.len) return false;
-    return w.sieve.prunes(vectors[d]);
+fn prunes(w: *const Winnow, table: ?crest_sidecar.View, d: u32) bool {
+    const view = table orelse return false;
+    if (d >= view.len()) return false;
+    return view.prunesDoc(d, w.sieve.ranked());
 }
 
 /// The base candidate set for a reading list: the index answer minus the sieve,
 /// or every document when nothing could narrow.
-fn seed(s: *const Sieve, w: *const Winnow, table: ?[]const crest.Vector, ids: *std.ArrayList(u32)) !void {
+fn seed(s: *const Sieve, w: *const Winnow, table: ?crest_sidecar.View, ids: *std.ArrayList(u32)) !void {
     const cand = try narrow(s, w);
     defer if (cand) |c| gpa.free(c);
     if (cand) |c| {
@@ -927,9 +928,9 @@ test "sieve: a persisted trigram pair answers in ids that resolve to paths" {
     var paths: [corpus.len][]const u8 = undefined;
     var names: [corpus.len][32]u8 = undefined;
     for (&paths, &names, 0..) |*slot, *cell, i| slot.* = try std.fmt.bufPrint(cell, "doc{d}.zig", .{i});
-    var vectors: [corpus.len]crest.Vector = undefined;
-    for (&vectors, corpus) |*v, doc| v.* = crest.crest(doc);
-    _ = try persist.persistIndexAndPathsAt(t.allocator, io, dir, &idx, &paths, &.{"."}, &vectors, 0);
+    var spectra: [corpus.len]crest.Spectrum = undefined;
+    for (&spectra, corpus) |*ridge, doc| ridge.* = crest.spectrum(doc, crest.max_rank);
+    _ = try persist.persistIndexAndPathsAt(t.allocator, io, dir, &idx, &paths, &.{"."}, &spectra, 0);
 
     var s: *Sieve = undefined;
     try t.expectEqual(Status.ok, open(dir.ptr, dir.len, &s));

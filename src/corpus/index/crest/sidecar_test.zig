@@ -1,159 +1,149 @@
-//! Crest sidecar codec tests — round-trip identity plus the adversarial
-//! fail-closed suite every persisted-blob loader in this kernel carries: any
-//! malformed byte pattern must decode to null, never to a wrong table.
-
 const std = @import("std");
 const testing = std.testing;
+const builder = @import("builder.zig");
 const crest = @import("../../../kernel/math/crest.zig");
-const signet = @import("../frame/signet.zig");
 const sidecar = @import("sidecar.zig");
+const signet = @import("../frame/signet.zig");
 
-const version_off = 8;
-const class_count_off = 10;
-const element_width_off = 11;
-const doc_count_off = 12;
-const schema_hash_off = 16;
-const reserved_off = 48;
+fn binding(label: []const u8) sidecar.Binding {
+    return sidecar.Binding.forBuild(signet.of(.content, label));
+}
 
-test "round-trip: build → writeInto → decode is identity" {
-    const gpa = testing.allocator;
-    const docs: []const []const u8 = &.{ "deadbeef00", "no runs zz", "ABC 123 xyz_9" };
-    const vectors = try sidecar.build(gpa, docs);
-    defer gpa.free(vectors);
-    for (docs, vectors) |d, v| try testing.expectEqual(crest.crest(d), v);
+fn encoded(rows: []const crest.Spectrum, q: u8, mark: sidecar.Binding) ![]u8 {
+    const out = try testing.allocator.alloc(u8, try sidecar.encodedSize(rows, q));
+    errdefer testing.allocator.free(out);
+    _ = try sidecar.writeInto(rows, .{ .q = q, .binding = mark }, out);
+    return out;
+}
 
-    const buf = try gpa.alignedAlloc(u8, .of(crest.Vector), try sidecar.encodedSize(docs.len));
-    defer gpa.free(buf);
-    try testing.expectEqual(buf.len, try sidecar.writeInto(vectors, buf));
+test "v6 round-trip preserves q4 spectra and q1 projection" {
+    const docs = [_][]const u8{
+        "",
+        "id=0123456789abcdef",
+        "111a22222b333c44",
+        "\u{0660}\u{0661}\u{0662}abc\u{3000}",
+    };
+    const rows = try builder.build(testing.allocator, &docs);
+    defer testing.allocator.free(rows);
+    const mark = binding("round-trip");
+    const bytes = try encoded(rows, 4, mark);
+    defer testing.allocator.free(bytes);
 
-    try testing.expectEqualSlices(u8, &crest.SidecarSchema.hash().bytes, buf[schema_hash_off..reserved_off]);
-    var off: usize = sidecar.header_len;
-    for (vectors) |vector| {
-        for (vector) |value| {
-            try testing.expectEqual(value, std.mem.readInt(u16, buf[off..][0..2], .little));
-            off += @sizeOf(u16);
-        }
+    const view = sidecar.decode(bytes, .{
+        .document_count = docs.len,
+        .q = 4,
+        .binding = mark,
+    }) orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(@as(usize, docs.len), view.len());
+    for (rows, 0..) |row, document| try testing.expectEqual(row, view.row(document));
+    for (docs, 0..) |doc, document| {
+        const vector = crest.crest(doc);
+        for (0..crest.K) |predicate|
+            try testing.expectEqual(vector[predicate], view.value(predicate, 0, document));
     }
-
-    const view = sidecar.decode(buf, @intCast(docs.len)) orelse return error.TestUnexpectedResult;
-    try testing.expectEqualSlices(crest.Vector, vectors, view);
 }
 
-test "fail-closed: old magic, version, schema, and shape tampering are rejected" {
-    const gpa = testing.allocator;
-    const vectors = [_]crest.Vector{ crest.crest("0123abcd"), crest.crest("hello") };
-    const buf = try gpa.alignedAlloc(u8, .of(crest.Vector), try sidecar.encodedSize(vectors.len));
-    defer gpa.free(buf);
-    _ = try sidecar.writeInto(&vectors, buf);
+test "sparse overflow preserves saturated and long runs" {
+    var long: [600]u8 = @splat('7');
+    const docs = [_][]const u8{ "7", long[0..] };
+    const rows = try builder.build(testing.allocator, &docs);
+    defer testing.allocator.free(rows);
+    const mark = binding("overflow");
+    const bytes = try encoded(rows, 1, mark);
+    defer testing.allocator.free(bytes);
+    const view = sidecar.decode(bytes, .{
+        .document_count = docs.len,
+        .q = 1,
+        .binding = mark,
+    }) orelse return error.TestUnexpectedResult;
 
-    const bad = try gpa.alignedAlloc(u8, .of(crest.Vector), buf.len);
-    defer gpa.free(bad);
-
-    @memcpy(bad, buf);
-    @memcpy(bad[0..8], "GISTCRS1");
-    try testing.expect(sidecar.decode(bad, 2) == null);
-
-    @memcpy(bad, buf);
-    std.mem.writeInt(u16, bad[version_off..][0..2], crest.SidecarSchema.format_version + 1, .little);
-    try testing.expect(sidecar.decode(bad, 2) == null);
-
-    @memcpy(bad, buf);
-    bad[schema_hash_off] ^= 1;
-    try testing.expect(sidecar.decode(bad, 2) == null);
-
-    @memcpy(bad, buf);
-    bad[class_count_off] += 1;
-    try testing.expect(sidecar.decode(bad, 2) == null);
-
-    @memcpy(bad, buf);
-    bad[element_width_off] += 1;
-    try testing.expect(sidecar.decode(bad, 2) == null);
-
-    @memcpy(bad, buf);
-    std.mem.writeInt(u32, bad[doc_count_off..][0..4], 3, .little);
-    try testing.expect(sidecar.decode(bad, 2) == null);
-    try testing.expect(sidecar.decode(buf, 3) == null); // loaded index has foreign doc space
+    const digit = crest.lane(.digit, .ascii);
+    try testing.expectEqual(@as(u16, 1), view.value(digit, 0, 0));
+    try testing.expectEqual(@as(u16, 600), view.value(digit, 0, 1));
+    try testing.expect(view.overflow.len >= sidecar.overflow_entry_len);
 }
 
-test "fail-closed: truncation, padding, and misalignment are rejected" {
-    const gpa = testing.allocator;
-    const vectors = [_]crest.Vector{crest.crest("0123abcd")};
-    const buf = try gpa.alignedAlloc(u8, .of(crest.Vector), try sidecar.encodedSize(vectors.len));
-    defer gpa.free(buf);
-    _ = try sidecar.writeInto(&vectors, buf);
+test "decode refuses foreign identity shape and damage" {
+    const rows = try builder.build(testing.allocator, &.{"123"});
+    defer testing.allocator.free(rows);
+    const mark = binding("bound");
+    const bytes = try encoded(rows, 4, mark);
+    defer testing.allocator.free(bytes);
+    const expected: sidecar.Expected = .{ .document_count = 1, .q = 4, .binding = mark };
 
-    try testing.expect(sidecar.decode(buf[0 .. buf.len - 1], 1) == null);
-    try testing.expect(sidecar.decode(buf[0..7], 1) == null);
+    try testing.expect(sidecar.decode(bytes, .{ .document_count = 2, .q = 4, .binding = mark }) == null);
+    try testing.expect(sidecar.decode(bytes, .{ .document_count = 1, .q = 2, .binding = mark }) == null);
+    try testing.expect(sidecar.decode(bytes, .{ .document_count = 1, .q = 4, .binding = binding("foreign") }) == null);
+    try testing.expect(sidecar.decode(bytes[0 .. bytes.len - 1], expected) == null);
 
-    const bad = try gpa.alignedAlloc(u8, .of(crest.Vector), buf.len);
-    defer gpa.free(bad);
-    @memcpy(bad, buf);
-    bad[reserved_off] = 1;
-    try testing.expect(sidecar.decode(bad, 1) == null);
-
-    const padded = try gpa.alignedAlloc(u8, .of(crest.Vector), buf.len + 4);
-    defer gpa.free(padded);
-    @memcpy(padded[0..buf.len], buf);
-    @memset(padded[buf.len..], 0);
-    try testing.expect(sidecar.decode(padded, 1) == null);
-
-    const shifted = try gpa.alignedAlloc(u8, .of(crest.Vector), buf.len + 1);
-    defer gpa.free(shifted);
-    @memcpy(shifted[1..], buf);
-    try testing.expect(sidecar.decode(shifted[1..], 1) == null);
+    const cases = [_]usize{
+        0,
+        sidecar.Offset.version,
+        sidecar.Offset.predicate_count,
+        sidecar.Offset.q,
+        sidecar.Offset.semantic_hash,
+        sidecar.Offset.dictionary_hash,
+        sidecar.Offset.build_id,
+        sidecar.header_len,
+    };
+    for (cases) |offset| {
+        const original = bytes[offset];
+        bytes[offset] ^= 1;
+        try testing.expect(sidecar.decode(bytes, expected) == null);
+        bytes[offset] = original;
+    }
 }
 
-test "the seal catches the record rot that every layout check passes" {
-    const gpa = testing.allocator;
-    const vectors = [_]crest.Vector{ crest.crest("0123abcd"), crest.crest("wwwwww") };
-    const buf = try gpa.alignedAlloc(u8, .of(crest.Vector), try sidecar.encodedSize(vectors.len));
-    defer gpa.free(buf);
-    _ = try sidecar.writeInto(&vectors, buf);
-    try sidecar.verify(buf);
+test "decode rejects structurally invalid overflow even after reseal" {
+    var long: [300]u8 = @splat('7');
+    const rows = try builder.build(testing.allocator, &.{long[0..]});
+    defer testing.allocator.free(rows);
+    const mark = binding("directory");
+    const bytes = try encoded(rows, 1, mark);
+    defer testing.allocator.free(bytes);
+    const expected: sidecar.Expected = .{ .document_count = 1, .q = 1, .binding = mark };
+    const seal: usize = std.mem.readInt(u64, bytes[sidecar.Offset.seal..][0..8], .little);
+    const overflow: usize = std.mem.readInt(u64, bytes[sidecar.Offset.overflow..][0..8], .little);
 
-    // A rotted ρ(d) is a structurally perfect table: right magic, right
-    // schema, right length, right alignment — and a sieve that silently
-    // prunes a matching document. The seal is the only reader that sees it.
-    buf[sidecar.header_len] ^= 0x40;
-    const view = sidecar.decode(buf, vectors.len) orelse return error.TestUnexpectedResult;
-    try testing.expect(!std.mem.eql(u16, &vectors[0], &view[0]));
-    try testing.expectError(signet.Error.Corrupt, sidecar.verify(buf));
+    std.mem.writeInt(u32, bytes[overflow..][0..4], 1, .little);
+    signet.sealAt(bytes, seal);
+    try testing.expect(sidecar.decode(bytes, expected) == null);
 }
 
-test "a stale K=16 sidecar (the pre-codepoint-lane format) decodes to null" {
-    // The exact migration this schema exists to survive: a table built before
-    // the codepoint-run alphabet shipped is byte-for-byte a real K=16 table —
-    // right magic shape, right alignment, its OWN schema hash for K=16 — and
-    // today's K=24 loader must refuse it outright rather than read 16 lanes
-    // where 24 belong and silently stand the sieve down on a corrupted read.
-    // `class_count_off` alone is the fact that distinguishes them; stamping
-    // it to the old value on an otherwise-valid current buffer isolates that
-    // one check from the schema-hash check `bad[schema_hash_off] ^= 1`
-    // already covers above.
-    const gpa = testing.allocator;
-    const vectors = [_]crest.Vector{crest.crest("0123abcd")};
-    const buf = try gpa.alignedAlloc(u8, .of(crest.Vector), try sidecar.encodedSize(vectors.len));
-    defer gpa.free(buf);
-    _ = try sidecar.writeInto(&vectors, buf);
+test "columnar retain equals allocation-free document pruning" {
+    const docs = [_][]const u8{
+        "plain prose",
+        "id=0123456789abcdef",
+        "rule=" ++ "~" ** 12,
+        "111a22222b333c44",
+    };
+    const rows = try builder.build(testing.allocator, &docs);
+    defer testing.allocator.free(rows);
+    const mark = binding("retain");
+    const bytes = try encoded(rows, 4, mark);
+    defer testing.allocator.free(bytes);
+    const view = sidecar.decode(bytes, .{
+        .document_count = docs.len,
+        .q = 4,
+        .binding = mark,
+    }) orelse return error.TestUnexpectedResult;
 
-    try testing.expectEqual(@as(u8, 24), buf[class_count_off]);
-    buf[class_count_off] = 16;
-    try testing.expect(sidecar.decode(buf, vectors.len) == null);
+    var swell: crest.RankedSwell = .{ .len = 1, .rank = 1 };
+    swell.requirements[0][crest.spectrumLane(crest.lane(.hex, .ascii), 0)] = 8;
+    var scalar = std.StaticBitSet(docs.len).initFull();
+    view.retain(&scalar, swell);
+    var columnar = try std.DynamicBitSet.initFull(testing.allocator, docs.len);
+    defer columnar.deinit();
+    try view.retainColumnar(testing.allocator, &columnar, swell);
+    for (0..docs.len) |document| try testing.expectEqual(scalar.isSet(document), columnar.isSet(document));
 }
 
-test "checked size arithmetic rejects the first overflowing document count" {
-    const record_len = crest.K * @sizeOf(u16);
-    const framed = sidecar.header_len + signet.len;
-    const max_docs = (std.math.maxInt(usize) - framed) / record_len;
-    const largest = sidecar.checkedEncodedSize(max_docs) orelse return error.TestUnexpectedResult;
-    try testing.expectEqual(framed + max_docs * record_len, largest);
-    try testing.expect(sidecar.checkedEncodedSize(max_docs + 1) == null);
-    if (@bitSizeOf(usize) > @bitSizeOf(u32))
-        try testing.expectError(error.Oversized, sidecar.encodedSize(@as(usize, std.math.maxInt(u32)) + 1));
-}
-
-test "encoder rejects a short destination" {
-    const vectors = [_]crest.Vector{crest.crest("0123")};
-    var buf: [sidecar.header_len]u8 = undefined;
-    try testing.expectError(error.Oversized, sidecar.writeInto(&vectors, &buf));
+test "legacy v4 magic is refused" {
+    var bytes: [sidecar.header_len + sidecar.seal_len]u8 = @splat(0);
+    @memcpy(bytes[0..8], "GISTCRS4");
+    try testing.expect(sidecar.decode(&bytes, .{
+        .document_count = 0,
+        .q = 1,
+        .binding = binding("legacy"),
+    }) == null);
 }

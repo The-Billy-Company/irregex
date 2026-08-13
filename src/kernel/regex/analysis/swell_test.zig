@@ -10,6 +10,9 @@
 const std = @import("std");
 const testing = std.testing;
 const crest = @import("../../math/crest.zig");
+const lower = @import("../linear/program/lower.zig");
+const oracle_cases = @import("oracle_cases.gen.zig");
+const ranked = @import("swell.zig");
 const Regex = @import("../linear/program/core.zig").Regex;
 
 const Options = Regex.Options;
@@ -18,6 +21,36 @@ const uni: Options = .{ .unicode = true };
 
 fn swellOf(pattern: []const u8, opts: Options) crest.Swell {
     return Regex.forcedSwell(testing.allocator, pattern, opts);
+}
+
+fn rankedOf(pattern: []const u8, opts: Options, rank: u8, budget: u8) !crest.RankedSwell {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const ast = try lower.parse(arena, pattern, opts);
+    return ranked.forcedRanked(arena, ast, budget, rank);
+}
+
+fn matchedSwell(pattern: []const u8, doc: []const u8, rank: u8) !crest.RankedSwell {
+    var re = try Regex.compileOpts(testing.allocator, pattern, ascii);
+    defer re.deinit();
+    var sim = try Regex.Sim.init(testing.allocator, &re);
+    defer sim.deinit();
+    try testing.expect(re.docMatch(&sim, doc));
+
+    const swell = Regex.forcedRankedSwell(testing.allocator, pattern, ascii, 8, rank);
+    try testing.expect(swell.len != 0);
+    try testing.expect(!swell.prunesSpectrum(crest.spectrum(doc, rank)));
+    return swell;
+}
+
+fn expectExactRequirementsZero(swell: crest.RankedSwell) !void {
+    for (swell.requirements[0..swell.len]) |requirement| {
+        inline for (std.enums.values(crest.ExactProperty)) |property| {
+            for (0..swell.rank) |rank|
+                try testing.expectEqual(@as(u16, 0), requirement[crest.spectrumLane(crest.exactLane(property), rank)]);
+        }
+    }
 }
 
 /// Assert the run a pattern's SOLE alternative forces in one class.
@@ -192,14 +225,14 @@ test "epsilon and unknown profiles cannot be confused" {
 }
 
 test "top-level alternation is a disjunction, not a componentwise min" {
-    // Each alternative keeps its OWN demand. Collapsing them was sound but
-    // blunt: it kept only 2 here, and nothing at all in the next two cases.
-    try expectBranches(&.{ 4, 2 }, "[0-9]{4}|[0-9]{2}", uni, .digit);
+    // Pareto-equivalent alternatives collapse: clearing the weaker same-class
+    // demand already admits every document the stronger branch could admit.
+    try expectBranches(&.{2}, "[0-9]{4}|[0-9]{2}", uni, .digit);
     try expectBranches(&.{ 4, 0 }, "[0-9]{4}|abcd", uni, .digit);
     // Multi `-e` and a capture group both reach the calculus as alternation.
-    try expectBranches(&.{ 4, 2 }, "(?:[0-9]{4})|(?:[0-9]{2})", uni, .digit);
-    try expectBranches(&.{ 4, 2 }, "([0-9]{4}|[0-9]{2})", uni, .digit);
-    try expectBranches(&.{ 6, 4, 2 }, "[0-9]{4}|[0-9]{2}|[0-9]{6}", uni, .digit);
+    try expectBranches(&.{2}, "(?:[0-9]{4})|(?:[0-9]{2})", uni, .digit);
+    try expectBranches(&.{2}, "([0-9]{4}|[0-9]{2})", uni, .digit);
+    try expectBranches(&.{2}, "[0-9]{4}|[0-9]{2}|[0-9]{6}", uni, .digit);
 
     // THE REGRESSION. Two alternatives forcing DISJOINT classes min to 0⃗, so a
     // single-vector ĝ sieved by nothing — and every extra `-e` could only make
@@ -218,22 +251,17 @@ test "top-level alternation is a disjunction, not a componentwise min" {
 }
 
 test "the split budget degrades toward the folded sieve, never past it" {
-    // Alternatives beyond `capacity` stay one subtree, which `Profile.alt`
-    // min-folds exactly as the old single-vector calculus did.
-    var many: std.ArrayList(u8) = .empty;
-    defer many.deinit(testing.allocator);
-    for (0..40) |i| {
-        if (i != 0) try many.append(testing.allocator, '|');
-        try many.print(testing.allocator, "[0-9]{{{d}}}", .{i + 2});
-    }
-    const s = swellOf(many.items, uni);
-    try testing.expectEqual(@as(u8, crest.Swell.capacity), s.len);
-    try testing.expect(s.active());
-    // Every alternative still demands ≥2 digits, so the weakest possible
-    // disjunction is still the weakest single branch — never weaker.
-    for (s.crests[0..s.len]) |ghat| try testing.expect(ghat[@intFromEnum(crest.Class.digit)] >= 2);
-    try testing.expect(s.prunes(crest.crest("only one 1 digit")));
-    try testing.expect(!s.prunes(crest.crest("12345678901234567890")));
+    const pattern = "[0-9]{4}|[~]{6}";
+    const split = try rankedOf(pattern, ascii, 1, 8);
+    const folded = try rankedOf(pattern, ascii, 1, 1);
+    try testing.expectEqual(@as(u8, 2), split.len);
+    try testing.expect(split.active());
+    try testing.expectEqual(@as(u8, 1), folded.len);
+    try testing.expect(!folded.active());
+
+    const plain = crest.spectrum("plain prose", 1);
+    try testing.expect(split.prunesSpectrum(plain));
+    try testing.expect(!folded.prunesSpectrum(plain));
 }
 
 test "soundness by degradation: what the engine rejects prunes nothing" {
@@ -433,7 +461,9 @@ test "sieve theorem: a matching document is never pruned" {
     var matches: usize = 0;
     var prunes: usize = 0;
     var split: usize = 0;
-    for (0..1500) |i| {
+    // Pareto absorption deliberately collapses equivalent split branches, so
+    // sample enough patterns to retain the original >100 split-case floor.
+    for (0..5000) |i| {
         var pat: std.ArrayList(u8) = .empty;
         defer pat.deinit(a);
         // A third of the run is a BARE top-level alternation of 2–9 branches —
@@ -469,7 +499,172 @@ test "sieve theorem: a matching document is never pruned" {
     // The run has to have exercised every side, or it proved nothing: matches
     // to give the implication an antecedent, prunes to give it teeth, and
     // multi-branch swells to cover the disjunction the theorem now ranges over.
+    if (matches <= 1000 or prunes <= 100 or split <= 100)
+        std.debug.print("\nsieve theorem coverage: matches={d}, active={d}, Pareto-split={d}\n", .{ matches, prunes, split });
     try testing.expect(matches > 1000);
     try testing.expect(prunes > 100);
     try testing.expect(split > 100);
+}
+
+test "bounded Pareto compiler preserves disjoint alternatives" {
+    const swell = try rankedOf("[0-9]{8}|[~]{12}", ascii, 1, 8);
+    try testing.expectEqual(@as(u8, 2), swell.len);
+    try testing.expect(swell.active());
+
+    try testing.expect(!swell.prunesSpectrum(crest.spectrum("id=01234567", 1)));
+    try testing.expect(!swell.prunesSpectrum(crest.spectrum("rule=" ++ "~" ** 12, 1)));
+    try testing.expect(swell.prunesSpectrum(crest.spectrum("plain prose", 1)));
+}
+
+test "rank-four compiler proves separated maximal runs" {
+    const swell = try rankedOf("[0-9]{3}x[0-9]{5}y[0-9]{2}", ascii, 4, 8);
+    try testing.expectEqual(@as(u8, 1), swell.len);
+    const requirement = swell.requirements[0];
+    const digit = crest.lane(.digit, .ascii);
+    try testing.expectEqual(@as(u16, 5), requirement[crest.spectrumLane(digit, 0)]);
+    try testing.expectEqual(@as(u16, 3), requirement[crest.spectrumLane(digit, 1)]);
+    try testing.expectEqual(@as(u16, 2), requirement[crest.spectrumLane(digit, 2)]);
+}
+
+test "byte-mode high-byte sets never certify exact UCD lanes" {
+    const cases = [_]struct { pattern: []const u8, doc: []const u8 }{
+        .{ .pattern = "[\\xC0]", .doc = "\xC0" },
+        .{ .pattern = "[\\xC0-\\xC1]{2}", .doc = "\xC0\xC1" },
+        .{ .pattern = "[A\\xC0]{2}", .doc = "A\xC0" },
+        .{ .pattern = "[^\\x00-\\x7F]{2}", .doc = "\x80\xFF" },
+    };
+    for (cases) |case| {
+        for ([_]u8{ 1, 4 }) |rank|
+            try expectExactRequirementsZero(try matchedSwell(case.pattern, case.doc, rank));
+    }
+
+    const separated_q1 = try matchedSwell("[0-9][^\\x00-\\x7F][0-9]", "0\x800", 1);
+    const separated_q4 = try matchedSwell("[0-9][^\\x00-\\x7F][0-9]", "0\x800", 4);
+    const nd = crest.exactLane(.nd);
+    try testing.expectEqual(@as(u16, 1), separated_q1.requirements[0][crest.spectrumLane(nd, 0)]);
+    try testing.expectEqual(@as(u16, 1), separated_q4.requirements[0][crest.spectrumLane(nd, 0)]);
+    try testing.expectEqual(@as(u16, 0), separated_q4.requirements[0][crest.spectrumLane(nd, 1)]);
+}
+
+test "ASCII byte sets retain exact UCD certificates" {
+    const cases = .{
+        .{ "[0-9]{3}", "123", crest.ExactProperty.nd },
+        .{ "[A-Z]{3}", "ABC", crest.ExactProperty.letter },
+        .{ "[ \\t]{3}", " \t ", crest.ExactProperty.white_space },
+    };
+    inline for (cases) |case| {
+        for ([_]u8{ 1, 4 }) |rank| {
+            const swell = try matchedSwell(case[0], case[1], rank);
+            try testing.expectEqual(
+                @as(u16, 3),
+                swell.requirements[0][crest.spectrumLane(crest.exactLane(case[2]), 0)],
+            );
+        }
+    }
+
+    const separated = try matchedSwell("[0-9]_[0-9]", "0_0", 4);
+    const nd = crest.exactLane(.nd);
+    try testing.expectEqual(@as(u16, 1), separated.requirements[0][crest.spectrumLane(nd, 0)]);
+    try testing.expectEqual(@as(u16, 1), separated.requirements[0][crest.spectrumLane(nd, 1)]);
+}
+
+test "Unicode classes certify exact pinned-UCD lanes" {
+    const swell = try rankedOf("\\d{3}", uni, 1, 8);
+    try testing.expectEqual(@as(u16, 3), swell.requirements[0][crest.spectrumLane(crest.exactLane(.nd), 0)]);
+    try testing.expect(!swell.prunesSpectrum(crest.spectrum("\u{0660}\u{0661}\u{0662}", 1)));
+    try testing.expect(swell.prunesSpectrum(crest.spectrum("abc", 1)));
+}
+
+test "ranked compiler refuses unsupported q and B" {
+    try testing.expectError(error.Unsupported, rankedOf("[0-9]", ascii, 3, 8));
+    try testing.expectError(error.Unsupported, rankedOf("[0-9]", ascii, 1, 3));
+}
+
+fn oracleClass(predicate: oracle_cases.Predicate) crest.Class {
+    return switch (predicate) {
+        .digit => .digit,
+        .hex => .hex,
+        .upper => .upper,
+        .lower => .lower,
+        .alpha => .alpha,
+        .word => .word,
+        .space => .space,
+        .punct => .punct,
+        .literal_space => .literal_space,
+        .dot => .dot,
+        .quote => .quote,
+        .lparen => .lparen,
+        .slash => .slash,
+        .underscore => .underscore,
+        .assign_sep => .assign_sep,
+    };
+}
+
+fn projectedPattern(template: []const u8, projection: oracle_cases.Projection) ![]u8 {
+    var substitutions: usize = 0;
+    for (template) |byte| substitutions += @intFromBool(byte == 'a' or byte == 'b');
+
+    const pattern = try testing.allocator.alloc(u8, template.len + substitutions * 3);
+    const hex = "0123456789abcdef";
+    var cursor: usize = 0;
+    for (template) |byte| {
+        const projected = switch (byte) {
+            'a' => projection.member,
+            'b' => projection.nonmember,
+            else => {
+                pattern[cursor] = byte;
+                cursor += 1;
+                continue;
+            },
+        };
+        pattern[cursor..][0..2].* = "\\x".*;
+        pattern[cursor + 2] = hex[projected >> 4];
+        pattern[cursor + 3] = hex[projected & 0x0f];
+        cursor += 4;
+    }
+    std.debug.assert(cursor == pattern.len);
+    return pattern;
+}
+
+fn weakestRequirement(swell: crest.RankedSwell, predicate: usize, order: usize) u16 {
+    var bound: u16 = std.math.maxInt(u16);
+    for (swell.requirements[0..swell.len]) |requirement|
+        bound = @min(bound, requirement[crest.spectrumLane(predicate, order)]);
+    return bound;
+}
+
+test "independent automata oracle bounds the production ranked compiler" {
+    try testing.expectEqual(oracle_cases.fixture_count, oracle_cases.cases.len * oracle_cases.projections.len);
+    try testing.expectEqualSlices(u8, &.{ 1, 2, 4 }, &oracle_cases.supported_production_ranks);
+    try testing.expectEqualSlices(u8, &.{ 1, 2, 3, 4 }, &oracle_cases.order_statistics);
+
+    for (oracle_cases.cases) |case| {
+        for (oracle_cases.projections) |projection| {
+            const pattern = try projectedPattern(case.pattern, projection);
+            defer testing.allocator.free(pattern);
+            const predicate = crest.lane(oracleClass(projection.predicate), .ascii);
+            const swell = try rankedOf(pattern, ascii, 4, 8);
+            try testing.expect(swell.len != 0);
+
+            inline for (oracle_cases.order_statistics, 0..) |order_statistic, oracle_index| {
+                const got = weakestRequirement(swell, predicate, order_statistic - 1);
+                const exact = case.oracle[oracle_index];
+                if (got > exact or (case.exact_subset and got != exact)) {
+                    std.debug.print(
+                        "\nCREST ORACLE MISMATCH /{s}/ predicate={s} q={d}: compiler={d}, oracle={d}, exact_subset={}\n",
+                        .{
+                            pattern,
+                            @tagName(projection.predicate),
+                            order_statistic,
+                            got,
+                            exact,
+                            case.exact_subset,
+                        },
+                    );
+                }
+                try testing.expect(got <= exact);
+                if (case.exact_subset) try testing.expectEqual(exact, got);
+            }
+        }
+    }
 }

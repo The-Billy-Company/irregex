@@ -98,14 +98,14 @@ matcher; and the calculus is sound, not tight (§3.6).
 ## 1. Definitions
 
 Fix the byte alphabet `Σ = {0,…,255}`. A **class** `C ⊆ Σ` is a set of bytes.
-Fix a small **class family** `𝒞 = {C₁,…,C_k}`; the implementation ships
-`k = 16` — eight base classes (digit, hexdigit, upper, lower, alpha, word,
-space, punct) each measured over two alphabets (`src/kernel/math/crest.zig`
-`Class` × `Alphabet`). The second alphabet is the scalar-closed twin
-`C+u = C ∪ [0x80,0xFF]`, which is what lets a Unicode codepoint class certify
-anything at all over a byte sieve; §3.7 derives it. `k` is a small constant,
-chosen once, query-independent. This family is not claimed to contain every
-pairwise meet and join, so "lattice" would be mathematically inaccurate.
+Fix a small **predicate family** `𝒞 = {C₁,…,C_k}`. The implementation ships
+15 byte predicates: the original superclass family plus seven workload-derived
+token predicates. Each is measured over three alphabets (ASCII, scalar-closed,
+and codepoint), followed by exact pinned-UCD `Nd`, `Letter`, and `White_Space`
+lanes, for `K = 48`. The scalar-closed twin `C+u = C ∪ [0x80,0xFF]` is what
+lets a Unicode codepoint class certify anything over a byte sieve; §3.7 derives
+it. `K` is fixed and query-independent. The family is not claimed to contain
+every pairwise meet and join, so "lattice" would be mathematically inaccurate.
 
 For a string `w = w₁…w_L` and class `C`, a **C-run** is a maximal contiguous
 substring all of whose bytes lie in `C`. The **crest of `w` at `C`**
@@ -175,17 +175,16 @@ claim is the conjunction of three obligations with different assumptions:
 > the indexed bytes cannot be pruned by their crest vector. §3 proves this by
 > structural induction in the same saturated `u16` domain the code compares.
 
-> **Artifact theorem.** If the `GISTCRS3` sidecar decoder accepts generation
-> `g`, record `i` is the crest of the exact byte string assigned to document ID
-> `i` when generation `g` was built. The producer computes vectors from the
-> same ordered `corpus.docs` used for `paths.list`; `pair.gen` publishes the
-> index, paths, roots, and sidecar together; exact document count and body
-> length reject missing/extra records; and the semantic-schema hash
-> binds class order, all 256 membership masks, saturation cap, element
-> interpretation, and format version. This theorem assumes published generation
-> files are not maliciously rewritten in place: the format has no per-record
-> identity tag and cannot detect an attacker who reorders equal-width records.
-> Rejection disables Crest.
+> **Artifact theorem.** If the `GISTCRS6` sidecar decoder accepts generation
+> `g`, row `i` is the q-ranked spectrum of the exact byte string assigned to
+> document ID `i` when the generation was built. The producer computes spectra
+> from the same ordered corpus used for `paths.list`; `pair.gen` publishes the
+> index, paths, roots, and sidecar together. The header binds document count,
+> q, semantic schema, dictionary identity, and an index/path-content build ID;
+> the decoder validates every column offset and sorted overflow record, then
+> spends a whole-artifact BLAKE3 seal before exposing a view. Rejection disables
+> CREST. Codicil overlays carry full spectra and are re-materialized as a sealed
+> in-memory v6 view, with tombstones saturated to never prune.
 
 > **Freshness theorem (conditional filesystem model).** Let the build anchor
 > predate the indexed reads. Assume a local filesystem where every completed
@@ -352,22 +351,18 @@ epsilon and optional certificates now close the former empty-group gap:
 oracle, not asserted. Define the true forced run `g(R,C) = min_{w∈L(R)} ρ(w,C)`
 and compute it by automaton intersection: the largest `r` for which
 `L(R) ∩ L(M_{C,r})` is empty, where `M_{C,r}` is the monitor DFA accepting
-strings with _no_ maximal C-run of length `≥ r` (state = current-run-length
-capped at `r`), binary-searched over `r`. This is a textbook min-over-a-
-max-automaton value (Kuperberg–Vanden Boom min/max cost automata, STACS 2015;
-the ranked variant is Mohri–Riley N-best paths) — we claim none of it, we use
-it only as a soundness+tightness referee built from a _separate_ Thompson NFA
-compiler, so the AST calculus never grades itself. The 2026-07-19 harness run,
-before the epsilon/optional-certificate repair, was sound on all 6,549 random
-(regex, class) checks and exactly tight on 98.0%, with mean gap 0.043. That
-number is retained only as a dated baseline; it must be remeasured before being
-claimed for the repaired calculus. The exact oracle and its property harness
-were a pre-production Python spike; they do not ship with this repo. Rebuilding
-them means a second Thompson NFA compiler, the product against the run monitor,
-and emptiness under a binary search on `r`; the independence is the whole point,
-so a referee sharing the calculus's own code path would be worth nothing. The
-corpus-scale matched⇒¬pruned proof against the real matcher does ship, in
-`bench/rungs/crest/`.
+strings with fewer than `i` maximal C-runs of length `≥ r` (state =
+current-run-length capped at `r` plus a capped completed-run count),
+binary-searched over `r`. This is a textbook min-over-a-max-automaton value
+(Kuperberg–Vanden Boom min/max cost automata, STACS 2015; the ranked variant is
+Mohri–Riley N-best paths) — we claim none of it. The shipped
+`research/crest/oracle/` implementation uses a separate parser and Thompson NFA
+compiler, so the AST calculus never grades itself, and explicitly refuses
+assertions/lookarounds/backreferences rather than erasing them. Its independent
+finite-language suite checks exact q=1/q=2/q=4 values; generated fixtures check
+the real Zig compiler stays below the exact ceiling. The 2026-07-19 98.0%
+tightness number is retained only as a dated baseline and cannot be attributed
+to this revision until the evidence package reruns the measurement.
 
 ### 3.7 Alphabet contract (the one real false-negative footgun)
 
@@ -837,19 +832,19 @@ evidence only and must not be presented as measurements of this revision.
 
 ## 6. Complexity summary
 
-| operation          | cost                                                                                           |
-| ------------------ | ---------------------------------------------------------------------------------------------- |
-| index corpus       | `O(total input bytes)`; one streaming pass, all `k=16` lanes in one SIMD register              |
-| sieve one document | `O(k·m)` compares, `m ≤ 8` top-level alternatives — early-exit on the first branch that admits |
-| index space        | `N·k·sizeof(u16)` — 32 bytes per indexed document, plus the fixed sidecar header               |
-| query-time `ĝ`     | `O(                                                                                            | R   | ·k)`plus`O(k log n)` for counted repetition, once per query, allocation-free |
-| sieve whole corpus | `O(N·k)` and `N·k·sizeof(u16)` mapped bytes potentially touched, not merely `O(k)`             |
-| incremental update | recompute one document's crest on change; publication remains generation-atomic                |
+| operation          | cost                                                                                                  |
+| ------------------ | ----------------------------------------------------------------------------------------------------- |
+| index corpus       | `O(total input bytes · K · q)` with fixed `K=48`, `q≤4`; documents shard across cores                |
+| sieve one document | `O(touched columns · m)`, `m ≤ 8` Pareto alternatives — early-exit on the first branch that admits    |
+| index space        | `N·K·q` dense bytes plus sparse u16 overflow, a column directory, and the fixed v6 header              |
+| query-time `ĝ`     | `O(\|R\|·K·B·log n)` worst case for bounded Pareto compilation (`B=8`, counted powers by squaring)     |
+| sieve whole corpus | sparse gather over candidates or dense SIMD over each demanded physical column                         |
+| incremental update | recompute changed documents' spectra; generation-atomic codicil overlay preserves ranked rows          |
 
-The `k` in the first row is free of the input length but not of the machine:
-all 16 lanes are one 256-bit vector, so a byte costs one table load and three
-lane-parallel operations regardless of how wide the family is — which is why
-doubling the family to carry the scalar twins cost no scan time at all.
+`K` and `q` are constants with respect to the corpus, not free machine work.
+The q=1 scan uses padded SIMD working vectors; q=4 maintains four rank slots
+per predicate, while persistence transposes them into columns so a query reads
+only the coordinates it actually demands.
 
 What it did cost was **latency**. The per-byte update is a saturating add
 feeding an AND, a loop-carried chain about three cycles deep, and one scan
@@ -862,7 +857,8 @@ each piece reports the run it opens with, its best interior run, the run it
 ends with, and whether it never broke, and `Piece.join` is `concat` — the same
 `max(F₁, F₂, S₁+P₂)` the calculus folds over the pattern AST. The document side
 and the query side share one law, which is what makes the split exact rather
-than approximate. Ablated back to back on the 21,854-file corpus:
+than approximate. The following is the historical pre-v6/q4 ablation, retained
+as lineage only:
 
 |                                   | one piece  | four pieces interleaved |
 | --------------------------------- | ---------- | ----------------------- |
@@ -870,8 +866,9 @@ than approximate. Ablated back to back on the 21,854-file corpus:
 | vs. the scalar per-byte reference | 0.63x      | **1.62x**               |
 | sharded whole-corpus index build  | 45.4 ms    | **19.1 ms** (2.38x)     |
 
-Byte-identical on all 21,854 documents (same checksum), which is the only
-result that licenses the table.
+Those figures do not license the current 48-predicate, q4 columnar build.
+Current corpus-dependent q1/q4, dictionary, planner, and end-to-end timings are
+explicitly pending the held-out evidence run.
 
 The sieve is embarrassingly composable with the trigram index: intersect
 survivor sets (both are necessary conditions, so the intersection is still
@@ -884,8 +881,9 @@ provided all three obligations in §2.1 hold.
 
 ## 7. The forced-run _spectrum_ (Ridge — from one run to a multiset)
 
-Crest indexes the **single** longest run per class and forces a single run, so
-it is structurally blind to patterns that force **several disjoint** runs:
+The production query policy defaults to the **single** longest run per class,
+so q=1 is structurally blind to patterns that force **several disjoint** runs.
+The v6 sidecar already stores q=4; promotion is a measured policy decision:
 
     [0-9]{6}[^0-9]+[0-9]{6}      two distinct 6-digit runs forced
     [0-9]{4}-[0-9]{2}-[0-9]{2}   the digit multiset {4,2,2}
@@ -955,10 +953,12 @@ multiset entry. Ridge is a **strict superset**: it only adds lower-ranked
 forced runs, never changes the top one, so no query Crest prunes today is
 weakened.
 
-### 7.4 Measured (spike, 14,498 files / 250 MiB) — and the honest boundary
+### 7.4 Historical spike (14,498 files / 250 MiB) — rerun pending
 
-Base = `q=1` (byte-identical to shipped Crest); Ridge = `q=4`. Index 906 KiB =
-**0.35%** of corpus (4× Crest's 0.09%). Soundness re-asserted per row
+These results predate the current predicate dictionary, exact UCD lanes,
+bounded Pareto compiler, and columnar executor. Base = `q=1`; Ridge = `q=4`.
+The historical index was 906 KiB = **0.35%** of corpus (4× Crest's 0.09%).
+Soundness was re-asserted per row
 (base and ridge survivor hit-counts both ≡ full scan); `ĝ_i ≤ g_i` held on all
 5,224 oracle checks (98.2% tight, mean gap 0.037).
 
@@ -976,6 +976,10 @@ The gains land exactly where a _positional_ index (CPM 2025, §0/PRIOR_ART §2)
 would target — multi-field structured tokens — but reached with a fixed `O(k·q)`
 aggregate order-statistic, no positions. The `two-hex-8` row earning +0.0 is
 soundness on display, not a miss (the runs may merge; §7.3).
+
+They are not evidence for this revision. The current held-out q1/q4 comparison
+and promotion decision remain pending; the evidence package must bind corpus
+and query-trace fingerprints before publishing replacement figures.
 
 ### 7.5 Scope of the novelty claim (referee re-scope, 2026-07-20)
 

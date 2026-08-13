@@ -30,6 +30,9 @@ const std = @import("std");
 const builtin = @import("builtin");
 const gist = @import("irregex");
 const crest = gist.math.crest;
+const crest_sidecar = gist.index.crest;
+const crest_runtime = gist.index.crest_runtime;
+const signet = gist.index.signet;
 
 const corpus_mod = gist.corpus;
 const Regex = gist.regex.Regex;
@@ -83,34 +86,26 @@ const queries = [_]Query{
     .{ .label = "[0-9]{6} -u (twin)", .pattern = "[0-9]{6}", .unicode = true },
 };
 
-/// One alternative, as `member:run` pairs; alternatives joined by `|`.
-///
-/// A class and its scalar twin agree on most queries — an ASCII byte class
-/// certifies both halves identically — so naming both would double the column
-/// to say one thing. Equal pairs collapse to the bare class name; the twin is
-/// named only where it carries a demand the ASCII half does not, which is
-/// exactly the codepoint-class case worth seeing. The codepoint-run lane
-/// (§3.7c) is a third, independent unit — codepoints, not bytes — so it gets
-/// its own `+cp:` suffix only when it diverges from the scalar-closed count,
-/// which is precisely the CJK/emoji case the lane exists to tighten.
-fn forcedStr(buf: []u8, branches: []const crest.Vector) []const u8 {
+/// One alternative as `predicate:r1/r2/...`; alternatives joined by `|`.
+/// Rank values stay in evidence order instead of collapsing q4 back to q1.
+fn forcedStr(buf: []u8, branches: []const crest.Requirement, rank: u8) []const u8 {
     var end: usize = 0;
-    for (branches) |gv| {
+    for (branches) |requirement| {
         if (end > 0) end += (std.fmt.bufPrint(buf[end..], "|", .{}) catch break).len;
-        for (std.enums.values(crest.Class)) |c| {
-            const a = gv[crest.lane(c, .ascii)];
-            const s = gv[crest.lane(c, .scalar)];
-            const p = gv[crest.lane(c, .codepoint)];
-            if (a == 0 and s == 0 and p == 0) continue;
+        for (0..K) |predicate| {
+            var any = false;
+            for (0..rank) |r| any = any or requirement[crest.spectrumLane(predicate, r)] != 0;
+            if (!any) continue;
             const sep: []const u8 = if (end > 0 and buf[end - 1] != '|') " " else "";
-            const part = (if (a == s)
-                std.fmt.bufPrint(buf[end..], "{s}{s}:{d}", .{ sep, @tagName(c), a })
-            else if (a == 0)
-                std.fmt.bufPrint(buf[end..], "{s}{s}+u:{d}", .{ sep, @tagName(c), s })
-            else
-                std.fmt.bufPrint(buf[end..], "{s}{s}:{d}+u:{d}", .{ sep, @tagName(c), a, s })) catch break;
+            const part = std.fmt.bufPrint(buf[end..], "{s}{s}:", .{ sep, crest.className(predicate) }) catch break;
             end += part.len;
-            if (p != s) end += (std.fmt.bufPrint(buf[end..], "+cp:{d}", .{p}) catch break).len;
+            for (0..rank) |r| {
+                const delimiter: []const u8 = if (r == 0) "" else "/";
+                end += (std.fmt.bufPrint(buf[end..], "{s}{d}", .{
+                    delimiter,
+                    requirement[crest.spectrumLane(predicate, r)],
+                }) catch break).len;
+            }
         }
     }
     return if (end == 0) "—" else buf[0..end];
@@ -120,8 +115,16 @@ pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
     const io = init.io;
     const config = evidence.parseArgs(init);
+    if (config.help) {
+        evidence.printUsage();
+        return;
+    }
+    if (config.self_test) {
+        try selfTest(gpa, config);
+        return;
+    }
     var violations: usize = 0;
-    const fixed = try evidence.fixedRegression(gpa, &violations);
+    const fixed = try evidence.fixedRegression(gpa, config, &violations);
     if (violations != 0) {
         std.debug.print("FAILED: fixed production matcher regression did not hold; refusing corpus timing.\n", .{});
         std.process.exit(1);
@@ -151,26 +154,38 @@ pub fn main(init: std.process.Init) !void {
     const n = corpus.docs.len;
     const mib = @as(f64, @floatFromInt(corpus.bytes)) / (1 << 20);
 
-    // Build the crest table via the PRODUCTION builder (the same parallel pass
-    // `gist index` persists as crest.bin) + the count index (ablation).
+    // Build, encode, seal, decode, and validate the production v6 sidecar.
     const build_sp = Span.open(io);
-    const crests = try gist.index.crest.build(gpa, corpus.docs);
-    defer gpa.free(crests);
+    var production = try ProductionIndex.init(gpa, corpus.docs);
+    defer production.deinit(gpa);
     const build = build_sp.read(io);
+    const spectra = production.spectra;
+    const view = production.view;
+    const calibration = crest_runtime.calibratedCosts();
+    const calibrated = calibration != null;
 
     const counts = try gpa.alloc([K]u32, n);
     defer gpa.free(counts);
     for (corpus.docs, 0..) |d, i| counts[i] = classCounts(d);
 
-    const idx_bytes = n * K * @sizeOf(u16);
-    std.debug.print("Crest — production proof · abi v{d} · {d} measured runs after {d} warmup\n", .{ gist.abi(), config.runs, config.warmup });
+    const idx_bytes = production.encoded.len;
+    std.debug.print("Crest — production proof · query q={d}, B={d} · abi v{d} · {d} measured runs after {d} warmup\n", .{
+        config.rank,
+        config.budget,
+        gist.abi(),
+        config.runs,
+        config.warmup,
+    });
     std.debug.print("machine: {s} · zig {s}\n", .{ @tagName(builtin.target.cpu.arch), builtin.zig_version_string });
     std.debug.print("corpus:  {d} files · {d:.1} MiB\n", .{ n, mib });
-    std.debug.print("index:   crest built in {d:.2} ms · {d} classes · ~{d:.1} KiB ({d:.4}% of corpus)\n\n", .{
-        build.ms(),                                  K,
-        @as(f64, @floatFromInt(idx_bytes)) / 1024.0, @as(f64, @floatFromInt(idx_bytes)) / @as(f64, @floatFromInt(@max(corpus.bytes, 1))) * 100.0,
+    std.debug.print("index:   production v6 sidecar built+sealed+decoded in {d:.2} ms · {d} predicates × sidecar q{d} · {d:.1} KiB · {d} overflow entries ({d:.4}% of corpus)\n", .{
+        build.ms(),                                  K,                           production.view.q,
+        @as(f64, @floatFromInt(idx_bytes)) / 1024.0, production.overflow_entries, @as(f64, @floatFromInt(idx_bytes)) / @as(f64, @floatFromInt(@max(corpus.bytes, 1))) * 100.0,
     });
-    try scanProof(io, corpus.docs, corpus.bytes, config.runs, &violations);
+    std.debug.print("planner: calibration {s}; uncalibrated production policy is always-sieve\n\n", .{
+        if (calibrated) "present (cost-gated)" else "absent",
+    });
+    try scanProof(io, corpus.docs, spectra, corpus.bytes, config.runs, &violations);
     if (violations != 0) {
         std.debug.print("FAILED: the block scan disagrees with the per-byte definition the proof is stated over.\n", .{});
         std.process.exit(1);
@@ -193,7 +208,7 @@ pub fn main(init: std.process.Init) !void {
         // Matcher and ĝ share the SAME parse, options, and fold — one AST, so
         // the Alphabet Contract holds by construction rather than by pairing.
         const opts: Regex.Options = .{ .caseless = q.caseless, .unicode = q.unicode };
-        const swell = Regex.forcedSwell(gpa, q.pattern, opts);
+        const swell = Regex.forcedRankedSwell(gpa, q.pattern, opts, config.budget, config.rank);
 
         var re = try Regex.compileOpts(gpa, q.pattern, opts);
         defer re.deinit();
@@ -204,7 +219,16 @@ pub fn main(init: std.process.Init) !void {
         // authority, and every matched document is checked directly against
         // the production Crest decision. Aggregate equality alone is not the
         // proof: matched_and_pruned must itself remain zero.
-        const diff = evidence.differential(&re, &sim, corpus.docs, crests, swell);
+        const applied = try evidence.differential(
+            gpa,
+            &re,
+            &sim,
+            corpus.docs,
+            view,
+            swell,
+            calibrated,
+        );
+        const diff = applied.counts;
         if (diff.matched_and_pruned != 0 or diff.sieve_hits != diff.matched) {
             violations += 1;
             std.debug.print(
@@ -216,8 +240,21 @@ pub fn main(init: std.process.Init) !void {
         // (2) Warm the exact paths that will be timed, validating every pass.
         for (0..config.warmup) |_| {
             const full = evidence.timeFull(io, &re, &sim, corpus.docs);
-            const sieve = evidence.timeSieve(io, &re, &sim, corpus.docs, crests, swell);
-            if (full.hits != diff.matched or sieve.hits != diff.matched or sieve.survivors != diff.survivors) {
+            const sieve = try evidence.timeSieve(
+                gpa,
+                io,
+                &re,
+                &sim,
+                corpus.docs,
+                view,
+                swell,
+                calibrated,
+            );
+            if (full.hits != diff.matched or
+                sieve.hits != diff.matched or
+                sieve.survivors != diff.survivors or
+                !plannerEqual(sieve.planner.?, applied.planner))
+            {
                 violations += 1;
                 std.debug.print("  !! WARMUP DIFFERENTIAL DRIFT on {s}: full={d} sieve={d} survivors={d}\n", .{
                     q.pattern, full.hits, sieve.hits, sieve.survivors,
@@ -233,10 +270,23 @@ pub fn main(init: std.process.Init) !void {
         errdefer gpa.free(sieve_samples);
         for (0..config.runs) |run| {
             const full = evidence.timeFull(io, &re, &sim, corpus.docs);
-            const sieve = evidence.timeSieve(io, &re, &sim, corpus.docs, crests, swell);
+            const sieve = try evidence.timeSieve(
+                gpa,
+                io,
+                &re,
+                &sim,
+                corpus.docs,
+                view,
+                swell,
+                calibrated,
+            );
             full_samples[run] = full.ns;
             sieve_samples[run] = sieve.ns;
-            if (full.hits != diff.matched or sieve.hits != diff.matched or sieve.survivors != diff.survivors) {
+            if (full.hits != diff.matched or
+                sieve.hits != diff.matched or
+                sieve.survivors != diff.survivors or
+                !plannerEqual(sieve.planner.?, applied.planner))
+            {
                 violations += 1;
                 std.debug.print("  !! TIMED DIFFERENTIAL DRIFT on {s} run {d}: full={d} sieve={d} survivors={d}\n", .{
                     q.pattern, run, full.hits, sieve.hits, sieve.survivors,
@@ -246,18 +296,19 @@ pub fn main(init: std.process.Init) !void {
         const full_ns = try evidence.upperMedian(gpa, full_samples);
         const sieve_ns = try evidence.upperMedian(gpa, sieve_samples);
 
-        // (4) two ablations at the same ĝ, both sound, both dominated:
+        // (4) two untimed kernel micro-oracles at the same ĝ, neither a release
+        //     speed/index claim:
         //     CNT — the count cousin (total class population ≥ longest run);
-        //     FOLD — the retired single-vector sieve (componentwise min over
-        //     the alternatives), which is what this change replaced.
+        //     FOLD — the retired collapsed sieve (componentwise min over the
+        //     alternatives at every selected rank).
         var cnt_survivors: usize = 0;
         for (counts) |c| {
             if (!countPruned(c, swell)) cnt_survivors += 1;
         }
         const folded = foldSwell(swell);
         var fold_survivors: usize = 0;
-        for (crests) |rho| {
-            if (!crest.pruned(rho, folded)) fold_survivors += 1;
+        for (spectra) |spectrum| {
+            if (!folded.prunesSpectrum(spectrum)) fold_survivors += 1;
         }
         // Dominance, checked rather than argued: min ĝᵢ ≤ ĝⱼ for every branch,
         // so anything the fold pruned the disjunction prunes too. A row where
@@ -270,7 +321,7 @@ pub fn main(init: std.process.Init) !void {
             });
         }
 
-        const branches = try gpa.dupe(crest.Vector, swell.crests[0..swell.len]);
+        const branches = try gpa.dupe(crest.Requirement, swell.requirements[0..swell.len]);
         errdefer gpa.free(branches);
         try rows.append(gpa, .{
             .label = q.label,
@@ -286,11 +337,12 @@ pub fn main(init: std.process.Init) !void {
             .full_ns = full_ns,
             .sieve_ns = sieve_ns,
             .differential = diff,
+            .planner = applied.planner,
             .full_samples_ns = full_samples,
             .sieve_samples_ns = sieve_samples,
         });
 
-        var fbuf: [256]u8 = undefined;
+        var fbuf: [1024]u8 = undefined;
         const run_pct = (1.0 - @as(f64, @floatFromInt(diff.survivors)) / @as(f64, @floatFromInt(@max(n, 1)))) * 100.0;
         const fold_pct = (1.0 - @as(f64, @floatFromInt(fold_survivors)) / @as(f64, @floatFromInt(@max(n, 1)))) * 100.0;
         const cnt_pct = (1.0 - @as(f64, @floatFromInt(cnt_survivors)) / @as(f64, @floatFromInt(@max(n, 1)))) * 100.0;
@@ -298,37 +350,67 @@ pub fn main(init: std.process.Init) !void {
         const sieve_ms = @as(f64, @floatFromInt(sieve_ns)) / 1e6;
         const speed = if (sieve_ns > 0) @as(f64, @floatFromInt(full_ns)) / @as(f64, @floatFromInt(sieve_ns)) else 0;
         std.debug.print("{s:<20} {s:>30} {d:>9.1}% {d:>10.1}% {d:>9.1}% {d:>9.2} {d:>9.2} {d:>8.2}x\n", .{
-            q.label, forcedStr(&fbuf, branches), run_pct, fold_pct, cnt_pct, full_ms, sieve_ms, speed,
+            q.label, forcedStr(&fbuf, branches, config.rank), run_pct, fold_pct, cnt_pct, full_ms, sieve_ms, speed,
         });
     }
 
-    std.debug.print("\nRUN = Crest sieve (disjunction of per-alternative forced runs) · FOLD = retired single-vector sieve (componentwise min over the alternatives) · CNT = weaker cousin (total class population, same ĝ)\n", .{});
+    std.debug.print("\nRUN = production v6 View + crest_runtime.apply · FOLD/CNT = untimed kernel micro-oracles only\n", .{});
 
     // (5) randomized adversarial soundness sweep — both engine modes × both
     //     case sensitivities, each paired with its own ĝ.
-    const ascii_checks = try randomSoundness(gpa, &corpus, false, false, &violations);
-    const uni_checks = try randomSoundness(gpa, &corpus, true, false, &violations);
-    const ci_ascii_checks = try randomSoundness(gpa, &corpus, false, true, &violations);
-    const ci_uni_checks = try randomSoundness(gpa, &corpus, true, true, &violations);
+    const ascii_checks = try randomSoundness(gpa, &corpus, view, config, calibrated, false, false, &violations);
+    const uni_checks = try randomSoundness(gpa, &corpus, view, config, calibrated, true, false, &violations);
+    const ci_ascii_checks = try randomSoundness(gpa, &corpus, view, config, calibrated, false, true, &violations);
+    const ci_uni_checks = try randomSoundness(gpa, &corpus, view, config, calibrated, true, true, &violations);
     std.debug.print(
         "randomized soundness: {d} ASCII + {d} Unicode + {d} (?i)ASCII + {d} (?i)Unicode (pattern,file) pairs · matched⇒¬pruned held on all\n",
         .{ ascii_checks.checks, uni_checks.checks, ci_ascii_checks.checks, ci_uni_checks.checks },
     );
 
     const manifest_sha = try evidence.writeCorpusManifest(gpa, io, &corpus);
-    try writeCsv(gpa, io, n, mib, rows.items);
-    try evidence.writeRunJson(gpa, io, .{
-        .config = .{ .runs = config.runs, .warmup = config.warmup },
+    var profile_buf: [16]u8 = undefined;
+    const profile = try evidence.profileName(&profile_buf, config);
+    var csv_buf: [32]u8 = undefined;
+    const csv_name = try evidence.csvName(&csv_buf, config);
+    var run_json_buf: [40]u8 = undefined;
+    const run_json_name = try evidence.runJsonName(&run_json_buf, config);
+    try writeCsv(gpa, io, csv_name, config, n, mib, rows.items);
+    try evidence.writeRunJson(gpa, io, run_json_name, .{
+        .config = .{
+            .runs = config.runs,
+            .warmup = config.warmup,
+            .rank = config.rank,
+            .budget = config.budget,
+            .profile = profile,
+        },
         .engine = .{
             .abi_version = gist.abi(),
             .architecture = @tagName(builtin.target.cpu.arch),
             .zig_version = builtin.zig_version_string,
+        },
+        .production = .{
+            .sidecar_format_version = crest.SidecarSchema.format_version,
+            .encoded_bytes = production.encoded.len,
+            .overflow_entries = production.overflow_entries,
+            .sidecar_q = production.view.q,
+            .query_rank = config.rank,
+            .validated = true,
+            .planner_calibration = if (calibrated) "environment" else "absent",
+            .planner_coefficients = if (calibration) |coefficients| .{
+                .fixed = coefficients.fixed,
+                .column_document = coefficients.column_document,
+                .verify_document = coefficients.verify_document,
+            } else null,
         },
         .corpus = .{
             .roots = roots,
             .file_count = n,
             .total_bytes = corpus.bytes,
             .manifest_sha256 = &manifest_sha,
+        },
+        .artifacts = .{
+            .aggregate_csv = csv_name,
+            .run_json = run_json_name,
         },
         .seeds = .{ .ascii = ascii_seed, .unicode = unicode_seed, .caseless_mask = caseless_seed_mask },
         .fixed_regression = &fixed,
@@ -342,7 +424,7 @@ pub fn main(init: std.process.Init) !void {
         .violations = violations,
         .passed = violations == 0,
     });
-    std.debug.print("wrote {s}/crest.csv, crest-run.json, corpus-manifest.tsv\n", .{out_dir});
+    std.debug.print("wrote {s}/{s}, {s}, corpus-manifest.tsv\n", .{ out_dir, csv_name, run_json_name });
 
     if (violations > 0) {
         std.debug.print("\nFAILED: {d} soundness violation(s) — the sieve pruned a real match. Do NOT weaken; fix the calculus.\n", .{violations});
@@ -351,24 +433,123 @@ pub fn main(init: std.process.Init) !void {
     std.debug.print("\nPROVEN: 0 false negatives across the corpus and random sweeps; Crest prunes the configured literal-free slate where Gist's required-literal trigram extractor yields no requirement, and the count cousin is weaker.\n", .{});
 }
 
-/// The retired document half: one table load and k data-dependent lane updates
-/// PER BYTE. Kept as the reference for both things a rewrite has to prove —
-/// that the block scan answers identically, and that it is faster.
-fn referenceCrest(doc: []const u8) crest.Vector {
-    var best: crest.Vector = @splat(0);
-    var cur: [K]u32 = @splat(0);
-    for (doc) |b| {
-        const m = crest.membership[b];
-        const hold = crest.isContinuation(b); // codepoint lanes: a continuation byte is transparent, not a reset
-        inline for (0..K) |i| {
-            const is_cp = i >= 2 * crest.base_k;
-            if ((m & (@as(crest.Mask, 1) << i)) != 0) {
-                cur[i] +|= 1;
-                best[i] = @max(best[i], @as(u16, @intCast(@min(cur[i], std.math.maxInt(u16)))));
-            } else if (!(is_cp and hold)) cur[i] = 0;
+const ProductionIndex = struct {
+    spectra: []crest.Spectrum,
+    encoded: []u8,
+    view: crest_sidecar.View,
+    overflow_entries: usize,
+
+    fn init(gpa: std.mem.Allocator, docs: []const []const u8) !ProductionIndex {
+        const sidecar_q: u8 = crest.max_rank;
+        const spectra = try crest_sidecar.buildSpectra(gpa, docs);
+        errdefer gpa.free(spectra);
+        var identity = signet.Scribe.init(.rollup);
+        for (docs) |doc| identity.push(signet.of(.content, doc));
+        const binding = crest_sidecar.Binding.forBuild(identity.finish());
+        const encoded = try gpa.alloc(u8, try crest_sidecar.encodedSize(spectra, sidecar_q));
+        errdefer gpa.free(encoded);
+        if (try crest_sidecar.writeInto(
+            spectra,
+            .{ .q = sidecar_q, .binding = binding },
+            encoded,
+        ) != encoded.len)
+            return error.SidecarLengthMismatch;
+        try crest_sidecar.verify(encoded);
+        const view = crest_sidecar.decode(encoded, .{
+            .document_count = @intCast(docs.len),
+            .q = sidecar_q,
+            .binding = binding,
+        }) orelse return error.SidecarValidationFailed;
+        for (spectra, 0..) |spectrum, document| for (0..sidecar_q) |rank| for (0..K) |predicate| {
+            if (view.value(predicate, rank, document) != spectrum[crest.spectrumLane(predicate, rank)])
+                return error.SidecarRoundTripMismatch;
+        };
+        return .{
+            .spectra = spectra,
+            .encoded = encoded,
+            .view = view,
+            .overflow_entries = view.overflow.len / crest_sidecar.overflow_entry_len,
+        };
+    }
+
+    fn deinit(self: *ProductionIndex, gpa: std.mem.Allocator) void {
+        gpa.free(self.encoded);
+        gpa.free(self.spectra);
+        self.* = undefined;
+    }
+};
+
+fn exactReferenceMember(property: crest.ExactProperty, cp: u21) bool {
+    const ranges = gist.regex.unicode.property(switch (property) {
+        .nd => "Nd",
+        .letter => "L",
+        .white_space => "White_Space",
+    }) orelse return false;
+    return gist.regex.unicode.inRanges(ranges, cp);
+}
+
+fn insertReferenceRun(
+    spectrum: *crest.Spectrum,
+    predicate: usize,
+    value: u16,
+) void {
+    if (value == 0) return;
+    var candidate = value;
+    for (0..crest.max_rank) |rank| {
+        const lane = crest.spectrumLane(predicate, rank);
+        if (candidate > spectrum[lane]) {
+            const displaced = spectrum[lane];
+            spectrum[lane] = candidate;
+            candidate = displaced;
         }
     }
-    return best;
+}
+
+/// Independent scalar/property oracle. It shares only the public byte masks,
+/// UTF-8 decoder, and pinned UCD tables—not the production spectrum scanner.
+fn referenceSpectrum(doc: []const u8) crest.Spectrum {
+    var spectrum = crest.zero_spectrum;
+    var approximate: [crest.approximate_k]u16 = @splat(0);
+    for (doc) |b| {
+        const m = crest.membership[b];
+        for (0..crest.approximate_k) |predicate| {
+            if (predicate >= 2 * crest.base_k and crest.isContinuation(b)) continue;
+            if ((m & (@as(crest.Mask, 1) << @intCast(predicate))) != 0) {
+                approximate[predicate] +|= 1;
+            } else {
+                insertReferenceRun(&spectrum, predicate, approximate[predicate]);
+                approximate[predicate] = 0;
+            }
+        }
+    }
+    for (0..crest.approximate_k) |predicate|
+        insertReferenceRun(&spectrum, predicate, approximate[predicate]);
+
+    var exact: [crest.exact_k]u16 = @splat(0);
+    var offset: usize = 0;
+    while (offset < doc.len) {
+        const decoded = gist.regex.decode.decode(doc[offset..]);
+        offset += if (decoded) |scalar| scalar.len else 1;
+        inline for (std.enums.values(crest.ExactProperty), 0..) |property, index| {
+            if (decoded != null and exactReferenceMember(property, decoded.?.cp)) {
+                exact[index] +|= 1;
+            } else {
+                insertReferenceRun(&spectrum, crest.exactLane(property), exact[index]);
+                exact[index] = 0;
+            }
+        }
+    }
+    inline for (std.enums.values(crest.ExactProperty), 0..) |property, index|
+        insertReferenceRun(&spectrum, crest.exactLane(property), exact[index]);
+    return spectrum;
+}
+
+fn referenceCrest(doc: []const u8) crest.Vector {
+    const spectrum = referenceSpectrum(doc);
+    var vector = crest.zero_vector;
+    for (0..K) |predicate|
+        vector[predicate] = spectrum[crest.spectrumLane(predicate, 0)];
+    return vector;
 }
 
 /// The document half, measured against the algorithm it replaced on the very
@@ -380,13 +561,19 @@ fn referenceCrest(doc: []const u8) crest.Vector {
 /// definition — so this is the link between the proof and the shipped code.
 /// Only then are the two timed, same corpus, same order, checksummed so
 /// neither side can be optimized away.
-fn scanProof(io: std.Io, docs: []const []const u8, bytes: usize, runs: usize, violations: *usize) !void {
-    for (docs) |d| {
-        const fast = crest.crest(d);
-        const slow = referenceCrest(d);
+fn scanProof(
+    io: std.Io,
+    docs: []const []const u8,
+    spectra: []const crest.Spectrum,
+    bytes: usize,
+    runs: usize,
+    violations: *usize,
+) !void {
+    for (docs, spectra) |d, fast| {
+        const slow = referenceSpectrum(d);
         if (!std.mem.eql(u16, &fast, &slow)) {
             violations.* += 1;
-            std.debug.print("  !! SCAN PARITY VIOLATION on a {d}-byte document: block scan {any} ≠ per-byte {any}\n", .{ d.len, fast, slow });
+            std.debug.print("  !! SCAN PARITY VIOLATION on a {d}-byte document: production spectrum ≠ independent scalar/UCD oracle\n", .{d.len});
             return;
         }
     }
@@ -412,7 +599,7 @@ fn scanProof(io: std.Io, docs: []const []const u8, bytes: usize, runs: usize, vi
             @as(f64, @floatFromInt(ns)) / 1e6,
         });
     }
-    std.debug.print(" · {d:.2}x · byte-identical on all {d} documents [checksum {x}]\n\n", .{
+    std.debug.print(" · {d:.2}x · untimed release claim: kernel scan micro-oracle only; q4-identical on all {d} documents [checksum {x}]\n\n", .{
         @as(f64, @floatFromInt(fastest[1])) / @as(f64, @floatFromInt(fastest[0])),
         docs.len,
         sink,
@@ -424,21 +611,143 @@ fn classCounts(doc: []const u8) [K]u32 {
     var cnt: [K]u32 = @splat(0);
     for (doc) |b| {
         const bits = crest.membership[b];
-        inline for (0..K) |i| {
-            if ((bits & (@as(crest.Mask, 1) << i)) != 0) cnt[i] += 1;
+        inline for (0..crest.approximate_k) |predicate| {
+            if ((bits & (@as(crest.Mask, 1) << predicate)) != 0)
+                cnt[predicate] +|= 1;
         }
+    }
+    var offset: usize = 0;
+    while (offset < doc.len) {
+        const decoded = gist.regex.decode.decode(doc[offset..]);
+        offset += if (decoded) |scalar| scalar.len else 1;
+        if (decoded) |scalar| inline for (std.enums.values(crest.ExactProperty)) |property| {
+            if (exactReferenceMember(property, scalar.cp))
+                cnt[crest.exactLane(property)] +|= 1;
+        };
     }
     return cnt;
 }
 
-/// The retired single-vector ĝ: componentwise min over the alternatives. Sound,
-/// and exactly as strong as the disjunction when there is only one branch —
+fn plannerEqual(a: evidence.PlannerState, b: evidence.PlannerState) bool {
+    return a.calibrated == b.calibrated and
+        a.decision_available == b.decision_available and
+        a.ran == b.ran and
+        std.mem.eql(u8, a.reason, b.reason) and
+        a.touched_columns == b.touched_columns and
+        a.candidate_docs == b.candidate_docs and
+        a.scanned_docs == b.scanned_docs and
+        a.expected_candidates == b.expected_candidates and
+        a.expected_rejected == b.expected_rejected and
+        a.direct_cost == b.direct_cost and
+        a.crest_cost == b.crest_cost and
+        a.estimated_savings == b.estimated_savings and
+        a.required_savings == b.required_savings;
+}
+
+fn selfTest(gpa: std.mem.Allocator, config: evidence.Config) !void {
+    const docs = [_][]const u8{
+        "123ABC \t",
+        "\u{0660}\u{0661}\u{0662}",
+        "A\u{0627}b",
+        " \u{2003}\t",
+        "12\xff34A\xc3(\u{0627}",
+        "1" ** 300,
+    };
+    const expected = [_]struct {
+        nd_run: u16,
+        nd_count: u32,
+        letter_run: u16,
+        letter_count: u32,
+        whitespace_run: u16,
+        whitespace_count: u32,
+    }{
+        .{ .nd_run = 3, .nd_count = 3, .letter_run = 3, .letter_count = 3, .whitespace_run = 2, .whitespace_count = 2 },
+        .{ .nd_run = 3, .nd_count = 3, .letter_run = 0, .letter_count = 0, .whitespace_run = 0, .whitespace_count = 0 },
+        .{ .nd_run = 0, .nd_count = 0, .letter_run = 3, .letter_count = 3, .whitespace_run = 0, .whitespace_count = 0 },
+        .{ .nd_run = 0, .nd_count = 0, .letter_run = 0, .letter_count = 0, .whitespace_run = 3, .whitespace_count = 3 },
+        .{ .nd_run = 2, .nd_count = 4, .letter_run = 1, .letter_count = 2, .whitespace_run = 0, .whitespace_count = 0 },
+        .{ .nd_run = 300, .nd_count = 300, .letter_run = 0, .letter_count = 0, .whitespace_run = 0, .whitespace_count = 0 },
+    };
+    var production = try ProductionIndex.init(gpa, &docs);
+    defer production.deinit(gpa);
+    if (production.view.q != crest.max_rank or config.rank > production.view.q)
+        return error.SidecarQueryRankMismatch;
+    if (production.overflow_entries == 0) return error.SelfTestMissedOverflow;
+    for (docs, expected, production.spectra) |doc, want, got| {
+        const reference = referenceSpectrum(doc);
+        if (!std.mem.eql(u16, &reference, &got)) return error.ReferenceSpectrumMismatch;
+        const counts = classCounts(doc);
+        inline for (.{
+            .{ crest.ExactProperty.nd, want.nd_run, want.nd_count },
+            .{ crest.ExactProperty.letter, want.letter_run, want.letter_count },
+            .{ crest.ExactProperty.white_space, want.whitespace_run, want.whitespace_count },
+        }) |case| {
+            const lane = crest.exactLane(case[0]);
+            if (reference[crest.spectrumLane(lane, 0)] != case[1] or counts[lane] != case[2])
+                return error.ExactUcdReferenceMismatch;
+        }
+    }
+    const invalid = referenceSpectrum(docs[4]);
+    const nd = crest.exactLane(.nd);
+    if (invalid[crest.spectrumLane(nd, 0)] != 2 or
+        invalid[crest.spectrumLane(nd, 1)] != 2 or
+        invalid[crest.spectrumLane(nd, 2)] != 0)
+        return error.InvalidUtf8DidNotResetExactRun;
+
+    const opts: Regex.Options = .{ .unicode = true };
+    const swell = Regex.forcedRankedSwell(gpa, "\\d{3}", opts, config.budget, config.rank);
+    var re = try Regex.compileOpts(gpa, "\\d{3}", opts);
+    defer re.deinit();
+    var sim = try Regex.Sim.init(gpa, &re);
+    defer sim.deinit();
+    const calibrated = crest_runtime.calibratedCosts() != null;
+    const applied = try evidence.differential(
+        gpa,
+        &re,
+        &sim,
+        &docs,
+        production.view,
+        swell,
+        calibrated,
+    );
+    if (applied.counts.matched != 3 or
+        applied.counts.matched_and_pruned != 0 or
+        applied.counts.sieve_hits != applied.counts.matched)
+        return error.ProductionRuntimeSoundnessMismatch;
+    if (calibrated) {
+        var sparse = try std.DynamicBitSet.initEmpty(gpa, docs.len);
+        defer sparse.deinit();
+        sparse.set(0);
+        const sparse_decision = try crest_runtime.apply(gpa, production.view, &sparse, swell);
+        const sparse_state = try evidence.plannerState(swell, true, sparse_decision);
+        if (sparse_state.candidate_docs != 1 or sparse_state.scanned_docs != 1)
+            return error.SparsePlannerScanMismatch;
+
+        var dense = try std.DynamicBitSet.initEmpty(gpa, docs.len);
+        defer dense.deinit();
+        dense.setRangeValue(.{ .start = 0, .end = 2 }, true);
+        const dense_decision = try crest_runtime.apply(gpa, production.view, &dense, swell);
+        const dense_state = try evidence.plannerState(swell, true, dense_decision);
+        if (dense_state.candidate_docs != 2 or dense_state.scanned_docs != docs.len)
+            return error.DensePlannerScanMismatch;
+    }
+    std.debug.print(
+        "crest self-test: query q{d} on sidecar q{d}; scalar/UCD oracle, malformed UTF-8 reset, v6 encode/decode, overflow, and production runtime{s} passed\n",
+        .{ config.rank, production.view.q, if (calibrated) " + sparse/dense planner scan" else "" },
+    );
+}
+
+/// The retired collapsed ĝ: componentwise min over alternatives at every
+/// selected rank. Sound, and exactly as strong when there is only one branch —
 /// which is why the regression it caused stayed invisible until multi-`-e`.
-fn foldSwell(swell: crest.Swell) crest.Vector {
-    if (swell.len == 0) return crest.zero_vector;
-    var folded = swell.crests[0];
-    for (swell.crests[1..swell.len]) |gv| {
-        inline for (0..K) |i| folded[i] = @min(folded[i], gv[i]);
+fn foldSwell(swell: crest.RankedSwell) crest.RankedSwell {
+    var folded: crest.RankedSwell = .{ .rank = swell.rank, .budget = swell.budget };
+    if (swell.len == 0) return folded;
+    folded.len = 1;
+    folded.requirements[0] = swell.requirements[0];
+    for (swell.requirements[1..swell.len]) |requirement| {
+        for (0..@as(usize, swell.rank) * K) |i|
+            folded.requirements[0][i] = @min(folded.requirements[0][i], requirement[i]);
     }
     return folded;
 }
@@ -446,12 +755,15 @@ fn foldSwell(swell: crest.Swell) crest.Vector {
 /// The cousin's sieve decision at the same ĝ (population < forced run ⇒ prune),
 /// read over the same disjunction so the ablation compares functionals rather
 /// than query languages.
-fn countPruned(cnt: [K]u32, swell: crest.Swell) bool {
+fn countPruned(cnt: [K]u32, swell: crest.RankedSwell) bool {
     if (swell.len == 0) return false;
-    for (swell.crests[0..swell.len]) |gv| {
+    for (swell.requirements[0..swell.len]) |requirement| {
         var short = false;
-        inline for (0..K) |i| {
-            if (cnt[i] < gv[i]) short = true;
+        for (0..swell.rank) |rank| {
+            for (0..K) |predicate| {
+                if (cnt[predicate] < requirement[crest.spectrumLane(predicate, rank)])
+                    short = true;
+            }
         }
         if (!short) return false;
     }
@@ -464,7 +776,16 @@ fn countPruned(cnt: [K]u32, swell: crest.Swell) bool {
 /// files — ĝ computed with the SAME mode flag the engine got, exactly as the
 /// production `gate.winnow` pairs them. Returns exact differential counts and
 /// the seed, so the sweep is independently replayable from crest-run.json.
-fn randomSoundness(gpa: std.mem.Allocator, corpus: *const corpus_mod.Corpus, unicode: bool, caseless: bool, violations: *usize) !RandomResult {
+fn randomSoundness(
+    gpa: std.mem.Allocator,
+    corpus: *const corpus_mod.Corpus,
+    view: crest_sidecar.View,
+    config: evidence.Config,
+    calibrated: bool,
+    unicode: bool,
+    caseless: bool,
+    violations: *usize,
+) !RandomResult {
     const seed = (if (unicode) unicode_seed else ascii_seed) ^ (if (caseless) caseless_seed_mask else 0);
     var prng = std.Random.DefaultPrng.init(seed);
     const rnd = prng.random();
@@ -504,16 +825,24 @@ fn randomSoundness(gpa: std.mem.Allocator, corpus: *const corpus_mod.Corpus, uni
         defer re.deinit();
         var sim = Regex.Sim.init(gpa, &re) catch continue;
         defer sim.deinit();
-        const swell = Regex.forcedSwell(gpa, pat, opts);
+        const swell = Regex.forcedRankedSwell(gpa, pat, opts, config.budget, config.rank);
         result.patterns += 1;
 
-        // sample up to 60 files per pattern
-        var s: usize = 0;
-        while (s < 60) : (s += 1) {
-            const d = corpus.docs[rnd.uintLessThan(usize, corpus.docs.len)];
+        // Apply the production runtime to exactly the sampled candidates.
+        var candidates = try std.DynamicBitSet.initEmpty(gpa, corpus.docs.len);
+        defer candidates.deinit();
+        var sampled: [60]usize = undefined;
+        for (&sampled) |*index| {
+            index.* = rnd.uintLessThan(usize, corpus.docs.len);
+            candidates.set(index.*);
+        }
+        const decision = try crest_runtime.apply(gpa, view, &candidates, swell);
+        _ = try evidence.plannerState(swell, calibrated, decision);
+        for (sampled) |index| {
+            const d = corpus.docs[index];
             result.checks += 1;
             const matched = re.docMatch(&sim, d);
-            const pruned = swell.prunes(crest.crest(d));
+            const pruned = !candidates.isSet(index);
             if (matched) result.matches += 1;
             if (pruned) result.pruned += 1;
             if (matched and pruned) {
@@ -526,13 +855,21 @@ fn randomSoundness(gpa: std.mem.Allocator, corpus: *const corpus_mod.Corpus, uni
     return result;
 }
 
-fn writeCsv(gpa: std.mem.Allocator, io: std.Io, n: usize, mib: f64, rows: []const Row) !void {
+fn writeCsv(gpa: std.mem.Allocator, io: std.Io, filename: []const u8, config: evidence.Config, n: usize, mib: f64, rows: []const Row) !void {
     var csv: std.ArrayList(u8) = .empty;
     defer csv.deinit(gpa);
+    var profile_buf: [16]u8 = undefined;
+    const profile = try evidence.profileName(&profile_buf, config);
+    try csv.appendSlice(gpa, "# profile\trank\tbudget\n");
+    var line: [512]u8 = undefined;
+    try csv.appendSlice(gpa, try std.fmt.bufPrint(&line, "# {s}\t{d}\t{d}\n", .{
+        profile,
+        config.rank,
+        config.budget,
+    }));
     try csv.appendSlice(gpa, "# corpus_files\tcorpus_mib\n");
-    var line: [256]u8 = undefined;
     try csv.appendSlice(gpa, try std.fmt.bufPrint(&line, "# {d}\t{d:.1}\n", .{ n, mib }));
-    try csv.appendSlice(gpa, "query\tpattern\tcaseless\tunicode\talternatives\tfiles\trun_survivors\tfold_survivors\tcnt_survivors\trun_prune_pct\tfold_prune_pct\tcnt_prune_pct\thits\tfull_ms\tsieve_ms\tspeedup\n");
+    try csv.appendSlice(gpa, "rank\tbudget\tquery\tpattern\tcaseless\tunicode\talternatives\tfiles\trun_survivors\tfold_survivors\tcnt_survivors\trun_prune_pct\tfold_prune_pct\tcnt_prune_pct\thits\tfull_ms\tsieve_ms\tspeedup\n");
     for (rows) |r| {
         const pct = struct {
             fn of(survivors: usize, files: usize) f64 {
@@ -540,13 +877,13 @@ fn writeCsv(gpa: std.mem.Allocator, io: std.Io, n: usize, mib: f64, rows: []cons
             }
         }.of;
         const speed = if (r.sieve_ns > 0) @as(f64, @floatFromInt(r.full_ns)) / @as(f64, @floatFromInt(r.sieve_ns)) else 0;
-        try csv.appendSlice(gpa, try std.fmt.bufPrint(&line, "{s}\t{s}\t{}\t{}\t{d}\t{d}\t{d}\t{d}\t{d}\t{d:.2}\t{d:.2}\t{d:.2}\t{d}\t{d:.3}\t{d:.3}\t{d:.3}\n", .{
-            r.label,                 r.pattern,                r.caseless,              r.unicode, r.ghat.len,                               r.files,                                   r.run_survivors, r.fold_survivors, r.cnt_survivors,
+        try csv.appendSlice(gpa, try std.fmt.bufPrint(&line, "{d}\t{d}\t{s}\t{s}\t{}\t{}\t{d}\t{d}\t{d}\t{d}\t{d}\t{d:.2}\t{d:.2}\t{d:.2}\t{d}\t{d:.3}\t{d:.3}\t{d:.3}\n", .{
+            config.rank,             config.budget,            r.label,                 r.pattern, r.caseless,                               r.unicode,                                 r.ghat.len, r.files, r.run_survivors, r.fold_survivors, r.cnt_survivors,
             pct(r.run_survivors, n), pct(r.fold_survivors, n), pct(r.cnt_survivors, n), r.hits,    @as(f64, @floatFromInt(r.full_ns)) / 1e6, @as(f64, @floatFromInt(r.sieve_ns)) / 1e6, speed,
         }));
     }
     try std.Io.Dir.cwd().createDirPath(io, out_dir);
     var d = try std.Io.Dir.cwd().openDir(io, out_dir, .{});
     defer d.close(io);
-    try d.writeFile(io, .{ .sub_path = "crest.csv", .data = csv.items });
+    try d.writeFile(io, .{ .sub_path = filename, .data = csv.items });
 }

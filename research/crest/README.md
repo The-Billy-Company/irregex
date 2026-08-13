@@ -2,7 +2,12 @@
 
 Crest is a sound necessary condition for regex candidate pruning that complements Gist's required-literal trigram extractor on literal-free class repetitions such as `[0-9a-f]{8}`, `[0-9]{6}`, and `[A-Z]{4}`, the Certificate's `regex-classcount` hole. A different n-gram implementation could enumerate a large OR-union of class trigrams instead; Crest avoids that expansion.
 
-Per document, it indexes the *crest vector*, the longest consecutive run per family member (eight byte classes times two alphabets, 32 bytes per document; the second alphabet is what lets `\d` prune under the engine's Unicode default). Per query, it extracts the *forced crest* `ĝ(R)`, the run every accepted string must contain, by a min-of-max prefix/suffix/best algebra over the AST, one vector per top-level alternative, since `R₁|R₂` obliges a match to satisfy only one of them.
+Per document, v6 indexes the top four maximal runs for 48 fixed predicates:
+15 workload predicates over ASCII/scalar/codepoint alphabets plus exact pinned-
+UCD `Nd`, `Letter`, and `White_Space` lanes. Per query, a bounded Pareto
+compiler extracts the forced run spectrum each accepted branch must contain.
+Production remains at `q=1`, `B=8`; q=4 is implemented end to end but cannot be
+promoted before held-out corpus and query-trace evidence.
 
 The prune rule follows directly: a document whose crest falls below every alternative's forced crest cannot match. That costs `k` integer compares per branch, no byte scan, and is provably free of false negatives.
 
@@ -50,7 +55,12 @@ Per-byte scanning is latency-bound rather than throughput-bound: a single scan r
 
 The pure kernel, the fixed class family, the crest vector, the `Swell` disjunction, and the dominance test all live in [`../src/kernel/math/crest.zig`](../../src/kernel/math/crest.zig). The query half, `forcedSwell`, folds `ĝ` out of the engine's own AST, one vector per top-level alternative, in [`src/kernel/regex/analysis/swell.zig`](../../src/kernel/regex/analysis/swell.zig).
 
-The persisted per-document crest table, `crest.bin`, is generation-atomic with the trigram pair and lives in [`src/corpus/index/crest/sidecar.zig`](../../src/corpus/index/crest/sidecar.zig). `src/exec/cold/writ/gate.zig`'s `winnow` builds the query's swell and its cover plan off one parse, standing each down wherever pruning would be unsound.
+The generation-bound `crest.bin` codec lives in
+[`src/corpus/index/crest/sidecar.zig`](../../src/corpus/index/crest/sidecar.zig);
+`builder.zig`, `columnar.zig`, `planner.zig`, and `runtime.zig` complete the
+index-to-execution path. `src/exec/cold/writ/gate.zig`'s `winnow` builds the
+q=1 production projection and its cover plan off one parse, standing each down
+wherever pruning would be unsound.
 
 `src/exec/cold/quarry/elide.zig` is the read-elision oracle both cold schedulers admit, composing the crest sieve with trigram candidates and the freshness proof, and `src/exec/session/answer/gather.zig` is the resident twin that prunes by the same swell from the mirror's own crest vector rather than the sidecar. `bench/rungs/crest/bench.zig` is the production proof harness (`zig build crest`): fail-closed soundness, pruning, speed, and ablation over the live corpus.
 
@@ -75,8 +85,30 @@ The repair changes candidate selectivity, so this document carries no inherited 
 
 ## Status
 
-Crest is integrated as a single-run sieve, disjunctive over alternatives. A dated adversarial search found no prior instance of the full composite as of 2026-07-20 (`PRIOR_ART.md`), which is not proof of global novelty. `gist index` persists the Crest sidecar, and both the serial and parallel engines prune candidates with it: caseless matching keeps case-closed certificates and self-declines unsafe folds, and Unicode mode certifies only alphabet-safe constructs under the Alphabet Contract (`PROOF.md` §3.7).
+Crest is integrated with q=1 as the production query default and q=4 carried
+end to end for held-out evaluation. A dated adversarial search found no prior
+instance of the full composite as of 2026-07-20 (`PRIOR_ART.md`), which is not
+proof of global novelty. `gist index` persists the columnar v6 sidecar, and
+both cold read-elision paths consume it through the cost-gated runtime;
+caseless and Unicode analysis retain the Alphabet Contract (`PROOF.md` §3.7).
 
 The lineage is a Python reference sieve, cleared by a 240,000-pair randomized property suite against Python `re` with zero false negatives, plus the count-cousin ablation and an originality dossier. That spike is not in this repository; `bench/rungs/crest/` proves the same soundness against the shipped matcher instead.
 
-Two research extensions remain partly open, both discussed in `PROOF.md` §3.6 and §7. An independent exact oracle, `g(R,C)` by NFA-times-run-monitor emptiness, checks soundness and tightness; its pre-repair 98.0% figure is historical and must be rerun before it is attributed to the repaired calculus. Ridge itself, the forced-run spectrum, cleared its own referee pass on 2026-07-20 with no collision, re-scoped to the run-order-statistic multiset calculus (`PRIOR_ART.md` §8). Both extensions came from one Python spike that does not ship here: it carried the gap-aware segment calculus, the NFA-times-monitor oracle (5,224 forced-run checks, sound on every one, 98.2% exactly tight), a 160,000-pair sieve property suite with zero false negatives, and the base-vs-ridge corpus bench `PROOF.md` §7.4 tabulates. Nothing in this repository re-runs it.
+The independent exact automata oracle now ships under `oracle/`, explicitly
+refuses assertions, and differentially referees q=1/q=2/q=4 compiler output.
+Training, mutation, and revision-bound publication tooling also ship here.
+Historical tightness/selectivity figures remain lineage only: current corpus
+q1/q4, adaptive-dictionary, and planner evidence is explicitly pending and
+cannot promote production defaults.
+
+Corpus-independent reproduction:
+
+```bash
+mise exec -- zig build check --summary failures
+python3 -m unittest discover -s research/crest/evidence -p 'test_*.py'
+PYTHONPATH=research/crest/training python3 -m unittest discover \
+  -s research/crest/training/tests -p 'test_*.py'
+python3 -m unittest discover -s research/crest/mutation -p 'test_*.py'
+uv run --project bindings/python --python 3.13 --only-group dev \
+  python -m pytest research/crest/oracle/tests -q
+```

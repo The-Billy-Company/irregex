@@ -1,13 +1,14 @@
-# `src/corpus/index/crest/` — Persisted Crest-Vector Sidecar
+# `src/corpus/index/crest/` — Persisted CREST/Ridge Sidecar
 
 The disk half of the **crest sieve**. Kernel math lives in
 [`../../../kernel/math/crest.zig`](../../../kernel/math/crest.zig); theory
 lives in [`../../../../research/crest/PROOF.md`](../../../../research/crest/PROOF.md).
 
-One `u16^K` crest vector per indexed doc (`K = 16`, so 32 bytes), doc-id
-order, staged under the same `gens/<id>/` directory and published by the same
-`pair.gen` flip as `index.gist` / `paths.list` — so a reader can never pair
-the table with a foreign doc-id space.
+Each indexed document contributes a top-`q` run spectrum over the fixed
+48-predicate dictionary. Production writes `q=4`; query compilation defaults
+to `q=1` until held-out evidence licenses promotion. The sidecar is staged
+under the same `gens/<id>/` directory and published by the same `pair.gen`
+flip as `index.gist` / `paths.list`.
 
 ## Why It Exists
 
@@ -19,17 +20,21 @@ Together they elide more `open(2)`s without changing answers.
 
 ## Files
 
-- **`sidecar.zig`** is the codec (`writeInto` / `decode` / `verify`,
-  fail-closed) plus the parallel `build` pass.
-- **`sidecar_test.zig`** runs the round-trip identity check and the
-  adversarial malformed-blob suite.
+- **`builder.zig`** computes exact q=4 spectra in parallel.
+- **`sidecar.zig`** owns the fail-closed v6 codec and borrowed `View`.
+- **`columnar.zig`** executes sparse gathers or dense SIMD filtering.
+- **`planner.zig`** is the calibrated integer cost gate; `runtime.zig`
+  applies it without making correctness depend on calibration.
+- **`sidecar_test.zig`** proves q1/q4 round trips, overflow recovery,
+  scalar/columnar parity, and adversarial refusal.
 
-## Format V3
+## Format V6
 
-`GISTCRS3` carries a 64-byte header: explicit format version, class count,
-element width, index-bound document count, the semantic-schema **signet**,
-and zero-only reserved padding. The body remains `[doc][8]u16` little-endian,
-and an artifact signet trails it.
+`GISTCRS6` stores predicate-major, rank-minor columns. Each column has a dense
+`u8` base; values above 255 live in a sorted sparse `(doc_id, u16)` overflow
+span named by the column directory. The 192-byte header binds document count,
+`q`, shape, semantic schema, adaptive dictionary, and the index/path build
+identity. A BLAKE3 artifact signet trails the body.
 
 The schema preimage is canonical and architecture-independent. It includes
 the ordered class names, all 256 byte-membership masks, the `u16` saturation
@@ -37,47 +42,30 @@ cap, the per-element interpretation, and the format version. A cache built
 under different semantics therefore fails closed even when its dimensions
 happen to match.
 
-Older magics are deliberately not upgraded in place; they decode as null and
-the existing generation lifecycle rebuilds them.
+Older row-major magics are deliberately not upgraded in place; they decode as
+null and the generation lifecycle rebuilds them.
 
 The trailing seal exists because this is the one table whose corruption story
 is a **missed** match: a ρ(d) that rots downward prunes a document that would
-have matched, and every layout check still passes. So the seal is **spent at
-admission** — `persist.sealedCrest` verifies it before the loader publishes
-`crest` / `short_docs`, and a broken seal reads as "no sidecar" like any
-other rejection. `verify` stays a separate call from `decode` only so the
-O(1) layout refusals run first and a foreign blob is never digested.
-
-That order is what keeps it cheap. The loader already walks every record
-straight after (`shortDocs`), and an active sieve walks them again, so the
-pages are resident either way and only the digest is new: 0.18 ms over the
-production 345 KB / 21.6k-doc table (BLAKE3, 1.93 GB/s) beside 0.007 ms for
-the record pass. The mapped base pair keeps the deferred posture — 44 MB of
-postings a query touches a few pages of is the trade `signet.body` exists
-for.
+have matched, and every layout check still passes. `decode` therefore spends
+the seal before publishing a `View`; a broken seal reads as "no sidecar".
 
 ## Invariants
 
-- `decode` is zero-copy over the caller's mapping and returns **null** on any
-  disagreement (magic, format version, semantic hash, doc count, class-family
-  arity, element width, reserved padding, checked length, alignment), so the
-  query simply runs without the sieve.
-- No admitted table is unproven: the loader pairs `decode` with `verify`, so
-  a vector that reaches `Swell.prunes` came from a sealed blob. The amend
-  segment that overlays it (`../trigrams/codicil.zig`, `GISTCOD2`) is sealed
-  whole for the same reason — its recomputed rows prune too.
+- `decode` is zero-copy and returns **null** on any disagreement: format,
+  schema/dictionary/build identities, q/shape/offsets, overflow ordering, or
+  artifact seal.
+- No admitted table is unproven. The ranked amend segment
+  (`../trigrams/codicil.zig`, `GISTCOD3`) is sealed whole and rebuilt into an
+  owned v6 view when overlaid.
 - Soundness rounds down only (under-prune); see the kernel and
   `research/crest`.
-- Consumers are the read-elision oracles in `exec/cold/quarry/elide.zig` and
-  the serial/swarm engines.
-- **`build` has a second caller that never touches this codec.** The
-  resident session computes its own ρ(d) array over the mirror's bytes by
-  calling `build` directly (`exec/session/warm/mirror.zig`) — no blob, no
-  seal, no freshness gate, because it holds the bytes it measured. It reuses
-  this pass rather than re-looping so that a resident vector and the on-disk
-  vector for the same bytes are the _same computation_ and cannot drift into
-  disagreeing about ρ(d), which is the only way the two tiers could prune
-  differently.
+- `runtime.apply` uses the calibrated planner when all three cost coefficients
+  are present; absent or malformed calibration preserves the always-sieve
+  behavior. Candidate filtering is sparse-gather below 25% density and dense
+  SIMD otherwise.
+- The resident session deliberately keeps live q=1 vectors: it owns the bytes,
+  so it needs neither persisted columns nor a freshness binding.
 
 ## When To Edit
 

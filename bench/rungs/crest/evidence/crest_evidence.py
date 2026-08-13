@@ -12,6 +12,7 @@ import plistlib
 import shutil
 import socket
 import subprocess
+import sys
 import tempfile
 import time
 from datetime import date, datetime, timezone
@@ -102,7 +103,7 @@ def _contract_at(commit: str) -> _TomlTable:
 
 def _expand(argv: list[str], contract: _TomlTable) -> list[str]:
     benchmark = contract["benchmark"]
-    values = {"runs": benchmark["runs"], "warmup": benchmark["warmup"]}
+    values = {key: benchmark[key] for key in ("rank", "budget", "runs", "warmup")}
     return [part.format_map(values) for part in argv]
 
 
@@ -209,7 +210,10 @@ def _cpu_model() -> tuple[str | None, str | None]:
     except OSError:
         pass
     value = platform.processor() or None
-    return value, None if value else "host exposed no CPU model through sysctl, procfs, or platform"
+    return (
+        value,
+        None if value else "host exposed no CPU model through sysctl, procfs, or platform",
+    )
 
 
 def _memory_bytes() -> tuple[int | None, str | None]:
@@ -296,6 +300,11 @@ def _machine(contract: _TomlTable) -> _JsonObject:
             "storage_cache_drop_attempted": False,
             "condition": "warmup-conditioned page cache; storage caches not forcibly dropped",
         },
+        "toolchain": {
+            "python": sys.version.replace("\n", " "),
+            "git": _probe("git", "--version"),
+            "zig": _probe("zig", "version") or _probe("mise", "exec", "--", "zig", "version"),
+        },
     }
     for key, note in (
         ("cpu_model", cpu_note),
@@ -368,7 +377,8 @@ def package(output: Path | None = None) -> Path:
         commands.append(
             _archive(commit, contract["paths"]["source_archive_paths"], stage / "source.tar")
         )
-        _json_write(stage / "machine.json", _machine(contract))
+        machine = _machine(contract)
+        _json_write(stage / "machine.json", machine)
         _json_write(
             stage / "command-log.json",
             {
@@ -393,6 +403,25 @@ def package(output: Path | None = None) -> Path:
             source_paths=contract["paths"]["monograph_sources"],
         )
 
+        environment = {
+            "toolchain": machine["toolchain"],
+            "platform": {
+                key: machine[key]
+                for key in (
+                    "hostname",
+                    "os",
+                    "kernel",
+                    "architecture",
+                    "cpu_model",
+                    "logical_cpu_count",
+                    "memory_bytes",
+                    "filesystem",
+                    "storage",
+                    "power",
+                    "cache_condition",
+                )
+            },
+        }
         manifest = {
             "schema_version": contract["meta"]["schema_version"],
             "artifact_kind": contract["meta"]["artifact_kind"],
@@ -402,6 +431,17 @@ def package(output: Path | None = None) -> Path:
             "benchmark_artifact_sha256": benchmark_sha,
             "test_artifact_sha256": test_sha,
             "corpus_manifest_sha256": _sha256(stage / "corpus-manifest.tsv"),
+            "machine_artifact_sha256": _sha256(stage / "machine.json"),
+            "command_log_sha256": _sha256(stage / "command-log.json"),
+            "environment": environment,
+            "environment_sha256": hashlib.sha256(
+                json.dumps(
+                    environment,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    ensure_ascii=True,
+                ).encode()
+            ).hexdigest(),
             "matcher_results": {
                 "fixed_regression": run["fixed_regression"],
                 "randomized_soundness": run["randomized_soundness"],
