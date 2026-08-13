@@ -1,4 +1,4 @@
-//! gist — "it is not HERE, but it is THERE": the sighting behind the only hint a
+//! "It is not HERE, but it is THERE": the sighting behind the only hint a
 //! scoped miss really wants.
 //!
 //! A search scoped to paths that comes back empty has two very different causes

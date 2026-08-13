@@ -212,7 +212,7 @@ def _mirrored() -> frozenset[str]:
     """Names the cffi tier declares instead of ctypes.
 
     The row cursor and the schema probe are the substrate a PRODUCER links against
-    — a host that already has a `gist`-shaped result set and wants its rows — and
+    — a host that already has a face-shaped result set and wants its rows — and
     they are declared in :data:`irgx.contract.abi.CDEF`, checked against this same
     header by ``test_cdef_header_parity``. They are bound, just not here, and this
     audit says so explicitly rather than letting them read as a gap.

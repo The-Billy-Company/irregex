@@ -1,4 +1,4 @@
-//! gist — Thompson NFA construction: lowers the `syntax.zig` AST into the flat
+//! irregex — Thompson NFA construction: lowers the `syntax.zig` AST into the flat
 //! `State` program that both the Pike VM (`../linear/pike/`) and the eager DFA
 //! (`../linear/dfa/powerset.zig`) execute. The structural counterpart to
 //! powerset construction (the *other* lowering, NFA→DFA), kept out of the engine

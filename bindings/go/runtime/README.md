@@ -6,8 +6,8 @@ and the fallback ladder between them. That means the cgo declarations against
 generic row decoder, the child-process runner, and the error mapping that
 decides which of those answers a query.
 
-Product verb packages (gist `exact`/`index`, relate, blast `compose`) hold
-vocabulary; this package holds mechanism.
+Product verb packages (the exact face's `exact`/`index`, the kinship face, the
+composed face's `compose`) hold vocabulary; this package holds mechanism.
 
 ## The Ladder
 
@@ -17,7 +17,7 @@ One verb, two tiers, one answer:
    product's `*_run` symbol against a warm `irgx_engine`, when that library
    is linked into the process. Preferred, allocation-lean, cancellable.
 2. **Child process** (`cold.go` + `plan.go` + `decode.go`) - the certified
-   `gist` / `relate` / `blast` binary, its NDJSON raised back into rows of the
+   exact, kinship, or composed binary, its NDJSON raised back into rows of the
    same schema.
 
 A tier that cannot answer **declines**, and a declinature is not an error.
@@ -30,9 +30,9 @@ forces the child tier.
 engine**, and an engine is only interpretable by the copy of the engine code
 that made it: the corpus, its arenas, and its process-global caches all belong
 to one image. `dlsym` with `RTLD_DEFAULT` searches everything the process has
-loaded, including libraries this module never chose, so finding a symbol named
-`relate_run` does not establish that it speaks for *this* engine. Hand a
-foreign handle to a producer carrying its own statically compiled copy and it
+loaded, including libraries this module never chose, so finding a symbol spelled
+like a face's producer does not establish that it speaks for *this* engine. Hand
+a foreign handle to a producer carrying its own statically compiled copy and it
 segfaults - identical struct layout, entirely separate state - rather than
 declining.
 
@@ -68,23 +68,23 @@ static void *guard(const char *name) {
 }
 ```
 
-**Refusal** - build a dylib that exports `relate_run` and links nothing:
+**Refusal** - build a dylib that exports a producer entry and links nothing:
 
 ```c
-int32_t relate_run(void *e, uint32_t op, const void *p, void *c, void **o) { return 0; }
+int32_t face_run(void *e, uint32_t op, const void *p, void *c, void **o) { return 0; }
 ```
 
-`dlopen` it, then `guard("relate_run")` must return `NULL`.
+`dlopen` it, then `guard("face_run")` must return `NULL`.
 
 **Admission** - load the substrate first (as every binding does), then the real
 producer, and `guard` must return the symbol:
 
 ```sh
 cc -shared -o libfake.dylib fake.c && cc -o probe probe.c
-./probe irregex/zig-out/lib/libirgx.dylib relate/zig-out/lib/librelate.dylib relate_run
+./probe irregex/zig-out/lib/libirgx.dylib <face>/zig-out/lib/lib<face>.dylib <face>_run
 ```
 
 Loading the substrate first is not incidental: the product dylibs currently bake
-a **relative** rpath into the build tree's `.zig-cache`, so a bare `dlopen` of
-`librelate.dylib` from an arbitrary directory fails to find
+a **relative** rpath into the build tree's `.zig-cache`, so a bare `dlopen` of a
+face's own dylib from an arbitrary directory fails to find
 `@rpath/libirgx.dylib` on its own.

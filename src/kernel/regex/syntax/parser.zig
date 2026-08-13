@@ -1,5 +1,5 @@
-//! gist — the recursive descent itself: a cursor over the pattern, and the four
-//! mutually-recursive grammar levels (`alt → concat → repeat → atom`).
+//! irregex — the recursive descent itself: a cursor over the pattern, and the
+//! four mutually-recursive grammar levels (`alt → concat → repeat → atom`).
 //!
 //! Only the levels that call each other live here. Everything a level *reaches
 //! for* — an escape's byte set, a bracket body, the scalar accumulator — is a
@@ -312,8 +312,8 @@ pub const Parser = struct {
                 // Group flavor: a plain `(…)` and named `(?P<n>…)`/`(?<n>…)` groups
                 // CAPTURE (get a 1-based index, recorded structurally so the capture
                 // VM can extract them); `(?:…)` is non-capturing. Lookaround
-                // (`(?=`,`(?!`,`(?<=`,`(?<!`) needs backtracking gist's linear engine
-                // can't do → BadPattern.
+                // (`(?=`,`(?!`,`(?<=`,`(?<!`) needs backtracking this linear
+                // engine can't do → BadPattern.
                 var capturing = true;
                 var name: ?[]const u8 = null;
                 if (p.eat('?')) {

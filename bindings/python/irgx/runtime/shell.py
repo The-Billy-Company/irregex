@@ -1,4 +1,4 @@
-"""The subprocess engine adapter. Locates the certified `gist` binary, lowers a `SearchRequest` into its rg-parity argv, runs it, and parses the result. All faces of the unified API funnel through here, so results are produced by the *same* engine the CLI uses — never a second matcher. Subprocess is the authoritative transport today: a bad pattern exits the child (code 2), surfaced as a typed error, and never terminates the host the way an in-process `die()`/exit would."""
+"""The subprocess engine adapter. Locates the certified exact-search binary, lowers a `SearchRequest` into its rg-parity argv, runs it, and parses the result. All faces of the unified API funnel through here, so results are produced by the *same* engine the CLI uses — never a second matcher. Subprocess is the authoritative transport today: a bad pattern exits the child (code 2), surfaced as a typed error, and never terminates the host the way an in-process `die()`/exit would."""
 
 from __future__ import annotations
 
@@ -46,8 +46,8 @@ _UNSUPPORTED_MARKERS = (
     "linear-time syntax",
     "not yet implemented",
 )
-# The opposite verdict, and why it needs its own class: no grammar gist has
-# accepts this pattern, so no flag lifts it and a `pcre=True` retry only fails
+# The opposite verdict, and why it needs its own class: no grammar the engine
+# has accepts this pattern, so no flag lifts it and a `pcre=True` retry only fails
 # again. The engine prints this line ONLY after asking PCRE2 and being refused
 # too (`writ/arm.zig: blame`), so it is that probe's answer, not a guess — the
 # same split the C ABI draws as IRGX_STALE vs a BadPattern fault.
@@ -60,8 +60,8 @@ def _locate_root(name: str) -> Path | None:
     Walks ancestors of this file for an already-built `zig-out/bin/<name>`, then
     for a `build.zig` whose directory is named `name` (or a sibling checkout of
     that name — the four packages sit next to each other in one workspace).
-    Substrate code lives in `irregex`, so a fixed `parents[N]` cannot name
-    relate's or blast's tree.
+    Substrate code lives in `irregex`, so a fixed `parents[N]` cannot name a
+    sibling face's tree.
     """
     here = Path(__file__).resolve()
     for parent in here.parents:
@@ -82,8 +82,8 @@ def _bundled(name: str) -> Path | None:
     """A binary bundled straight into `name`'s own installed distribution.
 
     Each product's PyPI distribution name differs from its import name
-    (`gist-search`→`gist`, `relate-search`→`relate`, `blast-search`→`blast`),
-    but the import name and the CLI's own name coincide — so the product's own
+    (`<name>-search`→`<name>`, for each of the three faces), but the import
+    name and the CLI's own name coincide — so the product's own
     installed package is exactly where its build hook (`hatch_build.py` in
     that repository, following this one's) placed the binary it built:
     `<name>/bin/<name>[.exe]`. Absent for a source checkout that has never
@@ -132,21 +132,21 @@ def _resolve(name: str, env_var: str) -> str:
 
 
 def binary() -> str:
-    """The `gist` binary (search face). Env override: `GIST_BIN`."""
+    """The exact-search face's binary. Env override: that face's `<FACE>_BIN`."""
     return _resolve("gist", "GIST_BIN")
 
 
 def relate_binary() -> str:
-    """The `relate` binary (compression-search face: similar/dups/clusters/echoes/concepts/search/pack/quote/patterns). Env override: `RELATE_BIN`."""
+    """The kinship face's binary (compression search: similar/dups/clusters/echoes/concepts/search/pack/quote/patterns). Env override: that face's `<FACE>_BIN`."""
     return _resolve("relate", "RELATE_BIN")
 
 
 def blast_binary() -> str:
-    """The `blast` binary (`provenance` / `blast` and the other composed verbs). Env override: `BLAST_BIN`."""
+    """The composed face's binary (`provenance`, the change-radius verb, and the other composed verbs). Env override: that face's `<FACE>_BIN`."""
     return _resolve("blast", "BLAST_BIN")
 
 
-# Compat alias — the composed face used to be named `irregex`.
+# Compat alias — the composed face used to carry this library's own name.
 irregex_binary = blast_binary
 
 
@@ -193,14 +193,14 @@ def run_verb(
     timeout: float = DEFAULT_TIMEOUT,
     ok_codes: tuple[int, ...] = (0,),
 ) -> Output:
-    """Run one `relate`/`blast` verb and return both streams.
+    """Run one kinship or composed verb and return both streams.
 
-    `tool` is `"relate"` or `"blast"` (`"irregex"` still accepted as a compat
-    alias for `"blast"`); the verb and its flags are `argv`. Results arrive on
-    stdout (NDJSON under `--json`) and diagnostics on stderr, so a caller reads
-    rows from one and provenance from the other without either contaminating
-    the other. Any exit code outside `ok_codes` is a loud `SearchFailedError`
-    — never a silently empty answer.
+    `tool` names the kinship or composed face (the composed face's former name
+    is still accepted as a compat alias); the verb and its flags are `argv`.
+    Results arrive on stdout (NDJSON under `--json`) and diagnostics on stderr,
+    so a caller reads rows from one and provenance from the other without either
+    contaminating the other. Any exit code outside `ok_codes` is a loud
+    `SearchFailedError` — never a silently empty answer.
     """
     resolve = blast_binary if tool in ("blast", "irregex") else relate_binary
     try:
@@ -299,7 +299,7 @@ def _invoke(
     cwd: str | os.PathLike[str] | None,
     timeout: float,
 ) -> subprocess.CompletedProcess[str]:
-    """Run `gist <flags> <tail> --regexp <pattern> [paths]`.
+    """Run the exact face as `<flags> <tail> --regexp <pattern> [paths]`.
 
     `--regexp` carries the pattern so it cannot be mistaken for a flag or path.
     The canonical no-verb face is required: the retired `rg` compatibility
@@ -361,7 +361,7 @@ def run(
     """Execute a `SearchRequest` and return structured matches (and any requested context lines), in engine output order."""
     # The CLI's default output budget protects agent context, but truncating a
     # structured API result silently breaks discovery. The process still retains
-    # gist's hard 256 MiB OOM ceiling.
+    # the engine's hard 256 MiB OOM ceiling.
     proc = _invoke(["--json", "--uncap"], request, cwd=cwd, timeout=timeout)
     return _parse_json(proc.stdout)
 
@@ -415,8 +415,8 @@ def count(
 
     rg `-c`/`--count`, one line counted once regardless of how many times the
     pattern hits it — the semantic every other count surface shares
-    (`gist.count`/`Session.count` docstrings, the resident daemon's
-    `countLines`, the in-process FFI's per-line stream). Was
+    (the exact face's own `count`/`Session.count` docstrings, the resident
+    daemon's `countLines`, the in-process FFI's per-line stream). Was
     `--count-matches` (per-occurrence), which over-counted a line with
     repeated hits and silently diverged from the warm transports.
     """
@@ -450,7 +450,7 @@ def rank(
     cwd: str | os.PathLike[str] | None = None,
     timeout: float = DEFAULT_TIMEOUT,
 ) -> list[Ranked]:
-    """The engine's definition-first `--rank` view: the top-`limit` files for the request's pattern, each tagged with the engine's own `def`/`use`/`gen` class (`limit <= 0` uses the engine default of 20). Ranking needs a persisted index — with none there is nothing to rank, so the result is empty. This is gist's one native shape with no rg equivalent; the def/use/gen class is read straight from the engine, never reclassified here."""
+    """The engine's definition-first `--rank` view: the top-`limit` files for the request's pattern, each tagged with the engine's own `def`/`use`/`gen` class (`limit <= 0` uses the engine default of 20). Ranking needs a persisted index — with none there is nothing to rank, so the result is empty. This is the exact face's one native shape with no rg equivalent; the def/use/gen class is read straight from the engine, never reclassified here."""
     return [record(row) for row in rank_rows(request, limit=limit, cwd=cwd, timeout=timeout)]
 
 
@@ -488,11 +488,11 @@ def _scrape_rank(stream: str) -> list[Row]:
 
 @functools.cache
 def version() -> str:
-    """The driven binary's semver (from `gist --version`)."""
+    """The driven binary's semver (from its `--version`)."""
     proc = subprocess.run(  # noqa: S603 — fixed argv, no shell
         [binary(), "--version"], capture_output=True, text=True, check=False
     )
-    # `gist 0.1.0` → `0.1.0`. Current binaries answer on stdout (rg parity);
+    # `<name> 0.1.0` → `0.1.0`. Current binaries answer on stdout (rg parity);
     # stderr is the fallback for one that predates that, so either is read.
     parts = (proc.stdout or proc.stderr).strip().split()
     return parts[-1] if parts else ""

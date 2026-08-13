@@ -1,19 +1,19 @@
-# GIST performance-evidence contract — the source of truth for Gist's
-# OPERATIONAL-ENVELOPE evidence (the evaluation counterpart to the correctness
-# contract in engine.toml).
+# The performance-evidence contract — the source of truth for the exact-search
+# face's OPERATIONAL-ENVELOPE evidence (the evaluation counterpart to the
+# correctness contract in engine.toml).
 #
 # SCOPE — WHAT THIS OWNS, AND WHAT IT DELIBERATELY DOES NOT
-#   The Dominance-and-Fit Certificate (sibling gist package: bench/certificate/ +
-#   dominance/session/ + conformance/rgsuite/) is the single home for how good
-#   Gist is AT FULL SPEED and what bounds it fits:
-#     • cold fresh-process dominance vs ripgrep  → Layer A macroscopic (gist certificate/mint/mint.sh)
+#   The Dominance-and-Fit Certificate (the sibling face package:
+#   bench/certificate/ + dominance/session/ + conformance/rgsuite/) is the single
+#   home for how good that face is AT FULL SPEED and what bounds it fits:
+#     • cold fresh-process dominance vs ripgrep  → Layer A macroscopic (face package certificate/mint/mint.sh)
 #     • single-thread cycles/byte                → Layer A microscopic (this package apparatus/harness/)
-#     • warm resident-daemon latency             → Layer A warm tier (gist certificate/mint/warm.sh + dominance/session/)
-#     • --rank definition-first shape rg can't   → Layer A --rank lane (gist certificate/mint/rank.sh)
-#     • rg drop-in correctness                   → gist conformance/rgsuite/
+#     • warm resident-daemon latency             → Layer A warm tier (face package certificate/mint/warm.sh + dominance/session/)
+#     • --rank definition-first shape rg can't   → Layer A --rank lane (face package certificate/mint/rank.sh)
+#     • rg drop-in correctness                   → face package conformance/rgsuite/
 #     • port / roofline / lower-bound / crest    → Layers B–E (this package bounds/ + rungs/crest/)
-#     • codex self-index space + decodability    → Layer F (gist certificate/report/codex.py + relate bounds/codex/)
-#     • relate retrieval quality + boundary      → Layer G (gist certificate/mint/relate.sh)
+#     • codex self-index space + decodability    → Layer F (face package certificate/report/codex.py + kinship package bounds/codex/)
+#     • kinship retrieval quality + boundary     → Layer G (face package certificate/mint/kinship lane)
 #   Those are NOT re-measured here. This contract owns only the operational
 #   envelope the certificate does not: index LIFECYCLE cost (build + incremental
 #   refresh), footprint RESOURCE ratios (index bytes / corpus bytes, peak RSS,
@@ -54,11 +54,12 @@ adr = 352
 certificate_bundle = "bench/certificate/artifact"
 
 # ── precondition (not a regime) ───────────────────────────────────────────────
-# Before ANY cell below is timed, gist must prove a byte-exact (order-insensitive)
-# file set equal to the ripgrep oracle over the 12-class registry, on BOTH the
-# parallel and serial engines. This is a build-sanity precondition for the timed
-# lanes — NOT a published correctness claim (the certificate's rgsuite is the rg
-# drop-in correctness proof). See [methodology].parity_before_timing.
+# Before ANY cell below is timed, the face under measurement must prove a
+# byte-exact (order-insensitive) file set equal to the ripgrep oracle over the
+# 12-class registry, on BOTH the parallel and serial engines. This is a
+# build-sanity precondition for the timed lanes — NOT a published correctness
+# claim (the certificate's rgsuite is the rg drop-in correctness proof). See
+# [methodology].parity_before_timing.
 
 # ── regimes ───────────────────────────────────────────────────────────────────
 # Each regime is a distinct measured PATH the certificate does NOT cover, with an
@@ -106,7 +107,7 @@ label = "concurrent query throughput"
 description = """
 Aggregate queries/second and tail (p95/p99) latency against the resident daemon
 at bounded worker counts. Proves the warm path holds under the many-agent load
-Gist is actually built for, not just single-query latency.
+these faces are actually built for, not just single-query latency.
 """
 gated_cross_machine = false
 
@@ -153,7 +154,7 @@ shape = "adversarial: cap edges, CRLF, UTF-16, invalid UTF-8, symlink cycles"
 pin = "torture.py deterministic build"
 
 # ── competitors ───────────────────────────────────────────────────────────────
-# The registry + fairness scoping live in the sibling gist package at
+# The registry + fairness scoping live in the sibling face package at
 # bench/dominance/races/field.sh (single source of truth for how each tool is
 # invoked). This lists which are REQUIRED as a paired ratio and which are
 # optional field context.
@@ -178,8 +179,9 @@ bootstrap_resamples = 10000      # bootstrap CI on the median
 bootstrap_seed = 28181           # 0x6E15 — the certify_stats seed family
 alpha = 0.05                     # Mann-Whitney significance threshold
 quantiles = [ 0.50, 0.95, 0.99 ] # reported latency quantiles
-# A cell is timed ONLY after gist proves a byte-exact (order-insensitive) file
-# set equals the rg oracle, on BOTH the parallel and serial engines.
+# A cell is timed ONLY after the face under measurement proves a byte-exact
+# (order-insensitive) file set equals the rg oracle, on BOTH the parallel and
+# serial engines.
 parity_before_timing = true
 # A tool whose timed command masks producer status (`2>&1 | wc -l`) is invalid.
 mask_producer_status = false

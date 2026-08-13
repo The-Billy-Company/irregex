@@ -71,9 +71,9 @@ foo-nest  foofoofoo    9  foo,foofoo,foofoofoo
 ```
 
 Ends 3, 6, 9 — what rust-regex reports only in `MatchKind::All` via
-`try_search_overlapping_fwd`, and what both `gist -o` and `rg -o` cannot express
-(they report three non-overlapping `foo`s, and reordering the alternation to
-`foofoofoo|foofoo|foo` reports one).
+`try_search_overlapping_fwd`, and what neither this engine's `-o` nor `rg -o`
+can express (they report three non-overlapping `foo`s, and reordering the
+alternation to `foofoofoo|foofoo|foo` reports one).
 
 Three things are absent that the reference needs:
 

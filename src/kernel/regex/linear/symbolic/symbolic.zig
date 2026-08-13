@@ -1,4 +1,4 @@
-//! gist — the symbolic (predicate-alphabet) determinizer, entered here.
+//! irregex — the symbolic (predicate-alphabet) determinizer, entered here.
 //!
 //! The shipped path lowers a Unicode class to a UTF-8 byte trie and then
 //! determinizes over bytes, so every epsilon-closure re-walks that trie: `\w+X`

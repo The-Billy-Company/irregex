@@ -6,11 +6,11 @@ byte-for-byte onto brand-new inodes, and all of them restore mtime because that
 is part of copying a tree faithfully. None of them can restore ctime, because the
 kernel owns it.
 
-gist's freshness law reads both clocks and disqualifies a file if *either* has
-reached the build anchor. So a transplanted corpus reads as entirely changed, its
-persisted index elides nothing, and the accelerator is inert — while `gist
-status` reports it healthy. Containers make this the normal case rather than a
-corner: an image layer is a reproduction by construction.
+The engine's freshness law reads both clocks and disqualifies a file if *either*
+has reached the build anchor. So a transplanted corpus reads as entirely changed,
+its persisted index elides nothing, and the accelerator is inert — while an index
+status readout reports it healthy. Containers make this the normal case rather
+than a corner: an image layer is a reproduction by construction.
 
 - **[`PROOF.md`](PROOF.md)** — the measured defect (a warm query and an
   explicitly unindexed control landing on the same 0.77 CPU-seconds, with the
@@ -21,13 +21,14 @@ corner: an image layer is a reproduction by construction.
 - **[`PRIOR_ART.md`](PRIOR_ART.md)** — who has stood at this exact tension
   before, and it is a crowd. borgbackup derives the ctime leg independently and in
   nearly our words; git records per-file ctime *and* inode already, and shipped its
-  ctime escape hatch because of **content indexers** — the class of tool gist is;
-  Bazel added ctime for the precise inverse reason (a `tar` that flattened mtime
-  plus an `mv` that *kept* the inode), a case §4.3 still refuses. Two findings that
-  changed the repair: git's own answer was not only a knob but stat-only
-  revalidation plus a capability probe, and because gist compares clocks against
-  one corpus-wide scalar instead of per-file recorded values, recording an mtime
-  *tightens* a guarantee at the same time as it loosens another.
+  ctime escape hatch because of **content indexers** — the class of tool this
+  engine belongs to; Bazel added ctime for the precise inverse reason (a `tar`
+  that flattened mtime plus an `mv` that *kept* the inode), a case §4.3 still
+  refuses. Two findings that changed the repair: git's own answer was not only a
+  knob but stat-only revalidation plus a capability probe, and because this engine
+  compares clocks against one corpus-wide scalar instead of per-file recorded
+  values, recording an mtime *tightens* a guarantee at the same time as it loosens
+  another.
 - **[`TESTING.md`](TESTING.md)** — how the claim dies. The reproduction is
   simulated by the same `utimensat(2)` an extractor makes, so the adverse cases
   are the ones that must keep reading live: an in-place write with a rewound

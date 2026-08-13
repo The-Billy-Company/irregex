@@ -18,7 +18,7 @@
 //!
 //! Nothing here is an engine. Every verb lowers to a call `exec/cold` already
 //! makes on the same `Matcher`, so an answer from this door and an answer from
-//! `gist` are the same answer by construction rather than by agreement.
+//! a product face are the same answer by construction rather than by agreement.
 
 pub const Pattern = @import("pattern.zig").Pattern;
 pub const Options = @import("pattern.zig").Options;

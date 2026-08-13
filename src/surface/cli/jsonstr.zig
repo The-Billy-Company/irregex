@@ -1,11 +1,11 @@
 //! One JSON string escaper for every face over this library that writes JSON/NDJSON.
 //!
-//! `rg --json` (emit/json.zig), the relate/blast NDJSON verb rows
-//! (surface/cli/emit.zig, re-exported as `jsonStr`), and the gist `--schema`
+//! `rg --json` (emit/json.zig), the kinship and composed faces' NDJSON verb rows
+//! (surface/cli/emit.zig, re-exported as `jsonStr`), and the `--schema`
 //! manifest all need the identical operation: append a byte slice as a JSON
 //! string literal, surrounding quotes included. They used to carry three
 //! near-copies that had quietly diverged — the schema one emitted RAW control
-//! bytes (invalid JSON), the relate one lacked the `\b`/`\f` short forms — so
+//! bytes (invalid JSON), the kinship one lacked the `\b`/`\f` short forms — so
 //! this is the single source of truth they now share.
 //!
 //! The escaping is serde_json's / ripgrep's exact discipline (the strictest
@@ -64,7 +64,7 @@ inline fn escape(out: *std.ArrayList(u8), c: u8) void {
 }
 
 /// Append `s` to `out` as a JSON string literal, surrounding quotes included.
-/// Argument order matches the relate face's `(buf, gpa, s)` convention so
+/// Argument order matches the kinship face's `(buf, gpa, s)` convention so
 /// `kinship.jsonStr` re-exports this directly.
 pub fn write(out: *std.ArrayList(u8), gpa: std.mem.Allocator, s: []const u8) void {
     // Reserve the no-escape size (bytes + both quotes) up front. The bulk copy of

@@ -4,7 +4,7 @@
 //! and once in its own first four bytes. Every regex library a user already
 //! knows honors the second spelling — `re.compile("(?i)cat")`,
 //! `Regex::new("(?i)cat")`, `regexp.MustCompile("(?i)cat")` — and until this
-//! module existed, only gist's CLI did. `irgx_compile("(?i)cat", 0)` was
+//! module existed, only the CLI over it did. `irgx_compile("(?i)cat", 0)` was
 //! refused, because the recursive-descent parser has no production for a flag
 //! group and the seam had nothing that would turn one into the option it asks
 //! for. That made the *documented* way to be case-insensitive unavailable to a

@@ -9,8 +9,8 @@
 //! its surplus subdirectories to idle peers. On the working corpus that turns a
 //! ~575 ms serial load into ~170 ms (measured against the search engine's own
 //! whole-tree walk+read, which this mirrors), and it accelerates every build
-//! verb that funnels through `corpus.load` (`gist index`, `relate index`,
-//! `codex build`).
+//! verb that funnels through `corpus.load` (an index build, a kinship index
+//! build, `codex build`).
 //!
 //! Membership parity with the serial `haystack.Walker` is by construction, not
 //! coincidence:
@@ -605,7 +605,7 @@ test "fused parallel load, serial walk, and census all admit the same corpus" {
     try testing.expect(expect.get(try joinPath(a, root, "bin.dat")) == null);
 }
 
-/// Worker count for the walk: `GIST_WORKERS` override, else one per core capped
+/// Worker count for the walk: `<prefix>WORKERS` override, else one per core capped
 /// at 8 — the walk+read is syscall/namei-bound (like the search walk), so more
 /// threads add directory-fd and namei contention without shortening the tail.
 fn workerCount() usize {
@@ -790,8 +790,8 @@ pub fn load(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8) !corp
 /// The same walk, classifying the corpus without materializing it: which files
 /// are members, in doc-id order, and how long each one says it is.
 ///
-/// This is what lets `gist index` read the corpus in doc order later instead of
-/// carrying it. The walk still opens every candidate and still reads its
+/// This is what lets an index build read the corpus in doc order later instead
+/// of carrying it. The walk still opens every candidate and still reads its
 /// verdict window — that is the membership rule, not an optimization — but an
 /// admitted file's body is never allocated, so the census retains its paths and
 /// its bookkeeping and nothing else.

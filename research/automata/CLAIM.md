@@ -606,14 +606,14 @@ with **no** witness spliced, so every row answers `false` and the seam can only
 cost. **Worst 0.98× over 11 rows** (noise; `find` and `presence` are the same
 scan). There is no document class this trades against.
 
-**End-to-end, on this repo, against the incumbent** — `gist -l` vs `rg -l`, best
+**End-to-end, on this repo, against the incumbent** — a face's `-l` vs `rg -l`, best
 of 5, byte-identical file sets verified on all four:
 
 ```text
-\w+X                     gist 206.4 ms   rg 386.4 ms   1.87x
-[a-z]+_[a-z]+_[a-z]+     gist 209.2 ms   rg 453.2 ms   2.17x
-if\s+err\s*!=\s*nil      gist 211.5 ms   rg 347.4 ms   1.64x
-\w+\.\w+\(               gist 223.9 ms   rg 584.8 ms   2.61x
+\w+X                     ours 206.4 ms   rg 386.4 ms   1.87x
+[a-z]+_[a-z]+_[a-z]+     ours 209.2 ms   rg 453.2 ms   2.17x
+if\s+err\s*!=\s*nil      ours 211.5 ms   rg 347.4 ms   1.64x
+\w+\.\w+\(               ours 223.9 ms   rg 584.8 ms   2.61x
 ```
 
 **What is left of C7, and why it is not built.** The residual is the *span*
@@ -695,7 +695,7 @@ against a 96.6 ms one **0.006%**.
 
 **The best case the tool can express was measured too, and it is also a
 millisecond.** If build ever dominates it is where many patterns compile and
-nothing is scanned, so: `relate patterns` with an N-regex slate against a zero-byte
+nothing is scanned, so: a multi-pattern sweep with an N-regex slate against a zero-byte
 file, where scanning is literally free.
 
 | slate | total |
@@ -723,7 +723,7 @@ floor, on a comparison the floor already loses.
 **And the daemon holds the stronger version of the same idea.** The resident
 session's answer keep stores the *rendered answer* against a corpus epoch, so a
 repeated identical query skips the scan, the render, and the build together —
-`relate echoes --unit function --shape distinct` goes 27.5 s → 4.9 ms. A table cache
+a corpus-wide function-distinctness sweep goes 27.5 s → 4.9 ms. A table cache
 would reuse the 5.6 µs the keep already skips entirely, one layer below where the
 reuse is worth having.
 

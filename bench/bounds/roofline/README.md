@@ -15,12 +15,12 @@ inventing a binding bottleneck.
   gate/contiguous-production ladder over a corpus-sized buffer of corpus
   bytes, and the engine's real SIMD scan over the corpus.
 
-- **`report.py`** reads `roofline.json` plus, when present, gist's own
-  Layer A `certify.csv` and this package's own Layer B `portcert.json` for
+- **`report.py`** reads `roofline.json` plus, when present, the face package's
+  own Layer A `certify.csv` and this package's own Layer B `portcert.json` for
   the compute ceiling; it renders the `## Layer C` markdown section and
-  splices it into the mint's working `CERTIFICATE.md` (`.gist/` by default,
-  or `$GIST_DIR`). [`mint.sh`](../../certificate/mint/mint.sh) copies the
-  finished file into the committed
+  splices it into the mint's working `CERTIFICATE.md` (the artifact home by
+  default, or `$<prefix>DIR`). [`mint.sh`](../../certificate/mint/mint.sh)
+  copies the finished file into the committed
   [`bench/certificate/artifact/`](../../certificate/artifact/) snapshot only
   when asked (`CERT_PUBLISH_DIR=...`).
 
@@ -57,7 +57,7 @@ contiguous buffer and against every document, and the run errors out rather
 than publish if either finds it.
 
 That guard exists because the arm spent its whole life measuring nothing. The
-needle used to be the literal `Zq9_gist_roofline_absent_needle_`, and the
+needle used to be a fixed literal spelled out in the source, and the
 corpus root defaults to the package itself — so `bandwidth.zig` was one of the
 corpus documents, the literal was tiled into the contiguous buffer, and
 `simd.contains` returned on the benchmark's own source a few hundred KiB in.
@@ -182,8 +182,8 @@ the reason above.
 
 `sudo` is not required for a measured clock — the unprivileged per-thread
 counter tier supplies one; it only buys `kperf`, the single tier that can
-program configurable events. When gist's own Layer A `certify.csv` is present
-in the same output directory, `report.py` reads it for the per-class
+program configurable events. When the face package's own Layer A `certify.csv`
+is present in the same output directory, `report.py` reads it for the per-class
 end-to-end operating points shown alongside the ceiling; absent it, Layer C
 still publishes on its own measurements. Never fails the run (mirrors
 `pmu.zig`'s discipline): no counter tier ⇒ the GB/s ceilings publish, the
@@ -203,7 +203,7 @@ which backend refused.
   arithmetic intensity)`; the engine's low arithmetic intensity puts it on
   the memory ridge this layer measures.
 
-- **`gist/bench/apparatus/harness/certify.zig`** (sibling `gist` repo, Layer A) —
+- **The face package's `bench/apparatus/harness/certify.zig`** (Layer A) —
   the per-class cycles/byte this layer's ceiling is optionally checked
   against, and [`../port/`](../port/README.md) (Layer B) — the compute
   ceiling this layer's report reads for the two-ceiling picture.

@@ -1,4 +1,4 @@
-//! gist — the prefilters: what the pattern proves we may skip.
+//! The prefilters: what the pattern proves we may skip.
 //!
 //! Every function here answers one question — given the compiled pattern, which
 //! bytes can we decline to look at and still be certain the answer is
@@ -119,7 +119,7 @@ pub fn trigramFilter(a: std.mem.Allocator, o: Opts, eff: []const u8, re: *const 
     if (o.caseless) return caselessFilter(a, o, eff, re);
     // The regex→sound-literals mapping is the shared search core's, so the cold
     // elision and the warm resident session prune by identical literals. The
-    // PCRE2 arm has no gist AST, so it prunes through the engine-neutral seam —
+    // PCRE2 arm has no linear AST, so it prunes through the engine-neutral seam —
     // the same function warm uses, rather than a second copy of the rule.
     return switch (re.*) {
         .linear => |*r| query_mod.regexPrefilter(r, one),
@@ -169,11 +169,12 @@ pub fn caselessFilter(a: std.mem.Allocator, o: Opts, eff: []const u8, re: *const
 ///
 ///   * **`mayElideByIndex` bounds both.** Neither ever widens where index
 ///     elision is inadmissible; they only EXTEND the criterion where it runs.
-///   * **PCRE2 gets neither.** Both are read off gist's AST while PCRE2 denotes
-///     the pattern under its own grammar — the dual-parser hazard one level up,
-///     worst exactly where `--engine auto` escalated *because* gist's grammar
-///     could not express the pattern. `-P` runs keep `trigramFilter`'s
-///     engine-neutral literals and lose only this extra pruning.
+///   * **PCRE2 gets neither.** Both are read off the linear AST while PCRE2
+///     denotes the pattern under its own grammar — the dual-parser hazard one
+///     level up, worst exactly where `--engine auto` escalated *because* the
+///     linear grammar could not express the pattern. `-P` runs keep
+///     `trigramFilter`'s engine-neutral literals and lose only this extra
+///     pruning.
 ///   * **Caseless stands the PLAN down, not the sieve.** A folded AST would in
 ///     principle cross-product into the case-variant set for free, but
 ///     `caselessVariants` is the one place the Unicode-fold bounds (ASCII-only,
@@ -184,8 +185,8 @@ pub fn caselessFilter(a: std.mem.Allocator, o: Opts, eff: []const u8, re: *const
 ///     `upper`/`lower` (and any Unicode orbit escaping ASCII) fold themselves
 ///     out of certification.
 ///
-/// `GIST_NO_COVER` / `GIST_NO_CREST` (internal, undocumented — the
-/// `GIST_NO_PARALLEL_LOAD` idiom) stand one half down each, leaving the run on
+/// `<prefix>NO_COVER` / `<prefix>NO_CREST` (internal, undocumented — the
+/// `<prefix>NO_PARALLEL_LOAD` idiom) stand one half down each, leaving the run on
 /// `trigramFilter`'s flat OR and/or no sieve. They are how each wired path is
 /// measured against itself on ONE binary, so an A/B cannot be confounded by a
 /// build difference; they are also the operational escape hatch if a plan ever

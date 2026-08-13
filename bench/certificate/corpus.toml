@@ -23,8 +23,9 @@
 # product faces. All Apache-2.0 and all public, so a stranger reproduces the
 # exact measured tree with one command.
 #
-# WHY NOT REUSE gist's LAYER A CORPUS. The layers minted here — J (footprint)
-# and L (index quality) — ask a different question than Layer A does, and the
+# WHY NOT REUSE THE LAYER A CORPUS. Layer A is minted by the exact-search face,
+# over a corpus built for it; the layers minted here — J (footprint) and L
+# (index quality) — ask a different question than Layer A does, and the
 # difference decides the corpus. Layer L compares two index *planners* by the
 # candidate bytes each admits, so every probe class has to land strictly between
 # "matches nothing" and "matches everything": at either endpoint both planners
@@ -32,11 +33,11 @@
 # fail-closed verdict. `rungs/sieve/slate.py --audit` takes that reading with
 # Python's own `re` rather than with the engine under test, and it is emphatic:
 #
-#   gist-synthetic-go-v1  9 of the 12 shared classes saturate, 7 of the 8
-#                         stress classes are vacuous — 16 of 20 rows dead
-#   irregex-self-v1       all 20 discriminate, but the tree is monoglot Zig
-#                         and half the size
-#   ecosystem-v1          all 20 discriminate, over 9 languages
+#   a synthetic Go corpus  9 of the 12 shared classes saturate, 7 of the 8
+#                          stress classes are vacuous — 16 of 20 rows dead
+#   irregex-self-v1        all 20 discriminate, but the tree is monoglot Zig
+#                          and half the size
+#   ecosystem-v1           all 20 discriminate, over 9 languages
 #
 # Saturation is harmless for Layers A and D — they measure scan throughput, and
 # a class matching every file measures it fine. It is fatal here. The synthetic

@@ -1,4 +1,4 @@
-//! gist `rg` — the physical-line-grid emit modes.
+//! The `rg` face — the physical-line-grid emit modes.
 //!
 //! Everything that answers a file by walking its already-split lines.
 //! `file` is the dispatcher and the default `path:line:text`
@@ -178,7 +178,7 @@ pub fn file(self: *Emitter, path: []const u8, lines: []const []const u8) usize {
             // line is the hit and carries a row per span (framed `-`, with its
             // column). Gating on `is_m` alone printed the context line and
             // dropped every inverted match line: `rg -o -v -C1 -e bbb` over
-            // "aaa\nxbbbx\nccc" is `1:aaa`, `2-2-bbb`, `3:ccc` — gist emitted
+            // "aaa\nxbbbx\nccc" is `1:aaa`, `2-2-bbb`, `3:ccc` — we emitted
             // only `2-2-xbbbx`. The `--vimgrep` rows below already invert this
             // way; `-o` did not. (Found by the differential fuzzer.)
             const pattern_hit = is_m != o.invert;

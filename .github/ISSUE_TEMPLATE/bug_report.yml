@@ -53,7 +53,7 @@ body:
         - Rust binding
         - Go binding
         - the build itself (zig build / zig build test)
-        - through one of the faces (gist / relate / blast)
+        - through one of the product faces built on this library
     validations:
       required: true
 

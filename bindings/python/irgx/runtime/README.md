@@ -10,16 +10,16 @@ in-process C-ABI  →  resident session (UDS)  →  subprocess CLI
 
 The first two rungs are *product-shaped* — a warm session and a resident
 daemon belong to the library whose corpus they hold — so they live in that
-product's own package (`gist._native`, `gist._daemon`). What stays here is
+product's own package (its native and daemon modules). What stays here is
 what every face shares: finding a library or a binary, composing one cffi
 type universe, dispatching a verb, and decoding a row.
 
 - **`loader.py`** owns the face registry, library location, and the one
   `cdef` composition.
-- **`shell.py`** owns binary location (`gist` / `relate` / `blast` via owning
-  checkout or env), subprocess search, and `run_verb`.
-- **`analytic.py`** owns the verb ladder over `gist_run` / `relate_run` /
-  `blast_run`.
+- **`shell.py`** owns binary location (the exact, kinship, and composed faces
+  via owning checkout or env), subprocess search, and `run_verb`.
+- **`analytic.py`** owns the verb ladder over the three `<face>_run`
+  producers.
 - **`cold.py`** rebuilds the CLI's NDJSON through the same `Row` decoder.
 - **`decode.py`** owns the schema-driven row-to-record conversion.
 - **`params.py`** owns the five analytic parameter families.

@@ -1,4 +1,4 @@
-//! gist — positional-trigram candidate index (the proven baseline tier).
+//! irregex — positional-trigram candidate index (the proven baseline tier).
 //!
 //! A document that *contains a literal* must contain every trigram of that
 //! literal, so the AND of the per-trigram posting lists is a sound *candidate
@@ -187,7 +187,7 @@ pub const Index = struct {
         };
     }
 
-    /// `GIST_NO_KILN=1` forces the serial builder. Present so the two routes can
+    /// `<prefix>NO_KILN=1` forces the serial builder. Present so the two routes can
     /// be diffed against each other on a real corpus — the differential IS the
     /// proof that the block builder emits the same index — and so a suspected
     /// builder fault has a one-variable bisect that needs no rebuild.
@@ -344,7 +344,8 @@ pub const Index = struct {
         return borrowMapped(m);
     }
 
-    /// Borrow Gist's atomically-written LOCAL cache after directory validation.
+    /// Borrow this engine's atomically-written LOCAL cache after directory
+    /// validation.
     /// Touched groups validate lazily and return `Corrupt` for full-walk.
     pub fn fromTrustedMappedBytes(bytes: []const u8) LoadError!Index {
         const m = try blob.parseMapped(bytes);

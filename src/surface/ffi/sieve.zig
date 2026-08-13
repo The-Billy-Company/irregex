@@ -31,7 +31,7 @@
 //!
 //! ## Two verbs, two different corpora
 //!
-//! The artifacts describe the bytes that were on disk when `gist index` ran.
+//! The artifacts describe the bytes that were on disk when the index build ran.
 //! That is not a caveat, it is the load-bearing distinction between the two
 //! answering verbs:
 //!
@@ -153,8 +153,8 @@ pub const State = enum(i32) {
 };
 
 /// Open the persisted narrowing tier. `dir_len == 0` means the artifact home
-/// (`GIST_DIR`, else the tree's `.gist`); any other directory is a deliberate override and
-/// costs freshness — see `Sieve.homed`.
+/// (`<prefix>DIR`, else the tree's artifact directory); any other directory is a
+/// deliberate override and costs freshness — see `Sieve.homed`.
 ///
 /// `.stale` when no index has been built: a declinature, not a fault. There is
 /// nothing wrong, this corpus simply has no narrowing tier and the host should

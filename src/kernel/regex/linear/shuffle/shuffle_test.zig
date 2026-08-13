@@ -1,4 +1,4 @@
-//! gist — the composition rung under the Pike VM, which is the oracle.
+//! irregex — the composition rung under the Pike VM, which is the oracle.
 //!
 //! Four layers, in increasing order of how much they would have caught:
 //!   1. **kernel ≡ definition** — the vector fold against `lanes.reference`, the

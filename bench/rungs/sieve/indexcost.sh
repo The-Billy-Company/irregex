@@ -1,23 +1,23 @@
 #!/usr/bin/env bash
-# gist bench — Layer L's **index cost** arm: what each of the two trigram
+# irregex bench — Layer L's **index cost** arm: what each of the two trigram
 # indexes charges for the selectivity it delivers.
 #
 # Selectivity is only half of "is this index better". An index that admits
 # fewer candidate bytes by being four times the size and four times slower to
 # build has not won anything, so Layer L is fail-closed on cost as well as on
-# candidates (`gist/bench/certificate/report/indexq.py` refuses to splice a win
+# candidates (`bench/certificate/report/indexq.py` refuses to splice a win
 # outside the declared cost envelope). This script measures the cost half.
 #
 # Fairness is not re-litigated here: the vendored floor at
-# `bench/apparatus/field.sh` already owns the contract that csearch indexes
-# gist's EXACT corpus — the persisted `paths.list`, the doc→path table gist's own
+# `bench/apparatus/field.sh` already owns the contract that csearch indexes this
+# index's EXACT corpus — the persisted `paths.list`, the doc→path table our own
 # indexer emitted — so the two indexes cover byte-identical files. This script
 # SOURCES that file (it is a library, never executed) and reuses its paths and
 # its `cindex` invocation verbatim rather than keeping a second, driftable copy.
 #
 # It lives with Layer L rather than with the binary it times, which is the
 # ownership law read correctly: the *claim* is about this engine's index quality,
-# and that a `gist` build is what prices the gist side is a fact about the
+# and that a product build is what prices our side is a fact about the
 # apparatus. The floor resolves `PRODUCT` for exactly this reason, so the arm
 # reaches the shipped indexer without this package depending on it.
 #
@@ -93,7 +93,7 @@ open(sys.argv[2], "wb").write(b"\0".join(paths))
 cs_rss="$(cd "${CORPUS}" && peak_rss env CSEARCHINDEX="${COMPETE_DIR}/csearch.rss.idx" xargs -0 -a "${RSS_PATHS}" cindex)"
 rm -f "${COMPETE_DIR}/csearch.rss.idx"
 
-# ── gist ─────────────────────────────────────────────────────────────────────
+# ── this engine's index ──────────────────────────────────────────────────────
 t0="$(now)"
 (cd "${CORPUS}" && "${GIST_BIN}" index > /dev/null 2>&1)
 t1="$(now)"

@@ -1,4 +1,4 @@
-//! gist `rg` — raw bytes made legible to the matcher.
+//! irregex `rg` — raw bytes made legible to the matcher.
 //!
 //! Two steps, one answer to "what is actually being searched": the bytes are
 //! normalized into matchable UTF-8 (the `auto` encoding leg `ingest.zig`
@@ -97,8 +97,8 @@ fn nextSequence(b: []const u8) struct { len: usize, ok: bool } {
 /// by U+FFFD — the "replacement" error mode encoding_rs decodes in, and
 /// therefore what ripgrep's `-E utf-8` prints where the file's bytes are not
 /// actually UTF-8. Without this an explicit UTF-8 label was a pure passthrough
-/// and gist emitted the raw invalid bytes where rg emitted `�`; the divergence
-/// was found differentially by `gist/bench/conformance/rgsuite/fuzz.py` on a corpus of lone
+/// and irregex emitted the raw invalid bytes where rg emitted `�`; the divergence
+/// was found differentially by the rg-suite fuzzer on a corpus of lone
 /// continuation bytes.
 ///
 /// Borrows when the bytes are already valid — which is the overwhelming case for

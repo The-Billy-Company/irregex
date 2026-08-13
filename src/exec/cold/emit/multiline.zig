@@ -1,4 +1,4 @@
-//! gist `rg -U` — the whole-buffer match MODEL (no output).
+//! `rg -U` — the whole-buffer match MODEL (no output).
 //!
 //! Under `-U`/`--multiline` the linear engine already matches over a WHOLE
 //! buffer (`^`/`$` anchor at `\n` boundaries, `.` crosses `\n` only under

@@ -3,7 +3,7 @@
 //! `frame.writeAtomic` needs the finished bytes in one slice, which is right for
 //! a header-sized artifact and ruinous for a large one: `content.shard` is a
 //! concatenation of the whole corpus, so building it in order to seal it made
-//! `gist index` hold a SECOND full copy of every file it had just read —
+//! an index build hold a SECOND full copy of every file it had just read —
 //! measured at +1.75 GiB on a 1.9 GiB corpus, the largest single line item in
 //! the build's peak. Nothing about the format wanted that. A `signet` seal
 //! covers the bytes in order, so a rolling `Scribe` reaches the identical digest

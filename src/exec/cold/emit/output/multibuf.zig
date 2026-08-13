@@ -1,4 +1,4 @@
-//! gist `rg` — the whole-buffer (`-U`/`--multiline`) emit path.
+//! The `rg` face — the whole-buffer (`-U`/`--multiline`) emit path.
 //!
 //! Split from `output.zig`: the multiline twin of `grid.zig`. A `-U` match may
 //! cross `\n`, so there is no "the matching line" — rg prints the whole run of

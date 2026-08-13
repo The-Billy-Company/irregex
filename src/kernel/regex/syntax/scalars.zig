@@ -1,4 +1,4 @@
-//! gist — Unicode scalar ranges: the parse-time accumulator, and the three
+//! irregex — Unicode scalar ranges: the parse-time accumulator, and the three
 //! rewrites a FINISHED tree can still owe its flags.
 //!
 //! `ScalarSet` is scratch, not vocabulary — it exists only between reading a
@@ -240,11 +240,11 @@ pub fn wordBoundedAst(arena: std.mem.Allocator, ast: *Node) ParseError!*Node {
 /// it. Without this, `.` glues two CRLF-terminated lines into one match and a
 /// lone CR reads as ordinary text.
 ///
-/// A LITERAL `\r` is a class of one by the time the parse finishes, so it empties
-/// and the pattern becomes unmatchable. That is deliberate: rg refuses such a
-/// pattern outright (exit 2), and gist answers the same question with the clean
-/// no-match its hint channel explains, exactly as it already does for a literal
-/// `\n` in the per-line model.
+/// A LITERAL `\r` is a class of one by the time the parse finishes, so it
+/// empties and the pattern becomes unmatchable. That is deliberate: rg refuses
+/// such a pattern outright (exit 2), and this engine answers the same question
+/// with the clean no-match its hint channel explains, exactly as it already
+/// does for a literal `\n` in the per-line model.
 ///
 /// Zero-width assertions and structure are untouched. Idempotent, so re-visiting
 /// a node shared through `{n,m}` is harmless.

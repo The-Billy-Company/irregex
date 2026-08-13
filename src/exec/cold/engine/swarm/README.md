@@ -86,7 +86,6 @@ on the emitter.
 - **The elision oracle may arrive late.** Files walked before it loads are
   deferred, never blocked on, then re-judged once `Lazy.ready` flips — see
   [`../../quarry/elide.zig`](../../quarry).
-- **rg parity is the acceptance test.**
-  `gist/bench/conformance/gates/parity/line_parity.sh`, in the sibling
-  `gist` repo, runs the whole supported flag surface through both engines
-  and diffs against real ripgrep. No change here lands on inspection.
+- **rg parity is the acceptance test.** The face package's line-parity gate
+  runs the whole supported flag surface through both engines and diffs
+  against real ripgrep. No change here lands on inspection.

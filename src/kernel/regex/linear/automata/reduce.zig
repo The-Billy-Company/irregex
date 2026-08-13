@@ -1,4 +1,5 @@
-//! gist — collapsing a finished determinization down to the automaton it means.
+//! irregex — collapsing a finished determinization down to the automaton it
+//! means.
 //!
 //! A determinizer stops when it runs out of reachable states, and reachable is
 //! not the same as *distinguishable*. Both roads overshoot, for different

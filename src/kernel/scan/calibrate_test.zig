@@ -1,4 +1,4 @@
-//! gist — adverse suite for the calibrating anchor selector.
+//! irregex — adverse suite for the calibrating anchor selector.
 //!
 //! Every expectation here is derived from the CONTRACT, not from the module's
 //! arithmetic: the survivor count a pair costs is recomputed by a scalar sliding

@@ -150,9 +150,9 @@ const (
 	// dated. Not an error - just no basis for eliding a read.
 	Unanchored FreshState = 2
 	// Foreign means the anchor exists and dates somebody ELSE'S tree: artifacts
-	// from another checkout, pointed at by GIST_DIR. They are inert rather than
-	// wrong, and [Freshness.Anchor] is non-zero, which is how a host recognizes
-	// this rather than guessing.
+	// from another checkout, pointed at by the artifact-home env knob. They are
+	// inert rather than wrong, and [Freshness.Anchor] is non-zero, which is how
+	// a host recognizes this rather than guessing.
 	Foreign FreshState = 3
 )
 
@@ -200,9 +200,10 @@ type WinnowFacts struct {
 // memory-mapped, so a second open is cheap.
 type Sieve struct{ ptr *C.irgx_sieve }
 
-// OpenSieve opens the persisted artifacts in dir, or the artifact home
-// (GIST_DIR, else .gist) when dir is empty. Any other directory is a deliberate
-// override and costs freshness: see [Foreign].
+// OpenSieve opens the persisted artifacts in dir, or the artifact home (the
+// `<prefix>DIR` env knob, else the default artifact directory) when dir is
+// empty. Any other directory is a deliberate override and costs freshness: see
+// [Foreign].
 //
 // It returns [ErrNoIndex] when nothing has been indexed - a declinature, not a
 // failure, and not an empty index. Artifacts built over a different tree open

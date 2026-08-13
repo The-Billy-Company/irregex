@@ -1,7 +1,7 @@
 //! The one doorway from a directory handle to bytes — and the only place in the
 //! package where a POSIX/Windows difference is stated.
 //!
-//! gist's descent is *handle-relative*: a worker opens a directory once, then
+//! The descent here is *handle-relative*: a worker opens a directory once, then
 //! resolves each child against that open handle rather than re-walking an
 //! absolute path per entry. On POSIX that is `openat(dirfd, name)`; the kernel
 //! resolves one component instead of the whole prefix, which is most of why the
@@ -54,7 +54,7 @@ pub const Handle = std.posix.fd_t;
 /// and this constant is what it should have said instead.
 pub const invalid_handle: Handle = if (windows) w.INVALID_HANDLE_VALUE else -1;
 
-/// Whether this platform can host the resident session (`gist serve`).
+/// Whether this platform can host the resident session (the warm daemon).
 ///
 /// Everywhere, now — including Windows, whose `AF_UNIX` arrived in Windows 10
 /// 1803 and which the kernels here therefore declare as their floor
@@ -226,14 +226,15 @@ fn pollReadable(h: Handle, timeout_ms: i32) bool {
 /// that case: its depth cap is documented as covering "a platform where
 /// `realpath(3)` can't resolve a leg".
 ///
-/// **The answer is in gist's separator, not the platform's**, for the same reason
-/// `corpus/scope/paths.zig::slashed` normalizes a walker path: every consumer of a
-/// canonical path here treats it as a KEY, and those keys are `/`-spelled by
-/// declared design. They are not merely more convenient that way — they are
-/// parsed that way. The warm session's delta resolver locates a path inside its
-/// root by testing `path[root.len] == '/'` and then splits the remainder on `'/'`
-/// (`reconcile/delta.zig::keyFor`, `classify`); the `-L` cycle guard counts `'/'`
-/// to name the offending ancestor (`exec/cold/quarry/walk.zig::loopAncestor`).
+/// **The answer is in this package's separator, not the platform's**, for the
+/// same reason `corpus/scope/paths.zig::slashed` normalizes a walker path: every
+/// consumer of a canonical path here treats it as a KEY, and those keys are
+/// `/`-spelled by declared design. They are not merely more convenient that
+/// way — they are parsed that way. The warm session's delta resolver locates a
+/// path inside its root by testing `path[root.len] == '/'` and then splits the
+/// remainder on `'/'` (`reconcile/delta.zig::keyFor`, `classify`); the `-L`
+/// cycle guard counts `'/'` to name the offending ancestor
+/// (`exec/cold/quarry/walk.zig::loopAncestor`).
 /// Handed `C:\repo\src\x.zig`, every one of those silently answered "not under
 /// this root" — so on Windows the resident session's scoped reconcile degraded to
 /// a full walk on every query, and `-L` could not name a loop. Normalizing at
@@ -271,9 +272,10 @@ pub fn realpath(path: [*:0]const u8, buf: []u8) ?[:0]const u8 {
     return slashed(buf[0..n :0]);
 }
 
-/// `p` rewritten in place to gist's separator. Spelled here rather than borrowed
-/// from `corpus/scope/paths.zig::slashInPlace` because that module imports this
-/// one; one `replaceScalar` is a cheaper price than the import cycle.
+/// `p` rewritten in place to this package's separator. Spelled here rather than
+/// borrowed from `corpus/scope/paths.zig::slashInPlace` because that module
+/// imports this one; one `replaceScalar` is a cheaper price than the import
+/// cycle.
 fn slashed(p: [:0]u8) [:0]const u8 {
     if (comptime std.fs.path.sep != '/') std.mem.replaceScalar(u8, p, std.fs.path.sep, '/');
     return p;
@@ -388,7 +390,7 @@ pub fn scratchDir(buf: *[max_path]u8) []const u8 {
 /// `peb().NumberOfProcessors` — the count of the process's **primary processor
 /// group**, capped at 64. On a machine with more than 64 logical CPUs that is
 /// half the machine or less, and every pool sized from it (the parallel walk, the
-/// index build, `relate`'s sweeps, the render fan-out) runs at half width. It is
+/// index build, the kinship sweeps, the render fan-out) runs at half width. It is
 /// the same defect `std::thread::hardware_concurrency` still has
 /// ([microsoft/STL#5453](https://github.com/microsoft/STL/issues/5453)) and that
 /// Rust only just repaired for `available_parallelism`

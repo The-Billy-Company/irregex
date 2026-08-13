@@ -11,8 +11,8 @@ This harness answers the three questions that follow from that, each with its ow
 committed artifact: what the **sliver tier**
 (`src/corpus/index/trigrams/sliver.zig`) recovers on Layer D's own axis, over the
 same corpus and probe set so the columns are directly comparable; what a
-**positional** tier would cost against what it would buy; and how gist holds up
-against **zoekt** and **csearch** on a multi-GB corpus.
+**positional** tier would cost against what it would buy; and how this engine
+holds up against **zoekt** and **csearch** on a multi-GB corpus.
 
 ```bash
 cd <irregex-repo-root>
@@ -20,9 +20,9 @@ zig build scale -Doptimize=ReleaseFast     # table on stdout + machine-readable 
 GIST_SCALE_TRACE=1 zig build scale         # also print the filters each class offers
 ```
 
-Output: `<GIST_DIR>/scale_tiers.tsv` — the same artifact home `gist index` uses,
-so it lands at the repo-root `.gist/` by default (a `# k=v`
-provenance header, then one row per class).
+Output: `scale_tiers.tsv` in the artifact home (`<prefix>DIR`) — the same home
+an index build uses, so it lands in the repo-root artifact directory by default
+(a `# k=v` provenance header, then one row per class).
 
 ## What It Measures, And Why The Numbers Can Be Trusted
 
@@ -68,12 +68,13 @@ A **positional** tier stores where in a document a trigram occurs, so verify rea
 regions rather than whole documents — the axis Layer D calls the floor. It is
 deliberately **not implemented**, and the whole size/benefit surface behind that
 decision is committed at `artifact/positional_pareto.tsv`, measured by a
-standalone probe over gist's own trigram directory across a 19,440-document,
-188.2 MiB slice of the corpus at a 256-byte block. Two axes are swept: a trigram
-carries block positions only if its document frequency is below **T**, and at most
-**cap** blocks are stored per (trigram, document) — an over-cap posting drops its
-constraint, which is sound because dropping a constraint only widens the admitted
-region. Sidecar bytes are measured at real delta+varint encoding.
+standalone probe over this package's own trigram directory across a
+19,440-document, 188.2 MiB slice of the corpus at a 256-byte block. Two axes are
+swept: a trigram carries block positions only if its document frequency is below
+**T**, and at most **cap** blocks are stored per (trigram, document) — an
+over-cap posting drops its constraint, which is sound because dropping a
+constraint only widens the admitted region. Sidecar bytes are measured at real
+delta+varint encoding.
 
 - **`cap=8`** caps every trigram at 8 stored positions per document. At **T=0**
   (no positions carried) sidecar is 0 MiB and every probe pays doc-level cost:
@@ -111,22 +112,22 @@ they cost 39.8% of corpus at T=1024, 72.3% at T=4096, and **130.6% uncapped and
 uniform, a sidecar larger than the text it indexes**. Capping to 8 blocks per
 document holds the price to 18.6–57.8% and guts the benefit to 1.4–2.5×.
 
-Declined because of what the money buys: positions help the classes gist is
-_already_ fastest on (`literal-rare` admits 6.5% of corpus before any positional
-work, and csearch answers it in 4 ms at multi-GB scale), while the classes that
-actually cost seconds at scale carry no rare literal — `func` measures **1.0× at
-every threshold below uniform**. Compare the sliver tier above: **0 new bytes on
-disk**, and a 16.5× win over csearch at scale. gist's postings stay document-level
-by choice at a measured price. The decision is gated, not asserted: Layer J
-refuses to splice if any threshold costing ≤10% of corpus is ever measured
-delivering ≥2× on any probe.
+Declined because of what the money buys: positions help the classes this engine
+is _already_ fastest on (`literal-rare` admits 6.5% of corpus before any
+positional work, and csearch answers it in 4 ms at multi-GB scale), while the
+classes that actually cost seconds at scale carry no rare literal — `func`
+measures **1.0× at every threshold below uniform**. Compare the sliver tier
+above: **0 new bytes on disk**, and a 16.5× win over csearch at scale. Our
+postings stay document-level by choice at a measured price. The decision is
+gated, not asserted: Layer J refuses to splice if any threshold costing ≤10% of
+corpus is ever measured delivering ≥2× on any probe.
 
-## Scale: Gist Vs Zoekt Vs csearch
+## Scale: This Engine Vs Zoekt Vs csearch
 
 `scale_race.py` races the three indexed engines over a multi-GB corpus (shallow
 clones of linux, llvm, go, rust — 352,316 files / 5.5 GiB on disk) across the same
-canonical 12 classes, reusing `gist/bench/dominance/races/field.sh`'s fairness
-contract (`GIST_UNCAP=1`, one shared output mode) and `bench/apparatus/stats.py`
+canonical 12 classes, reusing `bench/apparatus/field.sh`'s fairness contract
+(`<prefix>UNCAP=1`, one shared output mode) and `bench/apparatus/stats.py`
 for medians, bootstrap CIs and the Mann-Whitney verdict. Artifacts:
 `scale_race.tsv`, `scale_build.tsv`, `scale_resident.tsv`, `scale_truth.tsv`,
 `scale_elision.tsv`.
@@ -136,11 +137,11 @@ python3 bench/rungs/sliver/scale_race.py --corpus <corpus> --gist-dir <gistdir> 
     --zoekt-dir <zoektdir> --csearch-idx <csearch.idx> --reps 5
 ```
 
-Headline: gist indexes 3.35 GiB of text in **26.0 s** (9.1× faster than zoekt,
-2.2× faster than csearch) into the smallest index (10.4% of its text, against
-zoekt's 8.7 GiB of shards), and against csearch — the rival that agrees with
-ripgrep about what exists — wins 5 classes, ties 3, loses 4, with the wins at the
-hard end (`literal-punct2` 16.5×, `regex-litalt` 9.4×, `regex-eol` 4.0×).
+Headline: this engine indexes 3.35 GiB of text in **26.0 s** (9.1× faster than
+zoekt, 2.2× faster than csearch) into the smallest index (10.4% of its text,
+against zoekt's 8.7 GiB of shards), and against csearch — the rival that agrees
+with ripgrep about what exists — wins 5 classes, ties 3, loses 4, with the wins
+at the hard end (`literal-punct2` 16.5×, `regex-litalt` 9.4×, `regex-eol` 4.0×).
 
 One loss is published unnormalised because it is real: **indexing peak RSS is
 4.56 GiB**, 1.6× csearch. It was 14.50 GiB — 5.1× — until the trigram build
@@ -149,7 +150,7 @@ blocks, and that is the row to re-measure after any builder change, because the
 verdict sentence in Layer J is derived from it rather than typed beside it.
 
 Query-time memory needs two metrics on macOS, and two wrong explanations for
-gist's ~575 MiB `maximum resident set size` were tried and retired before
+our ~575 MiB `maximum resident set size` were tried and retired before
 finding the real one. The first guess — that this was the cost of loading the
 389 MiB index — is refuted by `vmmap`: `index.gist` shows **11.5 MiB resident
 of 354.9 MiB mapped**, genuinely demand-paged rather than loaded whole. Two
@@ -163,7 +164,7 @@ tree of 336,780 files, since one touched byte costs a whole 16 KiB page on
 ARM64 — was retired too, by the matched pair against ripgrep in
 [Walk Cost](#walk-cost-the-matched-pair-against-ripgrep) below: if the cost
 were a property of walking, ripgrep would pay it walking the same tree, and it
-does not. The excess was gist's own *implementation* of walking, in two
+does not. The excess was our own *implementation* of walking, in two
 retentions that move different columns — held file mappings on `maxrss`, and a
 path materialized per walked entry on **owned** memory. Both are closed; that
 section carries the current pair.
@@ -171,9 +172,9 @@ section carries the current pair.
 Which is why the owned figures in `scale_resident.tsv` are stamped **pre-fix**
 rather than quoted here as current. They were captured while the walk still
 kept a copy of every path it walked in the immortal per-worker arena, so the
-familiar "flat at 93–96 MiB" reading now **overstates** what gist owns, by this
+familiar "flat at 93–96 MiB" reading now **overstates** what we own, by this
 corpus's arena term. What survives it is the *shape* of that row and the rival
-comparison, neither of which the walk's own retention touched: gist's owned
+comparison, neither of which the walk's own retention touched: our owned
 working set is flat across every query class where zoekt spends 558 MiB on one
 common term, and csearch still wins `maxrss` outright because it never walks.
 Refreshing the numbers themselves needs the multi-GB corpus with rebuilt
@@ -183,7 +184,7 @@ not a side effect of the change that invalidated them.
 ## Walk Cost: The Matched Pair Against Ripgrep
 
 `walkcost.py` is the instrument for the one comparison that decides whether a
-walk is expensive or gist's walk was: same needle, same `-uu` scope, same cwd,
+walk is expensive or ours was: same needle, same `-uu` scope, same cwd,
 both counting, both a fresh process with no index and no daemon on either side,
 so the only difference left is the implementation of walking. It carries the
 same two metrics, and reports the owned ratio as the one that is a cost. Artifact:
@@ -197,31 +198,31 @@ python3 bench/rungs/sliver/walkcost.py --root <tree> [--root <tree> …] \
 
 `--root` repeats because the answer is **corpus-shaped**, and that is not a
 caveat — it is the finding. Ripgrep's own footprint swings further between two
-real trees than gist's does, so one tree would let whoever picked it pick the
+real trees than ours does, so one tree would let whoever picked it pick the
 verdict. Both ends are published. The artifact is the source of truth and the
 shape below is what it looks like, not a second copy to keep in step — read
 `scale_walkcost.tsv` for this machine's current cells:
 
-| corpus | gist | ripgrep | owned ratio |
+| corpus | this engine | ripgrep | owned ratio |
 |---|--:|--:|--:|
 | `.etc/llvm-project` (193,744 files) | 69.6 / 57.0 MiB | 33.8 / 31.8 MiB | **1.79×** |
 | `.etc` (449,684 files) | 89.2 / 76.6 MiB | 112.4 / 110.4 MiB | **0.69×** |
 
 (`maxrss / owned`, zero-match `pgxpool`, 3 reps.) Layer J quotes the **worst** of
 them, never the best. On a deep C++ checkout ripgrep still wins; on a tree of many
-cloned repositories gist now owns less memory than ripgrep does for the same
+cloned repositories we now own less memory than ripgrep does for the same
 zero-match answer. Which is the point of measuring more than one: a lane that had
 only ever walked `.etc` would have reported a win it does not have everywhere.
 
 This is where both of the walk's own retentions were found, and they move
-different columns. On `maxrss`: gist mapped every large file it read and held all
-of them to exit, so its resident set tracked the corpus rather than the query —
-closed by dropping each mapping in the frame that rendered it. On **owned**: the
-walk materialized every path it walked in the immortal per-worker arena, and
-twice per entry, because the display path and the scope-relative path are the
-same slice on every walk but an explicitly-rooted one and `handleEntry` joined
-both. One prefix compare drops the second copy; the remaining joins moved onto
-the per-directory scratch a worker already recycles, leaving only the three
+different columns. On `maxrss`: the walk mapped every large file it read and
+held all of them to exit, so its resident set tracked the corpus rather than the
+query — closed by dropping each mapping in the frame that rendered it. On
+**owned**: the walk materialized every path it walked in the immortal per-worker
+arena, and twice per entry, because the display path and the scope-relative path
+are the same slice on every walk but an explicitly-rooted one and `handleEntry`
+joined both. One prefix compare drops the second copy; the remaining joins moved
+onto the per-directory scratch a worker already recycles, leaving only the three
 branches that outlive a directory owning arena memory — a queued child
 `DirTask`, a file deferred while the elision oracle is still loading, and a
 `--sort` record. Worth 26.4 MiB of worker arena down to 3.0 on llvm-project.
@@ -231,7 +232,7 @@ what it allocates per entry; those are the two things this pair is watching.
 
 That walk is also the one cause of the cheap-literal latency losses (~1.2 s over
 337,949 files), and it is the freshness contract being paid for, not overhead: a
-file created after all three indices were built is found by gist and by
+file created after all three indices were built is found by this engine and by
 ripgrep, and missed by **both** csearch and zoekt.
 
 ## Certificate Layer
@@ -255,7 +256,8 @@ It is fail-closed in three directions, and the third is the unusual one:
   is false and the reporter refuses to splice it. The honest "no" cannot rot into
   an excuse.
 
-Re-run standalone (`zig build scale` first; it writes into `GIST_DIR`):
+Re-run standalone (`zig build scale` first; it writes into the artifact home
+named by `<prefix>DIR`):
 
 ```bash
 cd <irregex-repo-root> && zig build scale -Doptimize=ReleaseFast

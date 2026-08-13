@@ -1,4 +1,4 @@
-//! irregex — the path-string vocabulary shared by corpus traversal, gist's
+//! irregex — the path-string vocabulary shared by corpus traversal, the
 //! serial/parallel engines, and the gitignore protocol.
 //!
 //! These helpers used to live as per-file copies; any drift between the
@@ -25,7 +25,7 @@ pub fn allocFailure() noreturn {
     std.process.exit(2);
 }
 
-/// A walker path in gist's separator.
+/// A walker path in this engine's separator.
 ///
 /// On a platform that already spells `/` this is the identity — `p` comes back
 /// untouched, no allocation, so the seam costs POSIX nothing at all. Only where
@@ -36,18 +36,18 @@ pub fn allocFailure() noreturn {
 /// until the next `next()` — which is all any consumer here needs.
 ///
 /// The walker joins with the PLATFORM's separator, so on Windows it hands back
-/// `sub\a.txt` — and gist speaks `/` everywhere, deliberately: the portability
-/// slate hashes stdout and diffs it against the NATIVE oracle, so one spelling
-/// on every platform is a gated claim rather than a preference. It is also what
-/// every consumer in this file already assumes — `rootDepth` and gist's
-/// `pathDepth` count `/`, the gitignore protocol matches the `/` a rule is
-/// written in, and every join here spells `/` literally. Normalizing at the two
-/// seams a walker path enters (gist's serial walk, the corpus `Haystack`) is what
-/// keeps those consumers from each needing a platform branch — and on Windows
-/// the unnormalized spelling silently defeated `.gitignore` rules containing a
-/// separator, plus `--max-depth`, in the serial engine.
+/// `sub\a.txt` — and irregex speaks `/` everywhere, deliberately: the
+/// portability slate hashes stdout and diffs it against the NATIVE oracle, so
+/// one spelling on every platform is a gated claim rather than a preference. It
+/// is also what every consumer in this file already assumes — `rootDepth` and
+/// the engine's `pathDepth` count `/`, the gitignore protocol matches the `/` a
+/// rule is written in, and every join here spells `/` literally. Normalizing at
+/// the two seams a walker path enters (the serial walk, the corpus `Haystack`)
+/// is what keeps those consumers from each needing a platform branch — and on
+/// Windows the unnormalized spelling silently defeated `.gitignore` rules
+/// containing a separator, plus `--max-depth`, in the serial engine.
 ///
-/// (This is where ripgrep and gist genuinely part: rg renders the native
+/// (This is where ripgrep and irregex genuinely part: rg renders the native
 /// separator while normalizing internally for matching. Same matching, different
 /// render — and a `/` render is what lets a captured expectation, a script, and
 /// an agent read identically on every platform.)
@@ -104,11 +104,11 @@ pub fn cwdRelative(a: std.mem.Allocator, io: std.Io, path: []const u8) []const u
 /// `workerMain` recycles after every directory, so a borrowed `disk` on a queued
 /// `DirTask` dangled by the time a worker opened it. That read garbage for the
 /// direct children of a `.` root: a lost subtree in a small tree, a SIGSEGV
-/// inside `openat`'s path copy in a large one — i.e. `gist --files .` and every
-/// bare `gist PATTERN` in a tree deep enough to recycle the scratch. Copying is
-/// one basename per root child, and it makes the lifetime unconditional so no
-/// future caller has to know which arm it took (descent's sibling `joinRel`
-/// already carries this note for the same reason).
+/// inside `openat`'s path copy in a large one — i.e. a `--files .` run and
+/// every bare `PATTERN` invocation in a tree deep enough to recycle the
+/// scratch. Copying is one basename per root child, and it makes the lifetime
+/// unconditional so no future caller has to know which arm it took (descent's
+/// sibling `joinRel` already carries this note for the same reason).
 ///
 /// Returns `error.OutOfMemory` rather than calling `allocFailure` because this
 /// is the one path helper the **library** reaches: every ignore-tier load under

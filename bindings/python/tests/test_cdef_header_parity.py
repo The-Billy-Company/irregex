@@ -4,8 +4,8 @@
 resolves an ABI-mode symbol lazily — so a stale name in the mirror is invisible
 until the call, and invisible *entirely* if the tier that would make the call is
 skipped for want of a library. That is exactly how the mirror kept declaring
-`gist_engine_open` for a while after the engine moved down into the substrate as
-`irgx_engine_open`: nothing compared the two texts.
+a face-prefixed `engine_open` for a while after the engine moved down into the
+substrate as `irgx_engine_open`: nothing compared the two texts.
 
 This gate compares them: for every function in the mirror, `include/irgx.h` must
 declare one of that name, with the same return type and the same parameter types
@@ -15,9 +15,10 @@ not checked at all.
 
 **One header, on purpose.** This gate reads `include/irgx.h` and nothing else,
 because the mirror it checks declares `irgx_*` and nothing else. A producer
-symbol belongs to the library that EXPORTS it, so `gist_run` is declared in
-`gist.h`, mirrored in `gist._native.CDEF`, and gated against that header in
-gist's repo. The result is that this suite needs no sibling checkout to run —
+symbol belongs to the library that EXPORTS it, so a `<face>_run` is declared in
+that face's own header, mirrored in that face's own native module, and gated
+against that header in its own repo. The result is that this suite needs no
+sibling checkout to run —
 anyone can clone this repo alone and get the same verdict — and no product's
 release can be blocked on the engine's, nor the engine's on a product's.
 """

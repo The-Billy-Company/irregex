@@ -1,9 +1,9 @@
-//! gist T4 RRF-ranking tests — split from `rank.zig` to keep each tier file lean
-//! and tests in a sibling. Pulled into `zig build test` via `root.zig`'s test
-//! block. Asserts the editorial fusion calls: a definition beats a far hotter
-//! call site (symbol weight), density-then-shallowness orders the rest, the
-//! optional external graph signal fuses in and is weight-controlled, and the
-//! trivial 0/1-doc sizes are well-defined.
+//! irregex T4 RRF-ranking tests — split from `rank.zig` to keep each tier file
+//! lean and tests in a sibling. Pulled into `zig build test` via `root.zig`'s
+//! test block. Asserts the editorial fusion calls: a definition beats a far
+//! hotter call site (symbol weight), density-then-shallowness orders the rest,
+//! the optional external graph signal fuses in and is weight-controlled, and
+//! the trivial 0/1-doc sizes are well-defined.
 
 const std = @import("std");
 const rank_mod = @import("rank.zig");

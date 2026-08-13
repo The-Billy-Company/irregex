@@ -7,8 +7,8 @@
 //! error rather than a terminated host, which is the property that made
 //! subprocess the floor of the ladder in the first place.
 //!
-//! Three binaries wear the one engine — `gist` (exact), `relate` (compression),
-//! `irregex` (composed) — so resolution is by name with a per-binary env
+//! Three binaries wear the one engine — the exact face, the compression face,
+//! and the composed face — so resolution is by name with a per-binary env
 //! override. The parsers for the two *human-shaped* streams live here too:
 //! ripgrep's `--json` records, and the `--rank` view, which predates `--json`
 //! and still prints for people.
@@ -46,10 +46,10 @@ const UNSUPPORTED_MARKERS: &[&str] = &[
 // `engine` choice lifts it and a PCRE2 retry only fails again. The engine prints
 // this line ONLY after asking PCRE2 and being refused too
 // (`writ/arm.zig: blame`), so it is that probe's answer rather than a guess —
-// the same split the C ABI draws as `GIST_STALE` vs a `BadPattern` fault.
+// the same split the C ABI draws as `IRGX_STALE` vs a `BadPattern` fault.
 const MALFORMED_MARKER: &str = "no engine here compiles it";
 
-/// Absolute path to the `gist` binary.
+/// Absolute path to the exact face's binary.
 ///
 /// # Errors
 /// [`Error::NotFound`] when no binary resolves.
@@ -111,16 +111,17 @@ const ASCENT: usize = 16;
 ///
 /// Two anchors, because this file is read in two unrelated situations and
 /// neither one alone covers both. The **working directory** is the runtime
-/// truth and is what the Go binding walks: `cargo test` inside
-/// `blast/bindings/rust` stands in the blast checkout no matter which crate
-/// compiled this source. **`CARGO_MANIFEST_DIR`** is baked in at compile time,
-/// and — because `env!` expands where it is written — it names *this* crate's
-/// directory even when relate or blast is the consumer. That is why it cannot
-/// be the only anchor: from blast it can only ever describe irregex's tree,
-/// which is the reason asking it for `relate` used to be unanswerable. It is
-/// kept as the second anchor for a host that has chdir'd away from its
-/// checkout, and it is harmlessly inert for a crates.io consumer, whose
-/// manifest dir is a registry path holding no `zig-out` and no `build.zig`.
+/// truth and is what the Go binding walks: `cargo test` inside a face
+/// package's `bindings/rust` stands in that face's checkout no matter which
+/// crate compiled this source. **`CARGO_MANIFEST_DIR`** is baked in at compile
+/// time, and — because `env!` expands where it is written — it names *this*
+/// crate's directory even when a face package is the consumer. That is why it
+/// cannot be the only anchor: from a face's checkout it can only ever describe
+/// irregex's tree, which is the reason asking it for a sibling face used to be
+/// unanswerable. It is kept as the second anchor for a host that has chdir'd
+/// away from its checkout, and it is harmlessly inert for a crates.io consumer,
+/// whose manifest dir is a registry path holding no `zig-out` and no
+/// `build.zig`.
 fn anchors() -> Vec<PathBuf> {
     let mut from = Vec::with_capacity(2);
     if let Ok(cwd) = env::current_dir() {
@@ -141,9 +142,9 @@ fn anchors() -> Vec<PathBuf> {
 /// anywhere up the chain, then the sibling checkout that owns the name. All
 /// three are describing the same fact about one filesystem, so they must agree.
 ///
-/// The four packages are flat siblings of one workspace — `relate` sits at
-/// `../relate/zig-out/bin/relate` whether the process runs inside irregex or
-/// blast — and a sibling is only believed when it carries the `build.zig` that
+/// The four packages are flat siblings of one workspace — a face named `<name>`
+/// sits at `../<name>/zig-out/bin/<name>` whichever checkout the process runs
+/// inside — and a sibling is only believed when it carries the `build.zig` that
 /// makes it that package's checkout rather than a directory that happens to
 /// share a name.
 ///
@@ -299,9 +300,9 @@ fn nonempty(s: &str, fallback: &str) -> String {
     }
 }
 
-/// Run `gist rg <flags> <tail> --regexp <pattern> [paths]` under the request's
-/// timeout. `--regexp` carries the pattern so it can never be mistaken for a
-/// flag or a path.
+/// Run the exact face as `rg <flags> <tail> --regexp <pattern> [paths]` under
+/// the request's timeout. `--regexp` carries the pattern so it can never be
+/// mistaken for a flag or a path.
 fn invoke(tail: &[&str], request: &SearchRequest) -> Result<Output> {
     let bin = binary()?;
     let mut cmd = Command::new(&bin);
@@ -318,10 +319,10 @@ fn invoke(tail: &[&str], request: &SearchRequest) -> Result<Output> {
 
 /// How long a drained stream may stay open *after* its child exited before the
 /// bytes already read are taken as the whole answer. The engine self-spawns a
-/// resident `gist serve` daemon for warm-eligible queries, and that grandchild
-/// inherits the write end of our pipe — so waiting for EOF can outlive the
-/// query by the daemon's whole lifetime. Everything the child itself wrote is
-/// in the pipe before it exits, so the wait is only ever for a closer.
+/// resident daemon for warm-eligible queries, and that grandchild inherits the
+/// write end of our pipe — so waiting for EOF can outlive the query by the
+/// daemon's whole lifetime. Everything the child itself wrote is in the pipe
+/// before it exits, so the wait is only ever for a closer.
 const DRAIN_GRACE: Duration = Duration::from_millis(250);
 
 const POLL: Duration = Duration::from_millis(5);
@@ -448,8 +449,8 @@ pub fn count(request: &SearchRequest) -> Result<usize> {
         .sum())
 }
 
-/// The persisted-index report (`gist status`) — is an index ready, how fresh,
-/// how big. Read-only; safe to call blind.
+/// The persisted-index report (a face's `status` verb) — is an index ready, how
+/// fresh, how big. Read-only; safe to call blind.
 ///
 /// # Errors
 /// [`Error::NotFound`] when no binary resolves, [`Error::Io`] on spawn failure.
@@ -460,7 +461,8 @@ pub fn status() -> Result<String> {
     Ok(spawn_with_timeout(cmd, DEFAULT_TIMEOUT)?.stdout)
 }
 
-/// Build or refresh a persisted artifact (`gist index`, `relate index`).
+/// Build or refresh a persisted artifact (a trigram index build, a kinship
+/// atlas build).
 ///
 /// # Errors
 /// [`Error::NotFound`] when no binary resolves, [`Error::Failed`] on a non-zero
@@ -472,7 +474,7 @@ pub fn lifecycle(bin: &'static str, env_var: &'static str, args: &[&str]) -> Res
     Ok(check(spawn_with_timeout(cmd, DEFAULT_TIMEOUT)?, &path)?.stdout)
 }
 
-/// The driven binary's semver (from `gist --version`).
+/// The driven binary's semver (from its `--version`).
 ///
 /// # Errors
 /// [`Error::NotFound`] when no binary resolves, [`Error::Io`] on spawn failure.
@@ -481,7 +483,7 @@ pub fn version() -> Result<String> {
     let mut cmd = Command::new(&bin);
     cmd.arg("--version");
     let out = spawn_with_timeout(cmd, DEFAULT_TIMEOUT)?;
-    // `gist 0.1.0` → `0.1.0`. Current binaries answer on stdout (rg parity);
+    // `<name> 0.1.0` → `0.1.0`. Current binaries answer on stdout (rg parity);
     // stderr is the fallback for one that predates that, so either is read.
     let banner = if out.stdout.trim().is_empty() {
         out.stderr

@@ -1,4 +1,4 @@
-//! gist — the shuffle primitive's own differential: hardware against the
+//! irregex — the shuffle primitive's own differential: hardware against the
 //! portable statement of it, on whichever architecture is running.
 //!
 //! Every other differential in this package holds a vector kernel to a scalar

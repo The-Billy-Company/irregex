@@ -1,6 +1,6 @@
 # Crest — Forced-Class-Run Pruning
 
-Crest is a sound necessary condition for regex candidate pruning that complements Gist's required-literal trigram extractor on literal-free class repetitions such as `[0-9a-f]{8}`, `[0-9]{6}`, and `[A-Z]{4}`, the Certificate's `regex-classcount` hole. A different n-gram implementation could enumerate a large OR-union of class trigrams instead; Crest avoids that expansion.
+Crest is a sound necessary condition for regex candidate pruning that complements this engine's required-literal trigram extractor on literal-free class repetitions such as `[0-9a-f]{8}`, `[0-9]{6}`, and `[A-Z]{4}`, the Certificate's `regex-classcount` hole. A different n-gram implementation could enumerate a large OR-union of class trigrams instead; Crest avoids that expansion.
 
 Per document, v6 indexes the top four maximal runs for 48 fixed predicates:
 15 workload predicates over ASCII/scalar/codepoint alphabets plus exact pinned-
@@ -13,7 +13,7 @@ The prune rule follows directly: a document whose crest falls below every altern
 
 ## Why This Is A New Object
 
-Every surveyed production candidate filter reduces a pattern to required substrings and tests presence, so a pattern with no extractable literal degenerates to a full scan; Gist's own trigram prefilter is in that family, and its Certificate records the hole honestly at `cand% = 100%` on `regex-classcount`.
+Every surveyed production candidate filter reduces a pattern to required substrings and tests presence, so a pattern with no extractable literal degenerates to a full scan; this engine's own trigram prefilter is in that family, and its Certificate records the hole honestly at `cand% = 100%` on `regex-classcount`.
 
 The closest published neighbor, Bannai et al.'s *Text Indexing for Simple Regular Expressions* (CPM 2025), does index text by class-run structure, so that idea is prior art and Crest does not claim to originate it. Their indexed object is a window of `k` distinct symbols rather than the longest run of a fixed class, they store no per-document signature, and their exactness theorem requires an anchor outside the class; Crest's motivating query, `[0-9a-f]{12}`, is exactly the anchorless case their own lower bound proves has no efficient exact index, which is why a false-positive-tolerant sieve occupies different ground.
 
@@ -23,7 +23,7 @@ Crest deliberately does not claim to subsume the trigram index; it is complement
 
 ## The Disjunctive Sieve
 
-A single forced-crest vector is a weaker query language than the grammar supplies, because folding `R₁|R₂` into one componentwise minimum discards which branch a match actually satisfies. Multi-pattern search reaches gist's engine as one alternation, so before this fix every multi-pattern query collapsed to an all-zero vector and ran with the sieve silently disarmed.
+A single forced-crest vector is a weaker query language than the grammar supplies, because folding `R₁|R₂` into one componentwise minimum discards which branch a match actually satisfies. Multi-pattern search reaches the engine as one alternation, so before this fix every multi-pattern query collapsed to an all-zero vector and ran with the sieve silently disarmed.
 
 The fix keeps the branches apart. The *swell* is one forced crest per top-level alternative, and a document is pruned only when it clears none of them, which is never less selective than the folded version and is often far more so.
 
@@ -72,8 +72,8 @@ Reproduce the proof harness and the persisted index from the repository root.
 cd <irregex-repo-root>
 zig build crest       # exploratory proof → .local/crest-evidence/
 zig build test        # kernel + sidecar unit tests ride the main suite
-gist index            # persists crest.bin beside index.gist
-gist '[0-9a-f]{12}'   # the sieve elides pruned reads in production
+<face> index          # persists crest.bin beside the trigram index
+<face> '[0-9a-f]{12}' # the sieve elides pruned reads in production
 python3 bench/rungs/crest/evidence/crest_evidence.py package
 ```
 
@@ -88,7 +88,7 @@ The repair changes candidate selectivity, so this document carries no inherited 
 Crest is integrated with q=1 as the production query default and q=4 carried
 end to end for held-out evaluation. A dated adversarial search found no prior
 instance of the full composite as of 2026-07-20 (`PRIOR_ART.md`), which is not
-proof of global novelty. `gist index` persists the columnar v6 sidecar, and
+proof of global novelty. An index build persists the columnar v6 sidecar, and
 both cold read-elision paths consume it through the cost-gated runtime;
 caseless and Unicode analysis retain the Alphabet Contract (`PROOF.md` §3.7).
 

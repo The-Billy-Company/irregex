@@ -15,9 +15,9 @@ what makes the same suite valid in both places.
 
 - **`test_iteration.py`** proves zero-width and nullable patterns follow the
   two rules that produce the engine's answer, against the hand-rolled loop
-  that would give a different one. The same sequence is held to `gist
-  --json`, the authority the header names, in gist's own suite - that
-  comparison needs gist's binary, so it lives where the binary is built.
+  that would give a different one. The same sequence is held to the exact
+  face's `--json`, the authority the header names, in that face's own suite -
+  that comparison needs its binary, so it lives where the binary is built.
 - **`test_unicode.py`** covers codepoint indices versus byte offsets, case
   folding past ASCII, and the `str`/`bytes` wall.
 - **`test_threads.py`** holds one module-level `Pattern` live across many
@@ -43,9 +43,9 @@ what makes the same suite valid in both places.
   what `include/irgx.h` says it does, so a renamed C symbol fails here
   instead of staying invisible until a call nobody happened to make.
 - **`test_contract_substrate.py`** asserts the `irgx.contract` mirror has not
-  drifted from the canonical `engine.toml` and `analytic.toml`, from relate's
-  vendored `kinship.toml`, or from which library each verb actually routes
-  to.
+  drifted from the canonical `engine.toml` and `analytic.toml`, from the
+  kinship package's vendored `kinship.toml`, or from which library each verb
+  actually routes to.
 - **`test_rows.py`** decodes the analytic row plane against synthesized value
   arrays rather than a captured answer, so it can force the cases a real
   cursor rarely hits: an absent field, an ordinal newer than this table

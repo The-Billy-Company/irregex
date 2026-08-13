@@ -1,4 +1,4 @@
-//! gist — the anchor decision priced on the buffer being searched.
+//! irregex — the anchor decision priced on the buffer being searched.
 //!
 //! `simd.zig::indexOfPos` filters `block_bytes`-wide blocks on the conjunction
 //! of two byte equalities at needle offsets `(probe, confirm)`. That choice is
@@ -118,7 +118,7 @@
 //! first+last and never calls `select`).
 //!
 //! **MEASURED REACH, 2026-07-30** (M4, single-threaded, child CPU, best of 7,
-//! interleaved in-binary A/B via `GIST_NO_CALIBRATE`. Corpus: a 200 MB buffer whose
+//! interleaved in-binary A/B via `<prefix>NO_CALIBRATE`. Corpus: a 200 MB buffer whose
 //! alphabet is the statically-rare bytes, holding needles whose locally-rarest byte
 //! the shipped table ranks common — `zeqXtj`, `tzeQjq`, `ezQtj`, three of them so a
 //! row is not one needle's luck. Wall clock on a 200 MB mmap is mostly page-fault

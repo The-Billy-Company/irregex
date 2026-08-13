@@ -1,11 +1,12 @@
 //! A materialized analytic answer, and your position in it.
 //!
 //! Substrate, because the *walking* is the same question no matter who
-//! produced the rows: `gist` sweeping patterns, `relate` measuring kinship, and
-//! `blast` composing the two all hand a host the same thing — a run of
-//! self-describing rows plus the answer-level facts no row carries. Only the
-//! producing is per-package. So each library exports its own `…_run`, and every
-//! one of them returns THIS, walked by the one set of `irgx_rows_*` symbols.
+//! produced the rows: the exact face sweeping patterns, the kinship face
+//! measuring kinship, and the composed face joining the two all hand a host the
+//! same thing — a run of self-describing rows plus the answer-level facts no
+//! row carries. Only the producing is per-package. So each library exports its
+//! own `…_run`, and every one of them returns THIS, walked by the one set of
+//! `irgx_rows_*` symbols.
 //!
 //! That split is what keeps a host from learning three cursor protocols to ask
 //! three questions, and it costs nothing to arrange: an `Answer` holds an

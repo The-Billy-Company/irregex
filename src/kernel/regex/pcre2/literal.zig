@@ -1,4 +1,4 @@
-//! gist — sound required-literal extraction for the PCRE2 trigram prefilter.
+//! irregex — sound required-literal extraction for the PCRE2 trigram prefilter.
 //!
 //! The trigram index prunes a query's read set to files whose bytes could
 //! contain the pattern's *required literal* — the longest contiguous run of

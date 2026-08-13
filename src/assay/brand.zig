@@ -1,20 +1,20 @@
 //! assay/brand — the program identity this engine answers as.
 //!
-//! This kernel is embeddable, and more than one program already rides it:
-//! `gist`, `relate`, and `blast` are three binaries in three sibling repos over
-//! this one library, and an embedder may stand a fourth up under its own name. Three facts separate a
-//! program from the engine inside it — the name that opens a diagnostic line,
-//! the namespace its environment knobs live in, and the directory its artifacts
-//! are written to — and every one of them used to be the literal string `gist`,
-//! spelled out at ~80 call sites. The cost was visible: running `relate`, a bad
-//! `GIST_HYPERLINK` was reported as `gist: note: …`, naming a program the user
-//! was not running.
+//! This kernel is embeddable, and more than one program already rides it: the
+//! product faces are separate binaries in sibling repos over this one library,
+//! and an embedder may stand another up under its own name. Three facts
+//! separate a program from the engine inside it — the name that opens a
+//! diagnostic line, the namespace its environment knobs live in, and the
+//! directory its artifacts are written to — and every one of them used to be
+//! one hardcoded literal, spelled out at ~80 call sites. The cost was visible:
+//! a bad hyperlink knob was reported under the default name, naming a program
+//! the user was not running.
 //!
 //! Identity now arrives the way `std.options` does — the root module declares
 //! it, the library reads it, a caller who declares nothing gets the default:
 //!
 //! ```zig
-//! pub const irgx_brand: irregex.Brand = .{ .name = "relate" };
+//! pub const irgx_brand: irregex.Brand = .{ .name = "<binary>" };
 //! ```
 //!
 //! Because it resolves at comptime, a knob name is still a string literal by the
@@ -23,9 +23,9 @@
 //! default emits the bytes it always did.
 //!
 //! The three fields deliberately do NOT move together. `name` is per-binary:
-//! `relate` should say `relate:`, because that is what the user typed.
+//! a program signs its own name, because that is what the user typed.
 //! `env_prefix` and `artifact_dir` are per-ECOSYSTEM: the sibling binaries share
-//! one trigram index, one kinship atlas, and one `GIST_TRACE`, so they have to
+//! one trigram index, one kinship atlas, and one `<prefix>TRACE`, so they have to
 //! agree on where those live or a warm tier written by one is invisible to the
 //! next. Only an embedder standing the engine up under its own name moves those,
 //! and it moves them together.
@@ -33,8 +33,9 @@
 const std = @import("std");
 const root = @import("root");
 
-/// Who this program is. Defaults are the historical `gist` spellings, so a
-/// compilation that declares nothing is byte-for-byte what it was.
+/// Who this program is. The defaults below are the ecosystem's original
+/// spellings, so a compilation that declares nothing is byte-for-byte what it
+/// was.
 pub const Brand = struct {
     /// Opens every diagnostic line this program signs: `<name>: note: …`.
     /// Per-binary — it should be the name the user typed.
@@ -50,7 +51,7 @@ pub const Brand = struct {
 
 /// This compilation's identity: the root module's `irgx_brand` when it
 /// declares one, else the default. A test runner, a C-ABI host, and any binary
-/// that never opts in all land on `gist`.
+/// that never opts in all land on the default identity.
 pub const active: Brand = if (@hasDecl(root, "irgx_brand")) root.irgx_brand else .{};
 
 /// The full name of a branded environment knob — `active.env_prefix ++ suffix`,
@@ -60,7 +61,7 @@ pub fn knobName(comptime suffix: []const u8) [*:0]const u8 {
     return (full ++ "\x00")[0..full.len :0].ptr;
 }
 
-test "the default identity is the historical gist spelling" {
+test "the default identity is the original spelling" {
     try std.testing.expectEqualStrings("gist", active.name);
     try std.testing.expectEqualStrings("GIST_", active.env_prefix);
     try std.testing.expectEqualStrings(".gist", active.artifact_dir);

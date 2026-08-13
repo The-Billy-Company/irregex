@@ -177,8 +177,8 @@ func sweepArgv(op analytic.Op, s analytic.Sweep) []string {
 // composeArgv lowers the both-engines verbs. context and family are the exact
 // engine narrowing a candidate set for a retrieval or repetition question, which
 // the CLI now spells as `--matching` on those verbs rather than as separate ones;
-// provenance and blast remain their own face because their answers are shapes
-// neither kinship nor retrieval has.
+// provenance and change radius remain their own face because their answers are
+// shapes neither kinship nor retrieval has.
 func composeArgv(op analytic.Op, c analytic.Compose) ([]string, string, error) {
 	narrow := func() []string {
 		argv := []string{}

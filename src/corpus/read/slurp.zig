@@ -1,4 +1,4 @@
-//! gist `rg` — one candidate's bytes, off disk.
+//! irregex `rg` — one candidate's bytes, off disk.
 //!
 //! The read strategy every walk engine shares: a two-stage open (the first
 //! `BUFCAP` bytes now, the tail only if still wanted), a plain drain into a
@@ -23,9 +23,9 @@ pub const BUFCAP: usize = 65536;
 /// no match is exit 1; a file that will not open at all is a gap in what was
 /// searched, and ripgrep reports it on stderr and exits 2 even when other files
 /// matched. Returning `?` for both made an unreadable file present as a silent
-/// "found nothing here" — measured against live rg by `gist/bench/conformance/rgsuite/fuzz.py`,
-/// which is where this seam came from. `notice.WalkFault` already covers this
-/// set, so the shared renderer takes these errors unchanged.
+/// "found nothing here" — measured against live rg by the differential rg-suite
+/// fuzzer, which is where this seam came from. `notice.WalkFault` already
+/// covers this set, so the shared renderer takes these errors unchanged.
 pub const OpenFault = std.posix.OpenError;
 
 /// One candidate's raw bytes: POSIX open/read/close into the caller's reused
@@ -53,8 +53,8 @@ pub fn readFileInto(path: []const u8, scratch: []u8) ?usize {
 }
 
 /// Fill `buf` from `fd`; returns bytes read. A short read on a regular
-/// local file means EOF (the walk only yields regular files, and gist's
-/// corpus model is a local filesystem — see `corpus/README.md`), so the
+/// local file means EOF (the walk only yields regular files, and the corpus
+/// model here is a local filesystem — see `corpus/README.md`), so the
 /// common sub-cap file costs ONE read syscall, not read-then-read-zero.
 fn drain(fd: std.posix.fd_t, buf: []u8) usize {
     var n: usize = 0;
@@ -126,7 +126,7 @@ pub const Body = struct { bytes: []const u8, map: ?portal.Mapping = null };
 /// memory-MAPPED read-only rather than slurped through a read loop: the copy
 /// loop paid 2× the bytes (kernel→ArrayList reads plus growth memcpys) on
 /// multi-GB leaked-in blobs (explicit-root scoping admits gitignored
-/// training corpora — `gist pat services libs` spent ~0.5 s copying one 2.1 GB
+/// training corpora — a `pat services libs` run spent ~0.5 s copying one 2.1 GB
 /// text file rg mmaps in ~0.2 s), while the map costs one syscall, faults in
 /// only the pages the SIMD gate actually touches before its first hit, and
 /// rides the page cache across runs. ripgrep's own default does the same for

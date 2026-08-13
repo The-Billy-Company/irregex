@@ -1,4 +1,4 @@
-//! gist — the ON-DEMAND driver of the subset construction: the same automaton
+//! irregex — the ON-DEMAND driver of the subset construction: the same automaton
 //! `powerset.zig` builds, except a state is determinized the first time a haystack
 //! actually walks into it. RE2 / rust-`regex`'s hybrid DFA, in this package's shape.
 //!

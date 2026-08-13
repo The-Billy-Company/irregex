@@ -3,13 +3,13 @@
 //! The parallel walk's floor is syscalls: `openat` + `getattrlistbulk` +
 //! `close` for every directory in the corpus (~5k dirs ⇒ ~50 ms wall on this
 //! repo), paid on every cold query just to re-learn a tree that almost never
-//! changed. This artifact removes that floor. `gist index` walks the tree once
-//! with the QUERY engine's default admission semantics (gitignore + hidden +
-//! `.git`, never the corpus build's `isSkipDir` policy) and records, for every
-//! directory it enters, the raw name+kind membership of ALL direct children —
-//! including children the default walk then prunes (a hidden or gitignored
-//! subdir), so a query-side whitelist (`-g` forcing an ignored file back in)
-//! can detect exactly when the snapshot cannot serve it.
+//! changed. This artifact removes that floor. An index build walks the tree
+//! once with the QUERY engine's default admission semantics (gitignore +
+//! hidden + `.git`, never the corpus build's `isSkipDir` policy) and records,
+//! for every directory it enters, the raw name+kind membership of ALL direct
+//! children — including children the default walk then prunes (a hidden or
+//! gitignored subdir), so a query-side whitelist (`-g` forcing an ignored file
+//! back in) can detect exactly when the snapshot cannot serve it.
 //!
 //! A later query proves a directory's snapshot record still true with ONE
 //! `lstat`: POSIX bumps a directory's mtime (and ctime) whenever its direct

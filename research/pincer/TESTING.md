@@ -25,7 +25,7 @@ Integration (§7.2.e) — a second spike, also absent:
 | --- | --- |
 | `sweep.zig` | one hit-to-hit kernel sweep under the lazy, static, and calibrated plans; asserts the three hit counts agree before reporting times |
 | `probe.zig` | per-needle survivor counts for static / refined / best, i.e. the headroom the improvement test is deciding over |
-| `bigab.py` | in-binary CPU A/B across the literal modes, `GIST_NO_CALIBRATE` as the only variable |
+| `bigab.py` | in-binary CPU A/B across the literal modes, `<PREFIX>_NO_CALIBRATE` as the only variable |
 | `regexab.py` | the same for a regex carrying a required literal |
 | `diffall.py` | 420-invocation output differential, calibrated vs static arm of one binary |
 
@@ -167,9 +167,9 @@ way.
    select adjacent offsets — plus the table's rank-inversion and lowercase-
    distinguishability invariants.
 3. Output equivalence is proven three ways rather than argued: the mined ripgrep
-   suite (`gist/bench/conformance/rgsuite/run.py`, which ships in the `gist`
-   package — 411/411 on both the parallel and serial engines), its differential
-   fuzz companion (residual unchanged, and identical with `GIST_NO_CALIBRATE=1`,
+   suite (the face package's `bench/conformance/rgsuite/run.py`, which ships in
+   that package — 411/411 on both the parallel and serial engines), its differential
+   fuzz companion (residual unchanged, and identical with `<PREFIX>_NO_CALIBRATE=1`,
    so the one remaining `line-content` case is not this), and
    an in-binary differential over 420 mode×needle×corpus invocations comparing the
    calibrated and static arms of the *same* binary byte for byte.

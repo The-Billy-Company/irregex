@@ -4,7 +4,7 @@
 //! hot loop: splat first+last needle byte, vector-compare both
 //! lanes across a V-wide window, AND the masks, `@ctz`-verify survivors. The
 //! copy is drift-guarded by `probes_test.zig`, which feeds identical inputs to
-//! this function AND the real `gist.simd.contains` and asserts bit-identical
+//! this function AND the real `scan.simd.contains` and asserts bit-identical
 //! results — so if the production loop changes, this probe must too, or CI fails.
 //!
 //! One loop iteration is bracketed, unconditionally, by `# LLVM-MCA-BEGIN/END`

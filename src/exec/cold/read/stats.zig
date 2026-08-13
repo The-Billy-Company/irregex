@@ -1,7 +1,7 @@
-//! gist `rg` — the search tally.
+//! The `rg` face — the search tally.
 //!
 //! One counter schema behind rg's `--stats` block, the `--json` summary record
-//! (`emit/json.zig`), and the `GIST_TRACE=query` stderr diagnostic, plus the
+//! (`emit/json.zig`), and the `<prefix>TRACE=query` stderr diagnostic, plus the
 //! per-file count that feeds them. Both walk engines fold into the same
 //! `Stats`, so a parallel run's reported numbers cannot drift from a serial
 //! one's — the difference between the two engines is scheduling, never
@@ -44,9 +44,9 @@ pub const FileStat = struct { matches: usize, lines: usize, bytes: usize };
 /// ripgrep tallies that counter inside its STANDARD printer alone, so every
 /// summary shape — `-l`, `--files-without-match`, `-c`, `--count-matches` —
 /// reports `0 bytes printed` however many path or tally bytes it emitted, and so
-/// does `-q`, which emits nothing. gist used to report its own output buffer's
+/// does `-q`, which emits nothing. We used to report our own output buffer's
 /// length in those modes (`14 bytes printed` where rg said `0`); the divergence
-/// was caught differentially by `gist/bench/conformance/rgsuite/fuzz.py`. Both walk engines route
+/// was caught differentially by the rgsuite fuzzer. Both walk engines route
 /// through here so the two cannot answer it differently.
 pub fn bytesPrinted(o: Opts, written: usize) usize {
     return if (o.quiet or o.mode.enumerates()) 0 else written;
@@ -113,8 +113,8 @@ pub fn fileMatchStats(re: *const Matcher, a: std.mem.Allocator, o: Opts, body: [
             // the standard printer reports `0 matches` (an inverted line carries
             // no span to count) while every summary printer — `-c`,
             // `--count-matches`, `-l`, `--files-without-match` — reports one per
-            // inverted line. Both measured against live rg;
-            // `gist/bench/conformance/rgsuite/fuzz.py` is the oracle.
+            // inverted line. Both measured against live rg; the rgsuite
+            // differential fuzzer is the oracle.
             m += if (o.invert) @intFromBool(o.mode.enumerates()) else hits;
             last_hit_end = lineEnd(body, line);
         }
@@ -192,8 +192,8 @@ pub fn emitStats(a: std.mem.Allocator, out: *std.ArrayList(u8), s: Stats, elapse
 
 /// Lens-gated machine-readable diagnostic for a completed search — the stderr
 /// peer of the stdout `--stats`/`--json` summary, emitted ONLY under
-/// `GIST_TRACE=query` (default runs emit nothing here, preserving byte parity).
-/// It renders as one NDJSON record on a `--json` run (or `GIST_TRACE_FORMAT=
+/// `<prefix>TRACE=query` (default runs emit nothing here, preserving byte parity).
+/// It renders as one NDJSON record on a `--json` run (or `<prefix>TRACE_FORMAT=
 /// json`) and as one text line otherwise, routed through the assay sink — so a
 /// warm daemon query carries it back to the client's stderr like every other
 /// diagnostic. Shared by both walk engines so their reported counts can't drift.

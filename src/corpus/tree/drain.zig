@@ -11,8 +11,8 @@
 //!
 //! ripgrep names the same two ends (`--line-buffered` / `--block-buffered`) and
 //! implements them with the Rust standard library's writers: `LineWriter` pays
-//! one `write(2)` **per line**, `BufWriter` a fixed 8 KiB block. gist keeps both
-//! promises and pays less for each:
+//! one `write(2)` **per line**, `BufWriter` a fixed 8 KiB block. This drain
+//! keeps both promises and pays less for each:
 //!
 //!   * **line** — a complete line is never held, but every complete line
 //!     already in hand leaves in ONE syscall. A file yielding two hundred
@@ -25,7 +25,7 @@
 //!   * **block** — coalesced into a buffer whose size is the caller's
 //!     (`--buffer-size`; rg's 8 KiB is a constant), and which *ramps*: the
 //!     first fragment of a run is never held, and the flush threshold then
-//!     doubles from 1 KiB up to the ceiling. So `gist … | head -1` still gets
+//!     doubles from 1 KiB up to the ceiling. So a `… | head -1` run still gets
 //!     its line back immediately and still learns about the closed pipe within
 //!     a kilobyte, while a full-corpus dump settles into whole-buffer writes.
 //!     A plain `BufWriter` holds the first byte just as long as the last one.
@@ -200,8 +200,8 @@ var process_drain: Drain = .{};
 ///
 /// Fail-open by construction: if the buffer cannot be allocated the drain stays
 /// in `relay`, so the worst outcome of an arming failure is the syscall count
-/// gist had before this module existed — never a lost or reordered byte. The
-/// buffer is process-lifetime (this is a one-shot CLI; every terminal path
+/// the engine had before this module existed — never a lost or reordered byte.
+/// The buffer is process-lifetime (this is a one-shot CLI; every terminal path
 /// exits) and deliberately never freed.
 pub fn arm(policy: Policy, capacity: usize, term: u8) void {
     mu.lock();

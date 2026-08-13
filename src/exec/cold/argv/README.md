@@ -32,11 +32,12 @@ re-cut without a call-site edit.
   files/…) and its last-wins precedence over the other presentation flags —
   decided once, before any printer runs.
 - **`preference.zig`** holds personal preferences — a machine-local
-  `~/.config/gist/preferences` (or `$GIST_PREFERENCES` /
-  `$XDG_CONFIG_HOME/gist/preferences`) that prepends flags to argv only
-  when stdout is an interactive terminal. It carries shell-quoted
-  tokenization (fixing rg's `#927`/`#2646`), catalog-validated lines, and
-  `Reach`-classified answer impact.
+  `preferences` file in the face's own directory under `$XDG_CONFIG_HOME`
+  (or `~/.config`, or `%LOCALAPPDATA%`), or wherever `$<prefix>PREFERENCES`
+  points, that prepends flags to argv only when stdout is an interactive
+  terminal. It carries shell-quoted tokenization (fixing rg's
+  `#927`/`#2646`), catalog-validated lines, and `Reach`-classified answer
+  impact.
 - **`preference_test.zig`** is the adversarial test suite for the
   preferences grammar: quoting, catalog validation, reach classification,
   and every rg confusion report the file format repairs.
@@ -46,12 +47,11 @@ a `pub const` re-export lazily, so without it the package's parse tests
 silently stop running while still reporting green — the same reason
 [`root.zig`](../../../root.zig) wires its tiers by hand.
 
-Gist fails loud: any flag it cannot honor by design exits 2 with a reason,
+A face fails loud: any flag it cannot honor by design exits 2 with a reason,
 so the differential harness scores those N/A rather than silently wrong.
 The declarative `flag_catalog` in `catalog.zig` is both the parser's
-dispatch table and the rows `gist/src/surface/face/gist/verbs/schema.zig`
-(in the sibling `gist` repo) renders into `gist --schema` — one catalog, two
-consumers, no prose drift.
+dispatch table and the rows the face package's own schema verb renders into
+`--schema` — one catalog, two consumers, no prose drift.
 
 Process exit itself is not owned here: `die` / `oom` live in
 [`cli/outcome.zig`](../../../surface/cli/outcome.zig) beside the other ways
@@ -60,10 +60,10 @@ saying `args.die`.
 
 ## The Preferences Layer
 
-`preference.zig` is gist's answer to `.ripgreprc`, with three deliberate
-repairs. Preferences apply only when stdout is an interactive terminal, so
-a pipe, redirect, `--json`, CI, daemon, or agent never sees them (no
-`--no-config` needed).
+`preference.zig` is this package's answer to `.ripgreprc`, with three
+deliberate repairs. Preferences apply only when stdout is an interactive
+terminal, so a pipe, redirect, `--json`, CI, daemon, or agent never sees
+them (no `--no-config` needed).
 
 Lines are tokenized with shell quoting, so `--glob '!.git/*'` works as written
 instead of injecting literal quotes into the glob (rg issues 927, 932, 2646,

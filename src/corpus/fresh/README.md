@@ -16,7 +16,7 @@ This package sits above the trigram pair on the ward page, since it reads the pa
 
 ## What This Package Buys, Stated Against The Field That Skips It
 
-This law is the reason gist pays a metadata walk that the other indexed grep-class tools do not, so the cost is only justified by what they give up.
+This law is the reason irregex pays a metadata walk that the other indexed grep-class tools do not, so the cost is only justified by what they give up.
 
 *ripgrep is not the comparator here*: a tool with no index is fresh by construction and has no read to elide, which is why it appears nowhere in this package. The comparison that means anything is against the two indexed engines, csearch and zoekt.
 
@@ -24,7 +24,7 @@ Reproduce it in four commands. Index a two-file corpus where only `a.txt` holds 
 
 - **csearch** answers *(nothing)*: the index picks candidates and csearch then greps live bytes, so it never reports content that isn't there, correctly dropping `a.txt`. But `b.txt` and `c.txt` were never candidates, so they are never opened — staleness surfaces as false negatives only.
 - **zoekt** answers `a.txt`: matching runs against the content stored in the shard, so it returns the one match that no longer exists and misses the two that do, wrong in both directions.
-- **gist** answers `b.txt c.txt`: identical cold, resident, and across an instant create or delete.
+- **irregex** answers `b.txt c.txt`: identical cold, resident, and across an instant create or delete.
 
 Neither result is a defect in those tools; both are built to be reindexed on a cadence (zoekt ships an index server, `cindex` is a scheduled step), and on a corpus that changes between reindexes rather than during one they are right.
 
@@ -32,13 +32,13 @@ The point is narrower: "answers from current bytes" is a *different guarantee* f
 
 ## The Model
 
-This is the local-filesystem model the rest of the tree cites, and the thing every "no false negatives" claim about gist is conditional on. One predicate carries it, `tree/bulkstat.zig::needsLiveRead`:
+This is the local-filesystem model the rest of the tree cites, and the thing every "no false negatives" claim about irregex is conditional on. One predicate carries it, `tree/bulkstat.zig::needsLiveRead`:
 
 > An indexed file's read may be elided only if both its mtime and its ctime are strictly less than the build anchor. Either clock at-or-after the anchor, or either clock unavailable, forces the live read.
 
 Equality is deliberately on the live-read side, so a coarse clock that collapses a post-anchor write onto the anchor tick stays conservative.
 
-**What the proof assumes.** Three things hold true of every local filesystem gist is built for:
+**What the proof assumes.** Three things hold true of every local filesystem irregex is built for:
 
 1. A completed ordinary write advances the file's reported ctime to the anchor tick or later — POSIX requires `write(2)`, `rename(2)`, `truncate(2)` and friends to mark `st_ctime` for update, which is what closes the ordinary preserved-mtime hole: `touch -r old new` rewinds mtime and *advances* ctime.
 2. The primary live walk reports traversal failures instead of silently dropping a subtree — a declined bulk listing degrades to the stat walk, never to "nothing changed here."

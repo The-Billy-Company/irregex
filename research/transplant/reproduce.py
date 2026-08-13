@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Does gist's persisted index survive a tree reproduction?
+"""Does the engine's persisted index survive a tree reproduction?
 
     ./reproduce.py <source-tree> [workdir]
 
@@ -22,8 +22,8 @@ Wall time is reported but is not the claim. CPU-seconds are, because the
 container this was found in shares a vCPU with four others, so CPU is what
 multiplies into the subprocess timeout that surfaced the bug.
 
-Reads nothing but the source tree, writes only inside `workdir`, and pins
-`GIST_DIR` there so it cannot disturb the index of the tree it copied.
+Reads nothing but the source tree, writes only inside `workdir`, and pins the
+artifact-home variable there so it cannot disturb the index of the tree it copied.
 """
 
 import os

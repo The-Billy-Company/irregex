@@ -1,9 +1,9 @@
 //! Quotient sieve — production proof harness (soundness, selectivity, speed).
 //!
-//! Links gist's REAL engine (`@import("irregex")`) and walks the REAL host
-//! corpus, so nothing here is a toy: the baseline is the shipped byte-class
-//! DFA's own `docMatch`, and the sieve under test is the one `Sieve.build`
-//! hands the ladder.
+//! Links this package's REAL engine (`@import("irregex")`) and walks the REAL
+//! host corpus, so nothing here is a toy: the baseline is the shipped
+//! byte-class DFA's own `docMatch`, and the sieve under test is the one
+//! `Sieve.build` hands the ladder.
 //!
 //! Three claims, each fail-closed:
 //!

@@ -11,7 +11,7 @@ b0ac27ec5b5f6aa5634d9206c35a484b366ffcae
 # another. Two lines in the tree still blame to it, which is the whole benefit -
 # an audit of this history found the renames and reflows had already been
 # overwritten by authored work, so there is very little left here to hide.
-# `refactor(gist): repoint 169 @imports` (f3331694) is the same shape at 99%
+# The 169-@import repoint (f3331694) is the same shape at 99%
 # and is deliberately *not* listed: zero lines blame to it today, and a blame
 # count only falls as files change, so the entry could never earn its keep.
 ee424e21ccd5a471440eae78e660273cb93c7a54

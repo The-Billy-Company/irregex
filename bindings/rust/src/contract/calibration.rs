@@ -1,6 +1,6 @@
 //! The closed vocabularies an analytic row field can hold (`[row_enums]`) and
 //! the calibration that gives their scores meaning (`[channels]`,
-//! `[grades]` in `relate/contract/kinship.toml`).
+//! `[grades]` in the kinship package's `contract/kinship.toml`).
 //!
 //! These are the one place a raw number becomes a judgment. A distance of 0.78
 //! is not "the eighth-nearest file", it is *background* — so every kinship row

@@ -1,6 +1,6 @@
 # `src/corpus/index/phantom/` — The Phantom Walk Snapshot
 
-`tree.map` is the persisted directory-membership snapshot behind gist's
+`tree.map` is the persisted directory-membership snapshot behind the
 **phantom walk**. Instead of re-enumerating ~5k directories with
 `openat`+`getattrlistbulk`+`close` on every cold query — the syscall floor
 that dominates walk-bound shapes like `-g`/`-t` filters — a query proves each
@@ -86,7 +86,7 @@ is inside noise (0.85–1.16×, 6 at 0.96–1.08×), where a directory is typica
 
 ## Build And Fail-Open Behavior
 
-Build with `gist index` (whole-CWD corpora only): self-anchored, atomically
+Built by an index build (whole-CWD corpora only): self-anchored, atomically
 published beside the trigram artifacts.
 
 Fail-open everywhere — a missing, corrupt, or foreign `tree.map` just returns

@@ -16,22 +16,21 @@ Engines never import a face.
   session from above, so a host embeds `Engine`/`Cursor`/`CancelToken`
   without shelling a subprocess.
 - **[`ffi/`](ffi)** is the C-ABI substrate shared by every package in the
-  ecosystem: `contract.zig` owns the one status and fault vocabulary
-  `librelate`, `libgist`, and `libblast` all return; `rows.zig` is the
-  self-describing analytic row every kinship, retrieval, sweep, and
-  composed verb answers with; `answer.zig` is the shared row cursor one
-  walk batches from; `pattern.zig` is the regex-over-text plane for a host
-  with a pattern and a buffer but no corpus; `corpus.zig` is the warm
-  corpus every analytic producer is handed plus the cancel handle any
-  thread may trip; `exports.zig` is `libirgx`'s own C-ABI root, kept
-  separate from `src/root.zig` so the `export fn` shims are emitted once
-  rather than once per linking package; `schema.gen.zig` is generated from
-  `contract/analytic.toml` and must never be hand-edited.
+  ecosystem: `contract.zig` owns the one status and fault vocabulary every
+  face library returns; `rows.zig` is the self-describing analytic row every
+  kinship, retrieval, sweep, and composed verb answers with; `answer.zig` is
+  the shared row cursor one walk batches from; `pattern.zig` is the
+  regex-over-text plane for a host with a pattern and a buffer but no
+  corpus; `corpus.zig` is the warm corpus every analytic producer is handed
+  plus the cancel handle any thread may trip; `exports.zig` is `libirgx`'s
+  own C-ABI root, kept separate from `src/root.zig` so the `export fn` shims
+  are emitted once rather than once per linking package; `schema.gen.zig` is
+  generated from `contract/analytic.toml` and must never be hand-edited.
 
-The three product faces (`gist`, `relate`, `blast`) — their verb tables,
-`--help`, `--schema`, and NDJSON shapes — live in the sibling repos that own
-each binary, not here. What they share instead is this substrate: one match
-opinion, one status vocabulary, one row protocol.
+The three product faces — their verb tables, `--help`, `--schema`, and NDJSON
+shapes — live in the sibling repos that own each binary, not here. What they
+share instead is this substrate: one match opinion, one status vocabulary, one
+row protocol.
 
 ## Shared Contracts
 

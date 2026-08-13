@@ -1,6 +1,6 @@
 //! Compose — production proof harness (does it work, and is it actually faster).
 //!
-//! Links gist's REAL engine (`@import("irregex")`) and the REAL rung
+//! Links this package's REAL engine (`@import("irregex")`) and the REAL rung
 //! (`@import("compose")`), so the baseline is the shipped `Dfa.docMatch` and
 //! not a reimplementation of it. Both arms run over the SAME buffer, in the
 //! SAME process, interleaved round by round and reported min-of-N — a baseline

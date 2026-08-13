@@ -1,16 +1,17 @@
-//! gist `rg` — a ripgrep-DEFAULT drop-in over an arbitrary directory tree, and
-//! (since the two engines merged) the SOLE search engine gist ships: the same
-//! walk-and-emit pipeline backs the bare `gist <pattern> [PATH...]` shorthand
+//! The `rg` face — a ripgrep-DEFAULT drop-in over an arbitrary directory tree,
+//! and (since the two engines merged) the SOLE search engine we ship: the same
+//! walk-and-emit pipeline backs the bare `<pattern> [PATH...]` shorthand
 //! (no verb, no index required — the everyday zero-setup front door) and the
-//! explicit `gist rg` alias. A persisted trigram index, when it covers the
+//! explicit `rg` alias. A persisted trigram index, when it covers the
 //! searched roots, is used purely to ELIDE reads of files it proves can't match
 //! (`../quarry/elide.zig`) — never to change the file set, ignore semantics,
 //! ordering, or output; `--no-index`/`--index` force the pure walk / the
 //! accelerated path, and `--rank[=N]` ranks the same compiled-regex hits (and
-//! PATH scope) via the definition-first RRF view (`../view/`). This needs to *prove* gist is a
-//! genuine ripgrep drop-in against ripgrep's own integration suite — which
-//! creates a throwaway directory, drops in fixtures, and runs `rg` in that CWD —
-//! so this module searches an arbitrary tree with ripgrep's DEFAULT presentation:
+//! PATH scope) via the definition-first RRF view (`../view/`). This needs to
+//! *prove* the face is a genuine ripgrep drop-in against ripgrep's own
+//! integration suite — which creates a throwaway directory, drops in fixtures,
+//! and runs `rg` in that CWD — so this module searches an arbitrary tree with
+//! ripgrep's DEFAULT presentation:
 //!   • filename shown only when recursive or >1 file (a single explicit file
 //!     prints no `path:` prefix), `-H` forces it, `--no-filename`/`-I` suppress;
 //!   • line numbers OFF by default, `-n` turns them on;
@@ -19,7 +20,7 @@
 //!   • `.gitignore`/`.ignore`/`.rgignore` precedence honored (`ignore.zig`),
 //!     byte-identical to `rg`'s own default corpus scope;
 //!   • exit 0 = matched, 1 = no match, 2 = error/unsupported (ripgrep's codes).
-//! It reuses gist's linear-time RE2-style matcher for the default per-line and
+//! It reuses our linear-time RE2-style matcher for the default per-line and
 //! the `-U`/`--multiline` whole-buffer paths, and routes `-P`/`--pcre2` to the
 //! opt-in PCRE2 JIT backend (`kernel/regex/pcre2/backend.zig`) — both behind the
 //! engine-neutral `Matcher` seam, so `multiline.zig` + `Emitter.buffer` own
@@ -28,7 +29,7 @@
 //! `rg` is: `--json`/`--column`/`--vimgrep` ARE honored (`json.zig`,
 //! `output.zig`). A PCRE2 run that trips a resource limit on pathological input
 //! (catastrophic backtracking) mirrors ripgrep's exit 2 rather than reporting a
-//! silent no-match. `--rank` is the one gist-native view that stays linear-only
+//! silent no-match. `--rank` is the one native view that stays linear-only
 //! (it declines loud under `-P`).
 
 const std = @import("std");
@@ -121,10 +122,10 @@ const anyMatch = render.anyMatch;
 
 // ─────────────────────────── run ───────────────────────────
 
-/// Interactive long-line guard (gist-native, TTY-only). A single multi-megabyte
+/// Interactive long-line guard (native, TTY-only). A single multi-megabyte
 /// minified line — a generated `*.gen.json`, a bundled asset — makes a terminal
 /// spend ~a second reflowing ONE logical line; that render, not the search, is
-/// the "hang near the end" of a high-hit query (gist produces the whole result
+/// the "hang near the end" of a high-hit query (we produce the whole result
 /// in ~0.1s, faster than ripgrep). 16 KiB cleanly separates human-authored long
 /// lines (observed max a few KB) from generated blobs (tens of KB and up), and a
 /// 16 KiB line reflows instantly. Applied ONLY when stdout is a real terminal
@@ -146,15 +147,16 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
     // on purpose — you cannot silence the reason your flags were wrong.
     //
     // The muffle is process-wide (unlike the sink, which is thread-local), and
-    // safely so: this function has exactly ONE caller (`face/gist/main.zig`, the
-    // cold CLI entry), so it runs once per process and before any worker spawns.
+    // safely so: this function has exactly ONE caller (a face's own `main.zig`,
+    // the cold CLI entry), so it runs once per process and before any worker
+    // spawns.
     // A daemon never reaches here — the warm nier is a fail-closed allowlist
     // that does not admit these flags — so one client's silence can never become
     // another's. Should a second caller ever appear, this becomes a `scope`.
     assay.muffle(o.messages, o.ignore_messages);
     // Resolve the output budget for this run: the ~25k-token soft agent-context
-    // guard + the hard OOM ceiling (corpus.zig), honoring `--uncap`/`GIST_UNCAP`
-    // and the `GIST_MAX_OUTPUT_*` knobs. Applied at the single stdout seam
+    // guard + the hard OOM ceiling (corpus.zig), honoring `--uncap`/`<prefix>UNCAP`
+    // and the `<prefix>MAX_OUTPUT_*` knobs. Applied at the single stdout seam
     // (`writeStdout`/`emitStdout`) every engine emits through, plus the serial
     // accumulation guard (`outputFull`) below.
     corpus_mod.initOutputBudget(o.uncap);
@@ -234,7 +236,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
     // --type-list: dump every `-t` name and the globs it recognizes, one name
     // per line, in ripgrep's exact presentation — names sorted lexicographically,
     // each row's globs sorted lexicographically (`../scope/types.zig`
-    // `writeTypeList`). gist's registry is a strict SUPERSET of ripgrep's, so the
+    // `writeTypeList`). Our registry is a strict SUPERSET of ripgrep's, so the
     // listing is rg-shaped and rg-sorted while covering more types + globs.
     //
     // The run's own overlay goes with it: a `--type-add` shows up in the listing
@@ -319,7 +321,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
             \\
         , .{});
 
-    // gist's own ways of looking at a match — `--rank`, `--in-comments`/
+    // Our own ways of looking at a match — `--rank`, `--in-comments`/
     // `--in-code` — branch here, over the SAME compiled matcher and PATH scope,
     // and finish the run themselves. That early return is what keeps the
     // rg-parity certificate intact: the certified walk/emit paths below are
@@ -360,7 +362,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
         const body = if (o.encoding == .auto) stripBom(raw) else ingest.applyEncoding(a, o.encoding, raw);
         var out0: std.ArrayList(u8) = .empty;
         var em0 = Emitter{ .a = a, .re = re, .o = o, .show_name = false, .out = &out0, .base = @intFromPtr(body.ptr), .body_end = @intFromPtr(body.ptr) + body.len, .caps = caps, .use_color = use_color, .needle = line_needle };
-        // A pipe is the one source with no size bound at all — `cat 200MB | gist -F`
+        // A pipe is the one source with no size bound at all — `cat 200MB | … -F`
         // is the same scan a file argument gets, so it gets the same per-document
         // anchor re-pricing `renderFile` performs. Read whole before this point, so
         // the whole document really is in hand.
@@ -479,7 +481,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
         const wssp: ?*Matcher.SpanSim = if (wss) |*s| s else null;
         // Per-file independent with no output budget — fan out across cores like
         // the parallel READ that preceded it, falling back to the serial loop
-        // below the corpus floor, on one core, or under the `GIST_NO_PARALLEL`
+        // below the corpus floor, on one core, or under the `<prefix>NO_PARALLEL`
         // parity-gate idiom (`assay.serialForced`). `-U`'s "match" is a
         // whole-buffer hit; the per-line path reuses the same `-w`/`-v`/
         // zero-width classify as the emit loop.
@@ -531,7 +533,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
     // Binary detection remains active for -l: a match after the buffer that
     // revealed a NUL must not turn the file into a false-positive path.
     // --binary/-uuu (o.binary) searches binary files in full — same as --text for
-    // the quit-at-NUL decision, so detection is off for both (gist's superset
+    // the quit-at-NUL decision, so detection is off for both (our superset
     // flavor prints every matching line rather than a binary summary).
     const binary_detect = w.binary_detect;
     var stat = Stats{};
@@ -544,9 +546,9 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
     // fans out across cores (`emitSharded`) exactly like the parallel READ that
     // preceded it. `shardBounds` returns null below the corpus floor / on one
     // core, keeping the small-corpus answer on this proven serial loop.
-    // `GIST_NO_PARALLEL` (the parity-gate idiom, shared with `json.runParallel`
+    // `<prefix>NO_PARALLEL` (the parity-gate idiom, shared with `json.runParallel`
     // and `swarm.eligible` via the one `assay.serialForced` joint) forces the
-    // serial emit so `rgsuite/run.py`'s serial pass exercises this path too.
+    // serial emit so the rgsuite runner's serial pass exercises this path too.
     // No production caller sets it.
     const no_par = assay.serialForced();
     const bounds = if (heading or join_groups or no_par) null else par.shardBounds(InFile, files, {}, inFileWeight, par.min_bytes, par.max_shards, a);

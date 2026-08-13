@@ -6,7 +6,7 @@ they cannot drift on what a hit is. This package's own contract
 (`charter.zone`) declares eight tiers, low→high, and an import may
 only point back down the page. Two more tiers of the same law — compression
 kinship and set-algebra composition — are zoned separately in the sibling
-`relate` package, which stands above this library in the ecosystem DAG and
+kinship package, which stands above this library in the ecosystem DAG and
 carries its own `charter.zone`.
 
 - [`math/`](math) is the math floor: bits, mix, the pure glob matcher, the
@@ -24,17 +24,18 @@ carries its own `charter.zone`.
 - [`query/`](query) is the shared compiled query every transport compiles
   through.
 - [`rank/`](rank) fuses results and derives cross-language definition signals
-  (`gist --rank`, and the signals relate and blast read too).
+  (the ranked view, and the signals the other faces read too).
 - [`slate/`](slate) runs many patterns in one walk — `patterns` · `muster`
   · `trawl` · `loom`.
 - [`anatomy/`](anatomy) is source anatomy: the parser-free comment/code/string
   span lexer and the line index — what stayed after the unit anatomy
-  (functions, regions) and its tokens, spans and leans moved to `relate`.
-- `relate/src/kernel/kinship/` is compression-as-similarity: `metric/` ·
-  `cluster/` · `recall/`.
-- `relate/src/kernel/codex/` is the Ziv–Merhav cento quoter over this
-  package's FM-index — relate's product math over the `codex/` tier above.
-- `relate/src/kernel/compose/` is set algebra over candidate sets:
+  (functions, regions) and its tokens, spans and leans moved to the kinship
+  package.
+- The kinship package's `kernel/kinship/` is compression-as-similarity:
+  `metric/` · `cluster/` · `recall/`.
+- Its `kernel/codex/` is the Ziv–Merhav cento quoter over this package's
+  FM-index — that package's product math over the `codex/` tier above.
+- Its `kernel/compose/` is set algebra over candidate sets:
   exact-before-statistical composition.
 
 ## The Match Ladder
@@ -52,7 +53,7 @@ The seam deliberately mirrors the rust-regex ecosystem: `regex/` ≈
 regex-syntax + regex-automata; sibling `scan/` ≈ memchr + aho-corasick +
 teddy; sibling `query/` ≈ the meta engine.
 
-## Relate's Kernels
+## The Kinship Package's Kernels
 
 - `kinship/recall/lexicon` nominates; `kinship/recall/zipper` decides.
 - `kinship/metric/sketch` is the symmetric metric behind `similar` /
@@ -66,6 +67,6 @@ teddy; sibling `query/` ≈ the meta engine.
 ## When to Edit Here
 
 Match semantics, prefilter soundness, DFA/Pike/PCRE caps, ranking signals,
-relate math, multipattern attribution, composition algebra. Do not put
+kinship math, multipattern attribution, composition algebra. Do not put
 ignore rules, flag parsing, or output coloring here; that is `exec/cold/` /
 `corpus/`.

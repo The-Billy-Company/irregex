@@ -8,10 +8,10 @@ matches disk — that is [`../reconcile/`](../reconcile).
 
 ## Modules
 
-- **[`resident.zig`](resident.zig)** is `ResidentSession`, gist's warm state:
-  the mirror plus trigram index, the mutation overlay, the freshness seqlock
-  and dirty log, and `beginRead`, the read lease every answer passes
-  through.
+- **[`resident.zig`](resident.zig)** is `ResidentSession`, the exact-search
+  face's warm state: the mirror plus trigram index, the mutation overlay, the
+  freshness seqlock and dirty log, and `beginRead`, the read lease every
+  answer passes through.
 - **[`mirror.zig`](mirror.zig)** is the in-RAM corpus mirror. An unchanged
   member binds to the persisted `content.shard` mmap; a changed, new,
   binary, or oversize doc heap-reads with cold's own per-file treatment. It
@@ -27,7 +27,7 @@ matches disk — that is [`../reconcile/`](../reconcile).
 
 Suites: `resident_test.zig` and `scoped_test.zig` sit beside their subjects.
 
-The sibling `relate` repo holds the retrieval engine's own warm session —
+The sibling kinship package holds the retrieval engine's own warm session —
 `RetrievalSession` never held file contents here, and it left with the rest
 of the kinship engine when the packages split.
 

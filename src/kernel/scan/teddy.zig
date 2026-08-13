@@ -1,4 +1,4 @@
-//! gist — Teddy SIMD multi-literal prefilter (Hyperscan's algorithm, as in
+//! irregex — Teddy SIMD multi-literal prefilter (Hyperscan's algorithm, as in
 //! ripgrep's `aho-corasick`).
 //!
 //! Why this exists (proven, not assumed — see the load-count arithmetic below):

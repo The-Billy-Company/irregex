@@ -122,7 +122,7 @@ impl<'a> Row<'a> {
         self.schema.id
     }
 
-    /// The `[row_schemas]` key (`"similar"`, `"blast"`, …).
+    /// The `[row_schemas]` key (`"similar"`, `"quotation"`, …).
     #[must_use]
     pub fn schema_name(self) -> &'static str {
         self.schema.name

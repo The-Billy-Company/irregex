@@ -2,7 +2,7 @@
 //!
 //! This module knows the native-endian CSR layout but owns no allocation, IO,
 //! mapping lifetime, or query policy. Untrusted loaders validate every posting;
-//! Gist's trusted local-cache loader validates the directory and defers the same
+//! the trusted local-cache loader validates the directory and defers the same
 //! bounded group decoder until query time.
 
 const std = @import("std");

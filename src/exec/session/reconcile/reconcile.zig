@@ -54,7 +54,7 @@ const Dir = std.Io.Dir;
 /// tombstoned; a new file is read in; a file whose mtime/ctime advanced past
 /// the freshness cursor is re-read. This is the whole read-your-writes
 /// barrier — the set comes from the SAME walk as cold, so warm answers can't
-/// drift from `gist --no-index`/`rg`. A walk error (unreadable directory —
+/// drift from a cold no-index run or `rg`. A walk error (unreadable directory —
 /// cold reports it and exits 2) declines with `freshness_unprovable`; allocation
 /// failure remains `OutOfMemory`.
 pub fn barrier(self: *ResidentSession, ceil: Ceiling) QueryError!bool {
@@ -95,7 +95,7 @@ pub fn barrier(self: *ResidentSession, ceil: Ceiling) QueryError!bool {
 }
 
 /// Rebuild the resident corpus/index when the on-disk index generation has
-/// advanced (someone ran `gist index`). Heavy but rare; holds the caller's
+/// advanced (someone ran an index build). Heavy but rare; holds the caller's
 /// lock. On a non-allocation rebuild failure the session keeps its old state
 /// and declines so the query is answered cold.
 fn maybeReload(self: *ResidentSession) QueryError!bool {
@@ -401,7 +401,7 @@ fn refreshExtras(self: *ResidentSession) QueryError!bool {
 /// Does the mirror hold at least one path under every requested root? Naming a
 /// root is naming intent: cold exempts an explicitly given PATH from the ignore
 /// and hidden rules (`walk.zig::gather` → `Ignore.scopeToRoot`), matching rg, so
-/// `gist pat ign/` searches a gitignored subtree that the whole-tree default
+/// `pat ign/` searches a gitignored subtree that the whole-tree default
 /// walk behind the mirror pruned entirely. Such a root leaves no `Extra` either
 /// — the walk stops descending AT the pruned directory — so the extras guard
 /// below cannot see it, and scoping the mirror to it would render a clean "no

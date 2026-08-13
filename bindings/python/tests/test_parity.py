@@ -216,7 +216,7 @@ def test_a_newline_is_ordinary_whitespace_because_the_haystack_is_a_buffer():
     # promise compiled in as fact. In the per-line model the compiler is
     # licensed to assume no haystack contains a newline - it drops `\n` from a
     # class run on exactly that ground - so `\s` over "a\nb" found NOTHING.
-    # `gist` keeps that promise by feeding one line at a time. A binding handed
+    # A CLI face keeps that promise by feeding one line at a time. A binding handed
     # a whole string cannot, so it compiles for a buffer and `\s` is `\s`.
     assert irgx.findall(r"\s", "a\nb") == re.findall(r"\s", "a\nb") == ["\n"]
     assert irgx.findall(r"\s", "a\tb") == ["\t"]

@@ -463,8 +463,8 @@ fn why(because: rx.Munch.Because) u32 {
 /// `multiline` says *the haystack is a buffer rather than one line*, and the
 /// whole per-line model hangs off it: under that model the compiler is licensed
 /// to assume no haystack contains a `\n`, so it drops `\n` from every class run.
-/// `gist` can keep that promise because it feeds one line at a time. A host
-/// handing this plane a whole file cannot — and a lexer whose whitespace
+/// The exact face can keep that promise because it feeds one line at a time. A
+/// host handing this plane a whole file cannot — and a lexer whose whitespace
 /// terminal is `\s+` or `[ \t\n]+` would silently never match a line break,
 /// which is not fewer tokens but a wrong tokenization of every multi-line input.
 ///

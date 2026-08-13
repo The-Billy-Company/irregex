@@ -280,7 +280,7 @@ const slate = [_][]const u8{
     "^func",
     "[0-9]+",
     "err.*nil",
-    // Real gist-shaped queries.
+    // Real code-search-shaped queries.
     "pgxpool\\.[a-zA-Z_]+",
     "func \\(\\w+ \\*?\\w+\\) \\w+\\(",
     "TODO|FIXME|XXX|HACK",

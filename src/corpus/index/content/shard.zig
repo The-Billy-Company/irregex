@@ -4,9 +4,9 @@
 //! directory-listing syscalls, is the per-file `openat`+`read`+`close`: a
 //! full-scan query with no usable trigram filter (a 2-byte literal like `})`,
 //! a dense class-count, a bare `-c`) reads EVERY corpus file's bytes — ~20k
-//! opens on this repo, the syscall wall that leaves gist behind a static
+//! opens on this repo, the syscall wall that leaves irregex behind a static
 //! memory-mapped server index (zoekt) on exactly those classes. This artifact
-//! removes that floor the same way zoekt does: `gist index` concatenates every
+//! removes that floor the same way zoekt does: an index build concatenates every
 //! corpus body (the SAME membership `corpus.readMember` already computed — non-
 //! binary, non-empty, ≤ `per_file_cap`) into one contiguous blob with a doc→
 //! offset catalog, and a later query serves each unchanged file's bytes from
@@ -136,8 +136,8 @@ pub const View = struct {
     /// straight back and fault in every page the query was never going to
     /// touch. Correctness does not rest on it either — the tree binding, the
     /// layout validation in `decode`, and the per-file clock proof already fail
-    /// closed. So the seal is here for the moment someone ASKS: `gist status`,
-    /// a corruption hunt, an integrity sweep after a bad disk.
+    /// closed. So the seal is here for the moment someone ASKS: an index-status
+    /// report, a corruption hunt, an integrity sweep after a bad disk.
     pub fn verify(v: *const View) signet.Error!void {
         return signet.verify(v.map);
     }
@@ -154,7 +154,7 @@ pub const View = struct {
 /// layout-validated by `decode`, and a future-dated anchor is refused.
 ///
 /// This artifact is the sharpest reason the binding step exists. `slice`
-/// answers by relative path plus a clock proof, so under a `$GIST_DIR` aimed at
+/// answers by relative path plus a clock proof, so under a `<prefix>DIR` aimed at
 /// another checkout, any path the two trees share — `README.md` — is served the
 /// OTHER tree's bytes and reported at a real path in this one. Fabricated
 /// output, not a missed hit. Every refusal costs the shard read tier and never
@@ -209,7 +209,7 @@ fn decode(gpa: std.mem.Allocator, map: frame.Mapping) !View {
     return .{ .map = map, .anchor_ns = anchor_ns, .offsets = offsets, .content = content, .paths = paths, .indexed = indexed, .gpa = gpa };
 }
 
-/// Build + atomically publish the shard from the corpus snapshot `gist index`
+/// Build + atomically publish the shard from the corpus snapshot an index build
 /// already loaded (`docs`/`paths` in doc-id order, sharing the trigram index's
 /// `anchor_ns` — captured BEFORE the read, so a file touched mid-build reads as
 /// `>= anchor` next query and serves live). Best-effort: the caller ignores the
@@ -225,10 +225,10 @@ pub fn build(io: std.Io, docs: []const []const u8, paths: []const []const u8, an
 /// test can mint a shard outside the fixed artifact directory.
 ///
 /// STREAMED, and that is the point: the blob is a concatenation of the whole
-/// corpus, so assembling it in memory to seal it made `gist index` hold a second
-/// full copy of every file it had just read. `frame.Quill` reaches the identical
-/// bytes and the identical seal through a 64 KiB window, so this tier's cost is
-/// the file it writes and nothing more.
+/// corpus, so assembling it in memory to seal it made an index build hold a
+/// second full copy of every file it had just read. `frame.Quill` reaches the
+/// identical bytes and the identical seal through a 64 KiB window, so this
+/// tier's cost is the file it writes and nothing more.
 pub fn buildAt(io: std.Io, path: []const u8, docs: []const []const u8, paths: []const []const u8, anchor_ns: i128) !void {
     std.debug.assert(docs.len == paths.len);
     if (docs.len == 0 or docs.len > std.math.maxInt(u32)) return;

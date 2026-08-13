@@ -16,7 +16,7 @@ Its hermetic sources live at [`../../../../vendor/pcre2/`](../../../../vendor/pc
 
 ## The Shadow
 
-`shadow.zig` rewrites a PCRE pattern into gist's linear syntax such that the shadow's language is a superset of the PCRE language. A line the shadow rejects provably cannot match, so the O(1)/byte DFA answers it and PCRE2 never touches those bytes. The same containment makes the shadow's NFA-derived literals sound for the PCRE pattern, handing `-P` queries the trigram index prefilter they would otherwise lack.
+`shadow.zig` rewrites a PCRE pattern into this package's linear syntax such that the shadow's language is a superset of the PCRE language. A line the shadow rejects provably cannot match, so the O(1)/byte DFA answers it and PCRE2 never touches those bytes. The same containment makes the shadow's NFA-derived literals sound for the PCRE pattern, handing `-P` queries the trigram index prefilter they would otherwise lack.
 
 Every rewrite rule is provably language-growing or language-preserving.
 
@@ -46,7 +46,7 @@ A ceiling the caller actually named reads back as `ceilingHit()` (which one) and
 - **Concurrency.** One compiled `Pcre` is shared read-only; all mutable match state is per-thread scratch. PCRE2 match data is never shared.
 - **Resource caps.** A match limit or depth limit trips a clean no-match instead of hanging, fail-closed.
 - **Unicode and invalid UTF-8.** UTF plus UCP plus `PCRE2_MATCH_INVALID_UTF` lets binary or partial text match valid spans without erroring, matching `rg -P`.
-- **Sound literals or none.** If sound literals cannot be proven, gist scans rather than risk a false-negative elision.
+- **Sound literals or none.** If sound literals cannot be proven, the engine scans rather than risk a false-negative elision.
 
 ## When To Edit
 

@@ -122,7 +122,7 @@ pub const Lines = struct { out: []const u8, matched: bool };
 /// `spans` alias `search`'s per-line scratch. All three are valid ONLY during
 /// the `emit` call — the sink must copy anything it keeps. `line_number` is
 /// 1-based over rg's line model, and every span is a non-empty `[start,end)`
-/// byte range within `text`, byte-identical to the cold `gist --json` submatch
+/// byte range within `text`, byte-identical to the cold `--json` submatch
 /// stream (`exec/cold/emit/json.zig`).
 pub const MatchKind = enum(u32) { match, context };
 pub const MatchRecord = struct { path: []const u8, line_number: u64, text: []const u8, spans: []const Span, kind: MatchKind = .match };
@@ -139,7 +139,7 @@ pub const DocRef = render.Doc;
 /// parallel pipeline emits in worker-discovery order (nondeterministic);
 /// warm canonicalizes to this deterministic total order instead — per-file
 /// bytes stay identical, and the rgsuite oracle's own equivalence
-/// (`sort_lines(gist) == sort_lines(rg)`) certifies the file-order freedom.
+/// (`sort_lines(engine) == sort_lines(rg)`) certifies the file-order freedom.
 pub fn docLess(_: void, a: DocRef, b: DocRef) bool {
     return run.pathLess(a.path, b.path);
 }

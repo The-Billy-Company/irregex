@@ -22,8 +22,9 @@ is no headroom left" and sometimes "there is, and here is how much":
             measured and DECLINED
     L       index quality head-to-head against csearch
 
-Layer A and the CLI surface (H, I) belong to `gist`, and the retrieval and
-multi-pattern layers (F, G, K) to `relate`, on the rule the bench charters state:
+Layer A and the CLI surface (H, I) belong to the exact-search face, and the
+retrieval and multi-pattern layers (F, G, K) to the kinship package, on the rule
+the bench charters state:
 **a package certifies what it builds.** A claim measurable by linking the engine
 belongs here; a claim needing a running product binary belongs to whichever
 package can execute it. Those layers are not missing — they are published by
@@ -50,7 +51,8 @@ from charter import Charter, Layer, main
 
 #: Tools that appear as a timed or measured column somewhere in the bundle. The
 #: two indexed rivals are here because J and L race real index builds against
-#: them; there is no `gist` column, because irregex ships no binary to time.
+#: them; there is no column for a product binary, because irregex ships none to
+#: time.
 BENCH_TOOLS = frozenset({"csearch", "zoekt"})
 #: Tools that build or drive a measurement but are never themselves measured.
 #: `llvm-mca` is Layer B's static analyzer and `hyperfine` the wall-clock timer.
@@ -62,7 +64,7 @@ CHARTER = Charter(
     # The ecosystem's artifact home (`assay/brand.zig`), not a per-package one:
     # every lab binary here writes its layer receipt through the engine's own
     # `home.outDir()`, and a gate that looked somewhere else would judge an empty
-    # directory. Separate checkouts already make it a per-package `.gist`.
+    # directory. Separate checkouts already make the artifact home per-package.
     artifact_dir=".gist",
     roster=(
         Layer(

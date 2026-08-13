@@ -25,8 +25,8 @@
 //!     what it could not read.
 //!   * Under `--quiet` a match outranks a fault. Quiet short-circuits on the
 //!     first hit and stops looking, so a later unreadable path is a question it
-//!     never got around to asking. `rg -q p found missing` exits `0`, and gist
-//!     matches it byte for byte.
+//!     never got around to asking. `rg -q p found missing` exits `0`, and this
+//!     package matches it byte for byte.
 //!
 //! Collapsing those into one rule would silently break `-q` parity, which is why
 //! the choice is a named variant rather than a bool: a call site has to say which
@@ -39,7 +39,7 @@ const corpus = @import("../../corpus/tree/corpus.zig");
 const paths = @import("../../corpus/scope/paths.zig");
 
 /// The departure seam. `Outcome.exit` terminates through this hook so a
-/// product package can seal side-channels first — gist's answer-keep
+/// product package can seal side-channels first — the exact face's answer-keep
 /// (`reprise.zig`, living beside the daemon it is a passenger on) installs
 /// its `depart` here at face startup, which offers the run's rendered bytes
 /// back to the resident keep before exiting. The default settles the stdout

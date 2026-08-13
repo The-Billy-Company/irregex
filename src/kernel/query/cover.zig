@@ -1,4 +1,4 @@
-//! gist — the **conjunctive cover**: lowering a parsed pattern to a boolean
+//! irregex — the **conjunctive cover**: lowering a parsed pattern to a boolean
 //! query over trigrams that the index may soundly demand ( Layer L).
 //!
 //! `prefilter.zig` answers the *one-literal* question: which single literal (or

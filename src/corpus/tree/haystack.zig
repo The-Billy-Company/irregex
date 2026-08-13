@@ -56,11 +56,11 @@ pub const Haystack = struct {
 /// with this list; not worth it for noise-level gain on an already-cheap op).
 /// Every name is a cross-ecosystem convention (VCS, package caches, build
 /// output) — nothing project-specific; a tree with its own heavy dirs extends
-/// the policy per invocation via `GIST_SKIP`. `.gist` is here on the same
-/// footing as `.zig-cache`: it is this engine's OWN artifact home, it sits
-/// inside the walk root by default, and indexing an index is a tool reading
-/// its own exhaust. A caller who really wants those bytes names the directory
-/// as a root, which the walk still honors.
+/// the policy per invocation via `<prefix>SKIP`. The artifact directory is here
+/// on the same footing as `.zig-cache`: it is this engine's OWN artifact home,
+/// it sits inside the walk root by default, and indexing an index is a tool
+/// reading its own exhaust. A caller who really wants those bytes names the
+/// directory as a root, which the walk still honors.
 const skip_dirs = std.StaticStringMap(void).initComptime(.{
     .{".git"},          .{".github"},     .{".hg"},           .{".svn"},          .{"node_modules"},
     .{"target"},        .{"dist"},        .{"dist-types"},    .{"build"},         .{".build"},
@@ -89,7 +89,7 @@ pub const SkipOverlay = struct {
     /// current producer hands over strings that outlive the process.
     names: []const []const u8 = &.{},
 
-    /// What a walk with no `GIST_SKIP`, no charter `skip`, and no seeded
+    /// What a walk with no `<prefix>SKIP`, no charter `skip`, and no seeded
     /// `skips.list` prunes: nothing beyond the comptime baseline.
     pub const none: SkipOverlay = .{};
 };
@@ -107,14 +107,15 @@ pub const StatedSkipOverlay = struct {
 };
 
 /// The overlay's three optional sources and the one slot they land in: the
-/// `GIST_SKIP` env (`:`/`,`/space separated — one-shot override), the tree's
+/// `<prefix>SKIP` env (`:`/`,`/space separated — one-shot override), the tree's
 /// committed charter (`.irregex.toml skip` — the durable, SHARED policy, and
 /// the one a fresh clone gets for free), and the machine-local
 /// `<outDir()>/skips.list` (one name per line, `#` comments). The charter is
 /// why the last of those is no longer the only durable rung: `outDir()`
-/// defaults inside gitignored `.gist/`, so a skips.list policy was per-machine
-/// folklore that a fresh clone silently lacked — two clones of one tree walking
-/// two different corpora. It stays honored for the machine-specific case.
+/// defaults inside the gitignored artifact directory, so a skips.list policy
+/// was per-machine folklore that a fresh clone silently lacked — two clones of
+/// one tree walking two different corpora. It stays honored for the
+/// machine-specific case.
 /// The comptime baseline above stays generic; anything project-specific rides
 /// these. Env and charter tokens borrow strings that outlive the process; file
 /// tokens borrow a static buffer filled under the same lock. The spinlock idiom
@@ -180,7 +181,7 @@ const extra_skips = struct {
 };
 
 /// The overlay in force: whatever a caller stated, or — if nobody has — what
-/// `GIST_SKIP`, the tree's charter, and `<outDir()>/skips.list` say, resolved
+/// `<prefix>SKIP`, the tree's charter, and `<outDir()>/skips.list` say, resolved
 /// now and at most once per process, exactly as the first walk would have
 /// resolved it. The read half of the split, so `installSkipOverlay` below can
 /// be driven by a caller with no environment to read, and so a caller that
@@ -212,7 +213,7 @@ pub fn stateSkipOverlay(overlay: SkipOverlay) StatedSkipOverlay {
 }
 
 /// Comptime-baseline membership only — the generic VCS/build/cache basenames,
-/// with no runtime `GIST_SKIP`/`skips.list` overlay folded in. This is the pure
+/// with no runtime `<prefix>SKIP`/`skips.list` overlay folded in. This is the pure
 /// decision the `StaticStringMap`↔linear differential guardrail pins; it stays
 /// deterministic regardless of a machine's seeded per-tree policy. Production
 /// callers want the full-policy `isSkipDir` below.
@@ -221,14 +222,14 @@ pub fn inBaselineSkipSet(name: []const u8) bool {
 }
 
 /// Is `name` a directory basename every corpus walk skips? (`skip_dirs`
-/// baseline + `GIST_SKIP`/`skips.list` extension.)
+/// baseline + `<prefix>SKIP`/`skips.list` extension.)
 pub fn isSkipDir(name: []const u8) bool {
     if (inBaselineSkipSet(name)) return true;
     return isPolicySkip(name);
 }
 
 /// Is `name` a directory basename declared out of the corpus by the overlay in
-/// force — resolved from charter `skip`, `GIST_SKIP`, and
+/// force — resolved from charter `skip`, `<prefix>SKIP`, and
 /// `<outDir()>/skips.list` unless a caller stated one — and nothing else?
 /// Cold search (including `-uu`) consults this and not the generic baseline:
 /// ripgrep parity requires `-uu` to enter `.git`/`node_modules`, but a
@@ -273,7 +274,7 @@ pub fn joinPath(a: std.mem.Allocator, root: []const u8, rel: []const u8) ![]u8 {
 /// `joinPath` with the whole-tree root normalized away: a corpus rooted at
 /// `.` yields plain CWD-relative paths (`Lib/os.py`, never `./Lib/os.py`),
 /// so indexed paths, walk output, and query root-scoping all compare
-/// byte-equal — the same shape a rootless `gist <pattern>` walk emits.
+/// byte-equal — the same shape a rootless bare-pattern walk emits.
 pub fn joinRoot(a: std.mem.Allocator, root: []const u8, rel: []const u8) ![]u8 {
     if (std.mem.eql(u8, root, ".")) return a.dupe(u8, rel);
     return joinPath(a, root, rel);
@@ -320,9 +321,10 @@ pub const Walker = struct {
     pub fn next(self: *Walker, io: std.Io) !?Haystack {
         while (true) {
             const entry = try self.inner.next(io) orelse return null;
-            // gist's separator, not the platform's, before the path reaches the
-            // ignore protocol or a caller's output — rewritten in the join's own
-            // buffer, so a platform that needs it pays no second allocation.
+            // This engine's separator, not the platform's, before the path
+            // reaches the ignore protocol or a caller's output — rewritten in
+            // the join's own buffer, so a platform that needs it pays no second
+            // allocation.
             const path = try joinRoot(self.a, self.root_path, entry.path);
             paths.slashInPlace(path);
             if (entry.kind == .directory) {

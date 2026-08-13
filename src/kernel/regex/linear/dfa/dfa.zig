@@ -1,8 +1,8 @@
-//! gist — T2 byte-class DFA: the O(1)/byte automaton that puts gist's regex
-//! verify at the same hardware floor ripgrep/RE2 hit, then wins on top of it via
-//! the trigram prefilter + parallel candidate reads. Lineage: Cox's "Regular
-//! Expression Matching Can Be Simple And Fast" → RE2 / rust-`regex` hybrid (lazy)
-//! DFA. ADR-pending.
+//! irregex — T2 byte-class DFA: the O(1)/byte automaton that puts this
+//! package's regex verify at the same hardware floor ripgrep/RE2 hit, then wins
+//! on top of it via the trigram prefilter + parallel candidate reads. Lineage:
+//! Cox's "Regular Expression Matching Can Be Simple And Fast" → RE2 /
+//! rust-`regex` hybrid (lazy) DFA. ADR-pending.
 //!
 //! Why it exists: the Pike VM is O(active-threads)/byte — it loses to rg on the
 //! no-prefilter scan tail (a SELECTIVE but COMMON first byte — `;$`, `[0-9]{4}`,
@@ -537,7 +537,7 @@ pub const Dfa = struct {
         //     on the FIRST match, and a whole-document carve puts lane 0 alone on
         //     the front — so a match at byte `p` costs `p` steps where the line
         //     carve, with all four lanes bunched at the head, spent `p / lanes`.
-        //     Measured on the real `gist` binary that is a 1.3x LOSS on a matching
+        //     Measured on the real product binary that is a 1.3x LOSS on a matching
         //     document, against a 1.03–1.09x win on one that never matches: the
         //     bench could not see it because every row there scans to the end.
         //

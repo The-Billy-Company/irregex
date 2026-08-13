@@ -8,7 +8,7 @@
 //! ripgrep settles it with a single `Mode` under a last-wins rule and treats
 //! every *other* presentation flag (`-o`, `--passthru`, `--vimgrep`,
 //! `--heading`, `--column`, …) as an orthogonal printer option that never
-//! competes for the mode slot. gist used to model all of them as co-equal
+//! competes for the mode slot. We used to model all of them as co-equal
 //! booleans on `Opts` and re-derive the precedence inside each emit dispatcher —
 //! `grid.zig` and `multibuf.zig` each owned a private `and !o.count_only and
 //! !o.files_only …` ladder. Two ladders, one contract, no compiler holding them
@@ -28,7 +28,7 @@ const std = @import("std");
 ///
 /// `-n`/`-N` and `--column`/`--no-column` are explicit; `--column` and
 /// `--vimgrep` also *imply* line numbers, and `--vimgrep` implies a column.
-/// gist used to fire those implications the instant it read the flag, writing
+/// We used to fire those implications the instant we read the flag, writing
 /// straight into the booleans, on the theory (stated in `grammar.zig`) that a
 /// later `-N` could then override them "matching rg's left-to-right
 /// resolution". It doesn't: rg keeps the explicit answers as `Option<bool>`
@@ -37,10 +37,10 @@ const std = @import("std");
 /// order-dependence exactly backwards, and only the half where the negation
 /// happens to come last looks correct:
 ///
-///     rg --vimgrep -N ⇒ path:col:text     gist agreed
-///     rg -N --vimgrep ⇒ path:col:text     gist printed the line number
-///     rg --column --no-column ⇒ text      gist kept the implied line number
-///     rg --no-column --vimgrep ⇒ path:line:text   gist printed a column too
+///     rg --vimgrep -N ⇒ path:col:text     we agreed
+///     rg -N --vimgrep ⇒ path:col:text     we printed the line number
+///     rg --column --no-column ⇒ text      we kept the implied line number
+///     rg --no-column --vimgrep ⇒ path:line:text   we printed a column too
 ///
 /// Holding the explicit answers as null-until-asked and resolving once makes
 /// the order-dependence disappear, because an implication can no longer
@@ -168,7 +168,7 @@ pub const Mode = enum {
         };
     }
 
-    /// The one shape that prints file CONTENT inside gist's framing — path
+    /// The one shape that prints file CONTENT inside our own framing — path
     /// prefixes, line numbers, headings, context windows, separators. Every
     /// other mode prints a bare path, a tally, or its own self-framed JSON, and
     /// so takes none of that chrome.

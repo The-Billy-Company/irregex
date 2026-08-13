@@ -1,4 +1,4 @@
-//! gist search core — the compiled, transport-neutral query.
+//! irregex search core — the compiled, transport-neutral query.
 //!
 //! One deep module owns "a search intent, compiled". A `(pattern, fixed,
 //! ignore_case, pcre, mode)` spec — the whole shape the unified search contract
@@ -97,8 +97,9 @@ pub const Spec = struct {
 };
 
 pub const CompileError = error{
-    /// The pattern is outside gist's linear-time regex syntax (e.g. a construct
-    /// only PCRE would accept). The caller answers cold rather than approximating.
+    /// The pattern is outside this engine's linear-time regex syntax (e.g. a
+    /// construct only PCRE would accept). The caller answers cold rather than
+    /// approximating.
     Unsupported,
     OutOfMemory,
 };

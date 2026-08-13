@@ -2,7 +2,7 @@
 //! two production hot loops (`simd.contains`, `Dfa.docMatch`). A copy that
 //! silently drifts from its original would make the port-optimality certificate
 //! a lie. So this test feeds identical inputs to BOTH the probe and the real
-//! `gist` function and asserts bit-identical results over adversarial random
+//! engine function and asserts bit-identical results over adversarial random
 //! inputs — if the production loop changes and the probe isn't updated in
 //! lockstep, `zig build test` fails loudly and the certificate can't ship stale.
 //!
@@ -45,7 +45,7 @@ fn scribble(rng: std.Random, doc: []u8) void {
     }
 }
 
-// The SIMD `contains` probe must agree with the real `gist.scan.simd.contains` on
+// The SIMD `contains` probe must agree with the real `scan.simd.contains` on
 // every needle length + every hay, including the boundary regimes the vector
 // loop versions on (needle at the very end, hay shorter than a vector, matches
 // straddling the scalar tail). Random bytes are drawn from a small alphabet so

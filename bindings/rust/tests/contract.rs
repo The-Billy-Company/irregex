@@ -4,11 +4,12 @@
 //! Three files are canonical, split by who authors what they describe:
 //! `irregex/contract/analytic.toml` (row schemas, verbs, producers),
 //! `irregex/contract/engine.toml` (request surface, match kinds, exit codes,
-//! version axes), and `relate/contract/kinship.toml` (the compression plane),
-//! vendored into `contract/` by `tools/sync_contract.py` and drift-gated from
-//! relate's own CI. All three are in this checkout, so this suite runs against
-//! a clone of this repository alone. A product's own contract is gated in that
-//! product's repo — gist's `surface.toml` against `gist::contract`.
+//! version axes), and the kinship package's `contract/kinship.toml` (the
+//! compression plane), vendored into `contract/` by `tools/sync_contract.py`
+//! and drift-gated from that package's own CI. All three are in this checkout,
+//! so this suite runs against a clone of this repository alone. A product's own
+//! contract is gated in that product's repo — the exact face's `surface.toml`
+//! against its own crate's mirror.
 //!
 //! Reading them **fails closed**. It used to skip, on the reasoning that an
 //! installed crate legitimately ships without the repo file — true, but a test
@@ -37,7 +38,8 @@ const CONTRACTS: &[&str] = &["analytic", "engine", "kinship"];
 /// It never looks sideways. It used to fall back to `<author>/contract/…` in a
 /// sibling checkout, which is how a gate ends up passing on whatever happened to
 /// be cloned next to it; every contract this suite reads is now committed here,
-/// relate's `kinship.toml` included, vendored by `tools/sync_contract.py`.
+/// the kinship package's `kinship.toml` included, vendored by
+/// `tools/sync_contract.py`.
 fn contract_path(name: &str) -> PathBuf {
     let env_key = format!("IRGX_{}_CONTRACT", name.to_ascii_uppercase());
     if let Ok(p) = std::env::var(&env_key) {

@@ -10,24 +10,24 @@
 //!      break it silently.
 //!   2. The warm daemon dropped diagnostics entirely (it can't write the
 //!      client's stderr), so a warm query was unmeasurable.
-//!   3. Four trace env vars (`GIST_AMEND_TRACE`/`…_JOURNAL_TRACE`/…) each used
-//!      bare-presence truthiness, unlike the `envFalsy` policy the `GIST_HINTS`/
-//!      `GIST_UNCAP` knobs beside them use.
+//!   3. Four trace env vars (`<prefix>AMEND_TRACE`/`…_JOURNAL_TRACE`/…) each
+//!      used bare-presence truthiness, unlike the `envFalsy` policy the
+//!      `<prefix>HINTS`/`<prefix>UNCAP` knobs beside them use.
 //!
 //! This module is the single seam every diagnostic flows through. The **sink**
 //! is thread-local (default stderr; the FFI session installs `.dark`, a daemon
 //! worker installs a per-request `.buffer`), so the never-write contract and the
 //! warm-timing capability are both properties of one routing point rather than a
 //! convention re-checked at every call. The **lens** gate replaces the four
-//! bare-presence trace vars with one `GIST_TRACE=amend,journal,…` list sharing
+//! bare-presence trace vars with one `<prefix>TRACE=amend,journal,…` list sharing
 //! the `envFalsy` policy. The **env vocabulary** (`envSpan`/`envFalsy`/
-//! `envUsize`/`envFlag`) is the one place `GIST_*` knobs are read.
+//! `envUsize`/`envFlag`) is the one place branded knobs are read.
 
 const std = @import("std");
 const root = @import("root");
 const brand = @import("brand.zig");
 
-/// The prefix this program signs a diagnostic with (`"gist: "` by default).
+/// The prefix this program signs a diagnostic with (`"<name>: "`).
 /// Concatenate it into the format literal — `diag(tag ++ "output truncated\n",
 /// .{})` — so the line names whichever binary is actually running. Folded at
 /// comptime, so it costs nothing and cannot move the bytes of a program that
@@ -90,13 +90,12 @@ pub fn envFlag(key: [*:0]const u8) bool {
 }
 
 /// The parity-gate "force the serial reference" knob — the SINGLE joint that
-/// decides which cold plane runs. `GIST_NO_PARALLEL` (internal, undocumented,
+/// decides which cold plane runs. `<prefix>NO_PARALLEL` (internal, undocumented,
 /// never a CLI flag) routes every eligible query and every emit-phase shard onto
-/// the single-threaded reference engine, so the differential gates
-/// (`gist/bench/conformance/gates/parity/line_parity.sh`,
-/// `gist/bench/conformance/rgsuite/run.py`,
-/// `gist/bench/dominance/evaluate/regimes.py`) can push one case list through
-/// BOTH the parallel swarm and the serial oracle and prove them byte-identical.
+/// the single-threaded reference engine, so the face package's differential
+/// gates (its line-parity, rgsuite, and dominance-regime harnesses) can push
+/// one case list through BOTH the parallel swarm and the serial oracle and
+/// prove them byte-identical.
 ///
 /// It lives here, read by exactly one function, precisely because plane
 /// selection is this kernel's highest systemic risk: `swarm.eligible`, both
@@ -283,10 +282,10 @@ pub fn parseLenses(spec: []const u8) Mask {
 ///
 /// Both members are FILE chatter: the lane that reports, one line per offending
 /// path, what the walk could not read or honor. On a tree with an unreadable
-/// directory it is the noisiest thing gist writes, and it is exactly the lane
+/// directory it is the noisiest thing a face writes, and it is exactly the lane
 /// ripgrep's `--no-messages` / `--no-ignore-messages` exist to quiet. Nothing
 /// else on stderr belongs here — a timing summary, an output-truncation notice,
-/// and the `GIST_HINTS` guidance channel each answer to their own switch, and
+/// and the `<prefix>HINTS` guidance channel each answer to their own switch, and
 /// folding them in would silence more than the flag promises.
 ///
 /// Muffling changes what is REPORTED, never what happened: a path the walk

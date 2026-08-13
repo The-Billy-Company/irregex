@@ -4,7 +4,7 @@ The fail-closed barrier that earns a warm answer. It was renamed from
 `freshness/` so the barrier is the identity, and so it never puns with
 [`corpus/fresh/`](../../../corpus/fresh/), the artifact-clock law.
 
-Everything here exists so `resident matches == gist --no-index matches == rg
+Everything here exists so `resident matches == cold no-index matches == rg
 matches` holds by construction. The watcher that makes the answer cheap is a
 separate, optional accelerator ([`../watch/`](../watch)); the correctness
 lives here.
@@ -21,11 +21,11 @@ lives here.
   drain.
 - **[`delta.zig`](delta.zig)** is the O(changed) resolver, re-verifying each
   drained path through cold's own `Ignore` machinery.
-- **[`annals.zig`](annals.zig)** is the changed-path ledger a one-shot `gist
-  index amend` reads through the daemon: it never drains, so "which files
-  changed since instant S?" answers from one warm map lookup instead of a
-  fresh stat walk. It also carries the corpus's monotone change `epoch`, the
-  cheap WHETHER-anything-moved reading the answer keep compares against.
+- **[`annals.zig`](annals.zig)** is the changed-path ledger a one-shot index
+  amend reads through the daemon: it never drains, so "which files changed
+  since instant S?" answers from one warm map lookup instead of a fresh stat
+  walk. It also carries the corpus's monotone change `epoch`, the cheap
+  WHETHER-anything-moved reading the answer keep compares against.
 
 Suites: `reconcile_test.zig` (barrier vs on-disk oracle) and
 `vouch_test.zig` (real watcher backends — kqueue, inotify).

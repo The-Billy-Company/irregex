@@ -1,7 +1,7 @@
-//! gist `--rank` — the definition-first ranked view, gist's one output shape
+//! `--rank` — the definition-first ranked view, our one output shape
 //! ripgrep can't express.
 //!
-//! `gist <pattern>` (and `gist rg`) answer WHERE a pattern appears, ripgrep-
+//! A bare `<pattern>` (and the `rg` alias) answer WHERE a pattern appears, ripgrep-
 //! identically (the `engine/` tier). `--rank` answers WHICH of those hits matters most:
 //! over the bytes the caller's walk already gathered it extracts a few per-file
 //! ranking features, fuses them with the weighted RRF kernel in `rank/rank.zig`,
@@ -16,7 +16,7 @@
 //! all of `vendor/`, plus any walk-widening flag (`-uu`) the table knows nothing
 //! about. The caller (`view.zig`) now hands over the walk's own file set, still
 //! index-ACCELERATED through read elision, so the ranked set is the same query's
-//! `gist -l` set by construction rather than by coincidence.
+//! `-l` set by construction rather than by coincidence.
 //!
 //! Pattern semantics match the line engine: the caller compiles via
 //! `combinePatterns` + `Regex.compileOpts`, so alternations (`foo|bar`),
@@ -76,7 +76,7 @@ fn lineSignals(line: []const u8, re: *const Regex) LineSignals {
 ///
 /// `binary_detect` mirrors the locate/`-l` path's default (`!-a`): a walked file
 /// carrying a NUL is searched only through the bytes rg's quit strategy committed
-/// before it (`committedPrefix`), so `--rank`'s file SET matches `gist -l`
+/// before it (`committedPrefix`), so `--rank`'s file SET matches a `-l` run
 /// exactly — a compiled binary whose only "match" sits past the NUL in its symbol
 /// table is excluded, never surfaced as ranked noise. Under `-a` the whole body
 /// is scanned as text, again matching the locate path.
@@ -91,7 +91,7 @@ fn fileDoc(buf_in: []const u8, path: []const u8, re: *const Regex, sim: *Regex.S
     // now it pays exactly the one-pass verify floor, and only real matchers
     // fund the per-line feature extraction below. This is also the parity
     // gate: `docMatch` speaks rg's line model, so the ranked SET is decided
-    // by the same machine `gist -l` uses.
+    // by the same machine a `-l` run uses.
     if (!re.docMatch(sim, buf)) return null;
     var line_no: u32 = 0;
     var match_lines: u32 = 0;
@@ -387,7 +387,7 @@ test "fileDoc honors rg's default binary policy: a match past a NUL is excluded 
 
     // The bug the `--rank` no-fabrication invariant caught: `--rank` read the
     // FULL bytes of every candidate and matched a symbol inside a committed Go
-    // binary (`atomic.(*Int32).Store`) that `gist -l` (and ripgrep) skip by
+    // binary (`atomic.(*Int32).Store`) that a `-l` run (and ripgrep) skip by
     // default — so the ranked set was a strict SUPERSET of the located set, not
     // a reordering. A walked file whose only hit sits past an early NUL must be
     // excluded under the locate default, and searched whole only under `-a`.

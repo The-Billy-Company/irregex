@@ -3,7 +3,7 @@
 //!
 //! ## Why the symbols are probed, not linked
 //!
-//! Declaring `gist_run` as an `extern` would make the crate
+//! Declaring a face's producer entry as an `extern` would make the crate
 //! *unlinkable* against an engine that predates the analytic plane — the strictly worse
 //! failure, because the subprocess tier can answer every one of these questions
 //! already. So the plane is resolved with `dlsym` over the symbols already in
@@ -28,12 +28,12 @@ use super::{Error, Query, Result, handshake, sys};
 pub(super) struct Vtable {
     /// Entry symbol -> the function that answers the verbs routed to it.
     ///
-    /// Three libraries produce these seventeen verbs (`gist_run` for rank,
-    /// `relate_run` for kinship/retrieval/sweep, `blast_run` for the composed
-    /// ones) and a verb names its own in the generated table, so the keys are the
-    /// distinct entries that table declares rather than a list kept here. An
-    /// entry the process has not loaded is simply absent: those verbs decline and
-    /// the ladder answers them cold.
+    /// Three face libraries produce these seventeen verbs (the exact face's
+    /// entry for rank, the kinship face's for kinship/retrieval/sweep, the
+    /// composed face's for the composed ones) and a verb names its own in the
+    /// generated table, so the keys are the distinct entries that table declares
+    /// rather than a list kept here. An entry the process has not loaded is
+    /// simply absent: those verbs decline and the ladder answers them cold.
     runs: HashMap<&'static str, sys::AnalyticRunFn>,
     pub(super) next: sys::RowsNextFn,
     pub(super) next_batch: sys::RowsNextBatchFn,
@@ -62,7 +62,7 @@ fn resolve<F: Copy>(name: &CStr) -> Option<F> {
     const { assert!(size_of::<F>() == size_of::<*mut std::ffi::c_void>()) };
     let p = sys::symbol(name)?;
     // A dlsym result is a code address; the typed shapes live in `sys` and are
-    // checked against `include/gist.h` by review, exactly as an `extern`
+    // checked against `include/irgx.h` by review, exactly as an `extern`
     // block is.
     Some(unsafe { std::mem::transmute_copy::<*mut std::ffi::c_void, F>(&p) })
 }
@@ -85,8 +85,8 @@ fn probe() -> State {
     let runs = entries();
     // A cursor with nothing that produces one is not a plane. Whether the
     // ABSENT producers matter is per verb, decided at dispatch, because a host
-    // that links only libgist legitimately answers rank in-process and the rest
-    // through the child.
+    // that links only the exact face's library legitimately answers rank
+    // in-process and the rest through the child.
     if runs.is_empty() {
         return State::Absent;
     }
@@ -294,7 +294,8 @@ fn incident(pull: sys::LastFaultFn) -> Option<String> {
 /// The function that answers `op`, or `None` when its library is not loaded.
 ///
 /// The op alone does not say: the numbers stayed ecosystem-wide when the
-/// producers split, so `4` means `echoes` whether librelate is present or not.
+/// producers split, so `4` means `echoes` whether the kinship face's library is
+/// loaded or not.
 /// The generated table carries the entry symbol per verb, which is what makes an
 /// op-range rule — and its silent mis-route on the next verb appended to a
 /// family — unnecessary.
@@ -556,8 +557,9 @@ mod routing {
         for v in crate::contract::schema::VERBS {
             assert!(producer(&all, v.op).is_some(), "`{}` did not route", v.name);
         }
-        // Only libgist linked — the thin install. `rank` still answers in
-        // process; the other sixteen decline and the ladder answers them cold.
+        // Only the exact face's library linked — the thin install. `rank` still
+        // answers in process; the other sixteen decline and the ladder answers
+        // them cold.
         let thin = with(&["gist_run"]);
         assert!(producer(&thin, op("rank")).is_some());
         for v in crate::contract::schema::VERBS {

@@ -1,4 +1,4 @@
-//! gist — where a match lies, measured from both ends.
+//! irregex — where a match lies, measured from both ends.
 //!
 //! `-o` and every mode built on it (`--count-matches`, `--column`,
 //! `--vimgrep`, `--json`, `-w`, and colored highlighting) need a match's byte

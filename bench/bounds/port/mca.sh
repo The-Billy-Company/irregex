@@ -3,10 +3,10 @@
 #
 # Layer A proves empirical dominance over ripgrep on the registered workloads.
 # Layer B proves *why the hot loop can't be beaten on this instruction sequence*:
-# it lowers gist's two hot
+# it lowers this engine's two hot
 # loops to assembly for two REAL reference microarchitectures and asks llvm-mca
 # for the static microarchitectural bound (port pressure / reciprocal
-# throughput) of each. If gist's measured cycles/byte (Layer A) sits at that
+# throughput) of each. If the engine's measured cycles/byte (Layer A) sits at that
 # static bound, the loop is port-optimal — no scheduling of these instructions
 # on that core runs faster.
 #
@@ -196,7 +196,7 @@ echo "wrote ${JSON}"
 # Splice the Layer B section into CERTIFICATE.md (idempotent; degrades if the
 # report tool or the file is missing). The splicer auto-discovers a sibling
 # portbound.json (Layer B′ — the port bound MEASURED on this machine, from
-# `gist-portbound`) and renders it fail-closed: absent or PMU-less, the
+# `portbound`) and renders it fail-closed: absent or PMU-less, the
 # certificate says cycles are cross-checked-only, never a fabricated number.
 if python3 "${HERE}/report.py" --json "${JSON}" --certificate "${CERT}"; then
   echo "spliced Layer B section into ${CERT}"

@@ -15,14 +15,14 @@
 #   [coordinate_spaces] which ruler a fault's `at` offset is measured in
 #
 # Most of these are mirrored by hand in the Go, Python, and Rust bindings that
-# live in the `gist` repository. Nothing is copied: each binding RESOLVES this
-# file from the authoring sibling checkout, and the gate is fail-closed — a
-# binding that cannot read it fails rather than skips.
+# live in the exact-search face's repository. Nothing is copied: each binding
+# RESOLVES this file from the authoring sibling checkout, and the gate is
+# fail-closed — a binding that cannot read it fails rather than skips.
 #
 # The surfaces this file used to also declare now live with the packages that
-# own them — `analytic.toml` for the row schemas, `gist/contract/surface.toml` for
-# gist's transports;
-# `relate/contract/kinship.toml` for the compression plane. This file changed
+# own them — `analytic.toml` for the row schemas, the face package's
+# `contract/surface.toml` for that face's transports; the kinship package's
+# `contract/kinship.toml` for the compression plane. This file changed
 # name from `search_api.toml` when that happened. The in-process vocabulary
 # went with them and came back: see the note above [status_codes].
 #
@@ -111,17 +111,17 @@ no_index = { type = "bool", flag = "--no-index", detail = "force the pure live w
 #
 # The in-process vocabulary lives here because it is otherwise hand-copied four
 # times — the `include/irgx.h` defines, the Zig `Status` enum
-# (src/surface/ffi/contract.zig), and, in the `gist` repository that vendors this
-# file, the Rust constants (bindings/rust/src/contract/mod.rs) and the Python
-# ones (bindings/python/gist/runtime/native.py) — with no single source a gate
+# (src/surface/ffi/contract.zig), and, in the face repository that vendors this
+# file, the Rust constants (its bindings/rust/src/contract/mod.rs) and the Python
+# ones (its bindings/python runtime loader) — with no single source a gate
 # could check them against. Declared once, a status-parity gate can cover all
 # four.
 #
 # It lives HERE rather than with any one face because `include/irgx.h`
 # declares it: a host that links only libirgx — the whole point of the split
 # — still receives these codes and this fault struct, so the package that emits
-# them is the package that must declare them. librelate, libgist and libblast
-# each speak this same vocabulary by linking it, not by redeclaring it.
+# them is the package that must declare them. Every product ABI built on top of
+# it speaks this same vocabulary by linking it, not by redeclaring it.
 #
 # Every outcome belongs to exactly ONE channel, and nothing crosses:
 #
@@ -148,7 +148,7 @@ error = { code = 2, detail = "unsupported pattern/flag, or an I/O/walk error —
 # Non-negative is success; negative means the caller must do something else.
 # The KEY is the Zig `Status` field, `c` is the `include/irgx.h` macro, and
 # each binding's own constant is that macro's suffix (Rust `sys::OOM`; the
-# Python face prefixes its own, `_GIST_OK`, and names only the codes it branches
+# Python face prefixes its own, `_<PREFIX>_OK`, and names only the codes it branches
 # on — a binding may declare fewer, never a different code). Human text for a
 # code comes from `irgx_status_message`; a binding must not carry per-code
 # prose of its own.

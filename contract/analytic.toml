@@ -5,9 +5,9 @@
 # One self-describing row answers every analytic verb: a schema id, a presence
 # mask, and a flat `irgx_value` array. What that array MEANS is declared here
 # — and here rather than in a product's contract because the row layout is
-# substrate. gist, relate and blast all return these rows through the same
-# `irgx_rows` cursor, so a decoder written against this file decodes all
-# three, and none of them gets to redeclare a schema privately.
+# substrate. The three faces built on this library all return these rows through
+# the same `irgx_rows` cursor, so a decoder written against this file decodes
+# all three, and none of them gets to redeclare a schema privately.
 #
 #   [row_enums]         the closed vocabularies a row field can hold
 #   [row_schemas]       the field list of every analytic result row
@@ -23,16 +23,17 @@
 # load, so a stale shared library is a loud startup failure rather than a
 # silently mis-decoded row.
 #
-# Op codes are ecosystem-wide on purpose: nothing about op 4 says librelate
-# rather than libgist answers it, which is why `[analytic.producers]` exists and
-# why a binding must never infer routing from an op range.
+# Op codes are ecosystem-wide on purpose: nothing about op 4 says which face
+# library answers it, which is why `[analytic.producers]` exists and why a
+# binding must never infer routing from an op range.
 #
 # The engine's own return vocabulary (`[status_codes]`, `[decline_reasons]`,
 # `[fault_domains]`, `[coordinate_spaces]`) is next door in `engine.toml`. The
-# products' own surfaces stay with the products: gist's published names,
-# transports and daemon session in `gist/contract/surface.toml`, the compression
-# vocabulary in `relate/contract/kinship.toml`, the composed verbs in
-# `blast/contract/compose.toml`.
+# products' own surfaces stay with the products: the exact-search face's
+# published names, transports and daemon session in that package's
+# `contract/surface.toml`, the compression vocabulary in the kinship package's
+# `contract/kinship.toml`, the composed verbs in the composed face's
+# `contract/compose.toml`.
 
 
 # ── [row_enums] — the closed vocabularies a row field may hold ───────────────
@@ -326,8 +327,8 @@ fields = [
 
 # ── [analytic] — the `ffi` transport's analytic plane (ABI-3) ────────────────
 # Everything in part 4 — kinship, retrieval, the composed verbs — was reachable
-# only by spawning `relate`/`irregex` and re-parsing their NDJSON. That made
-# every embedding package a parser of a human-facing CLI: three hand-written
+# only by spawning a product face and re-parsing its NDJSON. That made every
+# embedding package a parser of a human-facing CLI: three hand-written
 # decoders per verb, drifting independently, and a binding that cannot answer
 # without a child process. This plane exposes the same kernels in-process.
 #
@@ -389,7 +390,7 @@ corpus = "index"                                                                
 # There used to be one `entry = "gist_run"` here, because one library answered
 # everything. Three do now, and a verb's producer is the ONE fact a binding
 # cannot derive: the op numbers stayed ecosystem-wide on purpose, so nothing
-# about op 4 says librelate rather than libgist answers it. Each verb below
+# about op 4 says which face library answers it. Each verb below
 # names its producer and the entry symbol is looked up here — never inferred
 # from an op range, which would silently mis-route the next verb appended to a
 # family.
@@ -400,7 +401,8 @@ corpus = "index"                                                                
 # nothing else.
 # A producer whose symbol is absent from the process is a DECLINATURE, not a
 # failure: that verb answers through the subprocess tier and the rows are
-# identical. So a host linking only libgist still answers all seventeen.
+# identical. So a host that links only one face library still answers all
+# seventeen.
 [analytic.producers]
 gist = { entry = "gist_run", library = "libgist", header = "gist.h" }
 relate = { entry = "relate_run", library = "librelate", header = "relate.h" }
@@ -475,8 +477,8 @@ rank = { c = "gist_rank_params", fields = [
 #
 # `stream` is load-bearing for a caller sizing a batch: `many` verbs can return
 # an unbounded row count and should be pulled in batches, while `one` verbs
-# answer with exactly one row (quote's phrases and blast's tiers nest inside it,
-# so the whole answer arrives in a single pull).
+# answer with exactly one row (`quote`'s phrases and `blast`'s tiers nest inside
+# it, so the whole answer arrives in a single pull).
 [analytic.verbs]
 similar = { op = 1, params = "kinship", schema = "similar", stream = "many", producer = "relate" }
 dups = { op = 2, params = "kinship", schema = "dup_pair", stream = "many", producer = "relate" }

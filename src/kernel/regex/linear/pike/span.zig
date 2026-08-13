@@ -1,7 +1,7 @@
-//! gist — `-o` leftmost-first spans.
+//! irregex — `-o` leftmost-first spans.
 //!
 //! `lineMatch`/`docMatch` answer *whether* a line matches; `-o`/--only-matching
-//! needs *where* — each non-overlapping match's byte span, so gist can emit the
+//! needs *where* — each non-overlapping match's byte span, so a face can emit the
 //! matched text alone (extraction: function names, idents, URLs, …) exactly as
 //! ripgrep does. The DFA is boolean, so spans run the Pike VM with a per-state
 //! start-offset map. Semantics are rg's `(?-u)`: leftmost start, then the
@@ -80,7 +80,7 @@ fn firstMatch(re: *const Regex, list: []const u32, starts: []const usize, end: u
 fn litSpan(re: *const Regex, sim: *SpanSim, region: []const u8, from: usize) ?Span {
     if (from > region.len) return null;
     // A single literal IS the span, so the position needs no attribution — and
-    // this is the shape most code searches have (`gist AcmeStore`), so it
+    // this is the shape most code searches have (a bare `AcmeStore`), so it
     // stays exactly the one scan and one add it was before the fused jump.
     if (re.lits.len == 1) {
         const lit = re.lits[0];

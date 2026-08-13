@@ -556,7 +556,7 @@ test "the haystack is a buffer, and that is not the same question as (?m)" {
     // `multiline` in `lower.zig` means "the haystack is a buffer, not one
     // line", and the per-line model it selects lets the compiler assume no
     // haystack holds a `\n` - it drops `\n` from a class run on that promise.
-    // `gist` keeps the promise by feeding lines; a `Pattern` is handed buffers
+    // A face keeps the promise by feeding lines; a `Pattern` is handed buffers
     // and cannot, so per-line compilation makes `\s` over "a\nb\n" report
     // NOTHING. Not fewer spans - none. Hence the forced buffer model.
     //

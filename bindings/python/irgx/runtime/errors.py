@@ -1,14 +1,14 @@
-"""Typed failures for the GIST search API. Every failure is a value a caller can catch — a bad pattern never terminates the host process the way the engine's own CLI `die()`/exit would in-process."""
+"""Typed failures for the search API. Every failure is a value a caller can catch — a bad pattern never terminates the host process the way the engine's own CLI `die()`/exit would in-process."""
 
 from __future__ import annotations
 
 
 class GistError(Exception):
-    """Base for every GIST search failure."""
+    """Base for every search failure."""
 
 
 class GistNotFoundError(GistError):
-    """The `gist` binary could not be located (env `GIST_BIN`, PATH, or the repo's `zig-out/bin/gist`). Build it with `zig build -Doptimize=ReleaseFast`."""
+    """The exact face's binary could not be located (env `<FACE>_BIN`, PATH, or that face's own `zig-out/bin`). Build it with `zig build -Doptimize=ReleaseFast`."""
 
 
 class UnsupportedPatternError(GistError):

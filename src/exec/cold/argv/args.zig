@@ -1,4 +1,4 @@
-//! gist `rg` — the ripgrep-compatible CLI flag surface (parsing only).
+//! The `rg` face — the ripgrep-compatible CLI flag surface (parsing only).
 //!
 //! This file is the argv package's **interface**: the names the rest of the tree
 //! may use, and nothing else. Thirty-odd modules — every engine, emitter, face
@@ -12,7 +12,7 @@
 //! It implements ripgrep's DEFAULT flag semantics — short-flag bundling, `--flag`
 //! and `--flag=value`, `-A/-B` precedence over `-C`, the `-u/-uu` unrestrict
 //! tiers, `-t/-T/-g/--glob/--iglob` scoping with `!`-exclude + leading-`/`
-//! anchoring. gist now accepts or honors the entire rg flag surface — the
+//! anchoring. We now accept or honor the entire rg flag surface — the
 //! fail-loud bucket is empty. `flag_catalog` is the parser and `--schema`
 //! compatibility source of truth.
 //!
@@ -21,7 +21,7 @@
 //!   * [`intent.zig`](intent.zig)       — the request: `Opts`, `Filter`, `Parsed`,
 //!                       and the `Builder` that accumulates them while argv arrives
 //!   * [`catalog.zig`](catalog.zig)     — `flag_catalog`: every flag declared once,
-//!                       as the table both the parser and `gist --schema` read
+//!                       as the table both the parser and `--schema` read
 //!   * [`grammar.zig`](grammar.zig)     — the walk: bundling, `=value`, and every
 //!                       precedence rule that can only settle after argv ends
 //!   * [`verdict.zig`](verdict.zig)     — what a flag's value may be, and the exit-2
@@ -65,7 +65,7 @@ const oom = @import("../../../surface/cli/outcome.zig").oom;
 /// no-match hint reasons about smart-case exactly as the parser did.
 pub const hasUpper = verdict.hasUpper;
 
-// The declarative flag contract gist's `verbs/schema.zig` renders into `--schema`.
+// The declarative flag contract a face's schema verb renders into `--schema`.
 pub const Compatibility = catalog.Compatibility;
 pub const FlagSpec = catalog.FlagSpec;
 pub const flag_catalog = catalog.flag_catalog;

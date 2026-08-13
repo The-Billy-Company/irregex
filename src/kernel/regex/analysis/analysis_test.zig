@@ -1,4 +1,4 @@
-//! gist T2 regex *analysis* tests — adversarial, oracle-free unit coverage of
+//! irregex T2 regex *analysis* tests — adversarial, oracle-free unit coverage of
 //! `analysis.zig`: the sound required-literal extraction (`literalInfo`), the
 //! alternation cover set (`requiredAny`), and the anchored-start predicate
 //! (`startsAnchored`). These feed the T0 trigram prefilter and the scan seeding,

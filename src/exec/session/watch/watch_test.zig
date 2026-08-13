@@ -1,4 +1,4 @@
-//! gist resident session — the freshness-watcher barrier suite.
+//! Resident session — the freshness-watcher barrier suite.
 //!
 //! The watcher is a pure *accelerator*: when it proves quiescence the session
 //! takes the microsecond clean path; on any event it forces a reconcile. These

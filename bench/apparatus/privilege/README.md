@@ -89,7 +89,7 @@ directory.
 
 ## Options Weighed
 
-- **Unprivileged `thread_selfcounts`** (shipped, default) has no blast
+- **Unprivileged `thread_selfcounts`** (shipped, default) has no exposure
   radius — no privilege exists to abuse — is not subvertible by an agent,
   and costs no friction at all.
 
@@ -99,7 +99,7 @@ directory.
   install path stays root-owned (see below), at the cost of one
   authenticated install, then a re-install to change the helper.
 
-- **NOPASSWD on the benchmark binary** has a blast radius of **full root**,
+- **NOPASSWD on the benchmark binary** has an exposure radius of **full root**,
   permanently, and is subvertible **trivially** — any agent writes
   `zig-out/` — for no friction saved.
 

@@ -1,4 +1,4 @@
-//! gist — the anchor decision's regression guards.
+//! irregex — the anchor decision's regression guards.
 //!
 //! These exist because the defect they cover was invisible to every benchmark
 //! that could have caught it (`research/pincer/`, PROOF.md §10.2). The two
@@ -142,8 +142,8 @@ test "plan: containsWith ≡ contains ≡ std.mem.indexOf" {
     // The plan hoist (`query.zig` prices the pair once per query instead of once
     // per line) is only sound if the pair cannot change the VERDICT — it selects
     // which two offsets the block filter compares, and `eql` decides the match.
-    // Checked against std as the third opinion so a shared bug in both gist
-    // paths still fails.
+    // Checked against std as the third opinion so a shared bug in both of this
+    // package's paths still fails.
     const needles = [_][]const u8{ "ab", "ctx", "func", "acmepool", "AcmeStore", "aaaa", "})", "Zq9_x" };
     var prng: std.Random.DefaultPrng = .init(0x9E3779B97F4A7C15);
     const rnd = prng.random();
@@ -185,7 +185,7 @@ test "plan: indexOfPosWith ≡ indexOfPos at every resume point" {
 test "plan: a Gate answers the same planned or unplanned" {
     // The plan lives IN the gate, so the gate is the seam that has to be proven a
     // cost decision and not a semantic one: `Gate.of` mints a plan, and a gate
-    // built without one (what `GIST_NO_PLAN` produces, and what a caseless or
+    // built without one (what `<prefix>NO_PLAN` produces, and what a caseless or
     // 1-byte gate is) must give the identical verdict and the identical position.
     const needles = [_][]const u8{ "x", "ab", "ctx", "acmepool", "context.Context", "aaaa", "})" };
     var prng: std.Random.DefaultPrng = .init(0x5DEECE66D);

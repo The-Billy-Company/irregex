@@ -1,9 +1,9 @@
-//! gist — PCRE2 backend (the opt-in `-P`/`--pcre2` engine).
+//! irregex — PCRE2 backend (the opt-in `-P`/`--pcre2` engine).
 //!
-//! gist's DEFAULT engine (`core.zig`) is a linear-time RE2/Pike matcher: no
+//! The DEFAULT engine (`core.zig`) is a linear-time RE2/Pike matcher: no
 //! backtracking, no catastrophic blowup, and — by construction — no lookaround
-//! or backreferences. That is the right default (it is what makes gist safe to
-//! run over an adversarial tree), but it leaves a real functional gap ripgrep
+//! or backreferences. That is the right default (it is what makes a search safe
+//! to run over an adversarial tree), but it leaves a real functional gap ripgrep
 //! closes with `-P`: PCRE-only constructs (`(?=…)`, `(?<=…)`, `\1`, `(?P=name)`).
 //!
 //! This module is the SECOND, opt-in backend that closes that gap — the same
@@ -28,12 +28,12 @@ pub const Span = engine.Span;
 /// Compile-time engine knobs, mirroring `Regex.Options` where they overlap so a
 /// single `Matcher.Options` can drive either backend. `unicode` selects PCRE2's
 /// Unicode property/character-class semantics (rg's `-P` default); when off the
-/// engine matches raw bytes with ASCII rules, matching gist's linear default.
+/// engine matches raw bytes with ASCII rules, matching the linear default.
 pub const Options = engine.Options;
 
 /// The error surface the caller (`run.zig`) maps onto its fail-loud / cold
 /// fallback contract. `Unsupported` covers "not built / not available" so the
-/// CLI degrades exactly as it does for any construct gist declines.
+/// CLI degrades exactly as it does for any construct the engine declines.
 pub const CompileError = engine.CompileError;
 
 /// A compiled PCRE2 program plus the derived required-literal the trigram index

@@ -57,8 +57,8 @@ def test_bundled_is_none_when_the_package_has_no_bin_dir(tmp_path, monkeypatch):
 
 
 def test_bundled_finds_the_binary_the_wheel_would_have_placed(tmp_path, monkeypatch):
-    # Package name == binary name, same as the real `gist`/`relate`/`blast`
-    # distributions — `_bundled` has no other way to connect the two.
+    # Package name == binary name, same as the real face distributions —
+    # `_bundled` has no other way to connect the two.
     pkg_name = "fakegistcli"
     exe_name = f"{pkg_name}.exe" if sys.platform == "win32" else pkg_name
     _, binary = _fake_binary(tmp_path, pkg_name, exe_name)

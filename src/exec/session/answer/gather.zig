@@ -298,8 +298,8 @@ fn everyDoc(self: *ResidentSession, sieve: *const crest.Swell, buf: *?[]u32) Que
 }
 
 /// Name the index tier that answered and how much it admitted — the warm twin of
-/// cold `elide.answered`, so one `GIST_TRACE=index` run reports both tiers in the
-/// same grammar and the certificate reads warm's numbers off the wired path.
+/// cold `elide.answered`, so one `<prefix>TRACE=index` run reports both tiers in
+/// the same grammar and the certificate reads warm's numbers off the wired path.
 fn tiered(tier: []const u8, cand: []u32, corpus: usize) []u32 {
     assay.trace(.index, assay.tag ++ "warm tier={s} candidates={d}/{d}\n", .{ tier, cand.len, corpus });
     return cand;

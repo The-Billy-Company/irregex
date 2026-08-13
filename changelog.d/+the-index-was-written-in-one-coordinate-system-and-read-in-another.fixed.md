@@ -27,7 +27,7 @@ root - the overwhelmingly common case - pays an acquire load and a length test.
 
 Builds go the other way. A build is a statement about the tree, so
 `corpus.enterTree` stands the process at the checkout root before it walks:
-`gist index` from `services/ai` indexes the repository, exactly as it does from
+an index build from `services/ai` indexes the repository, exactly as it does from
 the root, and names every file from the root. Without that it indexed the
 subtree, wrote `notes.md` for a file the tree holds at `services/ai/notes.md`,
 stamped the result with the tree's binding, and the next query at the root

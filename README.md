@@ -3,7 +3,7 @@
 > [!NOTE]
 > No binary ships from this repository. `zig build` produces `libirgx` and
 > installs [`include/irgx.h`](include/irgx.h); the product faces built on it
-> (`gist`, `relate`, `blast`) are separate packages.
+> are separate packages.
 >
 > That line is deliberate. Argv grammar, daemon lifecycle, distribution, and any
 > promise a user can hold you to belong to whoever ships an executable.
@@ -75,15 +75,15 @@ rather than disguised.
 
 ## Should I Be Using This?
 
- - **To search a repository from a terminal** – `gist` for patterns, `relate`
- for similarity, `blast` for blast radius. Those are separate packages, built
- on this one.
+ - **To search a repository from a terminal** – one face for exact patterns,
+ one for similarity, one for a symbol's change radius. Those are separate
+ packages, built on this one.
  - **For a linear-time regex in Python, Rust, or Go** – the
  [bindings](#install). Each wears the surface that language already expects,
  and you never see this repository.
- - **For a regex in C, C++, Swift, or anything with an FFI** –
- [`include/irgx.h`](include/irgx.h). One header, one library, and no corpus
- behind it.
+ - **For the engine from C, C++, Swift, or anything with an FFI** –
+ [`include/irgx.h`](include/irgx.h). One header, one library, and the corpus
+ planes are in it too.
  - **To build a search engine**, with your own index, your own walk, your own
  ranking and your own product – here. Start at [Recipes](#recipes), then the
  [toolkit map](#whats-in-the-toolkit).
@@ -93,12 +93,12 @@ rather than disguised.
  - **To take one piece and leave the rest** – also here. The
  [kernels](#the-kernels) are eight packages that do not need each other.
 
-The dividing line is whether you want *answers* or *parts*. A binding hands you
-answers and hides every decision below it.
+The dividing line is whether you want the *planes* or the *parts* they are built
+from. A binding hands you the planes, wired.
 
-This repository hands you the decisions: which files to open, which bytes to
-look at, which machine to run, and what a stale index is allowed to claim. If
-none of those are questions you have, take a binding and stop reading.
+This repository hands you the pieces: the ladder of machines, the index formats,
+the walk's policy, and what a stale index is allowed to claim. If none of those
+are questions you have, take a binding and stop reading.
 
 ## Support
 
@@ -108,7 +108,7 @@ none of those are questions you have, take a binding and stop reading.
  is a bug nobody can reproduce.
  - Security vulnerabilities never go in a public issue. See
  [SECURITY.md](SECURITY.md).
- - `gist`, `relate`, and `blast` are separate repositories with their own issue
+ - The product faces are separate repositories with their own issue
  trackers. File a command-line problem there; it moves here if the cause turns
  out to be the engine.
 
@@ -1092,25 +1092,45 @@ in [`research/crest/`](research/crest).
 
 ## The C ABI
 
-[`include/irgx.h`](include/irgx.h) is deliberately small. Compile a pattern, then
-ask `is_match`, `find_all` or `captures` about bytes the host already holds.
+[`include/irgx.h`](include/irgx.h) is the engine, minus the products built on it.
+One header, one library.
 
-There is no corpus, no walk, no index, and no session. A host that wants those
-links a sibling library.
+The floor is a pattern over bytes the host already holds. Compile it, then ask
+`is_match`, `find_all` or `captures`.
 
-The four properties worth knowing before you bind it, which are status instead of
-abort, per-thread pull-based faults, one handle per thread, and three version
-axes, are stated under [Contracts](#contracts).
+Above the floor are the planes a matcher alone cannot reach. `walk` says which
+files a search may read. `tree` searches a corpus rather than a buffer. `sieve`
+narrows one against a persisted artifact, so most files are never opened.
+`codex` answers `count` and `locate` about a text it does not keep. `slate`,
+`munch`, `needles`, `literals` and `lines` are the multi-pattern, lexer,
+literal-sweep, promise and line-grid verbs.
 
-The header is also the substrate the rest of the ecosystem speaks. The sibling
-libraries each link this one and return these status codes, this fault struct,
-these pattern flags, and the same self-describing row cursor, so a host linking
-two of them reads one vocabulary rather than two spellings of "declined".
+What is deliberately absent is the product. A resident session belongs to
+whoever ships a daemon. Ranking fusion, rg-shaped output, the flag grammar and
+the machine-local preferences file are an executable's decisions, so they stay in
+Zig. The kinship and compose producers live in the libraries of the other two
+faces.
+
+The four properties worth knowing before you bind it are status instead of abort,
+per-thread pull-based faults, one handle per thread, and three version axes. Each
+is stated under [Contracts](#contracts).
+
+The header is also the substrate the rest of the ecosystem speaks. Every face
+library links this one and returns these status codes, this fault struct, these
+pattern flags, and the same self-describing row cursor. A host linking two of
+them reads one vocabulary rather than two spellings of "declined".
 
 Row schemas are declared once in
 [`contract/analytic.toml`](contract/analytic.toml) and lowered by
 [`tools/build_schema_tables.py`](tools/build_schema_tables.py) into a generated
-decoder per language, guarded by a digest a binding checks at load.
+decoder per language. A digest each binding checks at load guards them.
+
+None of that surface is a reviewer's claim. Every exported plane names its C door
+in [`contract/exports.toml`](contract/exports.toml), or the reason it has none,
+and [`quality/parity/check.py`](quality/parity/check.py) holds the header, the
+export table and all three bindings to each other.
+
+The header parses clean as C99 and as C++17. `zig build header` is what says so.
 
 ## Build and Test
 

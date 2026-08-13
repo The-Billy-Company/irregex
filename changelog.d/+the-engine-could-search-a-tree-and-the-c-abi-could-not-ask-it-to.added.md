@@ -9,8 +9,9 @@ driven daily by the sibling binaries; the gap was that `libirgx` published a reg
 matcher and called itself a search toolkit. A C host could compile a pattern and run
 it over a buffer it had already read - which is the one part of a search engine that
 is not the hard part. It could not ask which files to read, could not skip the ones
-that cannot match, and could not search a tree at all. `gist` could, because `gist`
-minted its own cursor shim in its own repo. That shim is now here, where it belongs.
+that cannot match, and could not search a tree at all. The exact-search face could,
+because it minted its own cursor shim in its own repo. That shim is now here, where
+it belongs.
 
 Freezing the surface turned up one real hole rather than just plumbing. `tree`'s own
 header comment promised `irgx_matches_count` and `irgx_matches_close`, and neither

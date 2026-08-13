@@ -6,17 +6,18 @@
 //! `--smart-case`. It is machine-local, it is never committed, and nobody else
 //! is affected by it.
 //!
-//! Which is exactly why ripgrep's version of this is dangerous and gist's is
+//! Which is exactly why ripgrep's version of this is dangerous and this one is
 //! not. A `.ripgreprc` applies to every invocation, so a `--smart-case` in it
 //! silently changes what a colleague's script matches on your machine and not on
 //! theirs — the reason `--no-config` had to be invented, and the reason an agent
 //! is expected to pass it. Here, preferences apply **only when stdout is an
 //! interactive terminal**. That is not a new rule bolted on: it is the envelope
-//! boundary gist already draws everywhere else. The answer keep declines on a
-//! TTY (`surface/cli/reprise.zig`), the resident daemon declines on a TTY, color
-//! resolves on a TTY. Riding the same line means a pipe, a redirect, `--json`, a
-//! script, CI, the daemon, and an agent are all structurally outside this file's
-//! reach, and none of them ever needs `--no-config` to be sure of it.
+//! boundary this ecosystem already draws everywhere else. The answer keep
+//! declines on a TTY (`surface/cli/reprise.zig`), the resident daemon declines
+//! on a TTY, color resolves on a TTY. Riding the same line means a pipe, a
+//! redirect, `--json`, a script, CI, the daemon, and an agent are all
+//! structurally outside this file's reach, and none of them ever needs
+//! `--no-config` to be sure of it.
 //!
 //! Two smaller repairs of the same feature:
 //!
@@ -151,8 +152,8 @@ var steered: ?[]const u8 = null;
 
 /// What the file SAYS — regardless of the TTY gate or `--no-config`, both of
 /// which are facts about this run rather than about the file. That is what lets
-/// `gist config` explain a preferences file from inside a pipe, and explain it
-/// even in a shell that exports `GIST_NO_CONFIG`.
+/// a face's config verb explain a preferences file from inside a pipe, and
+/// explain it even in a shell that exports `<prefix>NO_CONFIG`.
 ///
 /// Never exits. A malformed file is recorded (`faulted`) rather than fatal,
 /// because whether it *should* be fatal depends on the caller: the run that
@@ -176,7 +177,7 @@ pub fn loaded() ?*const Preferences {
     const owned = gpa.create(Preferences) catch return null;
     owned.* = parse(gpa, path, src, &state.diag) catch |e| {
         // The token slices `src`, which this scope is about to free — and the
-        // diagnostic outlives the read (`gist config check` prints it, and the
+        // diagnostic outlives the read (a `config check` prints it, and the
         // suggestion is computed from it).
         state.diag.token = misread.keepToken(&state.token_bytes, state.diag.token);
         state.fault = e;
@@ -215,7 +216,7 @@ pub fn faultNote(e: anyerror) []const u8 {
     };
 }
 
-/// `$GIST_PREFERENCES`, else the platform's machine-local config home. Unset
+/// `$<prefix>PREFERENCES`, else the platform's machine-local config home. Unset
 /// and absent are the same answer — no preferences — because having none is the
 /// overwhelmingly common case and must cost nothing.
 ///

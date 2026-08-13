@@ -38,7 +38,7 @@ pub fn at(buf: []u8, d: Diagnostic) []const u8 {
 ///
 /// A parser hands back a slice of the file's bytes, and those bytes are freed
 /// the moment the read returns — but the diagnostic outlives the read by
-/// design: `gist config check` prints it, and `nearest` is computed from it.
+/// design: a face's `config check` prints it, and `nearest` is computed from it.
 pub fn keepToken(buf: []u8, tok: []const u8) []const u8 {
     const n = @min(tok.len, buf.len);
     @memcpy(buf[0..n], tok[0..n]);

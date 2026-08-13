@@ -1,4 +1,4 @@
-//! gist — minimal UTF-8 codepoint decode for the Unicode word-boundary engine.
+//! irregex — minimal UTF-8 codepoint decode for the Unicode word-boundary engine.
 //! `\b`/`\B`/`\<`/`\>` and `-w` resolve on the word-ness of the *codepoints*
 //! straddling a gap, so the Pike VM must decode the scalar value immediately
 //! after a position (`decode`) and immediately before it (`decodeLast`). Both

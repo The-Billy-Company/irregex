@@ -1,20 +1,20 @@
 // MONOLITHIC: persisted trigram-index loader/serializer — magic and versioning, the CSR directory, the generation-atomic pair, and mmap load form one on-disk format contract shared by every cold path
-//! gist — the persisted-index loader, shared by every cold-query path.
+//! irregex — the persisted-index loader, shared by every cold-query path.
 //!
-//! `surface/face/gist/verbs/index.zig`'s `run` (the `gist index` verb) serializes the trigram
-//! `Index` + the doc→path table to disk; each later fresh process maps them back
-//! **zero-copy** and validates only the compact directory up front. Posting
-//! groups are checked when queried, avoiding a full body decode on every fresh
-//! process. That cold-load path is shared by every shape the unified engine
-//! serves — the index-accelerated read-elision walk (`exec/cold/engine/serial.zig`)
-//! and the `--rank` ranked view (`exec/cold/view/ranked.zig`) — so it lives
-//! here, in the index layer, rather than in a command (a command importing
-//! another command's internals is the coupling this split exists to kill).
+//! The index verb's `run` serializes the trigram `Index` + the doc→path table to
+//! disk; each later fresh process maps them back **zero-copy** and validates
+//! only the compact directory up front. Posting groups are checked when queried,
+//! avoiding a full body decode on every fresh process. That cold-load path is
+//! shared by every shape the unified engine serves — the index-accelerated
+//! read-elision walk (`exec/cold/engine/serial.zig`) and the `--rank` ranked
+//! view (`exec/cold/view/ranked.zig`) — so it lives here, in the index layer,
+//! rather than in a command (a command importing another command's internals is
+//! the coupling this split exists to kill).
 //!
 //! Publish is generation-atomic: both blobs land under `gens/<id>/` first, then
 //! a single `pair.gen` rename publishes the pair. Readers bind to that id and
-//! re-check it after mapping, so they never observe new `index.gist` with old
-//! `paths.list` (or the reverse). Publishing also retires the generations it
+//! re-check it after mapping, so they never observe a new index blob with an
+//! old `paths.list` (or the reverse). Publishing also retires the generations it
 //! supersedes — `lapse.zig` owns that policy, and `publishGeneration` is the
 //! one place the two halves meet.
 
@@ -74,7 +74,7 @@ pub const gens_subdir = "gens";
 /// lifetimes bind to the two mappings and `deinit` simply unmaps them.
 ///
 /// A generation may additionally carry a CODICIL (`codicil.zig`) — the
-/// incremental amendment `gist index` publishes when only a few files changed.
+/// incremental amendment an index build publishes when only a few files changed.
 /// The loader folds it in here so every consumer sees ONE layered view:
 /// `paths` is extended with the codicil's new docs, `crest` becomes the merged
 /// owned table (dirty rows replaced, tombs never-prune), and candidate queries
@@ -292,8 +292,8 @@ pub fn load(gpa: std.mem.Allocator, io: std.Io) !?Persisted {
     return loadAt(gpa, io, home.outDir(), true);
 }
 
-/// `load`, but SILENT on a miss (no "run `gist index`" guidance). The bare
-/// `gist <pattern>` front door probes for an index on every invocation to
+/// `load`, but SILENT on a miss (no "build an index" guidance). The bare
+/// `<pattern>` front door probes for an index on every invocation to
 /// accelerate its live walk (skip reading provable-non-candidate files —
 /// `exec/cold/engine/serial.zig`), and outside an indexed corpus that probe MUST
 /// stay quiet: a missing index there is the normal case, not something to nag
@@ -567,7 +567,7 @@ pub fn loadAt(gpa: std.mem.Allocator, io: std.Io, out_dir: []const u8, comptime 
 /// Serialize + generation-publish the index/path/roots triple (plus the crest
 /// sidecar when the builder computed one) under `out_dir`, and record
 /// `built_ns` as the generation's BASE instant (`base.ns` — what a later
-/// `gist index` amend measures "changed since" against). Returns the
+/// index-build amend measures "changed since" against). Returns the
 /// posting-blob byte length.
 pub fn persistIndexAndPathsAt(
     gpa: std.mem.Allocator,
@@ -649,7 +649,7 @@ fn publishGeneration(io: std.Io, out_dir: []const u8, gen: []const u8) !void {
 /// Retire what the generation `gen` superseded, publishing nothing. Every
 /// publish ends in this (via `publishGeneration`), but the no-change amend
 /// path never publishes at all — it advances the freshness anchor and stops —
-/// so without a second call site `gist index` would tidy the artifact
+/// so without a second call site an index build would tidy the artifact
 /// directory only on the runs that happened to find work, leaving a backlog to
 /// drain behind future edits. Calling it here too makes the lifecycle verb
 /// idempotent in the way its name implies, for the cost of one directory
@@ -732,7 +732,7 @@ pub fn readBaseNs(gpa: std.mem.Allocator, io: std.Io, out_dir: []const u8, gen: 
 
 /// The build roots of generation `gen` (`gens/<gen>/roots.list`), read cheaply
 /// — no index mmap, no doc path-table parse. This is what lets a no-change
-/// `gist index` amend answer without ever loading the pair. Null when the
+/// index-build amend answer without ever loading the pair. Null when the
 /// list is missing/empty/torn (legacy layout or a torn publish; the amend
 /// caller falls back to the full build).
 pub const RootsList = struct {

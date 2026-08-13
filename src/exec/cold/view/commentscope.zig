@@ -1,4 +1,4 @@
-//! gist `--in-comments` / `--in-code` — the native comment/code match view.
+//! `--in-comments` / `--in-code` — the native comment/code match view.
 //!
 //! A contained, early-branching view (the same discipline as `--rank`): it runs
 //! BEFORE the certified ripgrep-parity per-line engine and returns, so the

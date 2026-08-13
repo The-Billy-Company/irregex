@@ -1,5 +1,5 @@
-//! gist powerset (subset-construction) tests — split from `powerset.zig` to keep
-//! the determinizer under the shape cap.
+//! irregex powerset (subset-construction) tests — split from `powerset.zig` to
+//! keep the determinizer under the shape cap.
 //!
 //! These are deliberately **NOT** differential-oracle tests: `dfa_test.zig`
 //! already diffs the built `Dfa`'s match verdict against the proven Pike VM. This
@@ -24,7 +24,7 @@
 //!      7. **Build determinism** — two compiles are byte-identical.
 //!
 //! B. **EXHAUSTIVE language equivalence** — the strongest correctness statement:
-//!    a from-scratch ε-closure NFA acceptor (`Spec`) *defines* gist's grep
+//!    a from-scratch ε-closure NFA acceptor (`Spec`) *defines* this engine's grep
 //!    semantics, and for each pattern EVERY string up to a bound (length 7
 //!    curated / 4 fuzz, over {a,z,1,'\n'}) is asserted to match identically under
 //!    the DFA and the spec. Exhaustive ⇒ a proof over that bounded space, not a
@@ -298,12 +298,13 @@ test "powerset: byte-class partition has the exact computed cardinality" {
 }
 
 // ── the determinizer's contract: an independent NFA acceptor (NOT the Pike VM) ──
-// A from-scratch ε-closure set-simulation over `syn.State` that *defines* gist's
-// grep line semantics (re-seed `start` at every position; `^`/`$` resolve against
-// the BOL/EOL flags). It is the specification the DFA tables must reproduce
-// exactly — and, run EXHAUSTIVELY over every short string below, gives certainty
-// (not a sampled probability) that `step`/`close`/`buildClasses` compute the
-// right language, the one class of bug the structural invariants cannot see.
+// A from-scratch ε-closure set-simulation over `syn.State` that *defines* this
+// engine's grep line semantics (re-seed `start` at every position; `^`/`$`
+// resolve against the BOL/EOL flags). It is the specification the DFA tables
+// must reproduce exactly — and, run EXHAUSTIVELY over every short string below,
+// gives certainty (not a sampled probability) that
+// `step`/`close`/`buildClasses` compute the right language, the one class of
+// bug the structural invariants cannot see.
 const Spec = struct {
     states: []const syn.State,
     start: u32,

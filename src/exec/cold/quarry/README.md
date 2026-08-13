@@ -91,7 +91,6 @@ that changed is re-read into the session's overlay, whose documents the
 sieve never sees. The proof above buys back a vector measured by someone
 else, at another time; warm never has to ask.
 
-Gated by `gist/bench/conformance/gates/parity/index_elision_parity.sh`
-(indexed and non-indexed runs must produce identical bytes) and
-`gist/bench/conformance/gates/oracle/indexed_pcre_oracle.py`, both in the
-sibling `gist` repo.
+Gated by the face package's index-elision parity gate (indexed and
+non-indexed runs must produce identical bytes) and its indexed-PCRE oracle,
+both run over a built binary there.

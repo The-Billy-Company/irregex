@@ -4,7 +4,7 @@
 //! It carries only match-finding *intent*; presentation, ranking, stats,
 //! replace, and stdin stay CLI-only. A chainable builder gives Rust the
 //! ergonomics Python gets from keyword arguments, and `to_argv` lowers the
-//! request into the exact rg-parity argv the certified `gist` binary accepts —
+//! request into the exact rg-parity argv the certified exact face accepts —
 //! so the crate never reimplements search, it drives the same engine.
 //!
 //! The field set mirrors `irregex/contract/engine.toml`'s `[request_options]`; the
@@ -343,7 +343,7 @@ impl SearchRequest {
     /// engine adapter positions). Order is deterministic and mirrors the Python
     /// face so the two build byte-identical argv.
     #[must_use]
-    /// Lower this request into the rg-parity argv the certified `gist` binary
+    /// Lower this request into the rg-parity argv the certified exact face
     /// accepts (without the binary name itself).
     pub fn to_argv(&self) -> Vec<String> {
         let mut argv: Vec<String> = Vec::new();

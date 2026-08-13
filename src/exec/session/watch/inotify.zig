@@ -1,4 +1,4 @@
-//! gist resident session — the Linux `inotify` freshness backend.
+//! Resident session — the Linux `inotify` freshness backend.
 //!
 //! Recursively watches every directory under the session's roots, keyed to
 //! absolute realpaths so noted paths match the canonical shape `delta.resolve`
@@ -238,8 +238,8 @@ fn noteAnnals(self: anytype, abs: []const u8) void {
 }
 
 /// Note the exact path an inotify record attributes to, into the session's
-/// `DirtyLog` — and, for a FILE, the annals ledger a one-shot `gist index`
-/// amend and the resident keep's epoch both read. A record with a name
+/// `DirtyLog` — and, for a FILE, the annals ledger a one-shot index amend
+/// and the resident keep's epoch both read. A record with a name
 /// (`ev.len > 0`) is an entry inside the wd's directory (`parent/name`); a
 /// nameless record (`ev.len == 0`) is the watched directory itself. Either
 /// resolves to an absolute path (the wds were realpath'd at arm time). An

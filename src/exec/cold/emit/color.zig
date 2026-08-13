@@ -1,4 +1,4 @@
-//! gist `rg` — whether/how to paint output. Split from `output.zig` so the
+//! The `rg` face — whether/how to paint output. Split from `output.zig` so the
 //! TTY/env resolution (`--color auto|always|never|ansi`) and the ANSI palette
 //! it feeds have their own home rather than growing an already-large emitter.
 //!
@@ -6,7 +6,7 @@
 //! swap, not a filled background block — but punchier: ripgrep's plain
 //! `fg:red,style:bold` reads as a muddy dark-red on many default terminal
 //! palettes (`31` is the dim/"normal" red; `bold` alone doesn't brighten it on
-//! every emulator). gist adds `underline` on top of the *bright* red
+//! every emulator). We add `underline` on top of the *bright* red
 //! foreground (`91`, the intensified SGR variant), so a match is unmistakable
 //! at a glance without ever painting a background. Chrome (path/line
 //! separators) is dimmed one notch so the match is the only thing competing
@@ -22,11 +22,11 @@ pub const line_on = "\x1b[32m"; // green — ripgrep's line-number color
 pub const sep_on = "\x1b[2m"; // dim — recedes so the match text dominates
 pub const match_on = "\x1b[1;4;91m"; // bold + underline + bright red — letters only, no fill
 
-// The constants above are gist's DEFAULT palette; `--colors` overrides them per
+// The constants above are our DEFAULT palette; `--colors` overrides them per
 // element, attribute by attribute, exactly as ripgrep's specs do. The
 // vocabularies mirror grep-printer's `UserColorSpec`/`Style`/`termcolor::Color`
 // parsers, and a malformed spec still fails loud (exit 2) rather than being
-// silently accepted (gist's fail-closed contract).
+// silently accepted (our fail-closed contract).
 const color_types = [_][]const u8{ "path", "line", "column", "match" };
 const color_styles = [_][]const u8{ "nobold", "bold", "nointense", "intense", "nounderline", "underline", "noitalic", "italic" };
 const named_colors = [_][]const u8{ "black", "blue", "green", "red", "cyan", "magenta", "yellow", "white" };
@@ -50,7 +50,7 @@ fn validColorValue(v: []const u8) bool {
 /// Validate one `--colors` spec (`{type}:none` or `{type}:{fg|bg|style}:{value}`),
 /// returning a human diagnostic when malformed, else null. Mirrors ripgrep's
 /// `UserColorSpec::from_str` failure taxonomy (unrecognized type / spec type /
-/// style attribute / color value), so gist rejects exactly what rg rejects.
+/// style attribute / color value), so we reject exactly what rg rejects.
 pub fn validateColorSpec(spec: []const u8) ?[]const u8 {
     var it = std.mem.splitScalar(u8, spec, ':');
     const otype = it.next().?; // splitScalar always yields ≥1 piece
@@ -68,12 +68,12 @@ pub fn validateColorSpec(spec: []const u8) ?[]const u8 {
 
 /// What paints one element. Four SGR prefixes, resolved once per run and then
 /// carried by `Opts`, so no emitter signature has to grow a parameter to learn
-/// a caller's `--colors`. `.{}` is gist's own palette, byte-for-byte what a run
+/// a caller's `--colors`. `.{}` is our own palette, byte-for-byte what a run
 /// with no spec has always printed.
 ///
 /// `sep` (the dimmed field separators) has no ripgrep `--colors` type and stays
-/// gist chrome. `column` defaults to EMPTY rather than to ripgrep's green: gist
-/// has never painted column numbers, and honoring a spec must not repaint an
+/// native chrome. `column` defaults to EMPTY rather than to ripgrep's green: we
+/// have never painted column numbers, and honoring a spec must not repaint an
 /// element nobody asked about.
 pub const Palette = struct {
     path: []const u8 = path_on,
@@ -172,11 +172,11 @@ fn fold(a: std.mem.Allocator, at: *[4]Attrs, spec: []const u8) void {
 }
 
 /// Resolve `--colors` specs into the palette this run paints with. With no
-/// specs the result is `.{}` — the same four constants gist has always used —
+/// specs the result is `.{}` — the same four constants we have always used —
 /// so the default path allocates nothing and cannot drift.
 pub fn resolve(a: std.mem.Allocator, specs: []const []const u8) Palette {
     if (specs.len == 0) return .{};
-    // gist's defaults, as attributes, so a spec merges into them the way
+    // Our defaults, as attributes, so a spec merges into them the way
     // ripgrep's merge into its own.
     var at = [4]Attrs{
         .{ .fg = "35", .bold = true }, // path
@@ -244,7 +244,7 @@ pub fn enabled(o: args.Opts, io: std.Io, env: *const std.process.Environ.Map) bo
 const t = std.testing;
 
 test "the default attributes render to the palette constants, byte for byte" {
-    // The safety property behind `--colors`: gist's defaults now live twice —
+    // The safety property behind `--colors`: our defaults now live twice —
     // once as constants for the no-spec path, once as attributes for the merge.
     // A spec that names only `column` must leave the other three EXACTLY as a
     // run with no spec at all would have printed them.
@@ -259,7 +259,7 @@ test "the default attributes render to the palette constants, byte for byte" {
 test "no spec allocates nothing and cannot drift" {
     const p = resolve(t.failing_allocator, &.{});
     try t.expectEqualStrings(match_on, p.match);
-    try t.expectEqualStrings("", p.column); // gist has never painted columns
+    try t.expectEqualStrings("", p.column); // we have never painted columns
 }
 
 test "--colors merges into gist's defaults the way ripgrep merges into its own" {
@@ -269,7 +269,7 @@ test "--colors merges into gist's defaults the way ripgrep merges into its own" 
     // Naming the foreground keeps the default's bold+underline.
     try t.expectEqualStrings("\x1b[1;4;34m", resolve(a, &.{"match:fg:blue"}).match);
     // `none` clears the element outright — this is the case ripgrep users reach
-    // for to keep path color while unstyling matches, which gist used to ignore.
+    // for to keep path color while unstyling matches, which we used to ignore.
     try t.expectEqualStrings("", resolve(a, &.{"match:none"}).match);
     try t.expectEqualStrings(path_on, resolve(a, &.{"match:none"}).path);
     // Specs accumulate in argv order, and a later one wins its attribute.

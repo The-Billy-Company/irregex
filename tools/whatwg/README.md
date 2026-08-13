@@ -8,8 +8,8 @@ The lowering lives in [`../build_encoding_tables.py`](../build_encoding_tables.p
 [`../../src/corpus/read/encoding.zig`](../../src/corpus/read/encoding.zig)
 rides. This is the same set `encoding_rs` (ripgrep's transcoder) is built from,
 so the engine reaches byte-for-byte `-E` parity with `rg` — proven by the
-`rgsuite` conformance harness in the sibling `gist` repository's
-`bench/conformance/rgsuite/`.
+`rgsuite` conformance harness in the sibling exact-search face's repository, at
+its `bench/conformance/rgsuite/`.
 
 ## Provenance
 
@@ -42,9 +42,9 @@ shasum -a 256 *.txt
 
 To upgrade the pin, re-fetch the set from the WHATWG URL above, then run the
 generator from the package root and re-run the conformance suite from the
-sibling `gist` checkout:
+sibling exact-search face's checkout:
 
 ```bash
 python3 tools/build_encoding_tables.py
-cd ../gist && python3 bench/conformance/rgsuite/transforms.py run
+cd <face package checkout> && python3 bench/conformance/rgsuite/transforms.py run
 ```

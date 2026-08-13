@@ -54,13 +54,13 @@ pub use decode::Row;
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum Error {
-    /// No engine binary could be located: not at the env override (`GIST_BIN`
-    /// / `RELATE_BIN` / `BLAST_BIN`), not at a built `zig-out/bin/<name>` in
+    /// No engine binary could be located: not at the per-face env override
+    /// (`<FACE>_BIN`), not at a built `zig-out/bin/<name>` in
     /// this checkout, an ancestor, or the sibling checkout that owns the name,
     /// and not on `PATH`. The message names every path it tried, in order.
     /// Build one with `zig build`.
     NotFound(String),
-    /// The pattern or flag combination is outside GIST's linear-time engine
+    /// The pattern or flag combination is outside the linear-time engine
     /// (e.g. PCRE2 lookaround/backreferences, `-U` multiline) — the engine
     /// exited 2 and named the ripgrep fallback on stderr.
     UnsupportedPattern(String),
@@ -105,8 +105,9 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             // The message already names the tool it went looking for, and it is
-            // not always `gist` — the same error carries a missing `relate` or
-            // `blast`. Prefix with the crate, not with one of the three faces.
+            // not always the exact face — the same error carries a missing
+            // kinship or composed binary. Prefix with the crate, not with one
+            // of the three faces.
             Self::NotFound(m) => write!(f, "irregex: {m}"),
             Self::UnsupportedPattern(m) => write!(f, "unsupported pattern: {m}"),
             Self::BadPattern(m) => write!(f, "malformed pattern: {m}"),
@@ -176,8 +177,8 @@ pub trait Query {
 
 /// A filled `[analytic.params]` family, borrowing the request that built it.
 ///
-/// The families are separate structs (rather than one union) because
-/// `gist_run` size-checks each against its declared shape, and a
+/// The families are separate structs (rather than one union) because a
+/// producer entry size-checks each against its declared shape, and a
 /// mismatched size is `IRGX_INVALID` by design.
 pub enum Wire<'a> {
     Kinship(sys::KinshipParams, std::marker::PhantomData<&'a ()>),
@@ -200,7 +201,7 @@ impl<'a> Wire<'a> {
         }
     }
 
-    /// The opaque pointer `gist_run` expects, valid for `&self`.
+    /// The opaque pointer a producer entry expects, valid for `&self`.
     pub fn as_ptr(&self) -> *const c_void {
         match self {
             Self::Kinship(p, _) => std::ptr::from_ref(p).cast(),

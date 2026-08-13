@@ -1,4 +1,4 @@
-//! gist T0 varint codec tests — split out per the shape cap, wired via
+//! irregex T0 varint codec tests — split out per the shape cap, wired via
 //! `root.zig`'s test block.
 
 const std = @import("std");

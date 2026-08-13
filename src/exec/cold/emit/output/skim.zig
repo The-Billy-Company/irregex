@@ -1,4 +1,4 @@
-//! gist `rg` — the line-free literal fast path.
+//! The `rg` face — the line-free literal fast path.
 //!
 //! Split from `output.zig`: ripgrep's searcher-loop architecture (candidate
 //! jump → line bounds → confirm → skip the line) for a pure-literal pattern.
@@ -85,8 +85,8 @@ pub fn litFastEligible(self: *const Emitter) bool {
 }
 
 /// The line-free literal fast path — ripgrep's searcher-loop architecture
-/// (candidate jump → line bounds → confirm → skip the line), the piece gist
-/// was missing. For a pure-literal pattern it NEVER builds the line array:
+/// (candidate jump → line bounds → confirm → skip the line), the piece we
+/// were missing. For a pure-literal pattern it NEVER builds the line array:
 /// one `indexOfAnyPos` sweep jumps hit→hit over `body`; each hit's line
 /// bounds come from a reverse/forward memchr (`lastIndexOfScalar`/`memchr`);
 /// the line is emitted through the same helpers as `file`; and the scan

@@ -92,7 +92,7 @@ pub const Options = struct {
     /// a class run on exactly that promise, and resolves `^`/`$` against the
     /// haystack's own edges because the haystack IS the line.
     ///
-    /// `gist` keeps that promise: it feeds one line at a time. A `Pattern` is
+    /// A face keeps that promise: it feeds one line at a time. A `Pattern` is
     /// handed whole buffers by definition, so it cannot. A `Pattern` compiled
     /// per-line finds nothing at all for `\s`, `\n`, `[\n\t]` or `\s+` over
     /// `"a\nb\n"` — not fewer matches, *none*, because a promise the caller

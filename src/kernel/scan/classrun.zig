@@ -1,5 +1,5 @@
 // MONOLITHIC: SIMD class-run scan — the dense-class boolean match kernel; the SIMD lane state, run detection, and the DFA-fallback boundary co-maintain one loop-carried match invariant
-//! gist — SIMD class-run scan: the dense-class boolean match kernel.
+//! irregex — SIMD class-run scan: the dense-class boolean match kernel.
 //!
 //! Why this exists (measured, not assumed): the byte-class DFA is O(1)/byte,
 //! but that one operation is a LOOP-CARRIED L1 load — `s = trans[s +

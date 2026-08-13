@@ -5,10 +5,10 @@
 //! ; ; URL ESC \` before the anchor text, `ESC ] 8 ; ; ESC \` after — and
 //! everything hard is deciding **whether** to emit them and **which URL**.
 //!
-//! It lives in the shared `cli` vocabulary rather than inside gist's emitter
-//! because all three faces print paths: a `relate echoes` family and an
-//! `blast blast` ripple are lists of files whose whole purpose is to be
-//! opened next. Nothing here knows what a match is, which face is asking, or
+//! It lives in the shared `cli` vocabulary rather than inside the exact face's
+//! emitter because all three faces print paths: a kinship repetition family and
+//! a composed change-radius ripple are lists of files whose whole purpose is to
+//! be opened next. Nothing here knows what a match is, which face is asking, or
 //! what that face's flags are called — `resolve` takes a `Request`, and each
 //! CLI fills it from its own argv.
 //!
@@ -18,7 +18,7 @@
 //! ships. Four things are deliberately different:
 //!
 //!   * **On by default, fail-closed.** rg links nothing until you learn a flag
-//!     *and* an alias. gist probes the emulator (`speaks`) and the editor
+//!     *and* an alias. This layer probes the emulator (`speaks`) and the editor
 //!     family (`destination`) and links when both answer. An emulator we can't
 //!     name gets plain bytes, so the failure mode is "no link", never "escape
 //!     soup in your pager".
@@ -102,13 +102,13 @@ pub fn alias(name: []const u8) ?[]const u8 {
 /// `--hyperlink` takes its value inline, because a bare one must not swallow
 /// the next token — that token is the pattern. But rg spells this flag
 /// `--hyperlink-format vscode`, with a space, so anyone arriving with that
-/// muscle memory writes `gist --hyperlink vscode needle .` and searches their
+/// muscle memory writes `--hyperlink vscode needle .` and searches their
 /// tree for the word "vscode" while linking somewhere else entirely. Every
 /// other way of getting this wrong already says so; this one used to succeed
 /// quietly, which is the exact failure the whole layer exists to prevent.
 ///
 /// Only consulted when the flag was written bare, and only true when the
-/// pattern spells a destination — so `gist vscode .`, a perfectly ordinary
+/// pattern spells a destination — so a bare `vscode .`, a perfectly ordinary
 /// search, never sees it.
 pub fn misspaced(pattern: []const u8) bool {
     return alias(pattern) != null or std.mem.indexOfScalar(u8, pattern, '{') != null;
@@ -122,7 +122,7 @@ const Part = union(enum) { text: []const u8, host, wsl, path, line, column };
 /// the flag parser can die loud and `resolve` can warn and carry on.
 pub const Choice = union(enum) { when: When, format: []const u8, bad: []const u8 };
 
-/// Read a `--hyperlink` / `GIST_HYPERLINK` value. One flag covers the whole
+/// Read a `--hyperlink` / `<prefix>HYPERLINK` value. One flag covers the whole
 /// axis: the three postures, any alias, or a literal format string (anything
 /// holding a `{`). rg needs two flags and cannot say "auto".
 pub fn choose(a: Allocator, value: []const u8) Choice {
@@ -134,16 +134,16 @@ pub fn choose(a: Allocator, value: []const u8) Choice {
     return .{ .bad = std.fmt.allocPrint(a, "unknown hyperlink alias '{s}' (known: {s}; or write a format like 'vscode://file{{path}}:{{line}}:{{column}}')", .{ value, names }) catch oom() };
 }
 
-/// A whole `--hyperlink` / `GIST_HYPERLINK` value: a posture, a destination, or
-/// the `WHEN,WHERE` pair that names both.
+/// A whole `--hyperlink` / `<prefix>HYPERLINK` value: a posture, a destination,
+/// or the `WHEN,WHERE` pair that names both.
 pub const Wish = struct { when: ?When = null, format: ?[]const u8 = null, bad: ?[]const u8 = null };
 
 /// Read one value into at most one posture and one destination. An empty value
-/// is an empty preference — `GIST_HYPERLINK=` in a profile stands the variable
-/// down rather than earning a diagnostic on every run.
+/// is an empty preference — `<prefix>HYPERLINK=` in a profile stands the
+/// variable down rather than earning a diagnostic on every run.
 ///
 /// The pair form is what lets a single variable hold a complete standing
-/// preference: `GIST_HYPERLINK=auto,vscode` says *where* while leaving the
+/// preference: `<prefix>HYPERLINK=auto,vscode` says *where* while leaving the
 /// probe to say *whether*, and `always,vscode` overrides the probe too. rg
 /// spends two flags on this axis and still cannot express either sentence.
 ///
@@ -175,7 +175,7 @@ pub const names = blk: {
 };
 
 /// Validate a literal format, returning a human diagnostic or null. Mirrors
-/// ripgrep's failure taxonomy exactly, so a format rg rejects gist rejects.
+/// ripgrep's failure taxonomy exactly, so a format rg rejects this layer rejects.
 pub fn fault(a: Allocator, spec: []const u8) ?[]const u8 {
     var parts: std.ArrayList(Part) = .empty;
     defer parts.deinit(a);
@@ -496,7 +496,7 @@ pub fn current() ?*const Beacon {
 
 /// Decide this run's hyperlink posture, or null for "emit no links".
 ///
-/// Precedence: the flag, then `GIST_HYPERLINK`, then the probe. `never` and a
+/// Precedence: the flag, then `<prefix>HYPERLINK`, then the probe. `never` and a
 /// record stream are absolute. `auto` additionally requires a real terminal
 /// that `speaks` OSC-8 and bytes meant for a human. `always` overrides all of
 /// that except a record stream.
@@ -543,7 +543,7 @@ pub fn resolve(a: Allocator, r: Request, io: std.Io, env: *const Environ) ?Beaco
 /// no links is the exact confusion this layer exists to remove.
 ///
 /// So does a lit `link` lens, for the same reason one step further out. Asking
-/// `GIST_TRACE=link` why a run didn't link is a debugging act, and the answer
+/// `<prefix>TRACE=link` why a run didn't link is a debugging act, and the answer
 /// lives in `resolve` — which a warm answer never calls. Without this the lens
 /// is silent in its single most common case (no flag, no env, output piped),
 /// which is worse than having no lens: it reads as "nothing to report."
@@ -599,7 +599,7 @@ fn here(a: Allocator, io: std.Io, env: *const Environ) []const u8 {
     return if (mine.inode == named.inode) logical else physical;
 }
 
-/// Report the decision under `GIST_TRACE=link` and pass it through, so every
+/// Report the decision under `<prefix>TRACE=link` and pass it through, so every
 /// exit from `resolve` says why on one line and none of them can go silent.
 fn trace(why: []const u8, b: ?Beacon) ?Beacon {
     assay.trace(.link, "link: {s} · {s}\n", .{ if (b == null) "off" else "on", why });
@@ -649,10 +649,11 @@ pub fn tears(shown: []const u8) bool {
 
 // ─────────────────────── the row-shaped faces' one call ───────────────────────
 //
-// gist's emitter builds a `Waypoint` per file and reuses it across thousands of
-// matching lines. relate and blast print tens of rows, each naming a
-// different file, so they take the direct route below: one frame per row, no
-// memo, and a plain borrow of the caller's bytes when the run emits no links.
+// The exact face's emitter builds a `Waypoint` per file and reuses it across
+// thousands of matching lines. The kinship and composed faces print tens of
+// rows, each naming a different file, so they take the direct route below: one
+// frame per row, no memo, and a plain borrow of the caller's bytes when the run
+// emits no links.
 
 /// Wrap `text` in a click frame pointing at `path`:`line`. The primitive under
 /// `anchor` and `locator`, exposed because a face occasionally has the locator
@@ -674,10 +675,10 @@ pub fn link(a: Allocator, path: []const u8, line: u64, anchored: []const u8) []c
     return out.items;
 }
 
-/// A printed unit label, made clickable in place. relate names a unit either by
-/// path (`src/root.zig`) or by fragment (`src/probe.zig#L340`), and the `#Lnnn`
-/// suffix is exactly the `{line}` a format wants — so the row that says which
-/// *function* it found also opens on that function.
+/// A printed unit label, made clickable in place. The kinship face names a unit
+/// either by path (`src/root.zig`) or by fragment (`src/probe.zig#L340`), and
+/// the `#Lnnn` suffix is exactly the `{line}` a format wants — so the row that
+/// says which *function* it found also opens on that function.
 pub fn anchor(a: Allocator, label: []const u8) []const u8 {
     if (current() == null) return label; // before the split, to allocate nothing
     const cut = std.mem.lastIndexOf(u8, label, "#L");
@@ -687,10 +688,11 @@ pub fn anchor(a: Allocator, label: []const u8) []const u8 {
 }
 
 /// `path:line` rendered as one clickable locator, into a buffer the caller
-/// already owns — the row shape `blast blast`, `provenance`, `relate
-/// patterns`, and the `--rank` view all print. Under `GIST_HYPERLINK_SCOPE=path`
-/// the click target narrows to the filename and the `:line` trails outside the
-/// frame, so selecting a row still yields text a shell can take.
+/// already owns — the row shape the composed change-radius and provenance
+/// verbs, the kinship pattern sweep, and the `--rank` view all print. Under
+/// `<prefix>HYPERLINK_SCOPE=path` the click target narrows to the filename and
+/// the `:line` trails outside the frame, so selecting a row still yields text a
+/// shell can take.
 ///
 /// This is the primitive rather than `locator` because one caller renders
 /// inside the resident daemon, where a per-row allocation would accumulate for

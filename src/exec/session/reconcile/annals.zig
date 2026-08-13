@@ -1,8 +1,8 @@
-//! gist resident session — the annals (the never-drained changed-path ledger).
+//! Resident session — the annals (the never-drained changed-path ledger).
 //!
 //! `DirtyLog` (dirty.zig) hands the watcher's changed set to the session's own
 //! reconcile and is CONSUMED by every drain. The annals are the sibling ledger
-//! for a different reader: a one-shot `gist index` amend, which dials the
+//! for a different reader: a one-shot index amend, which dials the
 //! daemon and asks "which corpus files changed since instant S?" — the answer
 //! that replaces the ~100 ms stat walk (and the ~10 ms FSEvents historical
 //! replay, whose fseventsd IPC floor a one-shot process can never dodge) with

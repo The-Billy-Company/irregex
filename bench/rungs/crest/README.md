@@ -50,8 +50,8 @@ between twins, not just a falling number.
 The two **disjunctive rows** (`[0-9a-f]{12}|~{60}`, `[0-9]{6}|[A-Z]{6}`) force
 alternatives with no common superclass. A collapsed single-vector ĝ is the
 zero vector for both branches, which used to stand the whole sieve down —
-exactly what `gist -e A -e B` compiles to — so these rows are the regression
-test for the disjunction fix itself.
+exactly what a `-e A -e B` invocation compiles to — so these rows are the
+regression test for the disjunction fix itself.
 
 ## Reading The Table
 
@@ -76,7 +76,7 @@ this same run; see its own [README](evidence/README.md) for what that adds.
 ## The Shipped Integration
 
 Everything above proves the kernel; the CLI path that spends the proof is
-exercised end to end rather than assumed. `gist index` persists the sidecar
-at `crest.bin` (`src/corpus/index/crest/sidecar.zig`), and a query like
-`gist '[0-9a-f]{12}'` elides pruned reads through that sidecar — compare
+exercised end to end rather than assumed. An index build persists the sidecar
+at `crest.bin` (`src/corpus/index/crest/sidecar.zig`), and a query for
+`[0-9a-f]{12}` elides pruned reads through that sidecar — compare
 timing against `--no-index` for the before/after a caller actually sees.

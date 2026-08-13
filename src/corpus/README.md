@@ -10,7 +10,7 @@ It knows nothing about matching, ranking, transports, or CLI presentation. Both 
 - **[`read/`](read/README.md)** owns byte legibility: encoding decode, the portable stat projection, and the line-splitting model every matcher reads through.
 - **[`tree/`](tree/README.md)** owns the walk itself, the corpus it materializes, and the stdout cadence (`drain.zig`).
 - **[`fresh/`](fresh/README.md)** owns freshness: the build anchor, the amend journal, and the sweep — what makes a days-old artifact still answer correctly.
-- **[`index/`](index/README.md)** owns the persisted artifacts (trigrams, postings, crest, content, phantom, shelf) and the wire floor beneath them (`frame/`). The kinship artifacts (atlas, frag) are built on that floor but live in the sibling `relate` repo.
+- **[`index/`](index/README.md)** owns the persisted artifacts (trigrams, postings, crest, content, phantom, shelf) and the wire floor beneath them (`frame/`). The kinship artifacts (atlas, frag) are built on that floor but live in the sibling kinship repo.
 
 ## Why It Exists
 

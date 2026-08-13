@@ -27,13 +27,13 @@ cannot disagree with each other.
   start-lines, and `-v` claims lines by a sequential rescan so a later
   match still hides its own line.
 - **`hints.zig`** is the stderr guidance channel, on two triggers: a
-  notable outcome (`gist: no matches …` plus up to three ranked `gist:
-  try` / `gist: note:` lines) and a notable duration (`Vigil` — a walk
-  still running past its patience reports progress instead of looking
-  hung). The outcome arm reads an `Evidence` value probed from the bytes
+  notable outcome (`<name>: no matches …` plus up to three ranked
+  `<name>: try` / `<name>: note:` lines) and a notable duration (`Vigil`
+  — a walk still running past its patience reports progress instead of
+  looking hung). The outcome arm reads an `Evidence` value probed from the bytes
   the run actually searched rather than from the query's spelling, so a
   suggestion is withheld unless the corpus backs it — see [A Hint Has to
-  Be Earned](#a-hint-has-to-be-earned). Muted by `GIST_HINTS=0`, never
+  Be Earned](#a-hint-has-to-be-earned). Muted by `<prefix>HINTS=0`, never
   touches stdout.
 
 The warm session's line renderer
@@ -44,11 +44,11 @@ warm `path:line:text` frames are cold frames by construction.
 ## Clickable Rows
 
 The click target itself is decided one directory up, in
-[`cli/beacon.zig`](../../../surface/cli/beacon.zig), because `relate` and
-`irregex` print paths too. What lives here is only the framing: `linkOpen`
-/ `linkClose` bracket text a row was going to print anyway, so the anchor
-is whatever the reader already sees — the whole `path:line` locator, or
-just the path under `--heading` and `-l`.
+[`cli/beacon.zig`](../../../surface/cli/beacon.zig), because the kinship
+and composed faces print paths too. What lives here is only the framing:
+`linkOpen` / `linkClose` bracket text a row was going to print anyway, so
+the anchor is whatever the reader already sees — the whole `path:line`
+locator, or just the path under `--heading` and `-l`.
 
 Every one of those calls is a null check when the run resolved no beacon,
 which is why links-off output stays byte-identical to ripgrep's. Under
@@ -58,7 +58,7 @@ bytes, bound for `xargs -0`.
 ## Why the Vigil Is Gated Harder Than a Hint
 
 A long walk is indistinguishable from a hung process, so it gets killed
-like one — the run that motivated `Vigil` (`gist -uu` over a tree carrying
+like one — the run that motivated `Vigil` (a `-uu` walk over a tree carrying
 gigabytes of vendored clones) walked for well over a minute in complete
 silence and was killed early. The fix is for the walk to say it is alive.
 
@@ -78,7 +78,7 @@ walk it watches.
 
 Every line on the outcome arm used to be a pure function of the pattern
 text, and a pure function of the pattern text cannot know whether its
-advice helps. `gist -n 'KEY_THREAD_ID|__all__|globals\(\)' attrs.py`
+advice helps. A `-n 'KEY_THREAD_ID|__all__|globals\(\)' attrs.py` run
 answered with three suggestions and all three were wrong: `-i` on a file
 holding no case variant of any branch, `-F` because `\(` looked like a
 metacharacter when the backslash is what makes it literal, and `-uu` on a

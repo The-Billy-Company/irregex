@@ -3,11 +3,11 @@
 // and the ladder between them.
 //
 // Two tiers answer every analytic verb. The in-process plane dispatches
-// through gist_run when this build has cgo, the library exports the
-// plane, and its row-schema digest matches the table this decoder was generated
-// from. Otherwise — no cgo, no plane, no library, or a tier that DECLINES
-// (IRGX_STALE) — the same verb answers by running the certified `gist` /
-// `relate` / `irregex` binary and decoding its NDJSON. The two produce identical
+// through a face's producer entry when this build has cgo, the library exports
+// the plane, and its row-schema digest matches the table this decoder was
+// generated from. Otherwise — no cgo, no plane, no library, or a tier that
+// DECLINES (IRGX_STALE) — the same verb answers by running the certified exact,
+// kinship, or composed binary and decoding its NDJSON. The two produce identical
 // rows, so which tier answered is a fact about speed, reported in [Stats], and
 // never an error.
 //

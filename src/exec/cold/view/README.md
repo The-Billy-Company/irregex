@@ -1,4 +1,4 @@
-# exec/cold/view — Gist's Own Ways of Looking at a Match
+# exec/cold/view — Our Own Ways of Looking at a Match
 
 A lens answers the same compiled query over the same PATH scope, but
 presents it in a shape ripgrep has no flag for. Two ship today.
@@ -17,10 +17,9 @@ presents it in a shape ripgrep has no flag for. Two ship today.
 Each lens finishes the run itself, before the certified rg-parity walk and
 emit path. That early return is not a shortcut — it is what keeps the
 parity certificate meaningful. A lens cannot thread its own awareness
-through the machinery `gist/bench/conformance/rgsuite/` (in the sibling
-`gist` repo) measures, because it never reaches that machinery. The rg
-path stays a byte-for-byte ripgrep drop-in no matter how many native views
-gist grows.
+through the machinery the face package's rgsuite harness measures, because
+it never reaches that machinery. The rg path stays a byte-for-byte ripgrep
+drop-in no matter how many native views the face grows.
 
 ## One Seam, Not a Growing Ladder
 

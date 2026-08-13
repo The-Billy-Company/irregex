@@ -1,4 +1,4 @@
-//! gist — the Thompson program, read right to left.
+//! irregex — the Thompson program, read right to left.
 //!
 //! The caliper closes on a match from both sides: a forward pass finds where it
 //! ENDS, a backward pass finds where it BEGAN. The backward pass needs an

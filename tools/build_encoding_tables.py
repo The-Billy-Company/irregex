@@ -1,21 +1,21 @@
 #!/usr/bin/env python3
 r"""Lower the pinned WHATWG Encoding Standard indexes into a Zig decode-table module.
 
-gist matches UTF-8 bytes; to honor `-E`/`--encoding` for the legacy code pages the
-way ripgrep (which rides encoding_rs) does, it transcodes a source encoding to
+The engine matches UTF-8 bytes; to honor `-E`/`--encoding` for the legacy code pages
+the way ripgrep (which rides encoding_rs) does, it transcodes a source encoding to
 UTF-8 before matching. This generator is the single source of the *decode* tables:
 it reads the vendored WHATWG index files (provenance in tools/whatwg/README.md) and
 emits one generated Zig module of pointer -> code point tables plus the authoritative
 label -> encoding map from `encodings.json`. The decoder state machines that consume
 these tables live in `src/corpus/read/encoding.zig` (one per WHATWG algorithm).
 
-Only the *decode* direction is lowered (gist never encodes to a legacy page), so a
-single dense `pointer -> code point` array per index is all that is needed. Tables
-are emitted as little-endian byte blobs (one Zig string literal each) read back via
-`std.mem.readInt` — this keeps the generated file compact and fast to compile while
-staying endianness-safe and byte-diffable. A code point of 0 marks an undefined
-pointer (verified: no index maps any pointer to U+0000), so the decoder treats 0 as
-"no mapping" and emits U+FFFD, matching encoding_rs's lossy decode.
+Only the *decode* direction is lowered (the engine never encodes to a legacy page),
+so a single dense `pointer -> code point` array per index is all that is needed.
+Tables are emitted as little-endian byte blobs (one Zig string literal each) read
+back via `std.mem.readInt` — this keeps the generated file compact and fast to
+compile while staying endianness-safe and byte-diffable. A code point of 0 marks an
+undefined pointer (verified: no index maps any pointer to U+0000), so the decoder
+treats 0 as "no mapping" and emits U+FFFD, matching encoding_rs's lossy decode.
 
 stdlib-only and deterministic, so `build_encoding_tables.py --check` is a sound
 regenerate-and-diff drift gate (CI-hermetic; no network).
@@ -34,7 +34,7 @@ HERE = Path(__file__).resolve().parent
 WHATWG = HERE / "whatwg"
 OUT = HERE.parent / "src" / "corpus" / "read" / "encoding_tables.gen.zig"
 
-# WHATWG single-byte encodings whose 128-entry (0x80..0xFF) index gist lowers.
+# WHATWG single-byte encodings whose 128-entry (0x80..0xFF) index the engine lowers.
 # ISO-8859-8-I shares ISO-8859-8's index; x-mac-ukrainian shares x-mac-cyrillic;
 # windows-1252 subsumes ISO-8859-1/ASCII; windows-1254 subsumes ISO-8859-9;
 # windows-874 subsumes ISO-8859-11/TIS-620 — all handled by the label map below.
@@ -78,9 +78,9 @@ MULTI_BYTE = {
     "euc-kr": 16,
 }
 
-# WHATWG canonical name -> gist Encoding enum tag (see encoding.zig). GBK decodes
-# through the gb18030 decoder (spec 10.1.1); the UTF-16 family + auto/none are
-# handled by ingest.zig, so their labels are overridden / injected below.
+# WHATWG canonical name -> the engine's Encoding enum tag (see encoding.zig). GBK
+# decodes through the gb18030 decoder (spec 10.1.1); the UTF-16 family + auto/none
+# are handled by ingest.zig, so their labels are overridden / injected below.
 NAME_TO_TAG = {
     "UTF-8": "utf8",
     "IBM866": "ibm866",
@@ -124,10 +124,12 @@ NAME_TO_TAG = {
     "x-user-defined": "x_user_defined",
 }
 
-# The two WHATWG UTF-16LE labels gist routes to its BOM-choosing `.utf16` variant
-# rather than a fixed LE decode (a benign superset of rg: it also corrects a BE BOM).
+# The two WHATWG UTF-16LE labels the engine routes to its BOM-choosing `.utf16`
+# variant rather than a fixed LE decode (a benign superset of rg: it also corrects a
+# BE BOM).
 UTF16_BOM_LABELS = {"utf-16", "utf16"}
-# gist's historically accepted dash-free spellings (not WHATWG labels, so no clash).
+# The engine's historically accepted dash-free spellings (not WHATWG labels, so no
+# clash).
 EXTRA_LABELS = [("utf16", "utf16"), ("utf16le", "utf16le"), ("utf16be", "utf16be")]
 
 
@@ -206,7 +208,7 @@ def build() -> str:
     lines.append(blob_decl("iso_2022_jp_katakana", kata, 16))
     lines.append("")
 
-    # ── label → gist Encoding tag (WHATWG get-an-encoding, ASCII-lowercased) ──
+    # ── label → engine Encoding tag (WHATWG get-an-encoding, ASCII-lowercased) ──
     catalog = json.loads((WHATWG / "encodings.json").read_text())
     entries: list[tuple[str, str]] = []
     for group in catalog:

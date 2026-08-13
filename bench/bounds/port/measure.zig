@@ -1,7 +1,7 @@
-//! gist bench — `gist-portbound`: Layer B′ of the dominance-and-fit certificate —
+//! irregex bench — `portbound`: Layer B′ of the dominance-and-fit certificate —
 //! the **port bound, measured on this machine**.
 //!
-//! Layer B (`mca.sh`) is a *static* llvm-mca bound on gist's two hot loops,
+//! Layer B (`mca.sh`) is a *static* llvm-mca bound on this engine's two hot loops,
 //! necessarily taken on reference cores (znver4 / neoverse-v2) because LLVM has
 //! no real scheduling model for any Apple CPU (LLVM issue #63698). That leaves a
 //! disclosed truth gap: the "at the hardware limit" claim was cross-checked on
@@ -38,7 +38,7 @@
 //!     values the loop needs live anyway. The production `simd.contains` is
 //!     timed alongside as a marker-overhead cross-check.
 //!
-//! Output: stdout table + `.gist/portbound.json`. Re-run
+//! Output: stdout table + `portbound.json` in the artifact home. Re-run
 //! `bench/bounds/port/mca.sh` (or `report.py`) afterward to splice
 //! the measured subsection into `CERTIFICATE.md`.
 
@@ -52,9 +52,9 @@ const dfa_probe = @import("probes/dfa_step.zig");
 const mirror_probe = @import("probes/dfa_mirror.zig");
 
 const Regex = gist.regex.Regex;
-// `ArtifactPath`, not the comptime `default_out_dir`: the mint points GIST_DIR
+// `ArtifactPath`, not the comptime `default_out_dir`: the mint points `<prefix>DIR`
 // at the bundle being assembled, and `mca.sh` looks for this JSON beside the
-// certificate it is splicing into. A baked-in `./.gist` would leave B′ reading
+// certificate it is splicing into. A baked-in artifact home would leave B′ reading
 // a stale measurement from a previous run's leftovers.
 const json_path = gist.index.home.ArtifactPath("portbound.json");
 const Span = gist.assay.Span; // package instrumentation floor: monotonic Span
@@ -298,7 +298,7 @@ fn writeJson(gpa: std.mem.Allocator, io: std.Io, brand: []const u8, qos: []const
     try j.appendSlice(gpa, "{\n");
     try j.appendSlice(gpa, "  \"layer\": \"B-measured\",\n");
     try j.appendSlice(gpa, "  \"claim\": \"port bound, measured on this machine (same drift-guarded probes as Layer B)\",\n");
-    try j.appendSlice(gpa, "  \"generated_by\": \"bench/bounds/port/measure.zig (gist-portbound)\",\n");
+    try j.appendSlice(gpa, "  \"generated_by\": \"bench/bounds/port/measure.zig (portbound)\",\n");
     try j.appendSlice(gpa, try std.fmt.bufPrint(&line, "  \"cpu_brand\": \"{s}\",\n", .{brand}));
     try j.appendSlice(gpa, try std.fmt.bufPrint(&line, "  \"arch\": \"{s}\",\n", .{@tagName(builtin.target.cpu.arch)}));
     try j.appendSlice(gpa, try std.fmt.bufPrint(&line, "  \"qos\": \"{s}\",\n", .{qos}));

@@ -1,4 +1,4 @@
-//! gist bench — the single, shared probe registry for the Certificate of
+//! irregex bench — the single, shared probe registry for the Certificate of
 //! Optimality. Layer A (`certify.zig`, microscopic cycles/byte) and Layer D
 //! (`../lowerbound/lowerbound.zig`, the algorithmic floor) must speak about
 //! *exactly* the same regex classes for the certificate to line up
@@ -13,7 +13,7 @@
 //! but it is a single, already-documented cross-language boundary, not
 //! open-ended drift between two Zig files.
 
-/// One probe per *regex class* gist competes on (the "every type of
+/// One probe per *regex class* the shipped CLI competes on (the "every type of
 /// operation" axis). Each names the class so the certificate maps 1:1 to the
 /// claim under test.
 pub const Kind = enum { literal, regex };
@@ -37,18 +37,19 @@ pub const probes = [_]Probe{
     // SIMD `containsAny` match-equivalence path (no regex engine run at all).
     .{ .class = "regex-litalt", .kind = .regex, .pattern = "panic|0x" },
     // Unicode classes (`\w+`, `(?i)fold`, `\bfunc\b`, `\p{L}+`) are proven at
-    // parity fail-closed by `gist/bench/conformance/gates/parity/unicode_parity.sh`
+    // parity fail-closed by the face package's
+    // `bench/conformance/gates/parity/unicode_parity.sh`
     // and the Zig Unicode differential fuzz; they fold into this certificate at
     // the next clean-tree republish (the published artifact is minted only on a
-    // clean tree — `gist/bench/certificate/artifact/README.md`), keeping the
+    // clean tree — that package's `bench/certificate/artifact/README.md`), keeping the
     // 12-class snapshot internally consistent until then.
     //
     // STAGED for the same republish — the `-i` (caseless) cost axis. The bit-5
     // fold gate (`simd.indexOfCaselessPos`) is a scan-kernel path, so it fits the
     // Layer-A cycles/byte model 1:1; until it lands here its worst-case tax is
-    // held by the same-run ratio floor in `gist/bench/apparatus/harness/flagbench.zig`
-    // (`-i caseless tax <= 3.0×`, run blocking in
-    // `gist/bench/conformance/gates/contract/ci_order.sh`).
+    // held by the same-run ratio floor in the face package's
+    // `bench/apparatus/harness/flagbench.zig` (`-i caseless tax <= 3.0×`, run
+    // blocking in its `bench/conformance/gates/contract/ci_order.sh`).
     // Add at republish (keeps the class↔claim 1:1 mapping this file promises):
     //   .{ .class = "literal-caseless", .kind = .literal, .pattern = "func" },   // -i over a common literal
     //   .{ .class = "regex-caseless",   .kind = .regex,   .pattern = "(?i)func\\s+\\w+\\(" }, // folded decl

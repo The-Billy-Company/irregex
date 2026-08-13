@@ -1,4 +1,4 @@
-//! gist resident session — the Windows `ReadDirectoryChangesW` freshness backend
+//! Resident session — the Windows `ReadDirectoryChangesW` freshness backend
 //!
 //! One recursive subscription per root, every completion landing on a single I/O
 //! completion port. Structurally this is the Linux arm, not the macOS one: a
@@ -136,8 +136,8 @@ const directory_bit: u32 = @bitCast(w.FILE.ATTRIBUTE{ .DIRECTORY = true });
 /// keeps these in a slice allocated once at arm time and never grows it.
 pub const Root = struct {
     handle: portal.Handle = portal.invalid_handle,
-    /// The root's canonical absolute path in gist's separator: the prefix every
-    /// noted path is built on. `gpa`-owned.
+    /// The root's canonical absolute path in this package's separator: the
+    /// prefix every noted path is built on. `gpa`-owned.
     abs: []u8 = &.{},
     /// Written by the kernel; read only through the completion packet, never
     /// polled — see the module note on why polling it would not be a barrier.
@@ -341,7 +341,7 @@ fn records(self: anytype, root: *const Root, buf: []const u8) void {
 }
 
 /// Note one record's path into the session's `DirtyLog` — and, for a FILE, the
-/// annals ledger a one-shot `gist index` amend and the resident keep's epoch both
+/// annals ledger a one-shot index amend and the resident keep's epoch both
 /// read. The absolute path is assembled straight into a stack buffer: this runs
 /// once per changed path, and the two notes copy what they keep, so nothing here
 /// needs to outlive the call.
@@ -359,8 +359,8 @@ fn noteRecord(self: anytype, root: *const Root, rec: []const u8, name: []const u
 }
 
 /// `root.abs ++ "/" ++ name`, written into `out` with the record's `\` separators
-/// rewritten to gist's. Returns the RELATIVE tail (a view into `out`), or null when
-/// the name will not decode or the join will not fit.
+/// rewritten to this package's. Returns the RELATIVE tail (a view into `out`), or
+/// null when the name will not decode or the join will not fit.
 fn render(root: *const Root, name: []const u8, out: []u8) ?[]const u8 {
     @memcpy(out[0..root.abs.len], root.abs);
     out[root.abs.len] = '/';

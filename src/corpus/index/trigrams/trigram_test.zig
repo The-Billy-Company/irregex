@@ -1,4 +1,4 @@
-//! gist T0 trigram-index tests — split from `trigram.zig` to keep the index
+//! irregex T0 trigram-index tests — split from `trigram.zig` to keep the index
 //! file under the shape cap. Pulled into `zig build test` via `root.zig`'s test
 //! block. Covers the candidate-set query semantics (sound superset / no false
 //! negatives), the on-disk serialize round-trip incl. the zero-copy

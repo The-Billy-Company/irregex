@@ -4,7 +4,7 @@ package runtime
 
 /*
 // Linked against the SHARED libirgx, as the Python and Rust bindings are, not
-// the static archive. Product producers (gist_run / relate_run / blast_run) are
+// the static archive. Product producers (each face's own run entry) are
 // resolved at run time via dlsym, so this package never links a product library
 // — a host that wants in-process rank, kinship, or compose links those dylibs
 // from the product module that owns them. This tier is opt-in
@@ -42,7 +42,7 @@ type Native struct {
 }
 
 // OpenNative stands up the in-process engine over roots (none = the rootless CWD
-// walk a bare `gist <pattern>` scans).
+// walk a bare pattern on a face's command line scans).
 func OpenNative(roots ...string) (*Native, error) {
 	cRoots := make([]*C.char, len(roots))
 	for i, r := range roots {
@@ -81,8 +81,9 @@ func (n *Native) Close() error {
 
 // Do runs fn while holding the engine lock, handing it the underlying
 // irgx_engine pointer. Product packages that speak a product ABI over this
-// corpus (exact search via gist_search_cursor) use this rather than reaching
-// into the unexported C handle — C pointer types cannot cross cgo packages.
+// corpus (exact search via a face's own search cursor) use this rather than
+// reaching into the unexported C handle — C pointer types cannot cross cgo
+// packages.
 func (n *Native) Do(fn func(engine unsafe.Pointer) error) error {
 	n.mu.Lock()
 	defer n.mu.Unlock()

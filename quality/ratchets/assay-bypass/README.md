@@ -43,7 +43,7 @@ Two bypasses in `src/corpus/index/frame/frame.zig` — the unreadable-artifact a
 corrupt-artifact notes. Both are burn-down targets, not blessed exceptions. Three
 further rows came over with the ratchet and were dropped on arrival because the
 files they pinned left in the ecosystem split (the daemon client and `grade.zig`
-to `gist`, `kinship.zig` to `relate`).
+to the exact-search face, `kinship.zig` to the kinship face).
 
 ## Surface
 

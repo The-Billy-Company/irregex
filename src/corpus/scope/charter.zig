@@ -14,10 +14,11 @@
 //! before it, and every one of them was a real divergence between two clones of
 //! the same tree —
 //!
-//!   * roots  lived only in `GIST_ROOTS`, else the whole tree;
-//!   * skips  lived in `<GIST_DIR>/skips.list`, which defaults inside gitignored
-//!            `.gist/`, so "seed `derived-out`" was per-machine folklore and a
-//!            fresh clone searched a different corpus than a seeded one;
+//!   * roots  lived only in `<prefix>ROOTS`, else the whole tree;
+//!   * skips  lived in `<prefix>DIR/skips.list`, which defaults inside the
+//!            gitignored artifact directory, so "seed `derived-out`" was
+//!            per-machine folklore and a fresh clone searched a different
+//!            corpus than a seeded one;
 //!   * types  had to be re-passed as `--type-add` on every single invocation.
 //!
 //! What a charter may say is ceilinged at `Reach.corpus` (see the argv catalog):
@@ -55,8 +56,8 @@ pub const filename = ".irregex.toml";
 const max_bytes: usize = 64 << 10;
 const max_entries: usize = 1024;
 /// Shared with the artifact home's own climb — one tree boundary, found one way,
-/// so a charter and the `.gist` beside it can never disagree about which
-/// checkout they belong to.
+/// so a charter and the artifact directory beside it can never disagree about
+/// which checkout they belong to.
 const max_climb: usize = home.max_climb;
 
 /// What a charter is allowed to declare. Every key is a `Reach.corpus` fact:
@@ -68,8 +69,8 @@ pub const Charter = struct {
     path: []const u8,
     /// Its directory, as a relative prefix (`""` for the working directory,
     /// else `..`, `../..`, …). Roots resolve against this rather than against
-    /// the working directory, so `gist` run from a subdirectory searches the
-    /// same corpus it does from the tree root — cargo's rule, for cargo's
+    /// the working directory, so a query issued from a subdirectory searches
+    /// the same corpus it does from the tree root — cargo's rule, for cargo's
     /// reason.
     dir: []const u8,
     /// Default corpus roots, already prefixed by `dir`.
@@ -150,7 +151,7 @@ var refusal: Refusal = .fault;
 /// calls it directly.
 ///
 /// Deliberately NOT a validation — it arms the posture and reads nothing. Eager
-/// validation here would kill `gist config check`, whose entire job is to
+/// validation here would kill `config check`, whose entire job is to
 /// REPORT a malformed charter and which runs after this call, in the same
 /// process, in every face. That is also why `governing` applies the posture
 /// lazily instead: `config` reaches the file through `inspect`/`faulted`, which
@@ -209,13 +210,13 @@ pub fn governing() ?*const Charter {
 /// configuration rather than to search under it. Two ways this differs from
 /// `governing`, both for the same reason:
 ///
-///   * a parse fault is recorded rather than fatal, so `gist config check` can
+///   * a parse fault is recorded rather than fatal, so `config check` can
 ///     say "the charter is malformed *and* here is the state of your
 ///     preferences" instead of dying on the first of the two;
 ///   * suppression is not consulted, because `--no-config` is a fact about
 ///     *this run's search*, not about the file. A reader whose shell exports
-///     `GIST_NO_CONFIG` still needs `gist config` and `gist status` to describe
-///     what is on disk — a configuration you cannot interrogate is the actual
+///     `<prefix>NO_CONFIG` still needs `config` and `status` to describe what
+///     is on disk — a configuration you cannot interrogate is the actual
 ///     defect in ripgrep's version of this feature, and refusing to answer
 ///     precisely when something is overriding you reproduces it.
 pub fn inspect() ?*const Charter {
@@ -231,7 +232,7 @@ pub fn inspect() ?*const Charter {
 }
 
 /// Say why the charter could not be used, located and with a guess where one is
-/// worth making. Split from the exit so `gist config check` can print the same
+/// worth making. Split from the exit so `config check` can print the same
 /// sentence for a file it is only inspecting — and so the `exit` posture is a
 /// two-line policy over this rather than a second copy of the wording.
 ///
@@ -253,7 +254,7 @@ pub fn report(e: anyerror) void {
 /// remember: only `UnknownKey` is, and an unterminated string that happens to
 /// have a legal key as its most recent token would otherwise be answered with
 /// "try `skip` — `skip` is not a charter key". One function, so the run's exit
-/// path and `gist config check` cannot come apart on it.
+/// path and `config check` cannot come apart on it.
 pub fn didYouMean(e: anyerror, token: []const u8) ?[]const u8 {
     if (e != Fault.UnknownKey) return null;
     return misread.nearest(token, &keys);

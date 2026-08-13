@@ -3,10 +3,10 @@
 //!
 //! Why a second slate exists. The shared registry is the certificate's own
 //! twelve classes, and Layer L reports every one of them first — it is the
-//! table nobody can accuse of being chosen to flatter gist. But that slate was
-//! designed to span *scan* cost (Layers A and D), and on the planner axis eight
-//! of its twelve classes cannot separate two planners at all: four are
-//! single-literal (any planner emits the same one trigram run), and four are
+//! table nobody can accuse of being chosen to flatter this planner. But that
+//! slate was designed to span *scan* cost (Layers A and D), and on the planner
+//! axis eight of its twelve classes cannot separate two planners at all: four
+//! are single-literal (any planner emits the same one trigram run), and four are
 //! structurally unfilterable — literal-free (`\w{3,8}`), sub-trigram (`})`,
 //! `;$`), or an alternation with a sub-trigram branch (`panic|0x`), where the
 //! only sound answer is "no filter". A slate that cannot distinguish the two

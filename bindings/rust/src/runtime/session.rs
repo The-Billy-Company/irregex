@@ -1,6 +1,6 @@
 //! Persistent resident-session client — Unix only.
 //!
-//! Long-lived Unix-socket connection to a `gist serve` daemon. Same wire
+//! Long-lived Unix-socket connection to a face's resident daemon. Same wire
 //! protocol as `src/exec/session/conduit/protocol/protocol.zig` / Zig
 //! CLI / Python. Fail-open: connect miss, ineligible request, or `decline` →
 //! cold ([`SearchRequest::files`] / [`SearchRequest::count`]).
@@ -15,7 +15,7 @@ use crate::request::SearchRequest;
 use super::Result;
 
 const PROTOCOL_VERSION: u8 = 9; // must match `protocol.protocol_version`
-const DEFAULT_OUT_DIR: &str = ".gist"; // `$GIST_DIR` default
+const DEFAULT_OUT_DIR: &str = ".gist"; // the artifact directory's default
 const MAX_FRAME: u32 = 16 << 20; // `protocol.max_frame`
 // A diagnostic stream is bounded by the lenses a query can light; a peer that
 // never stops emitting them is misbehaving, and cold is the honest answer.
@@ -42,8 +42,8 @@ const FLAG_SMART_CASE: u8 = 1 << 5;
 const FLAG_QUIET: u8 = 1 << 6;
 const FLAG_MAX_COUNT: u8 = 1 << 7;
 
-/// `$GIST_SESSION_SOCK`, else the per-repo default beside the index
-/// (`$GIST_DIR`-relocatable, matching the Zig CLI).
+/// `$<prefix>SESSION_SOCK`, else the per-repo default beside the index
+/// (relocatable with `$<prefix>DIR`, matching the Zig CLI).
 #[must_use]
 pub fn default_socket_path() -> String {
     if let Ok(p) = env::var("GIST_SESSION_SOCK") {
@@ -101,7 +101,8 @@ impl Session {
         }
     }
 
-    /// A session dialing the default socket (`$GIST_SESSION_SOCK` or the per-repo default).
+    /// A session dialing the default socket (`$<prefix>SESSION_SOCK` or the
+    /// per-repo default).
     #[must_use]
     pub fn default_socket() -> Self {
         Self::new(default_socket_path())
@@ -207,7 +208,7 @@ impl Session {
 
 /// The answer frame, with any diagnostics that preceded it relayed to stderr
 /// exactly as the CLI client relays them — a warm query stays as measurable as a
-/// cold one, and a host that mutes them (`GIST_HINTS=0`) simply gets none.
+/// cold one, and a host that mutes them (`<prefix>HINTS=0`) simply gets none.
 /// `None` guards against a peer that only ever sends diagnostics.
 fn answer(s: &mut UnixStream) -> io::Result<Option<(u8, Vec<u8>)>> {
     for _ in 0..MAX_DIAG_FRAMES {

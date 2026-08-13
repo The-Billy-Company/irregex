@@ -1,4 +1,4 @@
-//! gist resident session — the O(changed) reconcile resolver.
+//! Resident session — the O(changed) reconcile resolver.
 //!
 //! `Delta` turns one drained batch of watcher paths (absolute, as the OS
 //! delivered them) into walk-certified verdicts the session can apply to its

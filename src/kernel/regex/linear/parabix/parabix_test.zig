@@ -1,4 +1,4 @@
-//! gist — the Parabix rung held to three oracles, weakest first.
+//! irregex — the Parabix rung held to three oracles, weakest first.
 //!
 //! 1. `plane.transposeScalar` — the transposition's definition, so the shuffle
 //!    ladder is checked against what a basis plane MEANS.

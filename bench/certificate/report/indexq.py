@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""gist certify — Layer L report (index quality head-to-head against csearch).
+"""irregex certify — Layer L report (index quality head-to-head against csearch).
 
 Reads the `indexq.tsv` emitted by `zig build indexq` (`bench/sieve/indexq.zig`)
 and, optionally, the `indexcost.tsv` emitted by `bench/sieve/indexcost.sh`, and
@@ -7,8 +7,8 @@ splices a self-contained **Layer L** section into CERTIFICATE.md between stable
 sentinel markers, idempotent across re-mints.
 
 Layer L answers one claim and only that claim: *"your trigram index is
-csearch-class, not better."* csearch (Google Code Search, Russ Cox 2012) is
-gist's acknowledged trigram ancestor, and the honest axis for comparing two
+csearch-class, not better."* csearch (Google Code Search, Russ Cox 2012) is this
+engine's acknowledged trigram ancestor, and the honest axis for comparing two
 indexes is not wall time — which confounds the index with the walk, the IO and
 the matcher — but **filter quality**: candidate bytes admitted per query, and
 the precision of what is admitted. The harness holds everything but the boolean
@@ -18,14 +18,14 @@ planners are compared and nothing else is.
 
 **Fail-closed.** This reporter refuses to splice a win it cannot substantiate:
 
-  * gist must admit **strictly fewer** candidate bytes than csearch in total
-    over the measured slate;
-  * gist must not **regress** on any single class (never admit more than
+  * this engine's arm must admit **strictly fewer** candidate bytes than
+    csearch in total over the measured slate;
+  * it must not **regress** on any single class (never admit more than
     csearch anywhere) — a total that hides a loss is not a win;
   * every arm must have verified the **same hit count** per class (the harness
     already exits non-zero otherwise; re-checked here so a stale TSV cannot
     launder an unsound run);
-  * where `indexcost.tsv` is supplied, gist's index must be within
+  * where `indexcost.tsv` is supplied, this engine's index must be within
     `MAX_SIZE_RATIO` of csearch's and its build within `MAX_BUILD_RATIO` —
     selectivity bought with a pathologically bigger or slower index is not a
     better index.
@@ -115,11 +115,11 @@ def totals(rows_by_class: dict[str, dict[str, dict]], classes: list[str]) -> dic
     return {arm: sum(int(rows_by_class[c][arm]["cand_bytes"]) for c in classes) for arm in ARMS}
 
 
-# The Unicode row is carried, and named, rather than quietly dropped: gist's
-# rg-parity default reads `\d` as `\p{Nd}` (~680 codepoints, past the planner's
-# class ceiling) where csearch's Go `\d` is the ten ASCII digits. The ASCII
-# spelling of the same probe is the like-for-like one, so both appear and the
-# aggregate is taken over the DEFAULT flags a user actually runs.
+# The Unicode row is carried, and named, rather than quietly dropped: this
+# engine's rg-parity default reads `\d` as `\p{Nd}` (~680 codepoints, past the
+# planner's class ceiling) where csearch's Go `\d` is the ten ASCII digits. The
+# ASCII spelling of the same probe is the like-for-like one, so both appear and
+# the aggregate is taken over the DEFAULT flags a user actually runs.
 ASCII_TWIN = "stress-isodate-ascii"
 
 
@@ -159,7 +159,7 @@ def production(rows: list[dict]) -> tuple[list[str], list[str]]:
         "",
         (
             "_The head-to-head above measures a planner; this measures the **product**. "
-            "Same binary in both arms — `GIST_NO_COVER=1` stands the cover down — so no "
+            "Same binary in both arms — `<prefix>NO_COVER=1` stands the cover down — so no "
             "build difference can be mistaken for a win. Candidate bytes are read out of "
             "`elide.assemble` AFTER the crest subtraction, i.e. the oracle's real final "
             "candidate set, and wall time is the whole process: argv, index load, plan, "
@@ -195,7 +195,7 @@ def production(rows: list[dict]) -> tuple[list[str], list[str]]:
             "",
             (
                 "**Where it does not win, and why.** `stress-isodate` is flat in production "
-                "and the reason is semantic, not a planner defect: under gist's rg-parity "
+                "and the reason is semantic, not a planner defect: under this engine's rg-parity "
                 "Unicode default `\\d` denotes `\\p{Nd}`, ~680 codepoints, so the ASCII digit "
                 "trigrams are **not** necessary conditions and no sound plan exists. "
                 "csearch's Go `\\d` is the ten ASCII digits, which is why the head-to-head "
@@ -293,7 +293,7 @@ def render(
         "",
         (
             '_The claim under test: **"your trigram index is csearch-class, not better."** '
-            "csearch (Google Code Search, Russ Cox 2012) is gist's acknowledged trigram "
+            "csearch (Google Code Search, Russ Cox 2012) is this engine's acknowledged trigram "
             "ancestor, and the honest axis for comparing two indexes is **not** wall time — "
             "that confounds the index with the walk, the IO and the matcher — but **filter "
             "quality**: the candidate BYTES a query admits, and the precision of what it "
@@ -301,8 +301,8 @@ def render(
             "built index, one evaluator (`Index.queryPlan`), one verifier (the production "
             "matcher) — and varies only the boolean formula over trigrams. csearch's arm is "
             "**csearch's own formula**, lifted verbatim from `csearch -verbose` by "
-            "`bench/sieve/csearch_plan.py` and replayed against gist's postings: not a "
-            "reimplementation, not a proxy. `gist-base` is gist's pre-Layer-L planner (one "
+            "`bench/sieve/csearch_plan.py` and replayed against this engine's postings: not a "
+            "reimplementation, not a proxy. `gist-base` is the pre-Layer-L planner (one "
             "required literal, else the alternation cover), carried so each improvement is "
             "attributable._"
         ),
@@ -310,7 +310,7 @@ def render(
         f"- machine: **{machine}** · zig `{zig}` · corpus {corpus_docs} files · {corpus_mib} MiB",
         f"- **{won} classes won, {lost} lost, {len(every) - won - lost} tied** · total candidate bytes "
         f"**{tot['gist'] / 1e9:.3f} GB vs csearch's {tot['csearch'] / 1e9:.3f} GB** "
-        f"(gist admits {(1 - tot['gist'] / tot['csearch']) * 100:.1f}% less), from "
+        f"(this engine admits {(1 - tot['gist'] / tot['csearch']) * 100:.1f}% less), from "
         f"{tot['gist-base'] / 1e9:.3f} GB before Layer L",
         f"- index size {size_note} · build {build_note}",
         "",
@@ -318,7 +318,7 @@ def render(
         "",
         (
             "_The slate Layers A and D already publish, reported first and unedited: nobody "
-            "can call it chosen to flatter gist. Eight of the twelve cannot separate two "
+            "can call it chosen to flatter this engine. Eight of the twelve cannot separate two "
             "planners at all — four are single-literal (every planner emits the same run) and "
             "four are structurally unfilterable (literal-free `\\w{3,8}`, sub-trigram `})` and "
             "`;$`, and `panic|0x` whose two-byte branch makes the disjunction vacuous), where "
@@ -364,11 +364,11 @@ def render(
             "",
             (
                 f"Both indexes cover the byte-identical file list ({cost_meta.get('corpus_files', '?')} "
-                "files — gist's own persisted `paths.list`, the fairness contract "
+                "files — this engine's own persisted `paths.list`, the fairness contract "
                 "`bench/races/_compete.sh` already owns). The RSS figures are not like-for-like "
                 "and are reported as measured: `cindex` is driven in 400-path batches (its own "
                 "documented shape, forced by argv limits), so its peak is one batch, while "
-                "gist's is the whole corpus in a single parallel pass."
+                "this engine's is the whole corpus in a single parallel pass."
             ),
         ]
 
@@ -382,7 +382,7 @@ def render(
         (
             "> **What is disproven.** The two planners are not the same planner. csearch stops "
             "at 3-byte boundary trigrams and takes ONE window out of a class-punctuated run; "
-            "gist's conjunctive cover (`src/kernel/query/cover.zig`) keeps every "
+            "this engine's conjunctive cover (`src/kernel/query/cover.zig`) keeps every "
             "mandatory run, reads `x?` as the finite set {ε, x} so a scheme factors into whole "
             "literals, and emits every sound clause so the **cost-ordered evaluator** — which "
             "knows real posting cardinalities — picks and declines. Soundness is the fixed "
@@ -399,8 +399,9 @@ def render(
             "cannot disagree with the engine — and `elide.askIndex` puts it to the index "
             "ahead of the flat OR, which stays the fallback. A run's whole answer is "
             "unchanged: `bench/conformance/gates/parity/cover_parity.sh` holds the wired path byte-identical "
-            "to the pre-wiring prefilter, to gist's own `--no-index` read, and to ripgrep across "
-            "21 cases on a frozen real-source corpus — including `-i`, `-U`, `-F`, multi-`-e`, "
+            "to the pre-wiring prefilter, to this engine's own `--no-index` read, and to "
+            "ripgrep across 21 cases on a frozen real-source corpus — including `-i`, `-U`, "
+            "`-F`, multi-`-e`, "
             "PCRE2 and the unprovable patterns, each of which exercises a different "
             "stand-down. Caseless and PCRE2 deliberately keep their existing prefilters "
             "(a folded-AST cover and a foreign-grammar cover are each a soundness argument "
@@ -451,7 +452,7 @@ def publish(cert: Path, rows: list[dict], cost: dict[str, dict] | None, prod: li
 
 def splice(cert: Path, section: str) -> None:
     """Replace the one marked block and retire pre-marker duplicates."""
-    text = cert.read_text() if cert.exists() else "# gist — Dominance-and-Fit Certificate\n\n"
+    text = cert.read_text() if cert.exists() else "# irregex — Dominance-and-Fit Certificate\n\n"
     lo = text.find(START)
     if lo != -1:
         hi = text.find(END, lo + len(START))
@@ -474,7 +475,7 @@ def splice(cert: Path, section: str) -> None:
 
 def main() -> int:
     """CLI entry point."""
-    ap = argparse.ArgumentParser(description="gist Layer L (index quality vs csearch) report")
+    ap = argparse.ArgumentParser(description="irregex Layer L (index quality vs csearch) report")
     ap.add_argument("--certificate", type=Path, required=True)
     ap.add_argument("--tsv", type=Path, required=True, help="from `zig build indexq`")
     ap.add_argument("--cost-tsv", type=Path, help="from `bench/sieve/indexcost.sh`")

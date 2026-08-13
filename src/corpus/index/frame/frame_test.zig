@@ -108,7 +108,7 @@ test "bindingHolds: only this tree's own recording passes the gate" {
     try frame.writeAtomic(io, binding, "/some/other/checkout\n");
     try std.testing.expect(!frame.bindingHolds(binding));
 
-    // This tree's own recording, published by the same call `gist index` makes.
+    // This tree's own recording, published by the same call an index build makes.
     frame.publishBinding(io, binding);
     try std.testing.expect(frame.bindingHolds(binding));
 }

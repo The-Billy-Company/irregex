@@ -1,4 +1,4 @@
-//! gist bench — the ENGINE CENSUS: for every certificate probe class, which
+//! irregex bench — the ENGINE CENSUS: for every certificate probe class, which
 //! machine actually answers it.
 //!
 //! The certificate reports what a class COSTS. It cannot report which of the

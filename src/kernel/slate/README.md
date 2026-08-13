@@ -2,7 +2,8 @@
 
 Operates on many intents, or a whole result stream, at once, engine-side,
 with exact answers — the set-shaped half of the irregex primitives. This is
-what backs `relate patterns` and the dragnet/trawl multipattern tiers.
+what backs the kinship face's `patterns` verb and the dragnet/trawl
+multipattern tiers.
 
 `slate.zig` is the door: it groups the four files below under one name
 (`slate.patterns`, `slate.loom`, `slate.muster`, `slate.trawl`), so the tier
@@ -39,7 +40,7 @@ files.
   pooled literals — the measured crossover where the dragnet's four bucket
   groups saturate and the trawl's flat per-byte cost overtakes it —
   `PatternSet.build` hands off to the trawl instead, so per-byte cost stops
-  growing with N. `GIST_MUSTER_TIER` forces either side for measurement.
+  growing with N. `<prefix>MUSTER_TIER` forces either side for measurement.
 - **`loom.zig`** executes `loom.Plan`, a closed filter → group → sort →
   limit plan over attributed rows, engine-side and before a byte of output
   exists. Every op is total and deterministic (orderings tiebreak on the
@@ -65,4 +66,4 @@ strategies. They are hoisted to the package root beside `Regex`.
 
 New closed ops in the loom vocabulary, attribution shape changes, the
 dragnet/trawl handoff threshold, or fused-gate soundness. Verb UX lives in
-`surface/face/relate/`; match semantics live in `kernel/regex/`.
+the kinship face's own package; match semantics live in `kernel/regex/`.

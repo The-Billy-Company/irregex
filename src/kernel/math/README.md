@@ -6,10 +6,10 @@ or that a search exists.
 | File | What it gives you | Start with | Ridden by |
 |---|---|---|---|
 | [`bits.zig`](bits.zig) | two's-complement identities and packed bitsets over storage you own | `ones`, `Field(Word)`, `prefixMask`, `rank`, `laneMask`, `Stream` | `scan/`, `slate/`, the linear engine's symbolic and DFA layers, `regex/syntax`, `regex/analysis` |
-| [`mix.zig`](mix.zig) | the hash-mixing floor, including the slice-key context `std` lacks | `SliceCtx(T)`, `finalize` | the linear engine's alphabet, determinize, subset and reduce passes, `frame/`, `relate` |
+| [`mix.zig`](mix.zig) | the hash-mixing floor, including the slice-key context `std` lacks | `SliceCtx(T)`, `finalize` | the linear engine's alphabet, determinize, subset and reduce passes, `frame/`, the kinship package |
 | [`glob.zig`](glob.zig) | gitignore- and rg-shaped globbing, pure pattern against string | `globApplies`, `globMatch`, `unterminatedClass` | `corpus/scope`, `corpus/tree/ignore`, `slate/loom`, argv, cold read |
 | [`misread.zig`](misread.zig) | located configuration faults and a shy did-you-mean | `nearest`, `Diagnostic` | `corpus/scope/charter`, `exec/cold/argv/preference` |
-| [`forest.zig`](forest.zig) | union-find, path-halving finds, min-index roots | `Forest` | out of package only: `relate`'s `kinship/cluster` |
+| [`forest.zig`](forest.zig) | union-find, path-halving finds, min-index roots | `Forest` | out of package only: the kinship package's `kinship/cluster` |
 | [`dag.zig`](dag.zig) | a hash-consed DAG with structural identity and free topological order | `Dag(Payload, arity)`, then `fold` | `regex/ast` |
 | [`lease.zig`](lease.zig) | reader/writer lease guards and the read-mostly reconcile | `Ward.readReconciled`, `Latch` | the warm session, `corpus/tree`, `regex/glean/pool` |
 | [`parallel.zig`](parallel.zig) | shard geometry and a partial-spawn-safe fan-out | `shardBounds`, `evenBounds`, `fanOut` | every parallel lane in the package |
@@ -33,8 +33,8 @@ belong to those callers.
 
 `math.zig` is the door, re-exporting every file below under one name
 (`math.bits`, `math.crest`, `math.succinct.rrr`). `forest` and `mix` are also
-published through `root.inner.math`, because `relate`'s kinship tiers need those
-two and nothing else here.
+published through `root.inner.math`, because the kinship package's tiers need
+those two and nothing else here.
 
 Half of this is what a reader would otherwise write for themselves. The
 difference is that these are the versions this package's hot paths are held to,

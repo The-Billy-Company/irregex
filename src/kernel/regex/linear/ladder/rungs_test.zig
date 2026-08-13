@@ -1,4 +1,4 @@
-//! gist — the ladder's auction, tested through the front door.
+//! irregex — the ladder's auction, tested through the front door.
 //!
 //! `rungs.zig` keeps the tests it can reach on its own: the admission policy, the
 //! comptime rung table, the fail-closed gates. This file holds the ones that need

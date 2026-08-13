@@ -1,4 +1,4 @@
-//! gist — the crew: run-wide immutable `Cfg`, per-worker mutable state, the
+//! The crew: run-wide immutable `Cfg`, per-worker mutable state, the
 //! pool topology, and the ordered `--sort` replay over what the crew held back.
 //!
 //! `Cfg` is frozen before fan-out and shared by const pointer; everything a
@@ -230,7 +230,7 @@ pub const Worker = struct {
 /// for traversal-only / narrow / index-selective runs that do less work per file.
 /// Every other OS has a scalable fault + open path — ripgrep saturates all
 /// logical CPUs there — so the ceiling would just idle cores: scale to `ncpu`.
-/// `GIST_WORKERS` and `-j` still override.
+/// `<prefix>WORKERS` and `-j` still override.
 ///
 /// It is a STARTING width because the numbers above were all measured on walks
 /// that respect `.gitignore` and hit the index — the fast ones. A walk that turns

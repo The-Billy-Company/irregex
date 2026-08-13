@@ -1,4 +1,4 @@
-//! gist n-gram extraction tests — split from `ngram.zig` to keep the strategy
+//! irregex n-gram extraction tests — split from `ngram.zig` to keep the strategy
 //! file under the shape cap. Pulled into `zig build test` via `root.zig`'s test
 //! block. Covers `extractSortedUnique`'s distinct/ascending contract and the
 //! sub-3-byte boundary (the floor below which the trigram filter can't apply).

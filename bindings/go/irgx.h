@@ -8,9 +8,10 @@
  * Above the floor, this ABI also carries the warm corpus planes the sibling
  * products share — opening an engine over a tree, searching and walking it,
  * sieving literals, and the codex verbs over a persisted index. What is
- * deliberately NOT here is the session: the resident pull cursor and gist_run
- * live in libgist, whose header is gist.h and whose symbols are gist_*, and the
- * kinship / compose producers live in librelate and libblast.
+ * deliberately NOT here is the session: the resident pull cursor and its run
+ * entry live in the exact-search face's own library, which ships its own header
+ * and its own symbol prefix, and the kinship / compose producers live in the
+ * libraries of the other two faces.
  *
  * Every entry returns a status instead of aborting, so a bad pattern can never
  * terminate the host. On a negative status, irgx_last_fault gives the
@@ -340,7 +341,7 @@ int32_t irgx_is_match(irgx_regex *re, const uint8_t *text, size_t len);
  * what Python's re.finditer shows for the same input.
  *
  * That is deliberate, and it is NOT what a grep prints. A grep-class tool drops
- * the trailing empty match, so `gist --json` reports four submatches for the
+ * the trailing empty match, so a face's `--json` reports four submatches for the
  * line "abc\n" where this verb reports five for the same four bytes. The widest
  * sequence is the right thing to publish here because thinning is subtractive:
  * a binding can reproduce its own ecosystem's convention by removing spans (Go

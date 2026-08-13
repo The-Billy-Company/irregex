@@ -1,5 +1,5 @@
-//! gist T0 persisted index/path-table tests — split per the shape cap, wired via
-//! `root.zig`'s test block. Exercises the doc→path integrity invariant
+//! irregex T0 persisted index/path-table tests — split per the shape cap, wired
+//! via `root.zig`'s test block. Exercises the doc→path integrity invariant
 //! (`validatePersistedPair`), the NUL-split (`frame.parsePathTable`), generation
 //! matching, and a filesystem concurrency regression for generation publish.
 
@@ -83,7 +83,8 @@ test "persistIndexAndPathsAt: generation publish keeps readers off a torn pair" 
     try std.testing.expectEqualStrings("src", loaded_a.roots.items[0]);
 
     // Stage a second generation WITHOUT flipping pair.gen — the classic torn
-    // window if index.gist/paths.list were published as two independent renames.
+    // window if the index blob and its path table were published as two
+    // independent renames.
     const docs_b = [_][]const u8{ "gamma eel", "delta fox", "epsilon gnu" };
     const paths_b = [_][]const u8{ "c.txt", "d.txt", "e.txt" };
     var idx_b = try Index.build(gpa, &docs_b);
@@ -113,7 +114,7 @@ test "persistIndexAndPathsAt: generation publish keeps readers off a torn pair" 
     try frame.writeAtomic(io, stable_index, blob_b);
 
     // pair.gen still names generation A → load must keep A's consistent pair,
-    // not the poisoned stable index.gist + old paths.list mix.
+    // not the poisoned stable index blob + old path table mix.
     var loaded_mid = (try persist.loadAt(gpa, io, root, false)).?;
     defer loaded_mid.deinit();
     try std.testing.expectEqual(@as(u32, 2), loaded_mid.idx.doc_count);

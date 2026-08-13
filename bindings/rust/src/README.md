@@ -2,7 +2,7 @@
 
 Two faces share this crate. The **regex** face is a `regex`-shaped API over a
 buffer. The **substrate** face is the shared analytic base every product binding
-imports (`gist`, `relate`, `blast`).
+imports - the exact, kinship, and composed faces alike.
 
 The regex face is the crate root - its modules are private `mod`s, and `pub mod`
 is reserved for the substrate - which is the same arrangement the Python and Go
@@ -24,7 +24,7 @@ in between is allowed to skip a layer.
 ## Substrate face
 
 - **`contract/`** mirrors TOML constants and calibration, plus the generated `schema.gen.rs`.
-- **`request.rs`** builds `SearchRequest` for the exact plane, shared with `gist`.
+- **`request.rs`** builds `SearchRequest` for the exact plane, shared with the exact face.
 - **`runtime/`** is the analytic ladder, row decode, subprocess / session transports, and the substrate `Error`.
 
 The crate-root [`Error`](crate::Error) is the regex face. Analytic callers use

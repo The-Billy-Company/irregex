@@ -2,7 +2,7 @@
 
 The other dossiers in `research/` each defend something built. This one defends a number and a map: the speed limit our scanning engines actually run into, why it is the limit, and which routes past it have been tried and closed. It exists so the same dead ends are not rediscovered annually.
 
-Unlike `crest/`, `gist/research/gist/`, and `relate/research/relate/`, no road here defends a shipped novel technique. The shipped accelerator tier (composition, transposed bitstreams, the class-run sieve) applies known ideas to escape the bound this document measures. Read each road below as the investigation record that led to those rungs, not as a description of the engine's current form.
+Unlike `crest/` and the research dossiers the face packages keep next door, no road here defends a shipped novel technique. The shipped accelerator tier (composition, transposed bitstreams, the class-run sieve) applies known ideas to escape the bound this document measures. Read each road below as the investigation record that led to those rungs, not as a description of the engine's current form.
 
 ## The Limit, Measured
 
@@ -70,4 +70,4 @@ The quotient sieve, a conjunction of small SP-partition quotients as a sound gat
 
 The tier that admits a rung and the order it consults them in lives at [`../../src/kernel/regex/linear/ladder/`](../../src/kernel/regex/linear/ladder/). The three escapes, each with its own measured limit, live at [`../../src/kernel/regex/linear/shuffle/`](../../src/kernel/regex/linear/shuffle/), [`../../src/kernel/regex/linear/parabix/`](../../src/kernel/regex/linear/parabix/), and [`../../src/kernel/regex/linear/sieve/`](../../src/kernel/regex/linear/sieve/).
 
-The two determinization drivers and their bounds live at [`../../src/kernel/regex/linear/dfa/`](../../src/kernel/regex/linear/dfa/). The document-stage sieve is [`../../src/kernel/math/crest.zig`](../../src/kernel/math/crest.zig), documented in full in the sibling [`crest/`](../crest) dossier. The certificate whose `regex-classcount` row is the 100%-candidate hole named above lives in the sibling `gist` repository's `bench/certificate/`.
+The two determinization drivers and their bounds live at [`../../src/kernel/regex/linear/dfa/`](../../src/kernel/regex/linear/dfa/). The document-stage sieve is [`../../src/kernel/math/crest.zig`](../../src/kernel/math/crest.zig), documented in full in the sibling [`crest/`](../crest) dossier. The certificate whose `regex-classcount` row is the 100%-candidate hole named above lives in the sibling face package's `bench/certificate/`.

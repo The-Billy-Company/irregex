@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""gist roofline — Layer C synthesis + CERTIFICATE.md splicer (measured headroom).
+"""irregex roofline — Layer C synthesis + CERTIFICATE.md splicer (measured headroom).
 
 The roofline model (Williams, Waterman & Patterson, "Roofline: An Insightful
 Visual Performance Model for Multicore Architectures", CACM 2009) bounds a
@@ -14,12 +14,12 @@ This reads two measured artifacts and writes a verdict that is beyond reproach:
   * `matched_ladder` — dual-window control, production on contiguous DRAM, and
                        production over corpus documents; these localize the gap.
   * `certify.csv`    — Layer A's per-class measured operating point (bytes crunched
-                       + median ns), from which gist's achieved GB/s is derived.
+                       + median ns), from which the engine's achieved GB/s is derived.
 Optionally `portcert.json` (Layer B) supplies the **compute ceiling** for the
 full two-ceiling picture; absent, the section notes memory-ceiling-only.
 
 It splices a `## Layer C — roofline (hardware ceiling)` section into
-`.gist/CERTIFICATE.md`, replacing any existing one (heading → next
+the artifact home's `CERTIFICATE.md`, replacing any existing one (heading → next
 `## Layer`/EOF), mirroring `certify/certify_stats.py`. stdlib only, fail-closed.
 """
 
@@ -51,7 +51,7 @@ SUMMARY = (
     "decomposes it with matched controls when present. It reports near-roof placement "
     "only at or above 80%; otherwise it reports optimization headroom."
 )
-# GIST_DIR first, then the package's own `.gist` — the same order `outDir()` in
+# `<prefix>DIR` first, then the package's own artifact home — the same order `outDir()` in
 # `home.zig` resolves, so the splicer reads the JSON the lane just wrote even
 # when a mint relocated the artifact home. Anchored off this file rather than the
 # CWD so it works from anywhere. A `--out-dir` override still wins.
@@ -248,7 +248,7 @@ def render(roof: dict, pts: list[ClassPoint], compute: ComputeBound | None) -> s
     lines.append(
         "_The roofline model (Williams, Waterman & Patterson, CACM 2009) supplies an upper "
         "bound: min(peak compute, peak bandwidth × arithmetic intensity). Layer C measures "
-        "gist's distance from that bound. It does **not** infer saturation from low arithmetic "
+        "the engine's distance from that bound. It does **not** infer saturation from low arithmetic "
         "intensity. A matched ladder separates raw STREAM bandwidth, the dual-window "
         "load/compare shape, production on contiguous DRAM, and production over corpus "
         "documents._"
@@ -331,10 +331,10 @@ def render(roof: dict, pts: list[ClassPoint], compute: ComputeBound | None) -> s
             )
         lines.append("")
 
-    # ── gist's corpus operating point (same process, same clock) ──
+    # ── the engine's corpus operating point (same process, same clock) ──
     if scans:
         lines.append(
-            "**gist's SIMD scan on the roofline** "
+            "**This engine's SIMD scan on the roofline** "
             "(real `scan/simd.zig` `contains` over the corpus):"
         )
         lines.append("")
@@ -377,13 +377,14 @@ def render(roof: dict, pts: list[ClassPoint], compute: ComputeBound | None) -> s
 
     # ── Layer A per-class end-to-end operating point (as-instructed ingest) ──
     # Optional on purpose: `certify.csv` is Layer A's artifact, and Layer A is
-    # minted by `gist` — a package certifies what it builds. This engine package
+    # minted by the face package — a package certifies what it builds. This engine package
     # can measure its own roofline without a product binary in the tree, so the
     # absence of a downstream layer narrows the section rather than voiding it.
     if not pts:
         lines.append(
             "> No `certify.csv` in this bundle, so the per-class end-to-end operating point is "
-            "not shown. That table is Layer A's artifact and Layer A is minted by `gist`; the "
+            "not shown. That table is Layer A's artifact and Layer A is minted by the face "
+            "package; the "
             "ceilings and the verdict above are measured here and do not depend on it."
         )
         lines.append("")
@@ -421,7 +422,7 @@ def render(roof: dict, pts: list[ClassPoint], compute: ComputeBound | None) -> s
     lines.append("")
     if have_layer_a_cycles and ceiling is not None:
         lines.append(
-            "_Layer A measured gist's actual cycles/byte (see the microscopic table above); "
+            "_Layer A measured the engine's actual cycles/byte (see the microscopic table above); "
             f"compare them to the derived DRAM ceiling of {ceiling:.4f} cyc/byte to quantify "
             "headroom; do not read the bound as saturation._"
         )
@@ -445,7 +446,7 @@ def splice(cert: Path, section: str) -> None:
     """Replace an existing `## Layer C …` block (→ next `## Layer`/EOF); else insert it *before* the macroscopic Layer A section (which certify_stats.py rewrites to EOF) so a later macro re-splice can't clobber it; else append at EOF."""
     body = section.rstrip() + "\n"
     if not cert.exists():
-        cert.write_text("# gist — Dominance-and-Fit Certificate\n\n" + body)
+        cert.write_text("# irregex — Dominance-and-Fit Certificate\n\n" + body)
         return
     text = cert.read_text().replace(LEGACY_SUMMARY, SUMMARY)
     m = re.search(r"^## Layer C\b.*$", text, re.MULTILINE)
@@ -467,7 +468,7 @@ def splice(cert: Path, section: str) -> None:
 
 def main() -> int:
     """CLI entry point."""
-    ap = argparse.ArgumentParser(description="gist Layer C roofline synthesis")
+    ap = argparse.ArgumentParser(description="irregex Layer C roofline synthesis")
     ap.add_argument("--out-dir", type=Path, default=OUT_DIR)
     ap.add_argument(
         "--roofline", type=Path, help="roofline.json (default: <out-dir>/roofline.json)"
@@ -488,7 +489,7 @@ def main() -> int:
         print(f"roofline_report: {rj} missing — run `zig build roofline` first.")
         return 1
     roof = json.loads(rj.read_text())
-    # Layer A's CSV is a downstream package's artifact (`gist` mints it), so a
+    # Layer A's CSV is a downstream package's artifact (the face package mints it), so a
     # bundle without one still gets a full Layer C — minus the one supplementary
     # table that reads it. An EMPTY csv is a different thing: something ran and
     # produced no rows, which is a broken measurement rather than an absent one.

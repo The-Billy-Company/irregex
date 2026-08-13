@@ -11,7 +11,7 @@ on-disk shelf is [`shelf/`](shelf/). Freshness lives in
 [`../fresh/`](../fresh/README.md), not under trigrams. The wire floor
 ([`frame/`](frame/README.md)) sits architecturally above `fault`, even though
 it lives here on disk. Kinship artifacts (atlas / frag) live in the sibling
-`relate` repo.
+kinship repo.
 
 ## Indexes, By What They Eliminate
 
@@ -26,9 +26,9 @@ it lives here on disk. Kinship artifacts (atlas / frag) live in the sibling
   `content.shard` mmap of unchanged bodies.
 - **[`shelf/`](shelf)** eliminates the corpus itself, for count/find/restore:
   a persisted SHLF over the kernel codex.
-- **`relate/src/corpus/index/atlas/`** eliminates re-sketching every file:
-  warm LZJD sketches for `relate similar` / `echoes`.
-- **`relate/src/corpus/index/frag/`** eliminates re-sketching every function:
+- **the kinship repo's `atlas/`** eliminates re-sketching every file: warm
+  LZJD sketches for its `similar` / `echoes` verbs.
+- **the kinship repo's `frag/`** eliminates re-sketching every function:
   per-function silhouettes for `--unit function`.
 
 ## Substrate Packages
@@ -44,6 +44,6 @@ Index is an accelerator, not an authority. Every persisted artifact in this
 family must degrade to the same answer a live, unindexed walk would produce —
 never a different one, only a slower one.
 
-The sibling `gist` repo's
+The sibling exact-search repo's
 `bench/conformance/gates/parity/index_elision_parity.sh` asserts indexed ≡
 unindexed byte-exact line multisets and exit codes.

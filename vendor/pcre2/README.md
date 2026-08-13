@@ -1,10 +1,10 @@
 # Vendored PCRE2 10.47
 
-The pinned, hermetically-built PCRE2 sources behind gist's opt-in `-P`/`--pcre2`
-engine. gist consults **no** system/global `libpcre2`; `build.zig`
-(`pcre2Library`) compiles these sources from source, so the build is
-byte-reproducible on any machine. The Zig wrapper lives in
-`../../src/regex/pcre2/`.
+The pinned, hermetically-built PCRE2 sources behind the opt-in `-P`/`--pcre2`
+backend a surface can select. This package consults **no** system/global
+`libpcre2`; `build.zig` (`pcre2Library`) compiles these sources from source, so
+the build is byte-reproducible on any machine. The Zig wrapper lives in
+`../../src/kernel/regex/pcre2/`.
 
 ## Provenance (pin)
 

@@ -96,8 +96,8 @@ disagreeing about the bytes, in one repository. Today's canonical image is a
 property of which spelling the hot path happens to use, at this optimization
 level, on this target.
 
-**Blast radius, for the same reason: none moves.** `gist`, `relate` and `blast`
-are three faces over this engine and share this interner, so a defect that costs
+**Change radius, for the same reason: none moves.** The three product faces
+over this engine share this interner, so a defect that costs
 zero nodes here costs zero there. If it ever stops being latent it stops for all
 four at once, which is the argument for the compile-time gates below rather than
 for a benchmark row.

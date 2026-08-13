@@ -3,7 +3,7 @@
 //! `flag_catalog` is a table, not code: one row per flag, naming its spellings,
 //! its parse effect, and its compatibility claim. Two consumers read it and
 //! neither may disagree with the other — `grammar.zig` builds the short/long
-//! dispatch maps from it, and gist's `verbs/schema.zig` renders `gist --schema` from
+//! dispatch maps from it, and a face's own schema verb renders `--schema` from
 //! it. A flag cannot therefore be accepted by the parser while the machine-
 //! readable manifest calls it unsupported, or vice versa; that drift used to be
 //! a prose-versus-behavior bug waiting to happen.
@@ -98,7 +98,7 @@ pub const Act = union(enum) {
     buffered: Buffering,
     bufsize,
     // The two presentation poles: -p/--pretty is rg's terminal alias, --plain
-    // its gist-native inverse. Each lands three effects, so neither is a
+    // its native inverse here. Each lands three effects, so neither is a
     // declarative row — and both must reach `locus` rather than `line_num` so a
     // later -n/-N still wins, exactly as it does over --vimgrep.
     pretty,
@@ -156,11 +156,11 @@ pub fn setVal(o: *Opts, f: OptField, v: anytype) void {
     }
 }
 
-/// Public compatibility buckets emitted by `gist --schema`. `.native` rows are
-/// gist additions, emitted separately from the four-bucket ripgrep matrix.
+/// Public compatibility buckets emitted by `--schema`. `.native` rows are our
+/// own additions, emitted separately from the four-bucket ripgrep matrix.
 /// `.improvement` is a flag whose result is identical-or-superset to ripgrep's
 /// yet strictly better in behavior, performance, or robustness — never a
-/// regression. Where gist differs from rg it is an improvement or it is a bug.
+/// regression. Where we differ from rg it is an improvement or it is a bug.
 pub const Compatibility = enum {
     supported,
     improvement,
@@ -360,7 +360,7 @@ pub const flag_catalog = [_]FlagSpec{
     .{ .longs = &.{"messages"}, .action = .{ .set = .messages }, .doc = "print per-file errors", .compatibility = .supported },
     .{ .longs = &.{"no-ignore-messages"}, .action = .{ .unset = .ignore_messages }, .doc = "suppress errors from unreadable ignore sources", .compatibility = .supported, .note = "suppress the narrower ignore-source lane (an --ignore-file that will not open); --no-messages subsumes it. gist's ignore parser accepts every line rg's glob compiler would reject, so this lane carries unreadable sources rather than rg's parse errors" },
     .{ .longs = &.{"ignore-messages"}, .action = .{ .set = .ignore_messages }, .doc = "print errors from unreadable ignore sources", .compatibility = .supported },
-    // Gist-native index controls are not ripgrep compatibility claims.
+    // Our own index controls are not ripgrep compatibility claims.
     .{ .longs = &.{"no-index"}, .action = .{ .set = .no_index }, .doc = "scan live, ignoring any persisted index", .compatibility = .native },
     .{ .longs = &.{"index"}, .action = .{ .unset = .no_index }, .doc = "use the persisted index when one is current", .compatibility = .native },
     .{ .longs = &.{"rank"}, .action = .rank, .doc = "ranked view: definitions first, generated files demoted", .compatibility = .native },
@@ -389,11 +389,11 @@ pub const flag_catalog = [_]FlagSpec{
     // file, or (here) `.irregex.toml` and the personal preferences file. A
     // surface that can turn a behavior on and not off is a surface whose
     // persisted layer is a one-way door, so these rows are load-bearing for
-    // gist's own config layers and not merely for rg parity.
+    // our own config layers and not merely for rg parity.
     //
     // They were missing until a conformance sweep over `rg --generate
-    // complete-bash` counted them (gist/bench/conformance/rgsuite/surface.py): 35 flags that
-    // ripgrep documents and gist rejected. The mined suite could not see the
+    // complete-bash` counted them (the face package's surface audit): 35 flags
+    // that ripgrep documents and we rejected. The mined suite could not see the
     // hole, because ripgrep's own integration tests do not exercise most of
     // its negations either — which is exactly why the denominator has to come
     // from the flag table rather than from the tests.
@@ -435,7 +435,7 @@ pub const flag_catalog = [_]FlagSpec{
     .{ .longs = &.{"type-clear"}, .action = .type_clear, .doc = "forget a file type's definition entirely", .compatibility = .supported, .note = "as in rg, a cleared name is no longer a type at all: a later -t/-T naming it fails loud with 'unrecognized type', and --type-add may define it afresh" },
     // rg's own diagnostic channel. rg writes these to STDERR and leaves stdout
     // and the exit code untouched, so accepting them changes nothing a caller
-    // reads — gist's equivalent lane is GIST_TRACE=<lens>, whose vocabulary is
+    // reads — our equivalent lane is `<prefix>TRACE=<lens>`, whose vocabulary is
     // its own and deliberately not pretended to be rg's.
     .{ .longs = &.{ "debug", "trace" }, .action = .noop, .doc = "accepted for rg parity; gist's own lane is GIST_TRACE", .compatibility = .accepted_but_ignored, .note = "rg emits its debug/trace prose on stderr and leaves stdout and the exit code alone, so this is accepted and ignored rather than mapped: GIST_TRACE=amend,warm,query,… selects gist's own phase lenses, which are not rg's vocabulary" },
     .{ .longs = &.{"colors"}, .action = .colors, .doc = "restyle one element: {type}:none or {type}:{fg|bg|style}:{value}", .compatibility = .supported, .note = "rg's spec grammar exactly (path/line/column/match × fg/bg/style, named colors, 0-255, r,g,b), merged into gist's palette the way rg's merge into its own — so naming a hue keeps the default's bold. gist renders one SGR sequence per element where rg emits a separate escape per attribute, and paints column numbers only when a spec asks for them" },
@@ -515,7 +515,7 @@ test "flag catalog is the parser compatibility source of truth" {
     }
     // The three live buckets are populated; the fail-loud bucket is now empty —
     // the content-transform flags (-z/--pre/--binary/-E) that used to fail loud
-    // are implemented, so gist accepts or honors the entire rg flag surface.
+    // are implemented, so we accept or honor the entire rg flag surface.
     // Bucket 1 is now `improvement` (proven-better wins): every flag that once
     // diverged is either a documented improvement or was reconciled to parity.
     try t.expect(bucket_counts[0] > 0 and bucket_counts[1] > 0 and bucket_counts[2] > 0);

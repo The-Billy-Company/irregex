@@ -1,4 +1,4 @@
-//! gist — one file's result, rendered: the per-file core both emit paths share.
+//! One file's result, rendered: the per-file core both emit paths share.
 //!
 //! `renderFile` is the whole of it — binary decision, line collection, match
 //! emission, the `--stats` tally — and it is deliberately the SAME code whether
@@ -63,7 +63,7 @@ pub fn renderFile(em: *Emitter, f: InFile, stat: *Stats, matched_files: *usize, 
     const body = visibleBody(o.encoding, f.bytes);
     // An empty file has nothing to print, but rg still SEARCHED it: its `--stats`
     // block counts the file and zero bytes (measured — rg says `3 files searched`
-    // over two files and an empty one, where gist used to say 2).
+    // over two files and an empty one, where we used to say 2).
     if (body.len == 0 and !count_zero) {
         if (o.stats) stat.bump(.files_searched);
         return;
@@ -356,7 +356,7 @@ pub fn emitFileSharded(gpa: std.mem.Allocator, a: std.mem.Allocator, out: *std.A
 /// question from "printed a row", and the two part company on exactly one file
 /// shape: a walked binary, whose search is abandoned and therefore found nothing
 /// (counts) but which rg's printer still refuses to list (no row). Deriving the
-/// exit code from the emitted bytes instead made gist exit 1 over a binary-only
+/// exit code from the emitted bytes instead made us exit 1 over a binary-only
 /// tree where rg exits 0.
 pub fn fileWithoutMatch(a: std.mem.Allocator, re: *const Matcher, o: Opts, em: *Emitter, lsim: *Matcher.Sim, wssp: ?*Matcher.SpanSim, needle: ?simd.Gate, f: InFile, out: *std.ArrayList(u8)) bool {
     const body = visibleBody(o.encoding, f.bytes);
@@ -364,7 +364,7 @@ pub fn fileWithoutMatch(a: std.mem.Allocator, re: *const Matcher, o: Opts, em: *
     // (measured — `rg --files-without-match -e zzz .` over a tree holding a
     // NUL file omits it). An EXPLICIT path arg is rg's "binary explicit"
     // posture, searched whole as text, so it IS listable — the same asymmetry
-    // `binary.handleBinary` applies to `-l`. gist used to drop both, losing a
+    // `binary.handleBinary` applies to `-l`. We used to drop both, losing a
     // file rg reports (found by the differential fuzzer).
     //
     // The rule is `renderFile`'s, byte for byte: the first NUL ANYWHERE in the
@@ -372,7 +372,7 @@ pub fn fileWithoutMatch(a: std.mem.Allocator, re: *const Matcher, o: Opts, em: *
     // that a NUL past the sniff window the slice model never reads leaves the
     // file text. This used to ask `corpus.isBinary`, whose 8 KiB window is the
     // INDEX's membership rule, not the searcher's — so a NUL in the tail of a
-    // large file went unseen here and gist listed a path rg suppresses. The
+    // large file went unseen here and we listed a path rg suppresses. The
     // three flags are `writ.binaryDetect` inlined (this file is below writ).
     if (body.len > 0 and !f.explicit and !o.text and !o.binary and !o.null_data) {
         if (verify.firstNulWide(a, body)) |nul| {
@@ -405,7 +405,7 @@ pub fn fileWithoutMatch(a: std.mem.Allocator, re: *const Matcher, o: Opts, em: *
 ///
 /// Extracted so `--files-without-match` can report the same tally it always
 /// should have. rg searches a file identically in that mode and prints the same
-/// stats block — only the emit differs — but gist's negated path exited before
+/// stats block — only the emit differs — but our negated path exited before
 /// any tally, printing paths and then NO stats block at all.
 /// Returns whether the file contained a match, so a caller that cannot infer it
 /// from its own emission (`--files-without-match`, which prints the opposite set)
@@ -607,7 +607,7 @@ test "--files-without-match: an unlistable binary still answers `found no match`
     // path may reach `out` — yet the search it abandoned found no match, and
     // `SummarySink::has_match` for this mode is `match_count == 0`, so the file
     // still carries the run to exit 0. Reading the exit code off the printed
-    // bytes instead made gist exit 1 over a binary-only tree where rg exits 0.
+    // bytes instead made us exit 1 over a binary-only tree where rg exits 0.
     const bin = InFile{ .path = "bin.dat", .scope = ".", .bytes = "head\n\x00\x01 buried\n" };
     try t.expect(fileWithoutMatch(a, &m, o, &em, &lsim, null, null, bin, &out));
     try t.expectEqual(@as(usize, 0), out.items.len);
@@ -626,10 +626,10 @@ test "--files-without-match: an unlistable binary still answers `found no match`
 
     // A NUL in the TAIL, past the 8 KiB window the index's membership rule
     // looks at. rg reads the file buffer by buffer and detects it wherever it
-    // lands, so it lists nothing; gist asked `corpus.isBinary` here, saw a
+    // lands, so it lists nothing; we asked `corpus.isBinary` here, saw a
     // clean first 8 KiB, and printed a path rg suppresses (`rg
     // --files-without-match -e generated .` over a 140 KB file ending in a NUL:
-    // rg omits it, gist listed it). The searcher's rule is the whole body.
+    // rg omits it, we listed it). The searcher's rule is the whole body.
     out.clearRetainingCapacity();
     const tail = try std.mem.concat(a, u8, &.{ "line of text\n" ** 1024, "\x00 buried\n" });
     try t.expect(corpus_mod.binary_window < tail.len - 10); // the window really is passed

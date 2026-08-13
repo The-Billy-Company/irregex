@@ -1,11 +1,11 @@
-//! gist — unsigned LEB128 varint codec (csearch's own posting-list encoding:
+//! irregex — unsigned LEB128 varint codec (csearch's own posting-list encoding:
 //! see google/codesearch `index/write.go` `WriteVarint` / `read.go` `uvarint`).
 //!
 //! The compact trigram index (`trigram.zig`) delta-encodes each posting list's
 //! ascending doc ids, and most deltas are small (a common trigram's docs sit
 //! close together relative to the corpus), so 7-bits-per-byte varints shrink
 //! the 4-byte-per-posting flat encoding by 3-8x — the lever that closes most of
-//! gist's index-size gap vs csearch's 28 MiB (README "COLD one-shot literal").
+//! this index's size gap vs csearch's 28 MiB (README "COLD one-shot literal").
 
 const std = @import("std");
 

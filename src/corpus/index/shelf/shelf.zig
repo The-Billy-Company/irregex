@@ -193,9 +193,9 @@ pub const Shelf = struct {
 pub const Persisted = struct { bytes: usize, bits_per_char: f64 };
 
 /// Build a shelf over a loaded corpus and write it atomically to `shelfFile()`.
-/// The one write seam: `gist codex build` and `relate index --shelf` are two
-/// product verbs over a single artifact, and an artifact with two writers is an
-/// artifact with two formats a version apart.
+/// The one write seam: the exact-search face's `codex build` and the kinship
+/// face's `index --shelf` are two product verbs over a single artifact, and an
+/// artifact with two writers is an artifact with two formats a version apart.
 pub fn persist(
     gpa: std.mem.Allocator,
     io: std.Io,

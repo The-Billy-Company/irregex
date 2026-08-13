@@ -1,4 +1,4 @@
-//! gist resident session — the eligible-request classifier.
+//! Resident session — the eligible-request classifier.
 //!
 //! Warm surface: `-l` / `-c` / bare `lines`, literal (`-F`), linear regex, or
 //! `-P`/`--pcre2` (`--engine=pcre2`) PCRE2 regex, ±case (`-i`/`-s`/`-S`),
@@ -6,13 +6,13 @@
 //! a clean relative PATH scope, `-g <glob>` / `-t <type>` file scoping, the
 //! corpus partition (`--docs`/`--no-docs`/`--code`/`--no-code`/`--data`/
 //! `--no-data`, and `-t docs` and friends), and the
-//! gist-native `--rank[=N]` definition-first view (regex pattern + case + PATH
+//! native `--rank[=N]` definition-first view (regex pattern + case + PATH
 //! roots only — see the `rank_k` guard below). Everything else (`--json`,
 //! `--iglob`, `-T`, stdin, …) → cold.
 //!
-//! Scope: a bare `gist <pattern>` searches the rootless CWD tree the daemon was
+//! Scope: a bare pattern query searches the rootless CWD tree the daemon was
 //! born serving. An explicit positional PATH is admitted only when it is a clean
-//! repo-root-relative subtree/file (`gist pat src/kernel`) — the resident
+//! repo-root-relative subtree/file (`pat src/kernel`) — the resident
 //! mirror stores CWD-relative paths with no `./` prefix, so a root cold would
 //! render with a prefix the mirror lacks (`.`, `./libs`, an absolute path, a
 //! `..` escape) still declines to cold. `-g`/`-t` add glob/type constraints
@@ -30,8 +30,8 @@ const std = @import("std");
 // One-way edge: args.zig never imports session.
 const args = @import("../../cold/argv/args.zig");
 // The resolved path-scope constraint (roots ∧ `-g` globs ∧ `-t` types) — the
-// SAME `PathFilter` the cold engine and relate's warm twin apply, so a scoped
-// warm answer prunes candidates by the identical rule cold walks with.
+// SAME `PathFilter` the cold engine and the kinship warm twin apply, so a
+// scoped warm answer prunes candidates by the identical rule cold walks with.
 const scope = @import("../../../corpus/scope/filter.zig");
 const glob = @import("../../../kernel/math/glob.zig");
 // The `-t <lang>` name → globs table (`extsForType`), the same registry the
@@ -49,7 +49,7 @@ pub const Mode = @import("../../../kernel/query/query.zig").Mode;
 pub const PathFilter = scope.PathFilter;
 
 /// Per-kind cap on scope tokens `classify` collects before declining to cold.
-/// Generous vs any realistic `gist pat a b c` shape, and a wall that keeps the
+/// Generous vs any realistic `pat a b c` shape, and a wall that keeps the
 /// wire frame + the client's stack scratch bounded: more scope tokens than this
 /// simply fall back to the certified cold path (fail-open, never wrong).
 pub const max_scope = 64;
@@ -107,7 +107,7 @@ pub const Request = struct {
     /// through the shared `PathFilter.prune`/`admits`, so warm scoping is the same
     /// rule cold walks with.
     filter: PathFilter = .{},
-    /// `--rank[=N]`: gist's definition-first ranked view (`ranked.zig`), the one
+    /// `--rank[=N]`: the definition-first ranked view (`ranked.zig`), the one
     /// shape rg can't express. `null` ⇒ not a rank query; `Some(k)` ⇒ surface the
     /// top-k rows (`0` ⇒ cold's default 20). Carried ONLY by `query_ext` (never a
     /// flag bit), and the daemon dispatches on it before the mode. `classify`

@@ -60,7 +60,8 @@ body:
       label: Scope check
       description: >-
         This repository is the engine and the C ABI floor. The command-line
-        products live in `gist`, `relate`, and `blast`.
+        products live in the face packages that ship those binaries, each in its
+        own repository.
       options:
         - label: This is about the engine, the indexes, the ABI, or a binding - not about a face's flags or output.
           required: true

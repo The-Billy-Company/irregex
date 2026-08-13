@@ -1,4 +1,4 @@
-//! gist — the fused walk as a CALLABLE file-set enumerator.
+//! The fused walk as a CALLABLE file-set enumerator.
 //!
 //! Everything `swarm.run` does up to the fan-out and join, without the per-file
 //! search, the streaming sink, or the `noreturn` exit tail: it runs the identical

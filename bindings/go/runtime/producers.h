@@ -1,12 +1,13 @@
 /* The analytic producers, and the request families they read.
  *
- * Three libraries answer the seventeen analytic verbs: `gist_run` for rank,
- * `relate_run` for the kinship, retrieval and sweep verbs, and `blast_run` for
- * the composed ones. Only libirgx is linked here — the substrate that opens
- * the corpus and walks rows. The product producers are resolved by name at RUN
- * time, so a host that links only the libraries it needs still builds, and a
- * weak fallback definition is never used (it would permanently SHADOW a strong
- * symbol from a later-loaded product library).
+ * Three face libraries answer the seventeen analytic verbs: the exact face's
+ * entry for rank, the kinship face's for the kinship, retrieval and sweep
+ * verbs, and the composed face's for the composed ones. Only libirgx is linked
+ * here — the substrate that opens the corpus and walks rows. The product
+ * producers are resolved by name at RUN time, so a host that links only the
+ * libraries it needs still builds, and a weak fallback definition is never used
+ * (it would permanently SHADOW a strong symbol from a later-loaded product
+ * library).
  *
  * The request families are MIRRORED from `[analytic.params]` in
  * irregex/contract/analytic.toml. Field names and order are the contract's;
@@ -60,7 +61,7 @@ typedef struct {
   uint32_t reserved;
 } relate_sweep_params;
 
-/* context · family · provenance · blast — an exact PatternSet narrows a
+/* context · family · provenance · change radius — an exact PatternSet narrows a
  * candidate set, then the compression kernel reasons INSIDE it. */
 typedef struct {
   uint32_t struct_size;
@@ -75,8 +76,9 @@ typedef struct {
   uint32_t top;
 } blast_compose_params;
 
-/* rank — the definition-first view of an exact query (gist_run). Mirrored
- * here so this translation unit never needs <gist.h>. */
+/* rank — the definition-first view of an exact query, answered by the exact
+ * face's producer. Mirrored here so this translation unit never needs that
+ * face's own header. */
 typedef struct {
   uint32_t struct_size;
   uint32_t flags;

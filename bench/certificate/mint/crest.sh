@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # certify_crest.sh — Layer E of the Dominance-and-Fit Certificate: the crest sieve.
 #
-# The one place gist's index math is new rather than borrowed. The trigram index
-# (and every trigram-family peer) prunes 0% on literal-free class repetitions —
-# `[0-9a-f]{12}`, `[0-9]{6}` — the Layer A `regex-classcount` hole (cand%=100%).
+# The one place this engine's index math is new rather than borrowed. The
+# trigram index (and every trigram-family peer) prunes 0% on literal-free class
+# repetitions — `[0-9a-f]{12}`, `[0-9]{6}` — the Layer A `regex-classcount`
+# hole (cand%=100%).
 # The crest sieve closes it with a sound forced-class-run necessary condition
 # (`src/kernel/math/crest.zig`, proof in `research/crest/PROOF.md`).
 #
@@ -17,7 +18,7 @@
 # Usage (from repo root or anywhere):
 #   bash bench/certificate/mint/crest.sh
 # Env:
-#   CERT_OUT=DIR   certificate dir (default: the artifact home, <corpus>/.gist)
+#   CERT_OUT=DIR   certificate dir (default: the artifact home under <corpus>)
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -43,7 +44,7 @@ die() {
 }
 note() { echo "certify_crest: $*"; }
 
-[[ -s "${CERT}" ]] || die "missing ${CERT} — run Layer A first (\`zig build certify\` in the gist package, which mints it)"
+[[ -s "${CERT}" ]] || die "missing ${CERT} — run Layer A first (\`zig build certify\` in the exact-search face package, which mints it)"
 
 # The standalone proof owns its complete raw evidence package under
 # .local/crest-evidence; copy the aggregate into the certificate bundle.

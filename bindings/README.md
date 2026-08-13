@@ -10,9 +10,9 @@ until somebody states it.
 ## The regex face is the binding's root
 
 A binding has two audiences. Somebody who wants a regex over a buffer, and a
-sibling product binding (`gist`, `relate`, `blast`) that wants the shared
-analytic substrate. The first audience is the larger one by far, so it gets the
-root and pays for nothing:
+sibling product binding - the exact, kinship, or composed face - that wants the
+shared analytic substrate. The first audience is the larger one by far, so it
+gets the root and pays for nothing:
 
 ```python
 import irgx

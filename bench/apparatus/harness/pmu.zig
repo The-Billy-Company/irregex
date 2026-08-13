@@ -1,7 +1,7 @@
-//! gist bench — cross-OS hardware performance-counter reader (Layer A of the
-//! optimality certificate). The macroscopic race proves gist is *fastest in its
-//! class*; this proves *why*, microscopically: retired **cycles** and
-//! **instructions** per byte for the single-threaded hot kernel, the number that
+//! irregex bench — cross-OS hardware performance-counter reader (Layer A of the
+//! optimality certificate). The macroscopic race proves the shipped CLI is
+//! *fastest in its class*; this proves *why*, microscopically: retired **cycles**
+//! and **instructions** per byte for the single-threaded hot kernel, the number that
 //! later meets the roofline (Layer C) and the static port-pressure bound
 //! (Layer B). Wall-clock measures the noisy box; the PMU measures the work.
 //!

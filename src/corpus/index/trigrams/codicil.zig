@@ -1,9 +1,9 @@
 //! Codicil — the incremental amendment to a published trigram generation.
 //!
-//! A full `gist index` reads the whole corpus (hundreds of MiB) and rewrites
+//! A full index build reads the whole corpus (hundreds of MiB) and rewrites
 //! every artifact; when three files changed since the last build that cost is
 //! structural waste. A codicil is the LSM-style delta segment (Lucene/zoekt
-//! lineage) fused with gist's own machinery: the T3 freshness walk
+//! lineage) fused with this engine's own machinery: the T3 freshness walk
 //! (`fresh.changedSince`) names exactly the paths whose metadata moved since
 //! the BASE build instant, and this module re-indexes ONLY those docs into one
 //! small blob that rides the existing generation-atomic publish — the base
@@ -34,10 +34,10 @@
 //! doc space, torn section, invalid embedded index, broken seal — reads as "no
 //! codicil": the base answers exactly, degradation is always to the sound side.
 //!
-//! SEALED IN FULL, unlike the base pair. `index.gist` and `content.shard` defer
-//! their seal because a query maps them and faults in a handful of pages; a
-//! codicil is kilobytes and is read whole by every layered query, so there is no
-//! saving to protect and the digest is the difference between "this delta is
+//! SEALED IN FULL, unlike the base pair. The index blob and `content.shard`
+//! defer their seal because a query maps them and faults in a handful of pages;
+//! a codicil is kilobytes and is read whole by every layered query, so there is
+//! no saving to protect and the digest is the difference between "this delta is
 //! what the amend wrote" and "these bytes are shaped like a delta". That matters
 //! here more than anywhere else in the format family: this blob carries crest
 //! rows, and a row that rots DOWNWARD makes the sieve prune a document that

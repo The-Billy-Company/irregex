@@ -1,4 +1,4 @@
-//! gist — the anchor decision for the two-probe literal block filter.
+//! irregex — the anchor decision for the two-probe literal block filter.
 //!
 //! `simd.zig::indexOfPos` filters 64-byte blocks on the conjunction of two byte
 //! equalities at needle offsets `(probe, confirm)`. That choice, and nothing

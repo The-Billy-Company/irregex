@@ -1,9 +1,9 @@
-//! gist — the caliper against its oracle.
+//! irregex — the caliper against its oracle.
 //!
 //! Every span the two jaws report must be the span the Pike VM reports, span
 //! for span, over the whole iteration — not just the first match. The VM is the
-//! definition of gist's leftmost-first semantics (`a|ab`→`a`, greedy `a+`
-//! maximal), so any divergence here is the caliper being wrong.
+//! definition of this package's leftmost-first semantics (`a|ab`→`a`, greedy
+//! `a+` maximal), so any divergence here is the caliper being wrong.
 
 const std = @import("std");
 const t = std.testing;

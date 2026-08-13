@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""gist certify — Layer E report (the crest sieve, the trigram blind spot).
+"""irregex certify — Layer E report (the crest sieve, the trigram blind spot).
 
 Reads the `crest.csv` emitted by `zig build crest` (the production proof harness,
 `bench/crest/bench.zig`) and splices a self-contained **Layer E** section into
 CERTIFICATE.md between stable sentinel markers, idempotent across re-mints.
 
-Layer E is the one place gist's index math is new rather than borrowed: the
-crest sieve (`src/kernel/math/crest.zig`, theorem in
+Layer E is the one place this engine's index math is new rather than borrowed:
+the crest sieve (`src/kernel/math/crest.zig`, theorem in
 `research/crest/PROOF.md`) prunes the literal-free class-repetition patterns
 (`[0-9a-f]{12}`, `[0-9]{6}`) that every trigram-family index concedes — exactly
 the `regex-classcount` row where Layer A measures cand% = 100% (the whole corpus
@@ -69,7 +69,7 @@ def render(rows: list[dict], files: str, mib: str, machine: str, zig: str) -> st
         HEADER,
         "",
         (
-            "_The one place gist's index math is new rather than borrowed: the **crest "
+            "_The one place this engine's index math is new rather than borrowed: the **crest "
             "sieve** (`src/kernel/math/crest.zig`, theorem in `research/crest/PROOF.md`). "
             "`zig build crest` links the **real** engine, builds the production crest sidecar, "
             "and walks the real corpus. It is **fail-closed**: for every file "
@@ -84,7 +84,7 @@ def render(rows: list[dict], files: str, mib: str, machine: str, zig: str) -> st
         ),
         "",
         f"- machine: **{machine}** · zig `{zig}` · corpus {files} files · {mib} MiB",
-        "- sidecar: 8 classes × 3 alphabets (ascii/scalar/codepoint, 24 lanes) · 48 bytes/file · built by the same parallel pass `gist index` persists as `crest.bin`",
+        "- sidecar: 8 classes × 3 alphabets (ascii/scalar/codepoint, 24 lanes) · 48 bytes/file · built by the same parallel pass an index build persists as `crest.bin`",
         "",
         "| query | pattern | RUN prune% | CNT prune% (cousin) | full ms | sieve ms | speedup |",
         "|---|---|--:|--:|--:|--:|--:|",
@@ -147,7 +147,7 @@ def render(rows: list[dict], files: str, mib: str, machine: str, zig: str) -> st
 
 def splice(cert: Path, section: str) -> None:
     """Replace the one marked block and retire pre-marker duplicates."""
-    text = cert.read_text() if cert.exists() else "# gist — Dominance-and-Fit Certificate\n\n"
+    text = cert.read_text() if cert.exists() else "# irregex — Dominance-and-Fit Certificate\n\n"
     lo = text.find(START)
     if lo != -1:
         hi = text.find(END, lo + len(START))
@@ -170,7 +170,7 @@ def splice(cert: Path, section: str) -> None:
 
 def main() -> int:
     """CLI entry point."""
-    ap = argparse.ArgumentParser(description="gist Layer E (crest sieve) certificate report")
+    ap = argparse.ArgumentParser(description="irregex Layer E (crest sieve) certificate report")
     ap.add_argument("--certificate", type=Path, required=True)
     ap.add_argument("--csv", type=Path, required=True)
     ap.add_argument("--machine", default="?")

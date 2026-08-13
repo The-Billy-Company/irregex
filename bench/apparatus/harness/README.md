@@ -30,7 +30,7 @@ name rather than by relative path.
 ```text
 irregex  bounds/{roofline,port}          → pmu
          bounds/lowerbound, rungs/…      → probes
-gist     bench/apparatus/harness/        → pmu · probes · stats   (via the irregex dependency)
+face     bench/apparatus/harness/        → pmu · probes · stats   (via the irregex dependency)
 ```
 
 One registry, one meter, one significance test, across two repositories. A
@@ -44,10 +44,11 @@ the worst kind of dead code: the kind that is trusted.
 
 ## Where the binary went
 
-`gist-bench` — the executable that used to root here and dispatch `bench` /
-`verify` / `session` / `certify` / `flagbench` / `sessionprof` — lives in the
-sibling `gist` package now, at `gist/bench/apparatus/harness/`. Its session
-lane spawns a real `gist serve` daemon and speaks the real socket frame
-grammar to it, and this package sits **upstream** of that product: `gist`
-depends on `irregex`, so the harness cannot live on this side of the edge.
-It still reaches back here for all three instruments.
+The omnibus bench executable — the one that used to root here and dispatch
+`bench` / `verify` / `session` / `certify` / `flagbench` / `sessionprof` —
+lives in the sibling pattern-search face now, at its own
+`bench/apparatus/harness/`. Its session lane spawns a real resident daemon
+and speaks the real socket frame grammar to it, and this package sits
+**upstream** of that product: the face depends on `irregex`, so the harness
+cannot live on this side of the edge. It still reaches back here for all
+three instruments.

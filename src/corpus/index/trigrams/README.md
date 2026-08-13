@@ -1,9 +1,9 @@
 # `src/corpus/index/trigrams/` — T0 Candidate Index
 
-Gist's structural edge over a whole-tree scan. A file containing a literal
-must contain every trigram of that literal, so the AND of per-trigram posting
-lists is a **sound candidate set**: false positives expected and verified
-away, false negatives impossible for literals of 3 or more bytes.
+This tier is the structural edge over a whole-tree scan. A file containing a
+literal must contain every trigram of that literal, so the AND of per-trigram
+posting lists is a **sound candidate set**: false positives expected and
+verified away, false negatives impossible for literals of 3 or more bytes.
 
 A **shorter** needle is served by the same directory rather than by a full
 scan. A 1–2 byte sliver must sit inside one of its document's trigrams, so the
@@ -60,7 +60,7 @@ in the family folds through the same freshness law, not just this one.
 ## Invariants
 
 - **Accelerator only** — indexed ≡ unindexed output, proven by the sibling
-  `gist` repo's
+  exact-search repo's
   `bench/conformance/gates/parity/index_elision_parity.sh`.
 - The anchor is stamped **before** the corpus read; missing or unreadable
   timestamps force a live read, and a missing anchor seeds every doc fresh
@@ -85,4 +85,4 @@ as it applies to the codicil, or the parallel build sweep's work-balancing.
 Changing n-gram width or soundness claims needs gate and doc updates
 together.
 
-Build and inspect with `gist index` / `gist status`.
+Build and inspect with a face's `index` / `status` verbs.

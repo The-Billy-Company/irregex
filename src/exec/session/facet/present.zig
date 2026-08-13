@@ -15,7 +15,7 @@
 
 const std = @import("std");
 const render = @import("render.zig");
-// The gist-native `--rank` kernel: its `renderLive` extracts features over
+// The native `--rank` kernel: its `renderLive` extracts features over
 // in-memory `LiveFile`s, fuses via RRF, and renders the top-K — the SAME
 // emission cold's `runLive` produces, returned to buffer instead of stdout.
 // A one-way edge (ranked never imports session), so no cycle.
@@ -29,7 +29,7 @@ const Lines = answer.Lines;
 const QueryError = answer.QueryError;
 const Request = resident.Request;
 
-/// Answer a bare `gist <pattern>` (`.lines`) request: the default
+/// Answer a bare pattern (`.lines`) request: the default
 /// `path:text` / `-n` `path:line:text` presentation, pre-rendered into one
 /// buffer through the cold engine's OWN Emitter (`render.zig`) so the bytes
 /// cannot drift from a piped cold run. Same reconcile + freshness barrier +
@@ -122,7 +122,7 @@ pub fn queryLinesShm(self: *ResidentSession, arena: std.mem.Allocator, req: Requ
     return if (ceil.declined()) .{ .declined = .freshness_unprovable } else .{ .got = rendered };
 }
 
-/// Answer a `--rank[=N]` request over resident bytes: gist's definition-first
+/// Answer a `--rank[=N]` request over resident bytes: the definition-first
 /// ranked view (`ranked.zig`), the one shape rg can't express. The candidate
 /// set is the SAME trigram-pruned, scope-gated ids the line faces gather (so a
 /// caseless rank prunes soundly instead of scanning the whole tree), gathered

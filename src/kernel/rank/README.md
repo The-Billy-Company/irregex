@@ -2,7 +2,7 @@
 
 Turns the verified match set into the ranked, token-compressed list an agent
 actually wants: the one line that answers the question first, not 200
-identical call sites. This is the shape `rg` cannot express — `gist --rank`.
+identical call sites. This is the shape `rg` cannot express — the ranked view.
 
 - **`rank.zig`** fuses the signals below with weighted Reciprocal Rank
   Fusion (Cormack et al. 2009) and emits `path:line [def|use|gen|mirror] ×n

@@ -1,6 +1,6 @@
 The no-match hint channel renders probed evidence now, not the pattern's spelling.
 
-`gist -n 'KEY_THREAD_ID|__all__|globals\(\)' attrs.py` used to answer with three
+A `-n 'KEY_THREAD_ID|__all__|globals\(\)' attrs.py` search used to answer with three
 suggestions, and all three were wrong. `-i` because the pattern has uppercase, on
 a file holding no case variant of any branch. `-F` because `\(` contains a
 metacharacter, when the backslash next to it is what makes it literal. `-uu`

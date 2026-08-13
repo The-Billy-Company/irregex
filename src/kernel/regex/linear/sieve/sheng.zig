@@ -1,4 +1,4 @@
-//! gist — the register-resident quotient kernel.
+//! irregex — the register-resident quotient kernel.
 //!
 //! A ≤16-state automaton needs no memory for its state. Hold the block id in
 //! all sixteen lanes of a vector, keep the transition row for each byte in a

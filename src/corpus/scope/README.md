@@ -16,7 +16,7 @@ The old `glob.zig` was two packages wearing one name. The pure matcher (gitignor
 - **`charter.zig`** parses `.irregex.toml`, the committed corpus declaration (`roots`, `skip`, `types`).
 - **`charter_test.zig`** holds the adverse tests: every malformed declaration must be refused.
 
-Did-you-mean support stays on the math floor rather than duplicating here: the charter, the cold engine's argv preferences, and the `gist config` verb all resolve an unrecognized key through the one edit-distance helper at [`../../kernel/math/misread.zig`](../../kernel/math/misread.zig).
+Did-you-mean support stays on the math floor rather than duplicating here: the charter, the cold engine's argv preferences, and a face's `config` verb all resolve an unrecognized key through the one edit-distance helper at [`../../kernel/math/misread.zig`](../../kernel/math/misread.zig).
 
 ## Two Different Questions About One Path
 

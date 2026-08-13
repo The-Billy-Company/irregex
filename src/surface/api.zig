@@ -5,14 +5,14 @@
 //! (or the C ABI + language bindings that sit above it) should program to: a
 //! small, coherent vocabulary of owned handles over the same error-returning
 //! warm engine the resident daemon and the in-process FFI already ride, so a
-//! hosted answer is byte-identical to the cold `gist --json` stream and a bad
+//! hosted answer is byte-identical to the cold `--json` stream and a bad
 //! query can never `die()` the host.
 //!
 //! The vocabulary mirrors the CLI faces without copying their argv:
 //!
 //!   * `Engine`      — a hosted corpus: roots + allocator + threaded I/O + the
 //!                     warm resident engine, opened once and queried many times.
-//!   * `SearchQuery` — one match-finding intent (the `gist` exact face), the
+//!   * `SearchQuery` — one match-finding intent (the exact-search face), the
 //!                     deep option surface `contract/engine.toml` pins.
 //!   * `Cursor`      — a *pull* result handle: `next()` one owned record at a
 //!                     time, or `nextBatch()` to amortize the call boundary.
@@ -40,9 +40,9 @@ const fault = @import("../fault.zig");
 const resident = @import("../exec/session/warm/resident.zig");
 const request = @import("../exec/session/answer/request.zig");
 
-// The relate (compression-kinship) and compose (exact ∩ compression) kernels
-// live in the `relate` package now — an embedder reaches them through that
-// module (`@import("relate")`) beside this library's `Engine`.
+// The compression-kinship and compose (exact ∩ compression) kernels live in
+// the kinship package now — an embedder reaches them by importing that module
+// beside this library's `Engine`.
 
 /// A cooperative, thread-safe cancellation flag. One token is shared by
 /// reference into `RunOptions.cancel`; any thread may `cancel()` while the

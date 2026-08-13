@@ -8,7 +8,7 @@ Each indexed document contributes a top-`q` run spectrum over the fixed
 48-predicate dictionary. Production writes `q=4`; query compilation defaults
 to `q=1` until held-out evidence licenses promotion. The sidecar is staged
 under the same `gens/<id>/` directory and published by the same `pair.gen`
-flip as `index.gist` / `paths.list`.
+flip as the trigram index and its path table.
 
 ## Why It Exists
 

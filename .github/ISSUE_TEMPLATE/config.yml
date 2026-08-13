@@ -11,15 +11,15 @@ contact_links:
       Never in a public issue. This opens a private thread only the maintainers
       can read. See SECURITY.md for what counts and what we do next.
 
-  - name: Something wrong with the `gist` command line
+  - name: Something wrong with the exact-search command line
     url: https://github.com/The-Billy-Company/gist/issues
     about: >-
-      Flags, output, ranking, the resident daemon, install - `gist` is a
-      separate repository. File it there; we move it here if the cause turns
-      out to be the engine.
+      Flags, output, ranking, the resident daemon, install - the face package
+      that ships that binary is a separate repository. File it there; we move it
+      here if the cause turns out to be the engine.
 
-  - name: Something wrong with `relate` or `blast`
+  - name: Something wrong with the kinship or composed faces
     url: https://github.com/The-Billy-Company/relate/issues
     about: >-
-      Similarity, repetition, provenance, and blast radius are the sibling
+      Similarity, repetition, provenance, and change radius are the sibling
       faces, each with its own repository and its own issue tracker.

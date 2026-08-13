@@ -12,7 +12,7 @@ Every other tier here is named for what it *is* — the syntax, the ast, the lin
 
 This package depends on `../matcher.zig` (the engine-neutral seam), `../compile/captures.zig` (the opt-in capture arm), and the package vocabulary in `../../../mark.zig`.
 
-It adds no engine: every verb lowers to a call `exec`/`cold` already makes on the same `Matcher`, so where this door and `gist` both report a match they agree by construction rather than by agreement. The one thing they do not share is which zero-width positions get reported — see below — and that fork is in the walk that drives the engine, never in the engine being driven.
+It adds no engine: every verb lowers to a call `exec`/`cold` already makes on the same `Matcher`, so where this door and the product face both report a match they agree by construction rather than by agreement. The one thing they do not share is which zero-width positions get reported — see below — and that fork is in the walk that drives the engine, never in the engine being driven.
 
 ## The Handle As A Second Type
 
@@ -26,7 +26,7 @@ Resuming a walk at `span.end` is correct for a match that consumed something and
 
 Where the walk genuinely forks is what to do with an empty match that is adjacent to the previous one, or that sits at the very end of the haystack. This package answers that twice, on purpose.
 
-- **Audience.** `Cursor` here serves a library caller with a haystack; `kernel/query`'s `walk` serves the `gist` CLI and the C ABI over it.
+- **Audience.** `Cursor` here serves a library caller with a haystack; `kernel/query`'s `walk` serves the product CLI and the C ABI over it.
 - **Bar.** `Cursor` matches Python `re`, `rust-regex`, and JS byte-identically; `walk` matches ripgrep byte-identically.
 - **An empty match adjacent to the last.** `Cursor` reports it; `walk` suppresses it.
 - **An empty match at the very end.** `Cursor` reports it; `walk` reports it only on a newline-terminated line.

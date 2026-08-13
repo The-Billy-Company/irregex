@@ -1,7 +1,7 @@
-//! gist resident session — the warm-engine correctness suite.
+//! Resident session — the warm-engine correctness suite.
 //!
 //! The one invariant the resident path must never break is
-//! `resident matches == gist --no-index matches == rg matches`. Freshness has a
+//! `resident matches == cold no-index matches == rg matches`. Freshness has a
 //! single unforgivable failure mode — a false result after the tree changed
 //! under a warm session — so these tests drive a REAL directory tree through a
 //! live `ResidentSession` and prove, over live syscalls: (1) the eligible
@@ -25,8 +25,8 @@ const ResidentSession = resident.ResidentSession;
 /// scope STATED rather than inherited, for the same reason.
 ///
 /// The corpus walk prunes a directory whose basename the skip overlay names,
-/// and that overlay is resolved from `GIST_SKIP`, the ambient charter, and
-/// `<GIST_DIR>/skips.list`. None of those three describe a tree this function
+/// and that overlay is resolved from `<prefix>SKIP`, the ambient charter, and
+/// the seeded `skips.list`. None of those three describe a tree this function
 /// just created under `/tmp`, so an operator whose seeded list happens to say
 /// `src` (these fixtures also write `sub`, `nested`, `stable`, `churn`) would
 /// have the walk prune a directory the fixture itself wrote. The session would
@@ -682,7 +682,7 @@ const RecSink = struct {
 test "resident: -w applies cold's exact word rule on every answer face" {
     // Expected values are derived from ripgrep's post-match word rule as cold
     // implements it (`output.zig::wordOk`/`nextSpan`), verified against a live
-    // cold `gist -w` run over these fixtures — never from the warm engine:
+    // cold `-w` run over these fixtures — never from the warm engine:
     //   - a word-REJECTED occurrence keeps scanning its line (`rerun run`);
     //   - a doc can boolean-match with ZERO word-valid lines (b.txt) and must
     //     vanish from every face;
@@ -1360,7 +1360,7 @@ test "resident: -g un-ignores (declines) but -t never un-ignores (stays warm)" {
 //
 // Naming a root is naming intent: cold exempts an explicitly given PATH from the
 // ignore and hidden rules (`walk.zig::gather` → `Ignore.scopeToRoot`), exactly as
-// rg does, so `gist needle ign/` searches a gitignored subtree. The mirror's
+// rg does, so `needle ign/` searches a gitignored subtree. The mirror's
 // whole-tree walk pruned that directory, and — unlike a file-level skip — it
 // leaves no `Extra` behind, because the walk stops descending AT the directory.
 // `rootsCovered` is the guard: a root the mirror holds no file under declines.

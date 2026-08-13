@@ -39,7 +39,7 @@ const short_map = catalog.short_map;
 const toU = verdict.toU;
 
 /// The `-rn` footgun: grep muscle memory reads `-rn` as "recursive + line
-/// numbers", but rg short-flag bundling (which gist matches byte-for-byte)
+/// numbers", but rg short-flag bundling (matched here byte-for-byte)
 /// parses it as `--replace=n` — every match silently rewritten to `n`, output
 /// that looks mangled rather than wrong. True iff a bundled `-r` value is a
 /// short string made entirely of known short flags (`n`, `ni`, `l`, …), i.e.
@@ -69,7 +69,7 @@ fn noteGrepStyleReplace(v: []const u8) void {
 
 /// The `--hyperlink vscode` footgun, the same shape as `-rn` above: rg spells
 /// this flag `--hyperlink-format vscode`, so that spacing arrives as muscle
-/// memory — but gist's `--hyperlink` reads its value inline (a bare one must
+/// memory — but this `--hyperlink` reads its value inline (a bare one must
 /// leave the next token to be the pattern), and the destination silently
 /// becomes the search. Behavior is untouched; this only says what happened,
 /// because a hyperlink layer that links somewhere unasked and stays quiet is
@@ -217,15 +217,15 @@ fn apply(b: *Builder, action: Act, v: *ValSrc) void {
         // `color.zig` at emit time — this just records the requested mode.
         .color => o.color = enumOrDie(ColorChoice, "bad --color value: {s}\n", v.take()),
         // One value grammar behind three spellings. Like `--rank`, a bare
-        // `--hyperlink` must NOT swallow the next token — that is the pattern
-        // (`gist --hyperlink foo`) — so it reads the inline `=value` only.
+        // `--hyperlink` must NOT swallow the next token — in `--hyperlink foo`
+        // that is the pattern — so it reads the inline `=value` only.
         // rg's `--hyperlink-format` is value-required and keeps rg's spacing.
         //
         // Naming a destination on the command line TURNS LINKS ON, in either
         // spelling. Typing `--hyperlink=vscode` and getting silence because the
         // probe disagreed is precisely the mystery this whole layer exists to
         // remove — and it is rg's behavior besides. The standing-preference
-        // case has its own spelling: `GIST_HYPERLINK=vscode` in a profile says
+        // case has its own spelling: `<prefix>HYPERLINK=vscode` in a profile says
         // only WHERE, and leaves the probe to decide WHETHER, so piping to a
         // file still cannot smear escapes through it. A flag is an act; an
         // environment variable is a preference. `--hyperlink=auto` remains the
@@ -237,7 +237,7 @@ fn apply(b: *Builder, action: Act, v: *ValSrc) void {
                 const value = if (how == .format) v.take() else v.inl orelse "always";
                 // An empty value WRITTEN OUT is the empty destination — the same
                 // thing the `none` alias resolves to. Only a standing preference
-                // (`GIST_HYPERLINK=`) may read empty as "no opinion"; a flag is
+                // (`<prefix>HYPERLINK=`) may read empty as "no opinion"; a flag is
                 // an act, and rg spells this very act `--hyperlink-format=''`.
                 const w = if (value.len == 0) beacon.Wish{ .format = "" } else beacon.wish(b.a, value);
                 if (w.bad) |msg| die(assay.tag ++ "error parsing flag --{s}: {s}\n", .{ v.name, msg });
@@ -267,7 +267,7 @@ fn apply(b: *Builder, action: Act, v: *ValSrc) void {
         },
         .type_clear => b.clearTypeDef(v.take()),
         // --rank takes an OPTIONAL inline count only (`--rank=N`); a bare `--rank`
-        // must not swallow the following token — that's the pattern (`gist --rank foo`).
+        // must not swallow the following token — in `--rank foo` that's the pattern.
         .rank => {
             o.rank, o.rank_k = .{ true, if (v.inl) |x| toU(x) else o.rank_k };
         },
@@ -292,7 +292,7 @@ fn apply(b: *Builder, action: Act, v: *ValSrc) void {
         .pretty => {
             o.color, b.locus.heading, b.locus.line = .{ .always, true, true };
         },
-        // --plain is the inverse pole, and the only one of gist's three
+        // --plain is the inverse pole, and the only one of the face's three
         // destination-conditional behaviors that is not already spellable:
         // `--color never` and a cadence have flags, but the terminal long-line
         // guard is keyed on the real fd. `o.plain` is what stands that down.
@@ -381,7 +381,7 @@ pub fn parseArgv(a: std.mem.Allocator, args: []const []const u8) Parsed {
     // -A/-B take precedence over -C regardless of order (ripgrep's rule).
     b.o.after = b.a_val orelse b.c_val orelse 0;
     b.o.before = b.b_val orelse b.c_val orelse 0;
-    // -u = --no-ignore, -uu = +hidden, -uuu = +--binary (rg's tiers). gist's
+    // -u = --no-ignore, -uu = +hidden, -uuu = +--binary (rg's tiers). Here
     // --binary searches binary files in full (see Opts.binary), so -uuu brings the
     // whole tree — ignored, hidden, and binary — online.
     if (b.o.smart_case and !b.o.caseless) b.o.caseless = for (pats.items) |pp| {
@@ -543,10 +543,11 @@ test "--plain is the pipe pole: no color, no tty guard, coalesced" {
 }
 
 test "an empty hyperlink value is the none alias, not a request to link" {
-    // rg's `--hyperlink-format=''` disables hyperlinks. gist read empty as "no
-    // preference" — the right reading for GIST_HYPERLINK= in a profile, the
-    // wrong one for a flag, which promoted it to `always` with the DEFAULT
-    // destination and linked every path the caller had just asked to unlink.
+    // rg's `--hyperlink-format=''` disables hyperlinks. This parser read empty
+    // as "no preference" — the right reading for `<prefix>HYPERLINK=` in a
+    // profile, the wrong one for a flag, which promoted it to `always` with the
+    // DEFAULT destination and linked every path the caller had just asked to
+    // unlink.
     try t.expectEqual(intent.Hyperlink.never, parseArgv(ta, &.{ "--hyperlink-format=", "x" }).opts.hyperlink);
     try t.expectEqual(intent.Hyperlink.never, parseArgv(ta, &.{ "--hyperlink=", "x" }).opts.hyperlink);
     try t.expectEqual(intent.Hyperlink.never, parseArgv(ta, &.{ "--hyperlink=none", "x" }).opts.hyperlink);

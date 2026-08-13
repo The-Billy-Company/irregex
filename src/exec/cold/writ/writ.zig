@@ -1,4 +1,4 @@
-//! gist — the writ: everything the argv patterns decide, decided once.
+//! The writ: everything the argv patterns decide, decided once.
 //!
 //! A `Writ` is what an invocation's patterns COMPILE TO. Handed the effective
 //! pattern and the parsed options, it resolves the engine arm, both literal

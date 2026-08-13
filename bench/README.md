@@ -7,10 +7,10 @@ The certificate split three ways when the four packages did, on one rule every
 package's own charter states: *a package certifies what it builds.* A claim
 measurable by linking the engine belongs to `irregex`; a claim that needs a
 running product binary belongs to whichever package builds that binary — the
-CLI races and the `gist` binary's own layers to `gist`, retrieval and
-multi-pattern attribution to `relate`. Each package now mints its own bundle,
-over its own corpus, with its own ledger, and none of the three borrows a
-number from either of the others.
+CLI races and the shipped binary's own layers to the exact-search face,
+retrieval and multi-pattern attribution to the kinship face. Each package now
+mints its own bundle, over its own corpus, with its own ledger, and none of the
+three borrows a number from either of the others.
 
 - **[`apparatus/`](apparatus/README.md)** holds the instruments — the shared
   Zig modules (`probes`, `pmu`, `stats`) plus the vendored shell/Python layer
@@ -22,41 +22,41 @@ number from either of the others.
   the `llvm-mca` static bound plus the on-machine measurement, [`roofline/`](bounds/roofline/README.md)
   the memory roof, and [`lowerbound/`](bounds/lowerbound/README.md) the
   candidate-byte floor. Layer F, the codex self-index against the order-0
-  entropy bound, lives in `relate/bench/bounds/codex/`.
+  entropy bound, lives in the kinship package's `bench/bounds/codex/`.
 
 - **[`rungs/`](rungs/README.md)** holds the per-mechanism production proofs:
   [`crest/`](rungs/crest/README.md) (Layer E), plus [`sieve/`](rungs/sieve/README.md)
   (also the source of Layer L's index-quality head-to-head), [`shuffle/`](rungs/shuffle/README.md),
   [`parabix/`](rungs/parabix/README.md), and [`sliver/`](rungs/sliver/README.md)
   (also the source of Layer J's scale measurement). The multi-pattern arm
-  that used to race here moved to `relate/bench/rungs/multipattern/`, next to
-  the Layer K it feeds.
+  that used to race here moved to the kinship package's
+  `bench/rungs/multipattern/`, next to the Layer K it feeds.
 
 - **`certificate/`** is this package's own Dominance-and-Fit bundle — `mint/`
   the mint script, `report/` the layer splicers, `guard/` the reproducibility
   and roster checks, `ledger/` the mint history, and `artifact/` the frozen
   published receipts. It mints Layers B, B′, C, D, E, J, and L: everything
   this package can certify by linking the engine, and nothing that needs a
-  running `gist` or `relate` binary.
+  running product binary.
 
 Two more evidence genres live entirely with the packages that build the
 binaries they measure:
 
-- **`gist/bench/dominance/`** (sibling `gist` repo) is measured product
+- **The exact-search face's `bench/dominance/`** is measured product
   performance in the world — `races/` the competitor field and the
   multi-tool head-to-heads, `session/` the warm resident-daemon tier,
   `evaluate/` the operational envelope (lifecycle cost, footprint, scaling,
   concurrency).
 
-- **`gist/bench/certificate/`** and **`relate/bench/certificate/`** are the
-  other two packages' own bundles, structured the same way as this one's.
-  `gist`'s mints Layers A (empirical dominance over ripgrep), H (the
-  portability matrix), and I (scanner mode, the index taken away). `relate`'s
-  mints Layers F (the codex self-index), G (the retrieval contract), and K
-  (multi-pattern attribution, against Hyperscan/Vectorscan).
+- **Each face's own `bench/certificate/`** is that package's bundle,
+  structured the same way as this one's. The exact-search face mints Layers A
+  (empirical dominance over ripgrep), H (the portability matrix), and I
+  (scanner mode, the index taken away). The kinship face mints Layers F (the
+  codex self-index), G (the retrieval contract), and K (multi-pattern
+  attribution, against Hyperscan/Vectorscan).
 
-- **`gist/bench/conformance/`** is fail-closed CLI correctness — no timing
-  claim lives there — and **`relate/bench/conformance/relate/`** is the
+- **The exact-search face's `bench/conformance/`** is fail-closed CLI
+  correctness — no timing claim lives there — and the kinship face carries the
   retrieval contract's own correctness gate.
 
 Every lane installs on its own named step, and `zig build lab` installs all
@@ -85,142 +85,25 @@ indistinguishable from a real hierarchy once it is JSON. It therefore refuses
 to run unoptimized rather than publish, so the `-Doptimize` above is not
 advice.
 
-The corpus-slate lane (`zig build bench`) moved to the `gist` package with
-the `gist-bench` binary. The candidate count it reports is a **sound
-superset** of `rg`'s true match-file count; the gap is the trigram filter's
-false-positive rate, verified away by the caller's real regex.
+The corpus-slate lane (`zig build bench`) moved to the exact-search face along
+with the bench binary that drives it. The candidate count it reports is a
+**sound superset** of `rg`'s true match-file count; the gap is the trigram
+filter's false-positive rate, verified away by the caller's real regex.
 
-## The Field — Who Gist Races
+## The Competitor Field Is Documented Where It Runs
 
-The product-level races below live in the sibling `gist` repo, not this one —
-this section documents what they measure so a reader here knows what a Layer
-A number means before opening that repo. `gist/bench/dominance/races/`,
-`conformance/gates/`, and `gist/bench/certificate/` all race `gist` against
-the same **seven** code searchers, split by whether they keep an index. The
-registry, fairness scoping, and per-tool invocations live in
-`gist/bench/dominance/races/field.sh` (sourced by every script below except
-`equality.sh`), which itself sources the vendored, cross-package
-`bench/apparatus/field.sh` for the corpus-scoping and hyperfine-timing rules
-every package's races share; columns auto-skip when a binary is not
-installed.
+The rival roster, each rival's honest fastest invocation, the tool-identity
+pinning a mint records, and the fairness contract every race honors are not
+restated here. They govern lanes that drive a product binary this package does
+not build, so they live with those lanes, in the exact-search face's
+`bench/dominance/README.md`. What matters on this side is only the boundary:
+those races time a shipped CLI end to end, and everything under this directory
+times the engine by linking it.
 
-- **gist** — indexed, our engine's product — resident RAM index (warm) or
-  instant cold-load (cold).
-- **csearch** — indexed, Google Code Search (Russ Cox) — gist's direct
-  trigram ancestor, the apples-to-apples rival.
-- **zoekt** — indexed, Sourcegraph's production indexed search (trigram +
-  ctags symbols).
-- **rg** — unindexed, ripgrep — the gold-standard parallel scanner.
-- **ugrep** — unindexed, claims-fastest grep — SIMD + PCRE2-JIT.
-- **ag** — unindexed, the_silver_searcher.
-- **ggrep** — unindexed, GNU grep (`ggrep` on macOS) — the classic baseline.
-- **git grep** — unindexed, the in-repo dev-workflow default.
-
-Install the optional ones: `brew install ugrep grep` ·
-`go install github.com/google/codesearch/cmd/{cindex,csearch}@latest` ·
-`go install github.com/sourcegraph/zoekt/cmd/{zoekt-index,zoekt}@latest`.
-
-### Which Rival, Exactly — the Identity a Mint Records
-
-`@latest` names no version, so the roster above does not pin itself: the
-rival is whatever the machine happened to have. Every mint therefore writes
-each tool's identity to **`tool-versions.txt`** beside the receipts — the
-version the tool reports of itself **and** the sha256 of the executable that
-resolved. Both, because either alone degrades quietly.
-
-A **digest alone** can name the wrong file. Under a version manager
-`command -v csearch` resolves to the multiplexer, not the rival — a `mise`
-shim is a symlink to `mise` — so shimmed tools hash to one launcher while
-still reading as exact pins. Measured here: `csearch`, `zoekt`, and `zig` all
-recorded the single digest `20d3bc06…`, which is `mise`. `guard/artifacts.py`
-now fails closed when two tool ids share a digest, and identity resolution
-walks `PATH` for a candidate whose name survives symlink resolution (a
-multiplexer renames itself; a real install does not), so the digest names the
-rival rather than the launcher.
-
-A **version alone** cannot distinguish two local builds of one release. Both
-csearch copies on this box are module `v1.2.0` compiled by different Go
-toolchains, and only the digest separates them.
-
-csearch and zoekt carry **no version flag at all**, so their pin is the
-embedded Go module version, read from build metadata rather than by running
-them — `csearch version` treats `version` as the *regexp* and prints a
-matching corpus line, which scraped a bogus `26.3.0` into an identity before
-the probe order was fixed. Expect `github.com/google/codesearch v1.2.0` and a
-`github.com/sourcegraph/zoekt` commit pseudo-version.
-
-- **`gist/bench/dominance/races/warm.sh`** races **warm**: gist's resident-index
-  p50 against the unindexed scanners — the long-lived agent-session model.
-- **`gist/bench/dominance/races/cold.sh`** races **cold literal**: fresh-process
-  gist against csearch/zoekt (indexed) plus rg/ugrep/ag/ggrep/git-grep
-  (unindexed).
-- **`gist/bench/dominance/races/regex.sh`** races **cold regex**: the same
-  field, gist's byte-class DFA against RE2 (csearch/zoekt) and PCRE (`-P`) /
-  `(?-u)`.
-- **`conformance/gates/parity/equality.sh`** proves **correctness**: gist ≡
-  `rg` over a byte-exact corpus snapshot — the soundness oracle, index path.
-- **`conformance/gates/parity/scan_regress.sh`** is the **scan-path
-  regression + race**: the no-prefilter live-tree scan ≡ `rg` (gate, exits 1
-  on a false negative/positive) plus min-of-N against `rg` and the
-  straggler-balance canary.
-- **`conformance/gates/contract/streams.sh`** gates the **output contract**
-  (exits 1 on violation): results to stdout, diagnostics to stderr, across
-  the literal, rank, and scan paths — the `rg`-conventional split that makes
-  gist composable in agent pipelines.
-- **`gist/bench/certificate/mint/mint.sh`** mints the **statistical
-  certificate**: the same field, per regex class, with a fail-closed
-  bootstrap-CI + Mann-Whitney verdict against ripgrep.
-
-Each race prints per-query times with gist's speedup, then a summary:
-**geomean speedup and win-rate per tool**, split indexed versus unindexed.
-Raw rows land in `.local/gist-compete/{cold,regex,warm}.csv` for your own
-analysis. See `gist/bench/dominance/races/README.md` and
-`conformance/gates/README.md` for the scenario-level detail.
-
-`gist/bench/dominance/races/warm.sh` times gist's **in-process** engine (the
-microsecond ceiling — no transport, no process spawn), which no client
-actually rides. The honest warm-**product** path — a persistent client
-dialing a `gist serve` daemon once and replaying the slate over that warm
-connection — is certified separately in `gist/bench/dominance/session/`, the
-only sound basis for a "warm is Nx faster than ripgrep" claim.
-
-## Fairness — Stated, Not Hand-Waved
-
-Every tool is scoped to the same source roots (`$GIST_ROOTS` when set, else
-the tree's own roots — `field.sh` resolves them once, mirroring
-`corpus.resolveRoots`) and given its honest fastest path.
-
-- **rg / git grep** honor `.gitignore` natively (skip the gitignored ~99 GB
-  of build artifacts). **ag** is handed `--path-to-ignore .gitignore` (the
-  root ignore set `rg` reads for free). **ugrep / GNU grep** have no
-  per-file gitignore, so they get the heavy dir-exclude set (`$XDIRS`) —
-  they still scan a slightly *larger* file set (gitignored individual files
-  `rg` skips), which only makes them do **more** work, so gist's win over
-  them is conservative.
-- **gist / rg** additionally run under `--no-ignore-vcs` plus the root
-  `.gitignore`, so a multi-root race can't hit ripgrep's nondeterministic
-  parent-ignore re-anchoring. That also discards every *nested* `.gitignore`,
-  which is why `field.sh` re-applies the build-output exclusions as globs
-  (`$SCOPE`): without them these two alone walk build artifacts the root
-  ignore never names — Elixir `_build`/`deps`/`cover`, Electron `out/` —
-  that `gist index` prunes and csearch therefore never indexes. Not the
-  whole of `$XDIRS`, because `vendor` holds tracked source; mix output is
-  anchored per `mix.exs` root for the same reason rule-of-five anchors it.
-- **csearch** indexes gist's **exact corpus file list** (the persisted
-  `paths.list` doc→path table) → byte-for-byte the same files → result sets
-  ≈ `rg`'s. It is the faithful indexed twin (the small delta is the few
-  files csearch's own binary heuristic drops: 16,696 of 17,112).
-- **zoekt** has no file-list input, so it indexes the roots tree under the
-  same heavy ignore set; its corpus is a documented superset (no per-file
-  gitignore plus ctags symbol indexing). Quoted-literal counts still match
-  `rg` on selective needles — treat it as a production-grade **timing
-  reference**, not a correctness oracle (`rg` plus `csearch` are).
-- Timing is `hyperfine` mean, warm page cache, fresh process. Every command's
-  output is drained (`… | wc -l`) so ugrep's lazy multithreaded `-l` actually
-  scans (it short-circuits when a harness discards its stdout) and a needle
-  *miss* (grep exits 1) doesn't abort the run. **Ratios** are the headline
-  number — robust to this shared dev box's load because each query's tools
-  run back-to-back under the same conditions.
+The one piece of that contract this package does own is the vendored floor at
+[`apparatus/field.sh`](apparatus/README.md) — the corpus-scoping and
+hyperfine-timing rules every package's races share, byte-identical in all four
+checkouts. A face's own field script sources it rather than re-deriving it.
 
 ## Dominance-and-Fit Certificate (Layers A–L)
 
@@ -234,7 +117,7 @@ Twelve named layers span the three packages, each publishing over its own
 corpus with its own ledger:
 
 - **A** — empirical dominance over ripgrep on the registered workloads,
-  fail-closed (`gist`).
+  fail-closed (the exact-search face).
 - **B / B′** — port-optimality: the static µarch bound, then the same bound
   measured on this machine (`irregex`, this package).
 - **C** — roofline: the memory ceiling and the fraction of it reached
@@ -244,31 +127,31 @@ corpus with its own ledger:
 - **E** — the crest sieve: fail-closed pruning of the literal-free
   class-repetition blind spot every trigram index concedes (`irregex`).
 - **F** — the codex self-index: compressed below the order-0 entropy coder
-  yet searchable and byte-exact decodable (`relate`).
-- **G** — the relate retrieval contract: boundary, recall@1, and
-  anti-redundant pack, graded rather than raced (`relate`).
+  yet searchable and byte-exact decodable (the kinship face).
+- **G** — the retrieval contract: boundary, recall@1, and anti-redundant
+  pack, graded rather than raced (the kinship face).
 - **H** — the portability matrix, graded by what was actually executed
-  (`gist`).
-- **I** — scanner mode: gist with the index taken away, on ripgrep's own
-  home turf (`gist`).
+  (the exact-search face).
+- **I** — scanner mode: the shipped CLI with the index taken away, on
+  ripgrep's own home turf (the exact-search face).
 - **J** — positional and substring index tiers at scale, including the tier
   measured and declined (`irregex`).
 - **K** — multi-pattern simultaneous matching, against Hyperscan/Vectorscan
-  (`relate`).
+  (the kinship face).
 - **L** — index quality head-to-head against csearch (`irregex`).
 
 This package's own bundle — Layers B, B′, C, D, E, J, and L — is minted by
 `bench/certificate/mint/mint.sh` and published to `bench/certificate/artifact/`.
 Its most recent mint (`bench/certificate/ledger/LEDGER.md`) recorded all
 seven of its layers present, none absent. The other five layers are not
-missing from this repository — they are published by `gist` and `relate`,
-over their own corpora, with their own ledgers, and this README does not
-restate their numbers.
+missing from this repository — they are published by the exact-search and
+kinship faces, over their own corpora, with their own ledgers, and this README
+does not restate their numbers.
 
 Always build **`-Doptimize=ReleaseFast`** — a Debug build is not vectorized
 and its cycles/byte and bandwidth numbers are meaningless (a Debug scan
-measures loop overhead, not the memory hierarchy). The report splicers
-resolve `.gist/` at the repo root by default, so they run from anywhere.
+measures loop overhead, not the memory hierarchy). The report splicers resolve
+the artifact home at the repo root by default, so they run from anywhere.
 
 Mint or refresh this package's bundle with one command:
 

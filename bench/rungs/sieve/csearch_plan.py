@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""gist bench — lift csearch's OWN trigram formula out of csearch, verbatim.
+"""irregex bench — lift csearch's OWN trigram formula out of csearch, verbatim.
 
 Layer L's whole point is to compare two *planners*, not two machines: the same
 corpus, the same postings, the same evaluator — only the boolean formula over
@@ -8,17 +8,18 @@ trigrams differs. `csearch -verbose` prints exactly that formula
 `index.RegexpQuery(re.Syntax)` rendered by `Query.String()` in
 `index/regexp.go`), plus the candidate count csearch's own index resolved it to.
 So nothing here is a proxy and nothing is re-derived: csearch states its plan,
-this script parses it, and `indexq.zig` runs it against gist's index.
+this script parses it, and `indexq.zig` runs it against this package's index.
 
 `Query.String()` renders an AND as space-joined terms and an OR as
 `(a)|(b)|(c)` — unambiguous under "split top-level whitespace ⇒ AND, then split
 top-level `|` ⇒ OR", because csearch's `andOr` never nests a node under a node
 of its own op. `+` is QAll (no filter at all) and `-` is QNone.
 
-The formula is emitted in gist's plan shape — AND over clauses, OR over the
-atoms of a clause, AND over the trigrams of an atom (`Index.queryPlan`) — which
-covers csearch's tree exactly: its OR-of-ANDs alternations become one clause of
-multi-trigram atoms, its AND-of-ORs boundary products become several clauses.
+The formula is emitted in this planner's plan shape — AND over clauses, OR over
+the atoms of a clause, AND over the trigrams of an atom (`Index.queryPlan`) —
+which covers csearch's tree exactly: its OR-of-ANDs alternations become one
+clause of multi-trigram atoms, its AND-of-ORs boundary products become several
+clauses.
 
 stdlib only. Probe rows come from `slate.py`, which reads the same Zig registries
 Layers A and D import, so this slate cannot drift from theirs.
@@ -210,9 +211,9 @@ def main() -> int:
     slate = [row for p in args.probes for row in read_probes(p)]
     rows, total_dropped = [], 0
     for cls, kind, pattern in slate:
-        # A `.literal` probe is gist's `-F` fixed string; csearch's equivalent is
-        # the quoted-literal form `_compete.sh` already races it on, so `.` and
-        # `)` stay bytes rather than becoming regex syntax.
+        # A `.literal` probe is the product's `-F` fixed string; csearch's
+        # equivalent is the quoted-literal form `_compete.sh` already races it
+        # on, so `.` and `)` stay bytes rather than becoming regex syntax.
         rendered, own = csearch_query(
             rf"\Q{pattern}\E" if kind == "literal" else pattern, args.index, args.csearch
         )

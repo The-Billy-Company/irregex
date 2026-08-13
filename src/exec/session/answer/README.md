@@ -43,8 +43,8 @@ door in [`../facet/`](../facet/).
   answer it twice. The daemon never computes here — a client computes cold
   and offers the result, and the keep only compares epochs and evicts by LRU
   against a byte ceiling, so a store that cannot recompute cannot recompute
-  wrongly. See the sibling `gist` repo's `src/surface/cli/reprise.zig` for
-  the caller's half.
+  wrongly. See the face package's `src/surface/cli/reprise.zig` for the
+  caller's half.
 
 `request_test.zig` sits beside its subject.
 
@@ -103,10 +103,10 @@ would be unsound: a caseless pattern keeps its case-variant filter, and a
 `-F` literal or a PCRE2 body arrives with a null `source`, which is the
 standing "do not re-parse" certificate.
 
-`GIST_NO_COVER` / `GIST_NO_CREST` stand one half down each. They are read in
-the **daemon's** environment, not the client's, since that is where the
-pruning is derived — which is what lets one binary A/B the wired path
-against itself (the sibling `gist` package's
+`<prefix>NO_COVER` / `<prefix>NO_CREST` stand one half down each. They are
+read in the **daemon's** environment, not the client's, since that is where
+the pruning is derived — which is what lets one binary A/B the wired path
+against itself (the face package's
 `bench/conformance/gates/parity/warm_parity.sh` runs two daemons on two
 sockets for exactly this reason). The `.index` lens reports the tier that
 answered and how much each stage admitted, in the same grammar cold uses,
@@ -114,15 +114,15 @@ and it rides the `diag` frame back to the client's stderr.
 
 ## One Argv Authority
 
-`request.zig` is the single argv authority: the sibling `gist` repo's CLI
-client, auto-spawn, and warm hints all reach it through this library's
+`request.zig` is the single argv authority: the face package's CLI client,
+auto-spawn, and warm hints all reach it through this library's
 `session.request` export.
 
 Python's `session.warm_eligible` field predicate is the one cross-language
 projection mechanically parity-tested against the built classifier — the
-suite lives in the sibling `gist` repo's
+suite lives in the face package's
 `bindings/python/tests/test_classify_parity.py`, driven through the `warm`
-trace lens (`GIST_TRACE=warm`) `[eligible]`/`[ineligible]` verdict, so the
+trace lens (`<prefix>TRACE=warm`) `[eligible]`/`[ineligible]` verdict, so the
 two cannot drift unnoticed. The Rust binding carries its own `warm_eligible`
 beside the daemon client (`bindings/rust/src/runtime/session.rs`), kept in
 step with `classify` by comment rather than by the same mechanical proof.

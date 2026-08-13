@@ -1,4 +1,4 @@
-//! gist — the Parabix rung's admission gate: who this kernel is allowed to
+//! irregex — the Parabix rung's admission gate: who this kernel is allowed to
 //! serve, decided entirely at compile time.
 //!
 //! Bit-parallel matching has a cliff, and it is not gentle. A flat pattern runs

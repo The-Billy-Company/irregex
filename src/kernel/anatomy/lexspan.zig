@@ -2,17 +2,18 @@
 //! extractor and the comment-scoped matcher ride.
 //!
 //! `regions.zig` walks source with a small lexical state machine so a `{` or a
-//! `def` inside a string or comment never opens a false function; the blast
-//! radius and `gist --in-comments`/`--in-code` need the INVERSE of the same
-//! knowledge — which bytes ARE comments. Rather than fork two drifting copies
-//! of the string/comment rules, the state machine lives here once:
+//! `def` inside a string or comment never opens a false function; the change
+//! radius and a face's `--in-comments`/`--in-code` need the INVERSE of the
+//! same knowledge — which bytes ARE comments. Rather than fork two drifting
+//! copies of the string/comment rules, the state machine lives here once:
 //!
 //!   • `lexByte` — advance the lexical state one byte; `true` iff the byte is
 //!     code punctuation (a `{`/`}` the brace walk should count). Consumed by
 //!     `regions.zig`'s function extraction.
 //!   • `commentMask` — a per-byte boolean map, `true` where a byte falls inside
 //!     a line (`//`, `#`) or block (`/* … */`) comment, string literals skipped.
-//!     Consumed by the comment-scoped matcher and the blast comments section.
+//!     Consumed by the comment-scoped matcher and the composed face's comments
+//!     section.
 //!   • `commentOnly` — whether a trimmed line STARTS as a comment (the cheap
 //!     line-granularity test `regions.select` uses to skip comment-only lines).
 //!
@@ -85,7 +86,7 @@ pub fn commentOnly(line: []const u8) bool {
 }
 
 /// What a byte belongs to, once the lexer has walked to it. The three-way
-/// answer the blast radius needs: a symbol in code is a reference, a symbol in
+/// answer the change radius needs: a symbol in code is a reference, a symbol in
 /// a comment is documentation the edit will falsify, and a symbol in a string
 /// is a name wired by text (reflection, SQL, a route table) — weaker evidence
 /// than a call, but an edge all the same, so it must be distinguishable rather
@@ -193,14 +194,16 @@ test "spanMask separates the three spans, and comments project to commentMask" {
     defer gpa.free(map);
 
     // The same identifier, three times, three different answers — the whole
-    // reason blast can tell a call site from a route string from a stale doc.
+    // reason a change radius can tell a call site from a route string from a
+    // stale doc.
     try std.testing.expectEqual(Span.code, map[std.mem.indexOf(u8, src, "AcmeService").?]);
     try std.testing.expectEqual(Span.comment, map[std.mem.indexOf(u8, src, "AcmeService is").?]);
     try std.testing.expectEqual(Span.literal, map[std.mem.indexOf(u8, src, "AcmeService/Get").?]);
     try std.testing.expectEqual(Span.comment, map[std.mem.indexOf(u8, src, "AcmeService in a block").?]);
 
     // One walk, two projections: `commentMask` must agree byte for byte, or a
-    // comment-scoped match and a blast report would disagree about the tree.
+    // comment-scoped match and a change-radius report would disagree about the
+    // tree.
     const comments = try commentMask(gpa, src);
     defer gpa.free(comments);
     for (map, comments) |span, flagged| try std.testing.expectEqual(span == .comment, flagged);

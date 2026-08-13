@@ -1,4 +1,4 @@
-//! gist — the descent: one worker's whole life, from popping a directory to
+//! The descent: one worker's whole life, from popping a directory to
 //! handing each admitted file to the per-file search.
 //!
 //! `workerMain` is this module's entire surface. Underneath it: the live
@@ -71,7 +71,7 @@ const noteIgnoreFile = ignore.noteIgnoreFile;
 /// comment for the asymmetry (`-g`/`--iglob` bypasses `.git`+ignore, a `-t`
 /// type match only un-hides) this engine must reproduce byte-for-byte.
 ///
-/// Charter / `GIST_SKIP` / `skips.list` directory basenames are pruned first and
+/// Charter / `<prefix>SKIP` / `skips.list` directory basenames are pruned first and
 /// unconditionally: they size the corpus, so `-uu`/`-g` cannot un-hide them
 /// (see `haystack.isPolicySkip`). The generic baseline (`.git`, `node_modules`,
 /// …) is deliberately not consulted here — ripgrep parity requires `-uu` to
@@ -610,7 +610,7 @@ fn handleEntry(w: *Worker, a: std.mem.Allocator, sa: std.mem.Allocator, scratch:
     // rides the per-directory scratch `workerMain` recycles. Charging all of them
     // to the worker arena made its growth track the TREE's file count rather than
     // the widest directory's: 29.4 MiB of retained path copies on a 175k-file
-    // corpus that a scan never reads twice, which is most of what put gist's
+    // corpus that a scan never reads twice, which is most of what put our
     // owned scanner footprint above ripgrep's for identical work.
     const pa: std.mem.Allocator = if (e.is_dir or cfg.collect_sorted or cfg.freshness_meta) a else sa;
     // The display path and the scope-relative path are the SAME bytes on the

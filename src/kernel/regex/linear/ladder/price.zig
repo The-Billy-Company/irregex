@@ -1,4 +1,4 @@
-//! gist — the ladder's PRICE PLANE: every number the auction bids with, in one
+//! irregex — the ladder's PRICE PLANE: every number the auction bids with, in one
 //! file, each one an arithmetic consequence of a kernel a bench timed alone.
 //!
 //! `rungs.zig` runs a real auction — each machine that can represent the pattern
@@ -72,7 +72,7 @@ pub fn perByte(cyc: f64) u32 {
 /// What a candidate machine costs. `scan` is the price of the hot loop and
 /// decides the auction; `compile` is the one-off build, in CYCLES, and breaks a
 /// scan tie. Keeping the two dimensions in separate fields rather than blending
-/// them is deliberate: gist compiles a pattern once and scans a corpus with it,
+/// them is deliberate: a face compiles a pattern once and scans a corpus with it,
 /// so a machine may never buy scan throughput by claiming a cheap build.
 pub const Cost = struct {
     scan: u32,

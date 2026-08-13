@@ -60,14 +60,14 @@ on `core.checkStat`:
 > device number, if Git was compiled to use it), are excluded from the check […]
 
 So git already carries **per-file ctime *and* inode** and consults both — the
-exact two facts `PROOF.md` §4 wants to add to gist's artifacts. That is the
+exact two facts `PROOF.md` §4 wants to add to this engine's artifacts. That is the
 strongest single result of this survey: the *data* in the proposed repair is
 not novel, it is what git has recorded per path since the beginning.
 
 What git does with it is the inversion. Every field is a **disqualifier**: any
 mismatch, inode included, means "possibly modified, re-read the content". A
-changed inode makes git *less* willing to trust the cache, where §4 makes gist
-*more* willing. Nobody surveyed uses inode inequality as evidence of anything.
+changed inode makes git *less* willing to trust the cache, where §4 makes this
+engine *more* willing. Nobody surveyed uses inode inequality as evidence of anything.
 
 **Git's comparison is an equality; ours is an ordering.** From the patch that
 added the knob, in `read-cache.c`:
@@ -79,8 +79,8 @@ if (trust_ctime && ce->ce_ctime != (unsigned int) st->st_ctime)
         changed |= CTIME_CHANGED;
 ```
 
-Each clock is checked against **the value recorded for that file**. gist checks
-live clocks against **one scalar for the whole corpus** — `built.ns`, a single
+Each clock is checked against **the value recorded for that file**. This engine
+checks live clocks against **one scalar for the whole corpus** — `built.ns`, a single
 epoch-ns — asking `mtime >= anchor`. Nothing surveyed occupies that point, and it
 has a consequence that changes §4's honesty accounting; see finding 5 below.
 
@@ -96,7 +96,7 @@ Alex Riesen, 2008-07-28) says why:
 > for marking scanned files.**
 
 Git's ctime escape hatch exists because of **content indexers** — the class of
-tool gist *is*. Git shipped it so a search index would stop making `git status`
+tool this engine *is*. Git shipped it so a search index would stop making `git status`
 lie; we need the mirror image, so an external reproducer stops making a search
 index inert. (The published config text broadens this to "file system crawlers
 and some backup systems", but the commit and the `git-update-index` paragraph it
@@ -104,8 +104,8 @@ adds both describe tools that *mark files processed*, and neither names a backup
 product. Attribute the motivation to crawlers.)
 
 **And the knob is not the only thing git shipped — this is where my first reading
-was wrong.** Two other mechanisms in the same codebase are closer to what gist
-needs than the config variable:
+was wrong.** Two other mechanisms in the same codebase are closer to what this
+engine needs than the config variable:
 
 - **`git update-index --refresh` is §5's mitigation, with precedent.** It
   re-proves each entry against that entry's own recorded stat, reading no
@@ -124,7 +124,7 @@ needs than the config variable:
 ### borgbackup — the same argument, written down, in a backup tool
 
 The closest true precedent, because borg's files cache decides exactly what
-gist's freshness law decides: *may I skip reading this file's bytes?* Its
+this engine's freshness law decides: *may I skip reading this file's bytes?* Its
 default mode is
 [`ctime,size,inode`](https://borgbackup.readthedocs.io/en/stable/usage/create.html),
 and its rationale is `src/corpus/fresh/README.md`'s argument almost verbatim:
@@ -176,8 +176,8 @@ every one of them has resolved it by exporting the decision to a human.
 > (by default) that looks for files that have changed in size or in
 > last-modified time.
 
-Size and mtime; ctime and inode are not consulted. This is the design gist would
-have if the ctime leg were simply dropped, and it is a perfectly respectable
+Size and mtime; ctime and inode are not consulted. This is the design this engine
+would have if the ctime leg were simply dropped, and it is a perfectly respectable
 default — for a tool whose failure mode is a re-copy, not a wrong answer to a
 search. rsync's escape hatch runs the *other* way (`--checksum`, `--ignore-times`)
 because for rsync the cheap check is the risk and reading is the fallback. Note
@@ -207,7 +207,7 @@ opposite answers:
 | | does mtime carry information? | does the inode change? | so the discriminator is |
 |---|---|---|---|
 | Bazel's bug | **No** — `--mtime` flattened to a constant by reproducible-build tooling | **No** — `mv` preserves it | ctime, the only field left |
-| gist's bug | **Yes** — a faithful reproduction restores the true mtime | **Yes** — extraction mints new inodes | the inode; ctime is the useless field |
+| this engine's bug | **Yes** — a faithful reproduction restores the true mtime | **Yes** — extraction mints new inodes | the inode; ctime is the useless field |
 
 So Bazel is not counter-evidence to §4, and citing it as such would be as lazy as
 my original claim that it agreed. It is the same analysis reaching the opposite
@@ -220,14 +220,14 @@ to fix cannot occur under our predicate.** Their bad case is an inode that
 *differs*. Their fix and ours are compatible; they simply had the other half of
 the field available.
 
-### Content addressing — the principled answer gist cannot afford
+### Content addressing — the principled answer this engine cannot afford
 
 ccache's default mode and zoekt's git-object-keyed shards sidestep clocks by
 identifying files by content digest (zoekt still *unverified*, see above). It is
 the correct answer and it is unavailable here: computing a digest requires reading
 the file, and reading the file is the exact cost the elision exists to avoid. Any
-content-addressed design for gist collapses into "always read", which is phase C —
-the defect, chosen deliberately.
+content-addressed design for this engine collapses into "always read", which is
+phase C — the defect, chosen deliberately.
 
 **Nor does birth time help**, which is the first thing anyone proposes. `ctime`
 is unforgeable but moves on extraction; `st_birthtime` sounds like the stable
@@ -262,10 +262,10 @@ freshly extracted container has no such observer by construction.
    here is not evidence of a gap in the field; nobody else's cache had to work
    with no operator present.
 5. **The repair is a trade, not a pure concession — §4.4 undersells its own
-   position.** This follows from the equality-vs-ordering difference above. gist's
-   mtime leg is today *strictly weaker* than git's or rsync's: `mtime >= anchor`
-   admits **any** sufficiently old value, so `touch -t 200001010000` defeats it
-   outright and only the ctime leg saves us. Under §4.3, mtime must **equal the
+   position.** This follows from the equality-vs-ordering difference above. This
+   engine's mtime leg is today *strictly weaker* than git's or rsync's:
+   `mtime >= anchor` admits **any** sufficiently old value, so
+   `touch -t 200001010000` defeats it outright and only the ctime leg saves us. Under §4.3, mtime must **equal the
    recorded nanosecond** — so a forger who today needs only a plausibly-old
    timestamp would then need the exact one, plus the exact size, plus a fresh
    inode. §4.4 presents the change as purely admitting a new forgery. It also

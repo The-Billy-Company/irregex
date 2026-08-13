@@ -91,6 +91,6 @@ unsafe_op_in_unsafe_fn = "deny"
 [lints.clippy]
 # The rule that every `unsafe` block carries a `// SAFETY:` comment, enforced by
 # the compiler instead of by review. The regex face holds this; the analytic
-# substrate (moved from gist) is allow-listed at the module boundary until its
-# blocks grow comments in a dedicated pass.
+# substrate (moved in from the exact face) is allow-listed at the module
+# boundary until its blocks grow comments in a dedicated pass.
 undocumented_unsafe_blocks = "deny"

@@ -15,10 +15,11 @@ about the **filter**, which is engine machinery this package builds and owns.
 - **`zig build indexq`** → [Layer L, index quality vs csearch](#layer-l--index-quality-head-to-head-against-csearch).
 
 Two prefilter **parity gates** used to live here — `cover_parity.sh` and
-`warm_parity.sh` — and drove a `gist` binary this package does not build, so
-they went with the product to `gist/bench/conformance/gates/parity/`.
-`indexcost.sh` stayed: it prices *this package's* index build, not the
-product's, so it still lives beside this file (below).
+`warm_parity.sh` — and drove a product binary this package does not build, so
+they went with the product to that face package's
+`bench/conformance/gates/parity/`. `indexcost.sh` stayed: it prices *this
+package's* index build, not the product's, so it still lives beside this file
+(below).
 
 # The quotient sieve's production proof harness
 
@@ -73,7 +74,7 @@ it is worth arming.
 # Layer L — index quality head-to-head against csearch
 
 `zig build indexq` answers one claim: _"your trigram index is **csearch-class,
-not better**."_ csearch (Google Code Search, Russ Cox 2012) is gist's
+not better**."_ csearch (Google Code Search, Russ Cox 2012) is this index's
 acknowledged trigram ancestor, so the comparison has to be against what csearch
 _actually does_, on the axis that actually defines an index.
 
@@ -93,13 +94,13 @@ boolean formula over trigrams:
 - **`gist`** is the conjunctive cover (`src/kernel/query/cover.zig`), read
   off the pattern source with the matcher's own parse options.
 - **`csearch`** is csearch's own formula, lifted verbatim from
-  `csearch -verbose` by `csearch_plan.py` and replayed against gist's
+  `csearch -verbose` by `csearch_plan.py` and replayed against this index's
   postings.
 
 csearch's arm is not a reimplementation and not a proxy. `csearch -verbose`
 prints `index.RegexpQuery(re.Syntax)` rendered by `Query.String()`; the parser in
-`csearch_plan.py` reads that grammar and re-emits it in gist's CNF plan shape,
-which covers csearch's AND/OR tree exactly.
+`csearch_plan.py` reads that grammar and re-emits it in this planner's CNF plan
+shape, which covers csearch's AND/OR tree exactly.
 
 ## Fail-closed, twice
 
@@ -117,12 +118,12 @@ in the discipline of the crest Sieve Theorem (`research/crest/PROOF.md`).
 ## Two slates, reported separately
 
 `bench/apparatus/harness/probes.zig` — the certificate's own twelve classes — is reported
-first and unedited, so nobody can call it chosen to flatter gist. But it was
-designed to span _scan_ cost (Layers A and D), and on the **planner** axis eight
-of its twelve rows cannot separate two planners at all: four are single-literal,
-and four are structurally unfilterable (literal-free, sub-trigram, or an
-alternation with a sub-trigram branch), where the only sound answer is "no
-filter" and both tools give it.
+first and unedited, so nobody can call it chosen to flatter this planner. But it
+was designed to span _scan_ cost (Layers A and D), and on the **planner** axis
+eight of its twelve rows cannot separate two planners at all: four are
+single-literal, and four are structurally unfilterable (literal-free,
+sub-trigram, or an alternation with a sub-trigram branch), where the only sound
+answer is "no filter" and both tools give it.
 
 So `stress.zig` adds eight shapes a real code search produces — a Go nil-check,
 a Zig signature, an ISO date, a hex constant, a URL, an ADR cite, a method
@@ -143,12 +144,12 @@ corpus for Layer L, not after a certificate run already trusted it.
 
 ## Running it
 
-All paths below are relative to the repository root; the artifacts land under the
-repo-root `.gist/` the other layers already write to.
+All paths below are relative to the repository root; the artifacts land in the
+repo-root artifact home the other layers already write to.
 
 ```bash
 cd <irregex-repo-root>
-# install the sibling `gist` package first — its index is the shared corpus
+# install the sibling product package first — its index is the shared corpus
 
 # csearch's index over the byte-identical file list, then its own formula per probe
 python3 bench/rungs/sieve/csearch_plan.py \
@@ -161,12 +162,12 @@ zig build indexq -Doptimize=ReleaseFast   # selectivity + precision → indexq.t
 
 The **cost** half of the claim — index size, build time, peak RSS — is measured
 by `bench/rungs/sieve/indexcost.sh`, beside this file. Pricing an index build
-means running the indexer a user actually runs, so it reaches the shipped `gist`
-binary through the vendored floor's `PRODUCT` root rather than through a
+means running the indexer a user actually runs, so it reaches the shipped
+product binary through the vendored floor's `PRODUCT` root rather than through a
 dependency on that package.
 
 `zig build indexq` runs with the repo root as its cwd (`build.zig` sets it), so
-its `indexq.tsv` is written to `.gist/` regardless of where you
+its `indexq.tsv` is written to the artifact home regardless of where you
 invoked it from.
 
 `indexq` accepts `--cover-class=N`, `--cover-atoms=N`, `--cover-clauses=N` so
@@ -175,19 +176,18 @@ constants; the shipped defaults are the knees of that sweep.
 
 `indexcost.sh` **sources** the vendored measurement floor
 (`bench/apparatus/field.sh`, never executed directly) so the fairness contract —
-csearch indexes gist's exact corpus, the persisted `paths.list` — is not
+csearch indexes this index's exact corpus, the persisted `paths.list` — is not
 re-litigated or duplicated here. That floor is byte-identical in every package,
 so the source resolves locally instead of reaching across a repository boundary.
 
 ## Splicing the certificate
 
-The splicer went to the sibling `gist` package along with the rest of the
-certificate lane, so splicing this rung's numbers is a cross-package step and
-needs a `gist` checkout beside this one:
+The splicer lives with the certificate lane in this package, so splicing this
+rung's numbers needs nothing beside this checkout:
 
 ```bash
-python3 ../gist/bench/certificate/report/indexq.py \
-  --certificate ../gist/bench/certificate/artifact/CERTIFICATE.md \
+python3 bench/certificate/report/indexq.py \
+  --certificate bench/certificate/artifact/CERTIFICATE.md \
   --tsv .gist/indexq.tsv \
   --cost-tsv .gist/indexcost.tsv \
   --machine "$(uname -m)" --zig "$(zig version)"
@@ -197,8 +197,8 @@ The mint script wires it with its own `${OUT}` / `${CERT}` variables, which
 already resolve to the same two files.
 
 The reporter refuses to splice a win it cannot substantiate. It exits non-zero,
-writing nothing, if gist does not admit strictly fewer candidate bytes in total,
-if gist admits **more** on any single class, if any arm's verified hit count
-differs, or if gist's index exceeds 1.10× csearch's size or 1.50× its build
+writing nothing, if this planner does not admit strictly fewer candidate bytes
+in total, if it admits **more** on any single class, if any arm's verified hit
+count differs, or if this index exceeds 1.10× csearch's size or 1.50× its build
 time — selectivity bought with a pathologically bigger or slower index is not a
 better index.

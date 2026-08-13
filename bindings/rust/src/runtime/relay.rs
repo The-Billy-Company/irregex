@@ -10,9 +10,10 @@
 //!
 //! Two verbs need more than a per-line mapping, and both get a declared
 //! [`Shape`] rather than a bespoke parser: `quote` splits one logical row across
-//! a header line and its phrase lines, and `blast` nests its answer under
-//! grouping keys the row model flattens. `rank` is the third exception for a
-//! different reason — `--rank` predates `--json` and still prints human text.
+//! a header line and its phrase lines, and the change-radius verb nests its
+//! answer under grouping keys the row model flattens. `rank` is the third
+//! exception for a different reason — the ranked view predates `--json` and
+//! still prints human text.
 
 use serde_json::{Map, Value as Json};
 
@@ -25,11 +26,11 @@ use crate::contract::{Ranked, Variant};
 /// Which certified binary answers a verb.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Bin {
-    /// `gist` — the rg-parity exact face.
+    /// The rg-parity exact face.
     Gist,
-    /// `relate` — the compression face.
+    /// The compression face.
     Relate,
-    /// `blast` — the composed face.
+    /// The composed face.
     Blast,
 }
 
@@ -213,8 +214,9 @@ fn quotation(stdout: &str) -> (Vec<OwnedRow>, Stats) {
     (vec![row], stats)
 }
 
-/// `blast` groups its answer under `seed` / `direct` / `tangential`; the `blast`
-/// schema is flat, so the grouping keys are lifted before the generic lowering.
+/// The change-radius verb groups its answer under `seed` / `direct` /
+/// `tangential`; its schema is flat, so the grouping keys are lifted before the
+/// generic lowering.
 fn blast(stdout: &str) -> (Vec<OwnedRow>, Stats) {
     let (objs, stats) = objects(stdout);
     let Some(obj) = objs.first() else {
@@ -241,7 +243,7 @@ fn blast(stdout: &str) -> (Vec<OwnedRow>, Stats) {
     (vec![lower(BLAST, &flat)], stats)
 }
 
-/// `gist --rank` predates `--json` and still prints its human view, so the
+/// The ranked view predates `--json` and still prints its human form, so the
 /// ranked rows come from the text parser and are lifted into the row model.
 fn ranked(stdout: &str) -> Vec<OwnedRow> {
     super::readout::parse_rank(stdout)

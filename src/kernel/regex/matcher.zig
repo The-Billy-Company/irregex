@@ -1,6 +1,6 @@
-//! gist — the engine-neutral match seam.
+//! irregex — the engine-neutral match seam.
 //!
-//! gist ships two match engines: the linear-time RE2/Pike default
+//! This package ships two match engines: the linear-time RE2/Pike default
 //! (`program/core.zig`, `Regex`) and the opt-in PCRE2 backend (`pcre2/`, `Pcre`)
 //! for `-P`. The
 //! entire `exec/cold` output layer — the `Emitter`, the `--json` stream,
@@ -33,7 +33,7 @@ const onset_mod = @import("linear/dfa/onset.zig");
 pub const Regex = core.Regex;
 pub const Pcre = pcre2.Pcre;
 
-/// Which engine backs a compiled query. The default `.linear` is gist's
+/// Which engine backs a compiled query. The default `.linear` is this package's
 /// linear-time RE2/Pike matcher; `.pcre` is the opt-in PCRE2 backend for `-P`.
 pub const Backend = enum { linear, pcre };
 
@@ -81,8 +81,9 @@ pub const Matcher = union(Backend) {
     }
 
     /// The pure-literal EQUIVALENCE set (a line matches ⟺ it contains one of
-    /// these), or empty. PCRE syntax is analyzed by the library, not gist's AST,
-    /// so the pcre arm never claims one (empty ⇒ callers take the engine path).
+    /// these), or empty. PCRE syntax is analyzed by the library, not this
+    /// package's AST, so the pcre arm never claims one (empty ⇒ callers take the
+    /// engine path).
     pub fn lits(self: *const Matcher) []const []const u8 {
         return if (self.* == .linear) self.linear.lits else &.{};
     }

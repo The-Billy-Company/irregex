@@ -9,11 +9,11 @@ other buckets — and the sibling packages' own certificates — measure *with*.
   Mann-Whitney verdict math.
 
 - **`roots.sh`** answers where this package's siblings are — climbs to the
-  package root, then names the checkouts that own the `gist` and `relate`
+  package root, then names the checkouts that own the product and kinship
   binaries and the corpus a race runs over. It is vendored byte-identical
-  across all four packages (`irregex`/`gist`/`relate`/`blast`), so each
-  package answers "where are my siblings?" the same way rather than keeping
-  its own opinion.
+  across all four packages — this engine plus its three sibling faces — so
+  each package answers "where are my siblings?" the same way rather than
+  keeping its own opinion.
 
 - **`statcore.py`** is the Python leg of the same verdict math — Type-7
   quantiles, bootstrap-CI medians, and the tie-corrected Mann-Whitney
@@ -39,12 +39,12 @@ other buckets — and the sibling packages' own certificates — measure *with*.
   gate is not rejected by another's.
 
 - **`corpora/ecosystem.sh`** materializes `ecosystem-v1`, the corpus Layers
-  J and L measure over: the four sibling packages' own trees side by side
-  (`irregex`, `gist`, `relate`, `blast`), fetched from their sibling
-  checkouts or cloned fresh. It exists because neither this package's own
-  tree (monoglot, half the size) nor gist's synthetic Go corpus makes every
-  probe class discriminate — `slate.py --audit` found most of them
-  saturating or vacuous on those two.
+  J and L measure over: the four sibling packages' own trees side by side —
+  this engine plus each of the three product faces — fetched from their
+  sibling checkouts or cloned fresh. It exists because neither this package's
+  own tree (monoglot, half the size) nor the pattern face's synthetic Go
+  corpus makes every probe class discriminate — `slate.py --audit` found most
+  of them saturating or vacuous on those two.
 
 - **`SHARED.sha256`** pins the sha256 of every vendored file above (plus a
   handful of `bench/certificate/guard/` and `bench/certificate/ledger/`
@@ -57,17 +57,17 @@ other buckets — and the sibling packages' own certificates — measure *with*.
 These are the only things in `bench/` that a **consumer** package can reach,
 and the only reason `bench/apparatus/harness` appears in this package's
 `build.zig.zon` `.paths`. `bounds/`, `rungs/`, this package's own
-`certificate/`, and the sibling `gist` repo's `gist-bench` all import the
+`certificate/`, and the pattern face's omnibus bench binary all import the
 same `probes` / `pmu` / `stats` modules, so a competitor race over there and
 an engine rung over here map 1:1 by class name and are judged by the same
 verdict math. A second copy would silently stop meaning the same thing.
 
 Two things left with the product they measure. The corpus fetcher went with
-the conformance slate to `gist/bench/apparatus/corpora/`; the `gist-bench`
-harness itself (`bench.zig` and its `certify` / `flagbench` / `sessionprof`
-modes) went to `gist/bench/apparatus/harness/`, because its session lane
-spawns a live `gist serve` daemon — and this package is upstream of the
-product, so it cannot reach down to one.
+the conformance slate to the pattern face's `bench/apparatus/corpora/`; the
+omnibus bench harness itself (`bench.zig` and its `certify` / `flagbench` /
+`sessionprof` modes) went to that package's `bench/apparatus/harness/`,
+because its session lane spawns a live resident daemon — and this package is
+upstream of the product, so it cannot reach down to one.
 
 `statcore.py` used to be the case where that direction bit: it was only
 reachable at `bench/certificate/report/stats.py`, which left

@@ -100,9 +100,9 @@ func (s Sweep) Flags() uint32 {
 }
 
 // Compose runs both engines over one candidate set: context, family,
-// provenance, blast. Patterns are the exact intents that narrow the corpus, Text
-// is the task text, the pasted snippet, or the symbol. Budget trims blast's
-// low-priority tail into the answer's omitted count.
+// provenance, change radius. Patterns are the exact intents that narrow the
+// corpus, Text is the task text, the pasted snippet, or the symbol. Budget trims
+// the change-radius answer's low-priority tail into its omitted count.
 type Compose struct {
 	Text        string
 	Patterns    []string

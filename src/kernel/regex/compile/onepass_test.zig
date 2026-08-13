@@ -139,7 +139,7 @@ test "onepass: randomized slot-exact differential against the Pike VM" {
     for (0..900) |i| {
         pat.clearRetainingCapacity();
         var g = Gen{ .rnd = rnd, .out = &pat };
-        // Half the corpus is Unicode-mode (gist's default), half `(?-u)`, so the
+        // Half the corpus is Unicode-mode (the default), half `(?-u)`, so the
         // byte-trie lowering is exercised on both sides of the alphabet.
         const unicode = i % 2 == 0;
         if (rnd.uintLessThan(u8, 10) < 2) try g.emit("^");
@@ -281,7 +281,7 @@ test "onepass: the real -r / --json patterns that must take the fast arm" {
 
 test "onepass: eligibility census over a realistic -r/--json pattern corpus" {
     // Measures — and prints — how much of a real capture workload reaches the
-    // fast arm, in gist's DEFAULT Unicode mode and under `--no-unicode`. The gap
+    // fast arm, in the DEFAULT Unicode mode and under `--no-unicode`. The gap
     // between the two columns is the UTF-8 lead-byte cost: two classes that are
     // disjoint as CODEPOINT sets (`\w` vs `\s`) share lead bytes once lowered to
     // a byte trie, so the byte automaton really does have two live alternatives

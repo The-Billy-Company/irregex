@@ -1,4 +1,4 @@
-//! gist `rg` — the portable `stat(2)` projection.
+//! irregex `rg` — the portable `stat(2)` projection.
 //!
 //! THE one raw-stat definition in the package: Zig 0.16's `std.c` deliberately
 //! declares no `fstat`/`fstatat` on Linux (the libc wrappers there are legacy
@@ -15,9 +15,9 @@ const std = @import("std");
 const builtin = @import("builtin");
 const portal = @import("../../portal.zig");
 
-/// The slice of `stat(2)` gist actually consumes, projected portably: device
-/// identity (`--one-file-system`), type+mode bits (fd classification, lstat
-/// reconcile), byte size (mmap bounds), and birth time where the platform
+/// The slice of `stat(2)` this package actually consumes, projected portably:
+/// device identity (`--one-file-system`), type+mode bits (fd classification,
+/// lstat reconcile), byte size (mmap bounds), and birth time where the platform
 /// records one.
 pub const RawStat = struct {
     dev: i128,
@@ -40,9 +40,9 @@ pub const RawStat = struct {
     ctime_ns: ?i128,
 
     /// Deliberately coarser than `stat(2)`'s type bits: these are every
-    /// distinction gist actually makes — the walk needs file/dir/symlink, and
-    /// stdin admission needs to tell a pipe from a socket from a tty. `other` is
-    /// devices and ttys, which every caller declines identically.
+    /// distinction the engine actually makes — the walk needs file/dir/symlink,
+    /// and stdin admission needs to tell a pipe from a socket from a tty.
+    /// `other` is devices and ttys, which every caller declines identically.
     pub const Kind = enum { file, directory, sym_link, fifo, socket, other };
 };
 
@@ -215,8 +215,8 @@ fn fromStat(st: std.posix.Stat) RawStat {
         .dev = st.dev,
         .mode = st.mode,
         .size = std.math.cast(u64, st.size) orelse 0,
-        // Darwin records birth time in `struct stat` itself; gist declines to
-        // invent one on libc targets that don't (matching ripgrep).
+        // Darwin records birth time in `struct stat` itself; this projection
+        // declines to invent one on libc targets that don't (matching ripgrep).
         .birthtime_ns = if (comptime builtin.os.tag.isDarwin()) @as(i96, st.birthtime().sec) * std.time.ns_per_s + st.birthtime().nsec else null,
         .mtime_ns = @as(i128, st.mtime().sec) * std.time.ns_per_s + st.mtime().nsec,
         .ctime_ns = @as(i128, st.ctime().sec) * std.time.ns_per_s + st.ctime().nsec,

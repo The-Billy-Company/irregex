@@ -1,4 +1,4 @@
-//! gist — regex *class-run analysis*: conservative, read-only reductions of an
+//! irregex — regex *class-run analysis*: conservative, read-only reductions of an
 //! AST (`../syntax/syntax.zig`) to a repeated single-class run, feeding the
 //! SIMD class-run / class-span kernels (`../../scan/classrun.zig`) — the
 //! dense-class escape from the DFA's chained table walk. Two strengths:

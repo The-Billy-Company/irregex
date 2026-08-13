@@ -15,7 +15,7 @@ that, because the denominator is another engine - ripgrep's own walk footprint m
 across the two real corpora on record (31.8 -> 110.4 MiB), so a ratio pinned near the
 worst observation would fault on corpus shape rather than on a defect.
 
-It judges gist's **worst** corpus, which is the same one `_walkcost` puts in its headline,
+It judges our **worst** corpus, which is the same one `_walkcost` puts in its headline,
 so the gate and the rendered prose cannot disagree about which measurement is the claim.
 It binds without `--race`, so a narrow mint is still guarded even where the surrounding
 section does not render. And the bound is disclosed in the certificate rather than

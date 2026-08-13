@@ -1,4 +1,4 @@
-//! gist T2 regex tests — split from `core.zig` to keep the engine file under
+//! irregex T2 regex tests — split from `core.zig` to keep the engine file under
 //! the shape cap. Pulled into `zig build test` via `root.zig`'s test block.
 //! Covers the parser/AST, the Pike VM, the required-literal + alternation
 //! prefilters, and the scan accelerators (anchored fast path, first-byte skip),
@@ -204,8 +204,8 @@ test "regex: {n} {n,} {n,m} counted repetition" {
 
 test "regex: an unescaped { without a valid count is rejected (matches rg)" {
     const a = std.testing.allocator;
-    // rust-regex/ripgrep errors on a `{` that doesn't begin a valid count; gist
-    // mirrors it rather than silently treating `{` as a literal.
+    // rust-regex/ripgrep errors on a `{` that doesn't begin a valid count; this
+    // engine mirrors it rather than silently treating `{` as a literal.
     try std.testing.expectError(ParseError.BadPattern, Regex.compile(a, "interface{}"));
     try std.testing.expectError(ParseError.BadPattern, Regex.compile(a, "a{")); // unterminated
     try std.testing.expectError(ParseError.BadPattern, Regex.compile(a, "a{b")); // non-decimal
@@ -218,8 +218,9 @@ test "regex: an unescaped { without a valid count is rejected (matches rg)" {
 test "regex: POSIX bracket classes ([[:space:]] etc.) match rg byte-mode sets" {
     const a = std.testing.allocator;
     // Regression: `[[:space:]]` used to silently parse as the class {[,:,s,p,a,c,e}
-    // followed by a literal `]`, matching almost nothing (`gist '[[:space:]]import'`
-    // returned 0 where rg found 23k+). It must now match a single whitespace byte.
+    // followed by a literal `]`, matching almost nothing (a search for
+    // `'[[:space:]]import'` returned 0 where rg found 23k+). It must now match a
+    // single whitespace byte.
     try std.testing.expect(try matches("[[:space:]]", "a b")); // the space
     try std.testing.expect(try matches("[[:space:]]", "x\ty")); // the tab
     try std.testing.expect(!try matches("[[:space:]]", "abc")); // no whitespace
@@ -317,7 +318,8 @@ test "regex: $ via docMatch picks the right line" {
 
 test "regex: \\b word boundary matches rg --no-unicode semantics" {
     // Whole-word search — the canonical agent use, and the foot-gun this fixes:
-    // gist used to read `\b` as the literal byte 'b' (so `\bcat\b` ⇒ "bcatb").
+    // this engine used to read `\b` as the literal byte 'b' (so `\bcat\b` ⇒
+    // "bcatb").
     try std.testing.expect(try matches("\\bcat\\b", "the cat sat"));
     try std.testing.expect(!try matches("\\bcat\\b", "concatenate")); // substring only
     try std.testing.expect(try matches("\\bcat", "cat")); // boundary at BOL
@@ -482,7 +484,7 @@ test "regex: mixed-anchor alternation seeds the ^-only branch (skip-path soundne
 // The span engine must reproduce rg's `(?-u)` match semantics EXACTLY: the
 // leftmost start, then among threads sharing it the earliest alternation branch
 // and greediest quantifier win. Every expectation below is cross-checked against
-// `rg -o` on this machine (see .local/gist-dogfood/o_battery.sh, byte-identical).
+// `rg -o` on this machine (see the dogfood `o_battery.sh` probe, byte-identical).
 
 /// The first match span in `line[from..]` as `[start,end)`, or null.
 fn span1(pattern: []const u8, line: []const u8, from: usize) !?Regex.Span {
@@ -633,7 +635,7 @@ test "matchSpan: greedy quantifiers extend the end maximally" {
 // Lazy (non-greedy) quantifiers prefer the FEWEST repetitions — the split
 // PRIORITY flips (exit before body) so the leftmost match ends as early as
 // possible. Every expectation is byte-verified against `rg -o` (ripgrep 15.2.0,
-// the Rust regex crate default engine, which shares gist's leftmost-first
+// the Rust regex crate default engine, which shares this engine's leftmost-first
 // semantics) — see the probe battery in the same-PR proof log.
 test "matchSpan: lazy quantifiers end the match as early as possible" {
     try expectJoined("a.*?b", "axbxb", "axb"); // greedy `a.*b` ⇒ "axbxb"; lazy stops at first b
@@ -691,8 +693,8 @@ test "matchSpan: resumes from a mid-line offset (non-overlapping iteration)" {
 
 // ─────────────── rg-parity escapes: \< \> (word start/end), \A \z ───────────────
 // Every expectation below is hand-verified against the installed ripgrep
-// (`rg '\<bar' …` etc.) — the divergences this pass fixed were gist silently
-// reading these as literal '<' '>' 'A' 'z' bytes.
+// (`rg '\<bar' …` etc.) — the divergences this pass fixed were this engine
+// silently reading these as literal '<' '>' 'A' 'z' bytes.
 
 test "regex: \\< matches only where a word STARTS, \\> only where one ENDS" {
     try std.testing.expect(try matches("\\<bar", "foo bar")); // gap ' |b' is a word start

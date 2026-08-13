@@ -1,4 +1,4 @@
-//! gist — proofs for the symbolic (predicate-alphabet) determinizer.
+//! irregex — proofs for the symbolic (predicate-alphabet) determinizer.
 //!
 //! The claim under test is narrow and total: for every pattern the symbolic
 //! path accepts, the byte DFA it transcribes recognizes **the same language**

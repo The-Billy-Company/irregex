@@ -3,7 +3,8 @@
 A corpus that arrives by being *reproduced* — `tar -x`, an OCI image layer
 extraction, `rsync -t`, `cp -p`, a restore from backup — carries content
 identical to the tree it was copied from and inodes that are all new. The claim
-here is that gist's freshness law reads such a corpus as *entirely changed*, so
+here is that the engine's freshness law reads such a corpus as *entirely
+changed*, so
 its persisted index elides nothing and the accelerator is inert while reporting
 itself healthy; that this is not a tuning problem but a consequence of one leg of
 `needsLiveRead`; and that it is fixable without giving up the property that leg
@@ -77,8 +78,8 @@ of 15,013**, and a query that nonetheless costs what reading all 15,013 costs.
 
 ### 2.3 It is invisible
 
-`gist status` reports the inert index as current — `built N s ago (freshness
-anchor set — new/edited files are folded in per query)`. Nothing in a container
+An index status readout reports the inert index as current — `built N s ago
+(freshness anchor set — new/edited files are folded in per query)`. Nothing in a container
 would tell an operator that "folded in per query" had quietly come to mean
 *every file, every query*. The artifact is present, bound to the right tree,
 structurally valid, and useless.
@@ -102,17 +103,17 @@ that would ever heal it — the corpus is immutable after extraction, so the
 clocks never move again.
 
 Containers are the case that makes this matter, and they are not a corner: an
-image layer is a reproduction by construction, so **gist's persisted index
-cannot accelerate anything in any container it ships in**, which is every
+image layer is a reproduction by construction, so **the persisted index cannot
+accelerate anything in any container it ships in**, which is every
 deployment target it has.
 
 ## 3. Measurement
 
 226.5 MB / 16,373 files, a tracked-source snapshot of the Billy monorepo, copied
 with `shutil.copy2` (new inodes, preserved mtime — a reproduction). Corpus as
-gist counts it after skips: 15,013 files. Query `pgxpool\.\w+`, five runs,
-median CPU and best wall, one isolated `GIST_DIR`, `GIST_NO_AUTOSERVE=1` so no
-resident session confounds it. Harness: [`reproduce.py`](reproduce.py) — it
+the corpus walk counts it after skips: 15,013 files. Query `pgxpool\.\w+`, five
+runs, median CPU and best wall, one isolated `<PREFIX>_DIR`, and
+`<PREFIX>_NO_AUTOSERVE=1` so no resident session confounds it. Harness: [`reproduce.py`](reproduce.py) — it
 copies the tree you point it at, so it never touches the index of the tree it
 measured (see [TESTING.md](TESTING.md)).
 
@@ -307,7 +308,7 @@ better factoring than today's on its own terms (mechanism observes, policy
 decides), and it means the sweep's output type widens from `[]const u8` to a
 small record, which is the largest single mechanical edit in the job.
 
-Two more facts about the blast radius, from reading it rather than guessing:
+Two more facts about the change radius, from reading it rather than guessing:
 
 - **It is eight call sites across three artifact families**, not one. The
   trigram overlay (`fresh.zig`, `sweep.zig`), the content shard
@@ -328,14 +329,14 @@ Two more facts about the blast radius, from reading it rather than guessing:
 
 ### 4.6 Diagnostics are part of the repair
 
-§2.3 is half the defect. A `gist status` that has the anchor and walks the tree
-anyway can say *"anchor predates N of M files — pruning disabled"*, and that line
+§2.3 is half the defect. An index status readout that has the anchor and walks
+the tree anyway can say *"anchor predates N of M files — pruning disabled"*, and that line
 is what turns this class of failure from invisible into obvious. It should land
 whether or not the predicate changes.
 
 ## 5. The mitigation, and why it is not the fix
 
-Phase D is available today with no engine change: run `gist index` once, inside
+Phase D is available today with no engine change: build the index once, inside
 the container, after the filesystem the queries will run against exists. The
 anchor is then stamped past the extraction and everything works.
 
@@ -343,7 +344,7 @@ That is worth shipping immediately — it is one boot-time action and it recover
 the whole win. It is not the fix, for three reasons: it costs a full re-read of
 the corpus (1.62s wall / 2.84 CPU-s here) to establish something the bytes on
 disk already prove; it has to be remembered separately by every deployment that
-ever ships a prebuilt index; and it leaves `gist index`-at-image-build-time —
+ever ships a prebuilt index; and it leaves an index-build-at-image-build-time —
 the obvious, documented, apparently-correct thing to do — as a silent no-op.
 An accelerator whose documented setup path yields nothing is a defect in the
 accelerator.

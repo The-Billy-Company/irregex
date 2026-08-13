@@ -20,7 +20,7 @@ const portal = @import("../../../portal.zig");
 
 /// The artifact directory's NAME — where the trigram index, kinship atlas,
 /// codex shelf, freshness anchor, and daemon socket live. `anchor()` decides
-/// which directory wears it; `GIST_DIR` overrides both per invocation.
+/// which directory wears it; `<prefix>DIR` overrides both per invocation.
 pub const default_out_dir = assay.identity.artifact_dir;
 
 /// How far up a walk may look for the checkout it is standing in. Bounded for
@@ -47,14 +47,14 @@ pub fn probe(at: portal.Handle, buf: []u8, dir: []const u8, name: []const u8) bo
     return true;
 }
 
-/// The artifact directory for THIS process: `GIST_DIR` when set (trailing
+/// The artifact directory for THIS process: `<prefix>DIR` when set (trailing
 /// slashes trimmed), else the checkout's own home (`anchor`). Both outlive the
 /// process — the env string by definition, the anchor in a static buffer — so
 /// the returned slice is borrow-safe everywhere.
 pub fn outDir() []const u8 {
     const v = assay.knob("DIR") orelse return anchor();
     // Both separators, not just `/`: on Windows a shell-completed directory
-    // arrives as `C:\tmp\gist\`, and the artifact names are appended raw.
+    // arrives as `C:\tmp\artifacts\`, and the artifact names are appended raw.
     const s = std.mem.trimEnd(u8, v, if (builtin.os.tag == .windows) "/\\" else "/");
     return if (s.len == 0) anchor() else s;
 }
@@ -67,7 +67,7 @@ pub fn outDir() []const u8 {
 /// but within one tree it made the home a property of where you happened to
 /// stand: a search from `services/ai` and a search from the root built two
 /// indexes, ran two daemons, and each paid a cold walk the other had already
-/// paid for. Worse, it parked a `gistd.sock` in whatever source directory was
+/// paid for. Worse, it parked a daemon socket in whatever source directory was
 /// current, and a file watcher that cannot watch a socket (chokidar's
 /// `fs.watch` throws EUNKNOWN) takes a dev server down with it.
 ///
@@ -186,7 +186,7 @@ fn offset() usize {
 ///
 /// A build publishes into the tree's home a path table, a content shard, and a
 /// directory-membership snapshot that every later query reads as tree-relative.
-/// Run from `services/ai` without this, `gist index` records `notes.md` for a
+/// Run from `services/ai` without this, an index build records `notes.md` for a
 /// file that is really `services/ai/notes.md` and binds the result to the tree
 /// — and the next query at the root faithfully tries to open a `notes.md` that
 /// was never there. Not a missed acceleration: an error and an empty answer.
@@ -199,9 +199,9 @@ fn offset() usize {
 /// requires, and `roots.list` and the tree binding say what they mean.
 ///
 /// Callers naming roots explicitly must rebase them (`inTree`) BEFORE calling —
-/// `gist index services/ai` names a path relative to where the user typed it.
-/// Returns false when there was nowhere to go or the move was refused, leaving
-/// the process exactly where it was.
+/// an `index services/ai` invocation names a path relative to where the user
+/// typed it. Returns false when there was nowhere to go or the move was refused,
+/// leaving the process exactly where it was.
 pub fn standAtRoot(io: std.Io) bool {
     const pre = treePrefix();
     if (pre.len == 0) return false;

@@ -1,4 +1,4 @@
-//! gist — the word-assertion family, as the truth table it actually is.
+//! irregex — the word-assertion family, as the truth table it actually is.
 //!
 //! Three declarations, no dependencies: `Word` names the six spellings a pattern
 //! can write, `mask` is the algebra over the raw 4-bit masks an engine reaches by

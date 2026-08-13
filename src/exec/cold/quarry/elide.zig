@@ -1,4 +1,4 @@
-//! gist — the read-elision oracle: the indexed→live seam both cold engines
+//! The read-elision oracle: the indexed→live seam both cold engines
 //! admit before they read a byte (fault-channel law 1).
 //!
 //! The persisted trigram index is an ACCELERATION structure, never a semantic
@@ -227,7 +227,7 @@ pub fn indexElisionWanted(io: std.Io, parsed: args.Parsed, filters: []const []co
 }
 
 /// True iff ≥1 root was given and every one stats as a regular file (a lone
-/// `gist PAT file.txt`, or several explicit files) — the case where index
+/// `PAT file.txt`, or several explicit files) — the case where index
 /// elision is provably useless. Empty roots (implicit CWD walk) or any
 /// directory / symlink-to-dir / unstattable root returns false, so a broad or
 /// mixed scan still gets the oracle. The stat is one syscall per root, dwarfed
@@ -382,8 +382,8 @@ fn assemble(gpa: std.mem.Allocator, io: std.Io, filters: []const []const u8, pla
 /// Gate-only: the SIZE of the admitted candidate set, in the bytes a reader
 /// would actually have to scan. The persisted index stores no per-document
 /// length, so this is a stat per candidate — far too costly to put on a query,
-/// and the reason it hides behind `GIST_CANDIDATE_BYTES` (internal, undocumented
-/// — the `GIST_TEST_REQUIRE_ELISION` idiom) instead of riding the `.index` lens.
+/// and the reason it hides behind `<prefix>CANDIDATE_BYTES` (internal, undocumented
+/// — the `<prefix>TEST_REQUIRE_ELISION` idiom) instead of riding the `.index` lens.
 ///
 /// It exists so the certificate's production column is read off the WIRED path
 /// rather than re-derived by a harness that might ask a subtly different
@@ -405,7 +405,7 @@ fn reportCandidateBytes(io: std.Io, p: *const persist.Persisted, candidates: *co
 }
 
 /// Gate-only proof that the admitted oracle can actually elide a real indexed
-/// file with live metadata. This runs only under `GIST_TEST_REQUIRE_ELISION`;
+/// file with live metadata. This runs only under `<prefix>TEST_REQUIRE_ELISION`;
 /// production queries pay no probe or counter overhead.
 pub fn testHasElidableFile(io: std.Io, el: *const Oracle) bool {
     for (el.p.paths.items, 0..) |path, doc| {

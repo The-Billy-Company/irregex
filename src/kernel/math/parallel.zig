@@ -1,9 +1,9 @@
-//! gist — the shared data-parallel sharding floor: work division and the
+//! irregex — the shared data-parallel sharding floor: work division and the
 //! partial-spawn-safe fan-out every engine rides. Pure `std.Thread` plumbing
 //! with no search, index, or corpus knowledge — the candidate verify
 //! (`kernel/scan/verify.zig`), the trigram index build
 //! (`corpus/index/trigrams/trigram.zig`), the codex shelf build
-//! (`corpus/index/codex/codex.zig`), the relate sketch build, and the relate
+//! (`corpus/index/codex/codex.zig`), the kinship sketch build, and the kinship
 //! attribution pass all divide their work here instead of in hand-rolled
 //! copies.
 //!

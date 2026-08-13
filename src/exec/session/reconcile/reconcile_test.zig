@@ -1,4 +1,4 @@
-//! gist resident session — the freshness-barrier hardening suite.
+//! Resident session — the freshness-barrier hardening suite.
 //!
 //! `resident_test.zig` pins correctness against hand-authored oracles; this file
 //! attacks the barrier itself along the three axes a warm, mutation-tracking

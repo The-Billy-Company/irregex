@@ -1,18 +1,19 @@
 """Where a product library gets opened, and the only place cffi's type universe is composed.
 
-The substrate can *describe* every producer — `irgx.h` declares `gist_run`,
-`relate_run` and `blast_run`, because analytic op numbers stayed ecosystem-wide
+The substrate can *describe* every producer — `irgx.h` declares all three
+`<face>_run` entries, because analytic op numbers stayed ecosystem-wide
 when the libraries split — but describing is not opening. Which shared library a
 process maps is a decision belonging to the package that owns that face, so this
 module opens only what has been **registered**, and registers nothing itself.
-`gist._native` registers the search face; a process that never imports it never
-maps `libgist`, and the analytic plane answers that face's verbs one tier down.
+The exact face's own native module registers the search face; a process that
+never imports it never maps that face's library, and the analytic plane answers
+its verbs one tier down.
 
 A face contributes its own C declarations along with its library. cffi fixes a
 library's type universe at `cdef` time, so those declarations are appended to the
 substrate's `CDEF` before the `dlopen` — one universe, assembled from two halves,
 each half checked against the header that actually declares it (`irgx.h` here,
-`gist.h` in gist's own header-parity gate).
+a face's own header in that face's own header-parity gate).
 
 **Fail-open by construction.** Every entry returns `None` rather than raising
 when a library is absent, `cffi` is missing, the ABI version disagrees, or the
@@ -113,7 +114,7 @@ def library(stem: str, checkout: str | None = None) -> str | None:
     The same structural rule `shell._locate_root` uses for binaries, for the same
     reason: this loader is substrate, so a package's library is in *that
     package's* `zig-out/lib`, not in whichever tree happens to be above this
-    file. `libgist` resolves out of `../gist`, `librelate` out of `../relate`,
+    file. Each face's library resolves out of that face's own sibling checkout,
     and the walk is over ancestors rather than a counted depth.
 
     Returns None (→ the tier below) when nothing is built or installed; an

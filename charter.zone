@@ -66,10 +66,10 @@ zones {
 
     // The FM-index composition over the succinct floors above (SA-IS → BWT →
     // wavelet → RRR). Pure compute: count/locate/restore over one byte
-    // string, plus a sealed save/load that uses the wire floor. It sat in
-    // `relate` until gist's `codex` verb and the relate face crossed each
-    // other through it; an index tier belongs below the corpus index
-    // artifacts and above the math it stands on.
+    // string, plus a sealed save/load that uses the wire floor. It sat in the
+    // kinship package until the exact face's `codex` verb and the kinship face
+    // crossed each other through it; an index tier belongs below the corpus
+    // index artifacts and above the math it stands on.
     codex       kernel/codex/**
 
     // The SIMD scanners and the literal-lane vocabulary they share with the
@@ -81,7 +81,8 @@ zones {
     regex       kernel/regex/**
 
     // The shared comment/code/string span lexer — pure, std-only; the last
-    // resident of `kernel/anatomy/` after the unit anatomy moved to `relate`.
+    // resident of `kernel/anatomy/` after the unit anatomy moved to the
+    // kinship package.
     anatomy     kernel/anatomy/**
 
     // The shared compiled query every transport compiles through.
@@ -121,7 +122,7 @@ zones {
     // The remaining persisted artifacts over the corpus — content shard,
     // phantom map, and the FM-index shelf (the multi-doc SHLF wrapping the
     // codex tier above). The kinship artifacts — atlas and fragment atlas —
-    // stay in `relate` with the metrics that write them.
+    // stay in the kinship package with the metrics that write them.
     index       corpus/index/content/** corpus/index/phantom/** corpus/index/shelf/**
 
     // ── Surface: vocabulary, then transports. ───────────────────────────────
@@ -135,14 +136,14 @@ zones {
 
     // The warm resident session over the cold engine's per-file path — the
     // one place a query outlives a process. The daemon transport that fronts
-    // it (sockets, spawn, serve loop) lives in `gist`; what remains here is
-    // the resident core itself plus the answer shapes and reconcile fold.
+    // it (sockets, spawn, serve loop) lives in the face package; what remains
+    // here is the resident core itself plus the answer shapes and reconcile fold.
     session     exec/session/**
 
     // The analytic plane's Zig-side API, driving the session from above. The
-    // C-ABI plane over it is `ffi/tree.zig`, one tier up — it lived in `gist`
-    // until the warm engine's C face came home, which is why the keep below
-    // names a guest.
+    // C-ABI plane over it is `ffi/tree.zig`, one tier up — it lived one repo
+    // over until the warm engine's C face came home, which is why the keep
+    // below names a guest.
     api         surface/api.zig surface/api_test.zig
 
     // The C-ABI plane: the substrate every package's ABI returns (status,
@@ -183,14 +184,14 @@ use irregex by ffi
 // aggregation is not an architectural crossing).
 
 // The hosted analytic API is entered by root's aggregators, by an FFI plane
-// LOWERING it to C, and from outside the package (gist's own plane, through
+// LOWERING it to C, and from outside the package (a face's own plane, through
 // the module boundary). An engine reaching back up to it would invert the
 // stack the tier block already forbids; naming the guests says who the surface
 // is *for*. `surface/ffi/tree.zig` is the second kind: `ffi` is declared above
 // `api` in the tier block, so it is reading DOWN the page, and it is the whole
 // reason `api.Engine` is published — the C face for the warm engine used to be
 // minted one repo over and has come home. It cannot take the module-boundary
-// route gist does, because it is reachable from `root.zig` and the library
+// route a face does, because it is reachable from `root.zig` and the library
 // module has no self-import to resolve `@import("irregex")` through.
 keep surface/api.zig to root.zig surface/ffi/tree.zig
 

@@ -1,4 +1,4 @@
-//! gist — the corpus walk: what is in the tree, before a byte is read.
+//! The corpus walk: what is in the tree, before a byte is read.
 //!
 //! The single-threaded descent behind the rg-DEFAULT file set. `.gitignore`
 //! precedence, the hidden-dotfile rule, `--max-depth`, `-L` symlink cycles, and
@@ -73,11 +73,11 @@ pub const Candidate = struct { rel: []const u8, scope: []const u8, disk: []const
 /// persisted default corpus — and the resident daemon's mirror — cannot supply
 /// them, since they build from this same hidden/ignore-excluding walk. A file
 /// under a PRUNED hidden/ignored directory never reaches this list, because the
-/// walk stops descending at the directory (rg/gist never un-hide *into* a hidden
-/// or ignored dir — proven in `gist/bench/conformance/gates/parity/index_elision_parity.sh`), so it
-/// captures precisely the reachable un-hide/un-ignore candidates and nothing
-/// more. Consumed by the warm session (`session/warm/resident.zig`) to keep
-/// `resident == gist --no-index == rg` for `-t`/`-g`. `rel` is owned by the
+/// walk stops descending at the directory (neither rg nor we ever un-hide *into*
+/// a hidden or ignored dir — proven by the face package's index-elision parity
+/// gate), so it captures precisely the reachable un-hide/un-ignore candidates and
+/// nothing more. Consumed by the warm session (`session/warm/resident.zig`) to
+/// keep `resident == --no-index == rg` for `-t`/`-g`. `rel` is owned by the
 /// caller's walk arena.
 pub const ExtraKind = enum { hidden, ignored };
 pub const Extra = struct { rel: []const u8, kind: ExtraKind };
@@ -239,7 +239,7 @@ fn walkDirLinked(a: std.mem.Allocator, io: std.Io, root_path: []const u8, prefix
         };
         const entry = maybe orelse break;
         // Every use of the walker's path below — display, ignore matching, depth,
-        // reopening — wants gist's one separator, not the platform's. Normalized
+        // reopening — wants our one separator, not the platform's. Normalized
         // exactly once, here, because this is the only place a foreign spelling
         // can enter: see `slashed`.
         const entry_path = try paths_mod.slashed(a, entry.path);
@@ -298,14 +298,14 @@ fn walkDirLinked(a: std.mem.Allocator, io: std.Io, root_path: []const u8, prefix
             continue;
         }
         if (entry.kind == .directory) {
-            // Charter / `GIST_SKIP` / `skips.list` basenames are structural — they
+            // Charter / `<prefix>SKIP` / `skips.list` basenames are structural — they
             // size the corpus, so `-uu`/`-g` cannot un-hide them. The generic
             // baseline (`.git`, `node_modules`, …) stays off this path: ripgrep
             // parity requires `-uu` to enter those (see `haystack.isPolicySkip`).
             if (haystack.isPolicySkip(entry.basename)) continue;
             // rg's DEFAULT walk descends everything except hidden dirs, `.git`, and
             // ignored ones (.gitignore/.ignore — see ignore.zig). It does NOT
-            // hardcode node_modules/target skips (that's gist's monorepo-corpus
+            // hardcode node_modules/target skips (that's the monorepo-corpus
             // policy in corpus.zig, wrong for an arbitrary-tree drop-in). A `-g`
             // whitelist (`wl_ig`) overrides all of it, `.git` included (rg parity).
             if (ig.shouldSkip(rel, true, entry.basename, wl_ig, wl_hid)) continue;
@@ -342,10 +342,10 @@ fn walkDirLinked(a: std.mem.Allocator, io: std.Io, root_path: []const u8, prefix
 /// The outcome of resolving the query's PATH args: whether the walk was
 /// recursive (drives the filename-prefix default) and whether any explicitly
 /// named path could not be opened AT ALL. ripgrep reports such a path to stderr
-/// and exits 2 (error); gist used to append it as a candidate whose deferred
+/// and exits 2 (error); we used to append it as a candidate whose deferred
 /// read failed silently, then exit 1 ("no match") — which read to a caller like
-/// an instant crash on a typo'd path (`gist search tel` → "search" pattern in
-/// nonexistent path "tel" → nothing, exit 1). This carries the error out so the
+/// an instant crash on a typo'd path (a `search tel` invocation → "search" pattern
+/// in nonexistent path "tel" → nothing, exit 1). This carries the error out so the
 /// run exits 2, matching rg (error trumps match/no-match).
 pub const Gathered = struct { recursive: bool, path_error: bool };
 

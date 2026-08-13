@@ -1,4 +1,4 @@
-//! gist T4 — result ranking via weighted Reciprocal Rank Fusion (RRF).
+//! irregex T4 — result ranking via weighted Reciprocal Rank Fusion (RRF).
 //!
 //! The lexical tiers (T0–T2) answer *which files contain the match* as an
 //! unordered set. An agent doesn't want a set — it wants the **one** line that
@@ -14,8 +14,9 @@
 //!   • **lexical** density (more occurrences ⇒ more relevant),
 //!   • **symbol** boost (parser-free structural confidence that the match names
 //!     a declaration rather than occurring inside one),
-//!   • **shape rarity** (relate-style normalized match geometry; repeated call /
-//!     import shapes carry less information than a rare explanatory shape),
+//!   • **shape rarity** (kinship-style normalized match geometry; repeated
+//!     call / import shapes carry less information than a rare explanatory
+//!     shape),
 //!   • **shallow path** (fewer path segments ⇒ closer to a package root, usually
 //!     more central than a deep test/vendor file),
 //!   • **authored** boost (codegen output and cached source mirrors are demoted:
@@ -93,9 +94,10 @@ fn addDefinitionSignal(score: []f64, docs: []const Doc, w: f64, k: f64) void {
     }
 }
 
-/// Relate's Shannon pricing at match-line scale: normalize away vocabulary,
-/// then credit a shape by log₂(N/df), normalized to [0,1] and scaled by one
-/// top-rank RRF term. Ubiquitous use geometry is worth exactly zero.
+/// The kinship face's Shannon pricing at match-line scale: normalize away
+/// vocabulary, then credit a shape by log₂(N/df), normalized to [0,1] and
+/// scaled by one top-rank RRF term. Ubiquitous use geometry is worth exactly
+/// zero.
 fn addStructureSignal(gpa: std.mem.Allocator, score: []f64, docs: []const Doc, w: f64, k: f64) !void {
     var counts: std.AutoHashMapUnmanaged(u64, u32) = .empty;
     defer counts.deinit(gpa);

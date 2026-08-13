@@ -38,7 +38,7 @@ component and are not superseded by the Apache License, Version 2.0 above.
     tools/ucd/README.md for the per-file pin and what each one lowers into.
 
   * ripgrep integration-test corpus, mined
-    (gist/bench/conformance/rgsuite/spec.json)
+    (the face package's bench/conformance/rgsuite/spec.json)
     Unlicense OR MIT
     Copyright (c) 2015 Andrew Gallant
     Test names, arguments, and haystack bytes mechanically extracted from

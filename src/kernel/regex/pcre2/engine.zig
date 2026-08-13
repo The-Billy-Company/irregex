@@ -1,4 +1,5 @@
-//! gist — the PCRE2-backed `Pcre` engine behind the frozen `matcher.zig` seam.
+//! irregex — the PCRE2-backed `Pcre` engine behind the frozen `matcher.zig`
+//! seam.
 //!
 //! One `Pcre` owns an immutable compiled program (`ffi.Code`), optionally
 //! JIT-compiled, plus the derived required literal for the trigram prefilter.
@@ -200,7 +201,7 @@ pub fn lastError() []const u8 {
 /// CLI reads this after the search and mirrors that exit rather than reporting
 /// the silent no-match `find` returns (fail-closed). A process-global atomic
 /// (not thread-local) so the parallel `-P` pipeline's worker threads all latch
-/// into one cell the main thread reads after they join — one gist process runs
+/// into one cell the main thread reads after they join — one face process runs
 /// exactly one query, so a single global is the whole run's verdict.
 var match_error_code: std.atomic.Value(c_int) = .init(0);
 

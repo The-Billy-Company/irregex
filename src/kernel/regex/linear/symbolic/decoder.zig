@@ -1,4 +1,4 @@
-//! gist — the UTF-8 → minterm decoder.
+//! irregex — the UTF-8 → minterm decoder.
 //!
 //! One deterministic byte automaton for the WHOLE alphabet, built once per
 //! pattern: read bytes, and the moment a codepoint completes, announce which

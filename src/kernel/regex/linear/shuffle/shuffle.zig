@@ -1,5 +1,5 @@
-//! gist — the composition rung: a byte-class DFA re-expressed as transformations
-//! so the scan becomes a REDUCTION instead of a pointer chase.
+//! irregex — the composition rung: a byte-class DFA re-expressed as
+//! transformations so the scan becomes a REDUCTION instead of a pointer chase.
 //!
 //! The eager DFA's hot loop is `s = trans[s + class[b]]` — a single loop-carried
 //! DEPENDENT LOAD, so it runs at load-use latency (≈3.6 cyc/byte on an Apple M4

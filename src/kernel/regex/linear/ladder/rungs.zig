@@ -1,4 +1,4 @@
-//! gist — the accelerator tier: every optional machine that can answer a
+//! irregex — the accelerator tier: every optional machine that can answer a
 //! boolean faster than the byte-class DFA, behind one interface.
 //!
 //! The ladder in `verdict.zig` used to name each engine it consulted. That does

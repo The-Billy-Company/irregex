@@ -24,8 +24,8 @@ means "ask the tier below", and the caller never learns it happened.
     * `errors` — the typed failures, including the two the analytic plane adds.
 
   The in-process session and the resident daemon are not here: they hold one
-  product's corpus, so they live in that product's package (`gist._native`,
-  `gist._daemon`) and register themselves with `loader`.
+  product's corpus, so they live in that product's own package (its native and
+  daemon modules) and register themselves with `loader`.
 """
 
 from __future__ import annotations

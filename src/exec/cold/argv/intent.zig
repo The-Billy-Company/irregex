@@ -1,4 +1,4 @@
-//! The request a gist run is about to serve — resolved, and under construction.
+//! The request a cold run is about to serve — resolved, and under construction.
 //!
 //! `Opts` (plus the type/glob `Filter`) is the single precedence-sensitive state
 //! the whole cold path reads: ten modules take it, nobody parses argv twice, and
@@ -46,8 +46,8 @@ pub const ColorChoice = enum { auto, always, never, ansi };
 /// `auto` (the default) is "on iff this terminal will render it and this
 /// output is for a human"; `always` overrides the probe; `never` is off.
 /// Defined by, and resolved against stdout + the environment in,
-/// `cli/beacon.zig` — the hyperlink layer is shared with relate and irregex,
-/// so gist's argv borrows its vocabulary rather than declaring a parallel one.
+/// `cli/beacon.zig` — the hyperlink layer is shared across every face, so this
+/// argv borrows its vocabulary rather than declaring a parallel one.
 pub const Hyperlink = @import("../../../surface/cli/beacon.zig").When;
 
 /// `-E`/`--encoding`: the source encoding to transcode to UTF-8 before matching.
@@ -61,7 +61,7 @@ pub const Encoding = encoding.Encoding;
 
 /// Resolve an `--encoding` label to the enum, or null for an unrecognized one
 /// (the caller fails loud). The full WHATWG label table (`encoding_rs::for_label`,
-/// which rg rides) plus gist's `auto`/`none` spellings — see `encoding.fromLabel`.
+/// which rg rides) plus our `auto`/`none` spellings — see `encoding.fromLabel`.
 pub const encodingFromLabel = encoding.fromLabel;
 
 fn globAppliesCI(a: std.mem.Allocator, pat: []const u8, path: []const u8) bool {
@@ -164,7 +164,7 @@ pub const Filter = struct {
 };
 
 /// Which match backend realizes the pattern (`-P`/`--pcre2`, `--engine=<name>`).
-/// `default` is gist's linear-time RE2/Pike engine — no backtracking, no
+/// `default` is this package's linear-time RE2/Pike engine — no backtracking, no
 /// lookaround/backreferences, safe over an adversarial tree. `pcre2` is the
 /// opt-in vendored PCRE2 JIT backend (`kernel/regex/pcre2/backend.zig`) for the constructs
 /// the linear engine can't express. `auto` is ripgrep's hybrid: `writ/arm.zig` compiles
@@ -175,11 +175,11 @@ pub const Filter = struct {
 pub const Engine = enum { default, pcre2, auto };
 
 /// `--sort`/`--sortr`/`--sort-files` ordering key. `none` (the default) leaves
-/// gist free to stream in the fastest work-stealing discovery order; any other
-/// key forces a globally ordered result. `path` sorts by the display path;
+/// the walk free to stream in the fastest work-stealing discovery order; any
+/// other key forces a globally ordered result. `path` sorts by the display path;
 /// `modified`/`accessed`/`created` sort by the file's mtime/atime/birth time.
-/// ripgrep abandons parallelism entirely when a sort is requested — gist keeps
-/// its parallel *reads* and only orders the final emit, so an ordered gist run
+/// ripgrep abandons parallelism entirely when a sort is requested — we keep
+/// the parallel *reads* and only order the final emit, so an ordered run here
 /// still beats rg's single-threaded sort walk.
 pub const SortKey = enum { none, path, modified, accessed, created };
 
@@ -234,7 +234,7 @@ pub const Opts = struct {
     hidden: bool = false,
     text: bool = false, // -a/--text: disable binary detection, search as text
     // --binary / -uuu: search binary files in full (never quit at the first NUL).
-    // gist's flavor searches the whole file and prints every matching line — a
+    // Our flavor searches the whole file and prints every matching line — a
     // superset that never drops a match — rather than rg's binary-summary
     // suppression (documented divergence; both stop treating a NUL as a wall).
     binary: bool = false,
@@ -289,7 +289,7 @@ pub const Opts = struct {
     sorted: bool = false, // any explicit ordering active (forces the deterministic sorted walk)
     sort_key: SortKey = .none, // --sort/--sortr key; .none = fastest discovery order
     sort_reverse: bool = false, // --sortr: descending instead of ascending
-    threads: usize = 0, // -j/--threads: 0 = gist picks its topology; N caps the worker pool
+    threads: usize = 0, // -j/--threads: 0 = we pick the topology; N caps the worker pool
     one_file_system: bool = false, // --one-file-system: never descend into another device
     max_depth: usize = 0, // --max-depth/--maxdepth (0 = unlimited)
     max_filesize: usize = 0, // --max-filesize (bytes, 0 = unlimited)
@@ -338,7 +338,7 @@ pub const Opts = struct {
     // paints with. It rides Opts rather than an emitter parameter because Opts
     // already reaches every render path — serial, swarm, and the daemon's
     // facet — so honoring a spec cost no signature a new argument. The default
-    // is gist's own palette, byte-for-byte what a run with no spec has always
+    // is our own palette, byte-for-byte what a run with no spec has always
     // printed.
     palette: emit_color.Palette = .{},
     // --no-index: never consult the persisted trigram index — always live-read
@@ -348,17 +348,17 @@ pub const Opts = struct {
     // `--index` is the explicit opt-in spelling of that default (undo a prior
     // `--no-index`); neither ever changes results, only how many files are opened.
     no_index: bool = false,
-    // --rank[=N]: gist-native ranked view (no rg equivalent) — definition-first
+    // --rank[=N]: our own ranked view (no rg equivalent) — definition-first
     // RRF over indexed candidates when available, else the live walk. `rank_k`
     // = 0 means the default 20; --no-index explicitly selects live ranking.
     rank: bool = false,
     rank_k: usize = 0,
     // --uncap: lift the soft output budget (the ~25k-token agent-context guard,
     // corpus.zig) for THIS query — the agent deliberately wants the full result.
-    // The hard OOM ceiling still applies. `GIST_UNCAP=1` is the env equivalent
+    // The hard OOM ceiling still applies. `<prefix>UNCAP=1` is the env equivalent
     // (what the bench harness sets to keep rg byte-parity exact).
     uncap: bool = false,
-    // --in-comments / --in-code: gist-native match SCOPING built on the shared
+    // --in-comments / --in-code: our own match SCOPING built on the shared
     // comment/code span lexer (kernel/anatomy/lexspan.zig). `--in-comments`
     // keeps only matches whose span begins inside a `//`/`#`/`/* */` comment
     // (doc mentions, TODOs, stale-invariant surface); `--in-code` keeps only
@@ -368,13 +368,13 @@ pub const Opts = struct {
     in_comments: bool = false,
     in_code: bool = false,
     // --line-buffered / --block-buffered / --buffer-size: the stdout drain's
-    // policy and its ceiling in bytes (0 ⇒ gist's 64 KiB default). Delivery
+    // policy and its ceiling in bytes (0 ⇒ the 64 KiB default). Delivery
     // cadence only — the emitted bytes are identical under every setting, which
     // is why both carry `Reach.execution`.
     buffering: Buffering = .auto,
     buffer_size: usize = 0,
     // --plain: pin the answer to the shape a PIPE would receive, even when
-    // stdout is a terminal. gist has three destination-conditional behaviors
+    // stdout is a terminal. There are three destination-conditional behaviors
     // (`--color auto`, the TTY long-line `-M` guard, `--line-buffered`'s auto
     // resolution), and a run that must not differ from a redirected one should
     // not have to remember and re-spell each of them.

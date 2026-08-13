@@ -1,12 +1,13 @@
 // Package analytic is the shared contract plane of the irregular-expression
 // ecosystem: the generated row-schema table ([Digest] and friends in
 // schema_gen.go), the constants mirrored from irregex/contract/{engine,analytic}.toml
-// and relate/contract/kinship.toml, the search request/record shapes, and the
-// kinship calibration every analytic row is graded against.
+// and the kinship package's contract/kinship.toml, the search request/record
+// shapes, and the kinship calibration every analytic row is graded against.
 //
 // Nothing in this package talks to the kernel. The transports live in the
-// sibling runtime package; product verbs live in the gist, relate, and blast
-// modules. Dependencies point one way: analytic ← runtime ← product verbs.
+// sibling runtime package; product verbs live in the modules of the three faces
+// built on this library. Dependencies point one way: analytic ← runtime ←
+// product verbs.
 package analytic
 
 import (
@@ -88,7 +89,7 @@ func (t Tag) String() string {
 var tagNames = [...]string{"text", "i64", "f64", "bool", "enum", "texts", "rows"}
 
 // Op is an analytic verb's op code ([analytic.verbs]) — the wire discriminant
-// for gist_run, append-only.
+// every producer entry reads, append-only.
 type Op uint32
 
 // The seventeen analytic verbs.
@@ -140,11 +141,10 @@ func (o Op) Schema() (SchemaDef, bool) {
 }
 
 // Analytic params flag bits, from [analytic.params] in contract/analytic.toml.
-// Each producing library spells them under its own prefix (GIST_AN_*,
-// RELATE_AN_*, BLAST_AN_*) with the SAME values, so one mirror serves all three
-// and a caller's flags word does not change meaning with the entry symbol. The
-// two threshold bits exist because 0.0 is a meaningful threshold, so "unset"
-// cannot be zero.
+// Each producing library spells them under its own prefix (`<FACE>_AN_*`) with
+// the SAME values, so one mirror serves all three and a caller's flags word
+// does not change meaning with the entry symbol. The two threshold bits exist
+// because 0.0 is a meaningful threshold, so "unset" cannot be zero.
 const (
 	AnMaxDistance uint32 = 1 << 0
 	AnMinEcho     uint32 = 1 << 1

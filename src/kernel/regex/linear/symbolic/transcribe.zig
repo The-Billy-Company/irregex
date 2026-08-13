@@ -1,4 +1,4 @@
-//! gist — transcribing a codepoint automaton back into a byte one.
+//! irregex — transcribing a codepoint automaton back into a byte one.
 //!
 //! Determinizing over minterms buys the compile-time collapse, but the scan
 //! loop must not change: `s = trans[s + class[b]]`, one dependent load per byte,

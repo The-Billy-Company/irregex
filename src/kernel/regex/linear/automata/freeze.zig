@@ -1,4 +1,4 @@
-//! gist — freezing a finished determinization into the immutable `Dfa`.
+//! irregex — freezing a finished determinization into the immutable `Dfa`.
 //!
 //! Two determinizers reach this point by different roads: the byte powerset
 //! construction (`../dfa/powerset.zig`) and the symbolic path's decoder product
@@ -214,7 +214,7 @@ fn sortMatchFirst(gpa: std.mem.Allocator, ncls: u16, t: Tables, sh: *Shape) std.
 /// see the note there for what it was worth.
 ///
 /// Built only for an attributed automaton. Single-pattern programs — every
-/// ordinary compile, and most of what gist runs — get an empty slice, so they
+/// ordinary compile, and most of what a face runs — get an empty slice, so they
 /// carry no array and their walks are not even asked the question.
 ///
 /// **Every table, deliberately.** `trans_fin` resolves `$`, so an accept can be

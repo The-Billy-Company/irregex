@@ -1,6 +1,6 @@
 //! Haystack unit tests — split from `haystack.zig` (shape cap). No filesystem
 //! touched: `Walker` itself is exercised indirectly by every corpus caller's
-//! own tests plus the CLI (`gist index`/`search`/`--live`) against the real
+//! own tests plus the CLI (`index`/`search`/`--live`) against the real
 //! repo tree; these pin the two pure hot-path decisions `Walker` leans on.
 
 const std = @import("std");
@@ -11,7 +11,7 @@ const fault = @import("../../fault.zig");
 /// same 36-name list. The comptime-baseline lookup's speedup must never change
 /// WHICH names are skipped — this differential is the guardrail, so it pins
 /// `inBaselineSkipSet` (the pure map), not the full-policy `isSkipDir`.
-/// Project-specific extras ride the runtime `GIST_SKIP`/`skips.list` overlay
+/// Project-specific extras ride the runtime `<prefix>SKIP`/`skips.list` overlay
 /// and are deliberately absent from the baseline the guardrail compares.
 const skip_list = [_][]const u8{
     ".git",          ".github",     ".hg",           ".svn",          "node_modules",
@@ -44,9 +44,9 @@ test "skip-dir baseline: near-misses (prefix/suffix/case/substring) are NOT skip
 }
 
 test "skip-dir baseline: the engine never indexes its own artifact home" {
-    // `.gist` is where the trigram index, kinship atlas, shelf, freshness
-    // anchor, and daemon socket live, and it sits inside the walk root by
-    // default — so a corpus walk that entered it would be indexing its own
+    // The artifact directory is where the trigram index, kinship atlas, shelf,
+    // freshness anchor, and daemon socket live, and it sits inside the walk root
+    // by default — so a corpus walk that entered it would be indexing its own
     // exhaust, and every index build would grow the corpus it just measured.
     // It is baseline, not overlay: it holds for any tree, with no charter —
     // which is why this asserts the pure map rather than `isSkipDir`, whose
@@ -65,10 +65,10 @@ test "policy skip is the charter/env overlay, not the generic baseline" {
     try std.testing.expect(!haystack.inBaselineSkipSet("derived-out"));
 
     // The overlay half is NOT asserted here on purpose. `isPolicySkip` reads
-    // whatever the ambient charter, `GIST_SKIP`, and `<GIST_DIR>/skips.list`
+    // whatever the ambient charter, `<prefix>SKIP`, and `<prefix>DIR/skips.list`
     // happen to say, so any claim about a specific name here is a claim about
     // the machine, not the code: it goes vacuous in a checkout with no charter
-    // and answers out of an unrelated repository whenever `GIST_DIR` is
+    // and answers out of an unrelated repository whenever `<prefix>DIR` is
     // inherited from one. `charter_test.zig` drives that path properly, from a
     // charter it writes itself.
 }

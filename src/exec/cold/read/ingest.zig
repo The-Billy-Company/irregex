@@ -1,9 +1,9 @@
-//! gist `rg` — file-content ingest transforms: the byte pipeline that turns one
+//! The `rg` face — file-content ingest transforms: the byte pipeline that turns one
 //! file's raw on-disk bytes into the bytes actually searched, honoring the three
 //! rg flags that reshape content before matching:
 //!
 //!   • `-z`/`--search-zip`  — transparently decompress a compressed file by its
-//!     extension. gist decodes the common web/source formats (gzip, zlib, zstd,
+//!     extension. We decode the common web/source formats (gzip, zlib, zstd,
 //!     xz) IN-PROCESS via Zig's `std.compress` — no `gzip -dc` fork per file,
 //!     the single biggest speed edge over ripgrep, which shells an external
 //!     decompressor for every format. The long-tail formats (bzip2, lz4, brotli,
@@ -163,7 +163,7 @@ fn decompress(a: std.mem.Allocator, cfg: *const Config, disk: []const u8, raw: [
     return switch (codec) {
         .gzip, .zlib, .zstd, .xz => native(a, codec, raw),
         // The long tail: the standard tool, path in, stdout captured, no fork of a
-        // decompressor gist can already do in-process.
+        // decompressor we can already do in-process.
         .bzip2 => spawnCapture(a, cfg, &.{ "bzip2", "-d", "-c", disk }),
         .lz4 => spawnCapture(a, cfg, &.{ "lz4", "-d", "-c", disk }),
         .brotli => spawnCapture(a, cfg, &.{ "brotli", "-d", "-c", disk }),
@@ -359,7 +359,7 @@ test "applyEncoding utf8: one U+FFFD per ill-formed maximal subpart" {
     const a = arena.allocator();
     const FFFD = "\u{FFFD}";
     // Every expectation below was captured from live `rg -E utf8` on the same
-    // bytes (see the `-E utf-8` lane of gist/bench/conformance/rgsuite/fuzz.py) — not derived
+    // bytes (see the `-E utf-8` lane of the rgsuite differential fuzzer) — not derived
     // from this implementation. An explicit label decodes; it never passes
     // invalid bytes through.
     try t.expectEqualStrings("hi", applyEncoding(a, .utf8, "\xEF\xBB\xBFhi")); // BOM still stripped

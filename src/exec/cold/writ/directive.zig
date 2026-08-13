@@ -1,7 +1,7 @@
-//! gist — the writ of patterns: many argv patterns, one compiled order.
+//! The writ of patterns: many argv patterns, one compiled order.
 //!
 //! `-e`/`-f`/`-F`/positional patterns arrive as a list and must become ONE
-//! effective pattern, because gist compiles a single global engine. Two things
+//! effective pattern, because a run compiles a single global engine. Two things
 //! make that non-trivial, and both live here.
 //!
 //! A leading `(?flags)` directive is a per-pattern request against a run-wide
@@ -11,7 +11,7 @@
 //! inert in the per-line model. `x`/`U`/`R` are semantics this engine cannot
 //! reproduce, so they die with the reason and the rg fallback.
 //!
-//! The contract, stated once: honored where gist can, LOUD where it can't — the
+//! The contract, stated once: honored where we can, LOUD where we can't — the
 //! one thing never permitted is a silent wrong answer.
 
 const std = @import("std");
@@ -27,15 +27,15 @@ const oom = @import("../../../surface/cli/outcome.zig").oom;
 
 /// A leading `(?flags)` directive (rust-regex/rg syntax), read through the
 /// engine's own grammar (`regex.syntax.preamble`) and answered the way a CLI
-/// has to answer it — the contract is "honored where gist can, loud where it
+/// has to answer it — the contract is "honored where we can, loud where we
 /// can't", never a silent wrong answer:
-///   • `i` / `-i` → caseless on/off for the WHOLE pattern (gist compiles one
+///   • `i` / `-i` → caseless on/off for the WHOLE pattern (a run compiles one
 ///     global engine, so the directive resolves to the run-wide option; mixed
 ///     demands across `-e`/`-f` patterns fail loud — rgsuite boundary #5);
 ///   • `m` `s` (and negations) → line anchors and dotall, inert in the per-line
 ///     model: `^`/`$` already anchor every line and no line carries a `\n` for
 ///     `.` to cross;
-///   • `u` / `-u` → Unicode mode on/off for the WHOLE pattern (`u` = gist's
+///   • `u` / `-u` → Unicode mode on/off for the WHOLE pattern (`u` = our
 ///     default; `-u` selects byte/ASCII), the run-wide analogue of `-i`
 ///     reconciled the same way (mixed per-pattern demands fail loud);
 ///   • `x` `U` `R` → semantics the engine can't reproduce → die with the
@@ -59,7 +59,7 @@ pub fn stripLeadingFlags(pat: []const u8) ?LeadingFlags {
     };
 }
 
-/// One leading-directive flag reconciled across every pattern source. gist
+/// One leading-directive flag reconciled across every pattern source. A run
 /// compiles a single engine, so a value one pattern explicitly `demand`s must
 /// agree with any pattern that only `inherit`s the CLI base — `see` collects
 /// each pattern's stance, `resolve` folds them onto the effective option (or
@@ -116,7 +116,7 @@ pub fn combinePatterns(a: std.mem.Allocator, io: std.Io, parsed: args.Parsed, o:
     if (parsed.opts.fixed) {
         for (pats.items) |*p| p.* = query_mod.escapeLiteral(a, p.*) catch oom();
     } else {
-        // Resolve leading `(?flags)` directives. gist compiles ONE engine, so a
+        // Resolve leading `(?flags)` directives. A run compiles ONE engine, so a
         // flag some pattern explicitly demands may not disagree with a pattern
         // that merely inherits the CLI's own setting (rg scopes flags per branch).
         // `(?i)` case, `(?u)` Unicode, `(?m)` line anchors, `(?s)` dotall each

@@ -6,8 +6,8 @@
 //! into anchored/negated/dir-only globs, accumulating them per directory as the
 //! walk descends, and deciding whether a candidate path is ignored. It reuses
 //! the shared `scope/glob.zig` matcher for the segment-aware `*`/`**`/`?`/`[…]`
-//! matching, so gist search, every persisted index, relate, and composed
-//! irregex all enumerate the same files.
+//! matching, so exact search, every persisted index, the kinship face, and the
+//! composed face all enumerate the same files.
 //!
 //! Semantics implemented (ripgrep/git parity):
 //!   • a leading or embedded `/` anchors the pattern to the ignore file's dir;
@@ -46,8 +46,9 @@ const Dir = std.Io.Dir;
 /// directory entry in the tree for a path the C seam cannot select.
 const Oom = std.mem.Allocator.Error;
 
-/// Filesystem-admission options independent of any CLI grammar. Gist lowers its
-/// richer argv state through `from`; corpus/index consumers use the defaults.
+/// Filesystem-admission options independent of any CLI grammar. A face lowers
+/// its richer argv state through `from`; corpus/index consumers use the
+/// defaults.
 pub const Options = struct {
     hidden: bool = false,
     no_ignore: bool = false,
@@ -385,10 +386,11 @@ pub const Ignore = struct {
     // explicitly on argv — only entries strictly BELOW it (see `walk.rs`'s
     // `add_parents`: ancestor ignore state is loaded at depth 0, but the depth-0
     // entry itself is never matched against it, only its depth>0 descendants
-    // are). gist's rules are matched against one path string spanning root+rel
-    // (`Rule.base == ""` covers CWD/ancestor-sourced rules), so `match` must
-    // floor slash-less/anchored matching at this depth to reproduce the same
-    // "the root itself is exempt, its subtree is not" boundary.
+    // are). This engine's rules are matched against one path string spanning
+    // root+rel (`Rule.base == ""` covers CWD/ancestor-sourced rules), so
+    // `match` must floor slash-less/anchored matching at this depth to
+    // reproduce the same "the root itself is exempt, its subtree is not"
+    // boundary.
     explicit_root_depth: usize = 0,
     // The "" (CWD/ancestor) tier compiled to the globset fast path, or null when
     // this run can't use it (case-insensitive matching folds no case here). The
@@ -525,8 +527,8 @@ pub const Ignore = struct {
     /// an ancestor-tier source that spans the whole tree from the CWD.
     /// git's global gitignore path (ripgrep parity, `gitconfig_excludes_path`),
     /// reading `$HOME`/`$XDG_CONFIG_HOME` from the process env (stable for the
-    /// per-user gist server's lifetime). The env-free resolution is delegated to
-    /// `globalExcludesFrom`.
+    /// per-user resident server's lifetime). The env-free resolution is
+    /// delegated to `globalExcludesFrom`.
     fn loadGlobalExclude(self: *Ignore) Oom!void {
         const xdg = assay.envSpan("XDG_CONFIG_HOME");
         const path = try globalExcludesFrom(self.io, self.a, assay.envSpan("HOME"), if (xdg != null and xdg.?.len != 0) xdg else null) orelse return;
@@ -732,13 +734,13 @@ pub const Ignore = struct {
     /// is excluded for being a dotfile, which is why rg users reach for
     /// `--glob '!.git/*'` (rg #927/#2646, pinned in `preference_test.zig`) —
     /// so `--hidden`/`-uu` searches it there, and an unconditional prune here
-    /// was the whole of gist's remaining `-uu` file-selection gap against rg
-    /// (188 of ~356k files on this tree, every one of them under `.git/`).
-    /// The corpus and index walks are unaffected: they prune `.git` structurally
-    /// through `haystack.isSkipDir`, before any verdict is asked for.
-    /// Nothing here is per-kind any more, so it no longer takes `is_dir`: the
-    /// verdict already accounted for `dir_only` rules, and the hidden rule reads
-    /// a dotfile the same whether it is a file or a directory.
+    /// was the whole of this engine's remaining `-uu` file-selection gap
+    /// against rg (188 of ~356k files on this tree, every one of them under
+    /// `.git/`). The corpus and index walks are unaffected: they prune `.git`
+    /// structurally through `haystack.isSkipDir`, before any verdict is asked
+    /// for. Nothing here is per-kind any more, so it no longer takes `is_dir`:
+    /// the verdict already accounted for `dir_only` rules, and the hidden rule
+    /// reads a dotfile the same whether it is a file or a directory.
     pub fn skipFromVerdict(self: *const Ignore, v: ?bool, basename: []const u8, wl_ignore: bool, wl_hidden: bool) bool {
         if (v == true) return !wl_ignore;
         const hidden = basename.len > 0 and basename[0] == '.';

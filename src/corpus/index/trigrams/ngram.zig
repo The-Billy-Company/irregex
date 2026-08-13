@@ -1,4 +1,4 @@
-//! gist — n-gram extraction strategy (which grams to emit).
+//! irregex — n-gram extraction strategy (which grams to emit).
 //!
 //! Isolated from the index build/query in `trigram.zig` so the SoTA sparse-n-gram
 //! variant (ADR-pending) drops in HERE without touching either. Pure,

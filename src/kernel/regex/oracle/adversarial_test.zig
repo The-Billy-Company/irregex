@@ -1,4 +1,5 @@
-//! gist T2 regex — ADVERSARIAL differential tests against an INDEPENDENT oracle.
+//! irregex T2 regex — ADVERSARIAL differential tests against an INDEPENDENT
+//! oracle.
 //!
 //! The `dfa_test.zig` fuzz checks the DFA against the Pike VM — but the Pike VM
 //! is its own reference, so a bug shared by both survives, and its generator
@@ -8,7 +9,7 @@
 //!   • `Oracle` — a from-scratch backtracking matcher over the AST (reuses ONLY
 //!     `syntax.zig`'s parser, never `compile.zig`/Pike/`dfa.zig`/`prefilter.zig`).
 //!     It computes, by fixpoint over reachable end-positions, whether the pattern
-//!     matches ANY substring of a line under gist's documented semantics
+//!     matches ANY substring of a line under this package's documented semantics
 //!     (unanchored search, `^`/`$` line anchors, `.`/negated-class exclude `\n`).
 //!     Truly independent ground truth: a shared engine bug cannot hide.
 //!   • The engine is checked on BOTH paths — `lineMatch` (DFA primary) AND
@@ -77,7 +78,8 @@ const Oracle = struct {
         return pos == o.line.len or (pos < o.line.len and o.line[pos] == '\n');
     }
 
-    /// ASCII word byte (`[0-9A-Za-z_]`) — gist's `\w` / rg `--no-unicode` class.
+    /// ASCII word byte (`[0-9A-Za-z_]`) — this engine's `\w` / rg `--no-unicode`
+    /// class.
     fn isWord(b: u8) bool {
         return std.ascii.isAlphanumeric(b) or b == '_';
     }
@@ -118,8 +120,9 @@ const Oracle = struct {
             .anchor_buf_end => if (pos == o.line.len) bit(pos) else 0,
             .class => |set| if (pos < o.line.len and set.has(o.line[pos])) bit(pos + 1) else 0,
             // Independent codepoint-class matcher: decode the scalar at `pos`
-            // (std.unicode, not gist's `utf8seq`) and test raw range membership —
-            // so a shared lowering bug can't hide. Consumes the whole codepoint.
+            // (std.unicode, not this package's `utf8seq`) and test raw range
+            // membership — so a shared lowering bug can't hide. Consumes the
+            // whole codepoint.
             .uclass => |ranges| blk: {
                 const d = udec.decode(o.line[pos..]) orelse break :blk 0;
                 for (ranges) |r| if (d.cp >= r[0] and d.cp <= r[1]) break :blk bit(pos + d.len);
@@ -173,8 +176,9 @@ const Oracle = struct {
 
 /// Independent doc oracle: rg `-l` line model — `\n` *terminates* a line (no
 /// phantom empty final line after a trailing `\n`; content after the last `\n`
-/// is still a line), OR of `substringMatch` per line. Mirrors gist's documented
-/// `docMatch` line-splitting but matches each line with the independent oracle.
+/// is still a line), OR of `substringMatch` per line. Mirrors this package's
+/// documented `docMatch` line-splitting but matches each line with the
+/// independent oracle.
 fn docMatchOracle(a: std.mem.Allocator, ast: *const Node, doc: []const u8) bool {
     var rest = doc;
     while (rest.len > 0) {
@@ -275,9 +279,9 @@ const Collector = struct {
     }
 };
 
-/// Compile with gist, parse independently for the oracle, and check the DFA path,
-/// the Pike+prefilter path, and the literal-prefilter analyses against the oracle
-/// on `line`, recording (not throwing) any disagreement. BadPattern /
+/// Compile with this engine, parse independently for the oracle, and check the
+/// DFA path, the Pike+prefilter path, and the literal-prefilter analyses against
+/// the oracle on `line`, recording (not throwing) any disagreement. BadPattern /
 /// parse-incomplete ⇒ a grammar question outside the engine's remit, skipped.
 fn engineAgrees(c: *Collector, a: std.mem.Allocator, pattern: []const u8, line: []const u8) void {
     if (line.len >= 64) return;
@@ -316,12 +320,13 @@ fn engineAgrees(c: *Collector, a: std.mem.Allocator, pattern: []const u8, line: 
 
 // ───────────────────── rg second oracle (parser-level differential) ─────────────────────
 //
-// The `Oracle` above reuses gist's own parser (`syntax.zig`), so a PARSER bug —
-// a mis-decoded class range, escape, or `{n,m}` — is invisible to it (the oracle
-// inherits the same misread AST). ripgrep is a fully independent implementation,
-// including its parser, so a gist-vs-rg disagreement on a pattern BOTH accept is
-// a real semantic/parse divergence. Patterns either side rejects (rg exit 2,
-// gist `BadPattern`) are grammar-scope questions, not bugs — skipped.
+// The `Oracle` above reuses this package's own parser (`syntax.zig`), so a
+// PARSER bug — a mis-decoded class range, escape, or `{n,m}` — is invisible to
+// it (the oracle inherits the same misread AST). ripgrep is a fully independent
+// implementation, including its parser, so an engine-vs-rg disagreement on a
+// pattern BOTH accept is a real semantic/parse divergence. Patterns either side
+// rejects (rg exit 2, a `BadPattern` here) are grammar-scope questions, not
+// bugs — skipped.
 
 /// rg runs against a temp file (`process.run` forces `stdin=.ignore`, so a file
 /// arg is the input channel). `true`/`false` = matched/didn't; `null` = rg
@@ -333,8 +338,9 @@ fn rgMatch(ctx: RgCtx, pattern: []const u8, input: []const u8) ?bool {
 }
 
 /// `multiline` adds `-U` (rg matches the whole file as one haystack — a match may
-/// span `\n`, and `^`/`$` anchor at line boundaries), the exact semantics gist's
-/// `bufMatch` implements. dotall is expressed by an inline `(?s)` in the pattern.
+/// span `\n`, and `^`/`$` anchor at line boundaries), the exact semantics this
+/// package's `bufMatch` implements. dotall is expressed by an inline `(?s)` in
+/// the pattern.
 fn rgMatchMode(ctx: RgCtx, pattern: []const u8, input: []const u8, multiline: bool) ?bool {
     std.Io.Dir.cwd().writeFile(ctx.io, .{ .sub_path = ctx.tmp, .data = input }) catch return null;
     const base = [_][]const u8{ ctx.rg, "-q", "-a", "--no-unicode", "--color", "never", "-e", pattern, ctx.tmp };
@@ -352,9 +358,10 @@ fn rgMatchMode(ctx: RgCtx, pattern: []const u8, input: []const u8, multiline: bo
     };
 }
 
-/// Compare gist's multiline `bufMatch` (whole-buffer, `-U` semantics) against
-/// `rg -U` over `input`. Records (doesn't throw) divergences where both engines
-/// accept the pattern. `dotall` prepends `(?s)` so `.` may cross `\n` in both.
+/// Compare this package's multiline `bufMatch` (whole-buffer, `-U` semantics)
+/// against `rg -U` over `input`. Records (doesn't throw) divergences where both
+/// engines accept the pattern. `dotall` prepends `(?s)` so `.` may cross `\n`
+/// in both.
 fn rgBufAgrees(c: *Collector, ctx: RgCtx, pattern: []const u8, input: []const u8, dotall: bool) void {
     var re = Regex.compileOpts(ctx.gpa, pattern, .{ .multiline = true, .dotall = dotall }) catch return;
     defer re.deinit();
@@ -390,7 +397,7 @@ fn rgMatchU(ctx: RgCtx, pattern: []const u8, input: []const u8) ?bool {
     };
 }
 
-/// Unicode-mode twin of `rgAgrees`: compile gist with `.unicode = true` (the CLI
+/// Unicode-mode twin of `rgAgrees`: compile with `.unicode = true` (the CLI
 /// default, rg-parity) and check `lineMatch` (rg fed `line ++ "\n"`) or `docMatch`
 /// (raw doc) against `rg` at its DEFAULT Unicode semantics. rg is a fully
 /// independent implementation — including its Unicode fold orbits, `\w`/`\p{…}`
@@ -436,12 +443,12 @@ fn findRg(gpa: std.mem.Allocator, io: std.Io) ?[]const u8 {
     return null;
 }
 
-/// Compare gist `lineMatch` (single line; rg fed `line ++ "\n"` so an empty line
-/// is one empty line, not zero lines) and `docMatch` (multi-line; rg fed the raw
-/// doc) against rg. Records (doesn't throw) divergences where both engines accept
-/// the pattern.
+/// Compare this engine's `lineMatch` (single line; rg fed `line ++ "\n"` so an
+/// empty line is one empty line, not zero lines) and `docMatch` (multi-line; rg
+/// fed the raw doc) against rg. Records (doesn't throw) divergences where both
+/// engines accept the pattern.
 fn rgAgrees(c: *Collector, ctx: RgCtx, pattern: []const u8, line: bool, input: []const u8) void {
-    var re = Regex.compile(ctx.gpa, pattern) catch return; // gist rejects ⇒ scope, skip
+    var re = Regex.compile(ctx.gpa, pattern) catch return; // rejected here ⇒ scope, skip
     defer re.deinit();
     var sim = Regex.Sim.init(ctx.gpa, &re) catch return;
     defer sim.deinit();
@@ -806,11 +813,11 @@ test "adversarial: Pike docMatch fallback (DFA-null) vs independent oracle" {
 }
 
 test "adversarial: Sim reuse across calls ≡ fresh Sim per call" {
-    // Real callers (`gist/bench/apparatus/harness/certify.zig`) reuse ONE `Sim`
-    // across many documents; a stale `gen`/`seen` not reset between calls would
-    // silently corrupt every call after the first. The harness elsewhere
-    // allocates a fresh `Sim` per check, so this is the only place that path is
-    // adversarially exercised.
+    // Real callers (the face package's `bench/apparatus/harness/certify.zig`)
+    // reuse ONE `Sim` across many documents; a stale `gen`/`seen` not reset
+    // between calls would silently corrupt every call after the first. The
+    // harness elsewhere allocates a fresh `Sim` per check, so this is the only
+    // place that path is adversarially exercised.
     const a = std.testing.allocator;
     const pats = [_][]const u8{ "\\d+", "ab*c", "[a-c]{2,}", "^x|y$", "(foo|bar)", "\\w+$", "a.*b" };
     const inputs = [_][]const u8{ "123", "abbbc", "aabbcc", "y", "xfoo", "", "no", "barbar\nfoo\n", "a\nb", "zzz" };
@@ -958,7 +965,8 @@ test "adversarial: rg second-oracle differential (parser-level)" {
         "...", "axbxc", "end", "ccc", "-",      "}",
     };
     // Parser corners: escapes, class range/edge handling, `{n,m}`, alternation,
-    // anchors, nesting. rg or gist rejecting one ⇒ scope question, auto-skipped.
+    // anchors, nesting. rg or this engine rejecting one ⇒ scope question,
+    // auto-skipped.
     const pats = [_][]const u8{
         "a\\.c",    "\\.",       "\\*",        "a\\*b",   "\\(",       "\\)",    "\\[",       "\\]",
         "\\|",      "\\^",       "\\$",        "\\\\",    "\\+",       "\\?",    "a\\{2\\}",  "a.c",
@@ -970,7 +978,7 @@ test "adversarial: rg second-oracle differential (parser-level)" {
         "((a))",    "(a*)*b",    "(a|b)+",     "(a?)+",   "a**",
         // Word boundaries `\b`/`\B` (ASCII, rg `--no-unicode`): leading, trailing,
         // both-sided, around classes, and the non-boundary `\B` — the foot-gun this
-        // change fixes (gist used to read `\b` as a literal byte 'b').
+        // change fixes (this engine used to read `\b` as a literal byte 'b').
               "\\ba",   "a\\b",      "\\babc",
         "abc\\b",   "\\babc\\b", "\\b\\w+",    "\\w+\\b", "\\bend\\b", "\\Bb",   "a\\Bb",     "\\Bbc",
         "[a-c]\\b", "\\b-",      "-\\b",
@@ -985,8 +993,8 @@ test "adversarial: rg second-oracle differential (parser-level)" {
     for (pats) |p| for (lines) |l| rgAgrees(&col, ctx, p, true, l);
 
     // Randomized breadth: the supported-subset generator vs rg over printable
-    // lines — the parser corner a hand-picked list would miss. rg/gist rejecting
-    // a generated pattern auto-skips (grammar scope).
+    // lines — the parser corner a hand-picked list would miss. Either engine
+    // rejecting a generated pattern auto-skips (grammar scope).
     const lalpha = "abc012 _-.";
     var line_buf: [24]u8 = undefined;
     var seed: u64 = 0;
@@ -1054,7 +1062,8 @@ test "adversarial: rg -U multiline differential (whole-buffer)" {
     }
 
     // Randomized breadth vs rg -U over newline-rich buffers: the corner a
-    // hand-picked list misses. rg/gist rejecting a pattern auto-skips (scope).
+    // hand-picked list misses. Either engine rejecting a pattern auto-skips
+    // (scope).
     const alphabet = "abc01_ \n\nX";
     var buf: [28]u8 = undefined;
     var seed: u64 = 0;
@@ -1084,17 +1093,19 @@ test "adversarial: rg -U multiline differential (whole-buffer)" {
 // Existence differentials (above) can't see laziness: `a.*b` and `a.*?b` match the
 // SAME inputs, differing only in the END offset of the chosen span. `rg -o` prints
 // each match's TEXT, so joining its lines is a direct, fully-independent oracle for
-// gist's `matchSpan` leftmost-first span — the ONLY place laziness is observable.
-// The Rust regex crate (rg's default engine) shares gist's leftmost-first,
-// greedy/lazy split-priority semantics, so byte-identical `-o` output is the proof
-// that no span is "more correct" than the one gist emits.
+// this package's `matchSpan` leftmost-first span — the ONLY place laziness is
+// observable. The Rust regex crate (rg's default engine) shares the same
+// leftmost-first, greedy/lazy split-priority semantics, so byte-identical `-o`
+// output is the proof that no span is "more correct" than the one this package
+// emits.
 
-/// `rg -o` over a single-line `input`, the NON-EMPTY match texts joined with '|'
-/// (each match is its own output line; `--no-unicode` matches gist's ASCII byte
-/// classes). Empty (zero-width) matches are dropped to match gist's documented
-/// `-o` policy (`render.zig`: zero-width spans are skipped, not emitted) — the
-/// remaining non-empty spans are exactly where greedy/lazy priority is observable.
-/// null ⇒ rg errored (grammar exit ≥2) or couldn't run; "" ⇒ ran, no non-empty match.
+/// `rg -o` over a single-line `input`, the NON-EMPTY match texts joined with
+/// '|' (each match is its own output line; `--no-unicode` matches this
+/// package's ASCII byte classes). Empty (zero-width) matches are dropped to
+/// match this package's documented `-o` policy (`render.zig`: zero-width spans
+/// are skipped, not emitted) — the remaining non-empty spans are exactly where
+/// greedy/lazy priority is observable. null ⇒ rg errored (grammar exit ≥2) or
+/// couldn't run; "" ⇒ ran, no non-empty match.
 fn rgOnlyJoined(ctx: RgCtx, pattern: []const u8, input: []const u8) ?[]u8 {
     std.Io.Dir.cwd().writeFile(ctx.io, .{ .sub_path = ctx.tmp, .data = input }) catch return null;
     const argv = [_][]const u8{ ctx.rg, "-o", "--no-filename", "--no-line-number", "-a", "--no-unicode", "--color", "never", "-e", pattern, ctx.tmp };
@@ -1114,7 +1125,7 @@ fn rgOnlyJoined(ctx: RgCtx, pattern: []const u8, input: []const u8) ?[]u8 {
     var first = true;
     var it = std.mem.splitScalar(u8, std.mem.trimEnd(u8, res.stdout, "\n"), '\n');
     while (it.next()) |seg| {
-        if (seg.len == 0) continue; // drop zero-width matches (gist skips them)
+        if (seg.len == 0) continue; // drop zero-width matches (this engine skips them)
         if (!first) out.append(ctx.gpa, '|') catch return null;
         first = false;
         out.appendSlice(ctx.gpa, seg) catch return null;
@@ -1122,10 +1133,11 @@ fn rgOnlyJoined(ctx: RgCtx, pattern: []const u8, input: []const u8) ?[]u8 {
     return out.toOwnedSlice(ctx.gpa) catch null;
 }
 
-/// gist's `-o` stream for a single line: every non-overlapping `matchSpan`'s text
-/// joined with '|' (empty matches advance one byte — exactly `emitOnlyMatching`).
+/// This package's `-o` stream for a single line: every non-overlapping
+/// `matchSpan`'s text joined with '|' (empty matches advance one byte — exactly
+/// `emitOnlyMatching`).
 fn gistOnlyJoined(gpa: std.mem.Allocator, pattern: []const u8, input: []const u8) ?[]u8 {
-    var re = Regex.compile(gpa, pattern) catch return null; // gist rejects ⇒ scope, skip
+    var re = Regex.compile(gpa, pattern) catch return null; // rejected here ⇒ scope, skip
     defer re.deinit();
     var ss = Regex.SpanSim.init(gpa, &re) catch return null;
     defer ss.deinit();
@@ -1201,7 +1213,7 @@ test "adversarial: rg -o span differential (lazy vs greedy leftmost-first)" {
 
     // Randomized breadth: lazy-heavy generated patterns over printable single-line
     // inputs. Where BOTH engines accept the pattern, their `-o` spans must be
-    // byte-identical — the independent-oracle proof that gist's span is canonical.
+    // byte-identical — the independent-oracle proof that this span is canonical.
     const alphabet = "abc012 _<>";
     var line_buf: [22]u8 = undefined;
     var seed: u64 = 0;
@@ -1230,8 +1242,8 @@ test "adversarial: rg -o span differential (lazy vs greedy leftmost-first)" {
 
 // ───────────────── Unicode differential vs rg DEFAULT (rg-parity) ─────────────────
 //
-// The differentials above run gist's ASCII engine against `rg --no-unicode`. This
-// one proves the OTHER half — gist's Unicode-default engine (`compileOpts(.{ .unicode
+// The differentials above run this ASCII engine against `rg --no-unicode`. This
+// one proves the OTHER half — the Unicode-default engine (`compileOpts(.{ .unicode
 // = true })`, the CLI default) ≡ `rg` at its DEFAULT (Unicode) semantics — across
 // the four surfaces this pass brought online: full-orbit case folding (Latin/Greek
 // final-sigma/Cyrillic/ß), codepoint & property classes (`\w \d \s . \p{…}`),
@@ -1351,17 +1363,18 @@ test "adversarial: Unicode differential vs rg default (fold/classes/boundaries)"
     }
 }
 
-// ─────────────── PCRE (grep -oP) SPAN differential — gist's true twin ───────────────
+// ──────────── PCRE (grep -oP) SPAN differential — this engine's true twin ────────────
 //
 // ripgrep is deliberately NOT the correctness oracle for empty-match rendering:
 // `rg -o` emits zero-width matches as blank lines and prints a `$`-anchored empty
 // match as the WHOLE line (`x*$` on "abc" ⇒ "abc"). GNU grep, PCRE (`grep -oP`)
-// AND gist all agree instead: zero-width matches are skipped. PCRE additionally
-// implements the SAME leftmost-first greedy/lazy semantics gist compiles, so
-// `grep -oP` is gist's exact semantic twin — this differential is therefore
-// FAITHFUL: anchors enabled, no empty-dropping, byte-for-byte. It is the "pattern
-// more true" proof that gist's span (empty-handling AND laziness) is canonical,
-// not merely rg-quirk-avoidant. (Measured: gist ≡ grep -oP ≡ PCRE on this battery.)
+// AND this engine all agree instead: zero-width matches are skipped. PCRE
+// additionally implements the SAME leftmost-first greedy/lazy semantics this
+// package compiles, so `grep -oP` is its exact semantic twin — this differential
+// is therefore FAITHFUL: anchors enabled, no empty-dropping, byte-for-byte. It
+// is the "pattern more true" proof that this span (empty-handling AND laziness)
+// is canonical, not merely rg-quirk-avoidant. (Measured: this engine ≡ grep -oP
+// ≡ PCRE on this battery.)
 
 /// Locate a GNU grep with working `-P` (PCRE). Probes `-oP` on a trivial pattern
 /// against `tmp` so we only claim it when PCRE is actually compiled in.
@@ -1380,9 +1393,9 @@ fn findGrepP(gpa: std.mem.Allocator, io: std.Io, tmp: []const u8) ?[]const u8 {
 /// `grep -oP` over a single-line `input`, matches joined with '|'. Inputs are
 /// ASCII-only, so locale is irrelevant to `\w`/`\d`/`\s`/`\b`/`.` here (a UTF-8 `.`
 /// over an ASCII byte is that byte); a multibyte-pattern that errors under UTF-8
-/// auto-skips below. Like gist and unlike rg, PCRE skips zero-width matches, so NO
-/// normalization is applied — the join is faithful. null ⇒ grep errored (exit ≥2)
-/// or couldn't run; "" ⇒ ran, no match.
+/// auto-skips below. Like this engine and unlike rg, PCRE skips zero-width
+/// matches, so NO normalization is applied — the join is faithful. null ⇒ grep
+/// errored (exit ≥2) or couldn't run; "" ⇒ ran, no match.
 fn grepOnlyJoinedP(ctx: RgCtx, grep: []const u8, pattern: []const u8, input: []const u8) ?[]u8 {
     std.Io.Dir.cwd().writeFile(ctx.io, .{ .sub_path = ctx.tmp, .data = input }) catch return null;
     const argv = [_][]const u8{ grep, "-oPh", "-e", pattern, ctx.tmp };
@@ -1433,7 +1446,7 @@ test "adversarial: grep -oP (PCRE) span differential — faithful, anchors on" {
     defer col.deinit();
 
     // Curated lazy/greedy pairs — verified against `grep -oP` (PCRE). Anchors and
-    // empty-producing patterns included: PCRE skips empties exactly as gist does.
+    // empty-producing patterns included: PCRE skips empties exactly as this does.
     const cases = [_]Case{
         .{ .pat = "a.*?b", .line = "axbxb" },
         .{ .pat = "a.*b", .line = "axbxb" },
@@ -1443,7 +1456,7 @@ test "adversarial: grep -oP (PCRE) span differential — faithful, anchors on" {
         .{ .pat = "a.??b", .line = "aXb" },
         .{ .pat = "a.??b", .line = "ab" },
         .{ .pat = "x.*?x.*?x", .line = "xaxbxcx" },
-        // Empty-match & anchor domain where rg diverges but PCRE ≡ gist:
+        // Empty-match & anchor domain where rg diverges but PCRE ≡ this engine:
         .{ .pat = "a*", .line = "baab" }, // leading empty skipped ⇒ "aa"
         .{ .pat = "[0-9]*", .line = "a12b3" }, // "12|3"
         .{ .pat = "x*$", .line = "abc" }, // zero-width EOL ⇒ no output (rg ⇒ "abc")
@@ -1454,7 +1467,7 @@ test "adversarial: grep -oP (PCRE) span differential — faithful, anchors on" {
     for (cases) |cs| grepSpanAgrees(&col, ctx, grep, cs.pat, cs.line);
 
     // Randomized breadth: lazy-heavy generated patterns WITH anchors (the faithful
-    // domain PCRE shares with gist) over printable single-line inputs.
+    // domain PCRE shares with this engine) over printable single-line inputs.
     const alphabet = "abc012 _<>";
     var line_buf: [22]u8 = undefined;
     var seed: u64 = 0;
@@ -1463,7 +1476,7 @@ test "adversarial: grep -oP (PCRE) span differential — faithful, anchors on" {
         const r = prng.random();
         var pat: std.ArrayList(u8) = .empty;
         defer pat.deinit(a);
-        var g = Gen{ .r = r, .buf = &pat, .a = a, .lazy = true, .word_edges = false }; // anchors ON — PCRE ≡ gist
+        var g = Gen{ .r = r, .buf = &pat, .a = a, .lazy = true, .word_edges = false }; // anchors ON — PCRE ≡ this
         g.pattern() catch continue;
         for (0..4) |t| {
             const len = if (t == 0) 0 else r.uintLessThan(usize, line_buf.len + 1);

@@ -15,8 +15,8 @@
 //! spelling, a deletion stays gone, a served root declines to scope and is right
 //! anyway — and the only honest way to hold two backends to one promise is to make
 //! them run the same cases. A per-backend copy of this rig would let the promises
-//! drift apart silently, which is exactly the fork `relate echoes --as copies`
-//! exists to find.
+//! drift apart silently, which is exactly the fork the kinship face's copy
+//! sweep exists to find.
 //!
 //! What stays in a per-backend suite is what is genuinely per-backend: macOS's
 //! descriptor-per-vnode coverage walk and its ignore-rule re-derivation
@@ -74,7 +74,7 @@ pub const Tree = struct {
         // The corpus scope is STATED, for the same reason the root is absolute:
         // this rig grades the engine against a ledger of files it wrote itself,
         // under subdirectories (`sub/`, `moved/`) whose basenames an operator's
-        // `GIST_SKIP` or seeded `<GIST_DIR>/skips.list` is free to name. Inherit
+        // `<prefix>SKIP` or seeded `skips.list` is free to name. Inherit
         // that overlay and the walk prunes a directory the oracle still expects,
         // and a true claim about the backend fails against a corpus nobody here
         // declared. The ambient policy goes back on the way out.

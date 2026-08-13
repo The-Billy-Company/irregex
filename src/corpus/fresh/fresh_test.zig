@@ -1,4 +1,4 @@
-//! gist T3 freshness-overlay test — split from `fresh.zig`. Pulled into
+//! irregex T3 freshness-overlay test — split from `fresh.zig`. Pulled into
 //! `zig build test` via `bench.zig`'s test block. Exercises `widen`'s set
 //! algebra in isolation (no filesystem): an existing-but-trigram-skipped file is
 //! forced into the candidate ids by its existing id, a brand-new file is
@@ -6,7 +6,7 @@
 //! once.
 //!
 //! Then the part `widen` cannot speak to: the MODEL in `README.md` § The model,
-//! which is what every "no false negatives" claim about a stale gist index rests
+//! which is what every "no false negatives" claim about a stale index rests
 //! on. Each assumption there is one test here, driving real files through the
 //! production sweep rather than asserting a hand-computed set — the interesting
 //! failures (a filesystem that does not advance ctime, a walk that loses a
@@ -23,7 +23,7 @@ const Dir = std.Io.Dir;
 /// A throwaway tree plus the two clocks the model is stated in terms of. The
 /// gap around the anchor is real sleep because it has to be: the claim is about
 /// what the FILESYSTEM records, and a filesystem whose timestamp granularity is
-/// coarser than the gap would make the test lie in gist's favor.
+/// coarser than the gap would make the test lie in the engine's favor.
 const Fixture = struct {
     const gap_ns = 25 * std.time.ns_per_ms;
 

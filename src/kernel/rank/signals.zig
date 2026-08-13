@@ -1,5 +1,5 @@
-//! gist ranking signals — the language-agnostic, byte-level heuristics the T4
-//! ranker (sibling `rank.zig`) consumes as `Doc` features. Three questions,
+//! irregex ranking signals — the language-agnostic, byte-level heuristics the
+//! T4 ranker (sibling `rank.zig`) consumes as `Doc` features. Three questions,
 //! answered from raw bytes with no parser:
 //!
 //!   • **`definesNeedle`** — does this line *define* the needle (vs use it)? The
@@ -15,12 +15,13 @@
 //! Both are deliberately **cross-language, not host-specific**.
 //! `declarationConfidence` reads Unicode word boundaries and geometry rather
 //! than a language catalogue: delimiter nesting, labels, equations, prefix
-//! forms, and body-opening punctuation. `shapeFingerprint` applies relate's
-//! model-free normalization idea to one match line (query identifier → Q,
-//! other identifiers → I, strings → S, numbers → N), letting the ranker price
-//! repeated use shapes below rarer explanatory shapes. `isGenerated` trusts
-//! universal header markers first and filename conventions only when bytes are
-//! unavailable. Every signal only reorders results; none can hide a match.
+//! forms, and body-opening punctuation. `shapeFingerprint` applies the kinship
+//! face's model-free normalization idea to one match line (query identifier →
+//! Q, other identifiers → I, strings → S, numbers → N), letting the ranker
+//! price repeated use shapes below rarer explanatory shapes. `isGenerated`
+//! trusts universal header markers first and filename conventions only when
+//! bytes are unavailable. Every signal only reorders results; none can hide a
+//! match.
 
 const std = @import("std");
 const decode = @import("../regex/regex.zig").decode;
@@ -317,7 +318,7 @@ fn hashByte(h: *u64, b: u8) void {
     h.* = (h.* ^ b) *% 1099511628211;
 }
 
-/// Relate-style normalized shape of a matching line. Unlike silhouette's
+/// Kinship-style normalized shape of a matching line. Unlike silhouette's
 /// file-level sketch this is allocation-free and keeps no keyword shelf.
 pub fn shapeFingerprint(line: []const u8, needle: []const u8) u64 {
     if (needle.len == 0 or isComment(line)) return 0;

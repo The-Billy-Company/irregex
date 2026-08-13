@@ -14,8 +14,8 @@ walk, in what shape, and how to stream the result.
 - **[`swarm/`](swarm)** is the fused work-stealing walk+read+match, taken
   when the flag set allows; ineligible combinations fall through to serial
   unchanged. Seven modules behind two functions (`eligible`, `run`).
-- **The retrieval rung** moved to `relate/src/exec/retrieval/` in the
-  sibling `relate` repo — the fingerprint-lexicon path for `similar` /
+- **The retrieval rung** moved to the kinship package's own
+  `exec/retrieval/` — the fingerprint-lexicon path for `similar` /
   `pack`, shared by cold and warm.
 
 ## Two Schedulers, One Policy
@@ -38,7 +38,7 @@ the user, just slower.
 `defaultFileSet` here is also what the warm session uses to select its
 corpus, so resident reconcile and cold walk agree on what is in the tree.
 
-## Why Relate's Engine Lives Beside Gist's
+## Why the Kinship Engine Lives Beside This One
 
 The cold-engine deep-module split lifted the native lenses to
 [`../view/`](../view) so this package would mean one thing, and then
@@ -47,7 +47,7 @@ three share is not a face but a rung: each drives a corpus to a finished
 answer in a fresh process, against the same walk, the same persisted
 index, and the same freshness discipline.
 
-Moving retrieval under `face/relate/` would put an engine inside a face —
+Moving retrieval under the kinship face would put an engine inside a face —
 the one direction [`exec/`](../../README.md) forbids — and would buy a
 tidier folder name at the cost of a real layering rule, while lifting no
 abstraction (depth-over-decomposition).

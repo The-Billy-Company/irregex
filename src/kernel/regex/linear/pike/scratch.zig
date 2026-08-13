@@ -1,4 +1,4 @@
-//! gist — Pike-VM scratch: the memory a linear-time simulation reuses across
+//! irregex — Pike-VM scratch: the memory a linear-time simulation reuses across
 //! haystacks. A `ThreadList` is the run-list of NFA states live at ONE input
 //! position; `PikeScratch` sizes both lists plus the generation-counted `seen`
 //! dedup once per program, so a search allocates nothing per line. Handed to

@@ -43,7 +43,7 @@
         // The shared measurement instruments — the 12-class probe registry, the
         // PMU counters, and the bootstrap/Mann-Whitney verdict math — exported
         // as the `probes` / `pmu` / `stats` modules. Here for the same reason
-        // `brigade.zig` is: `gist`'s bench harness reaches them through its
+        // `brigade.zig` is: a face's bench harness reaches them through its
         // dependency on this package, and one shared registry is what makes a
         // class name mean the same thing in both repos' numbers.
         "bench/apparatus/harness",

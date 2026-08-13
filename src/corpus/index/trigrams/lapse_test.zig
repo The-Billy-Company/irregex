@@ -1,4 +1,4 @@
-//! gist generation-retention tests — wired via `root.zig`'s test block.
+//! irregex generation-retention tests — wired via `root.zig`'s test block.
 //!
 //! Each of `lapse`'s four fences is asserted ALONE, because that is the claim:
 //! any one of them by itself keeps a directory. A fixture that satisfied two at

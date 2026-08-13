@@ -178,11 +178,11 @@ filter that runs at 30–50 GB/s when it is pointed at the right two bytes.
 
 The harness varies the anchor pair directly, which requires a patch. To confirm
 the defect is production-visible without one, exploit the fact that the
-selector's choice is a function of the needle: run the real `gist` on a single
-1.7 GB file and compare needles that select well against needles that collapse.
+selector's choice is a function of the needle: run the real search binary on a
+single 1.7 GB file and compare needles that select well against needles that collapse.
 
 ```bash
-gist -uu --no-index -c <needle> big.txt        # 1.7 GB, warm page cache
+<face> -uu --no-index -c <needle> big.txt      # 1.7 GB, warm page cache
 ```
 
 | needle | len | true hits | shipped pair | time | throughput |
@@ -414,7 +414,7 @@ with `√count`, which no relative floor can see, so the margin is the larger of
 and four standard deviations of the incumbent's own sampled count.
 
 Measured after integration (M4, single-threaded, in-binary A/B via
-`GIST_NO_CALIBRATE`, child CPU, best of 7, interleaved) on a 200 MB buffer whose
+`<PREFIX>_NO_CALIBRATE`, child CPU, best of 7, interleaved) on a 200 MB buffer whose
 alphabet is the statically-rare bytes, over three needles whose locally-rarest byte
 the table ranks common — `zeqXtj`, `tzeQjq`, `ezQtj`:
 
@@ -558,7 +558,7 @@ runs, never which positions match.
 `stepSec` ran **1.41×** the time of `pgxpool` while finding an order of magnitude
 fewer real matches. That ratio is the whole defect in one number, so it is also the
 cleanest closure test. Re-measured on the built binary with the tie-break repair
-**and** the unclamped table in place, `gist --no-index -c` over the 213 MB corpus,
+**and** the unclamped table in place, a `--no-index -c` run over the 213 MB corpus,
 interleaved, best-of-7:
 
 | needle | true hits | best | |
@@ -669,7 +669,7 @@ size gate fires.
   establishes that the defect is visible in the shipped binary; the end-to-end win
   is §7.2.e's in-binary A/B, on a different (adversarial) corpus.
 - §7.2.e's end-to-end ratios are **child CPU time in one binary against itself**
-  via `GIST_NO_CALIBRATE`, not a two-build comparison — deliberately, because this
+  via `<PREFIX>_NO_CALIBRATE`, not a two-build comparison — deliberately, because this
   tree is edited concurrently by many agents and a two-build A/B cannot hold the
   rest of the binary fixed. Wall clock on a 200 MB mmap is mostly page-fault noise,
   which is why CPU is the reported quantity.
@@ -699,6 +699,6 @@ per-needle ratios and the degenerate-pick census. The integration (§7.2.e) ran
 on a second: a `sweep.zig` timing one hit-to-hit kernel sweep under the lazy,
 static and calibrated plans that refused to report until all three hit counts
 agreed, a per-needle headroom probe, the in-binary CPU A/B against
-`GIST_NO_CALIBRATE`, and the 420-invocation output differential. What ships in
+`<PREFIX>_NO_CALIBRATE`, and the 420-invocation output differential. What ships in
 place of them is the part that must keep holding: `anchor_test.zig`,
 `calibrate_test.zig`, and the parity suites. See `TESTING.md`.

@@ -1,8 +1,8 @@
-//! gist — the one shared stdout writer every worker streams through.
+//! The one shared stdout writer every worker streams through.
 //!
 //! Each rendered fragment is written the instant it is ready, under a lock so
 //! concurrent workers' output never interleaves, and a write that comes back
-//! closed-pipe cancels the whole walk. That is what lets `gist … | head -1`
+//! closed-pipe cancels the whole walk. That is what lets a `… | head -1` run
 //! finish in single-digit milliseconds instead of paying for the entire corpus:
 //! the trade is that output arrives in worker-discovery order rather than a
 //! global path sort, which the rg-parity harness already treats as a soft pass.
@@ -31,8 +31,8 @@ pub const FragKind = enum { text_hit, text_plain, bin_hit, json };
 /// cooperative-cancellation shape ripgrep's own printer uses.
 ///
 /// The trade: output now arrives in worker-discovery order, not the old
-/// global path-sort — gist's own rgsuite harness already classifies an
-/// order-only diff as a soft pass (`sort_lines(gist) == sort_lines(rg)`),
+/// global path-sort — our own rgsuite harness already classifies an
+/// order-only diff as a soft pass (`sort_lines(ours) == sort_lines(rg)`),
 /// since a parallel walker's file order was never a byte-parity promise to
 /// begin with. Every other framing (heading blank lines, `--` context-group
 /// separators, per-file line order, the match/no-match exit code) is

@@ -1,6 +1,6 @@
 # regex/unicode — Unicode support for the byte engine
 
-gist matches *bytes*, but ripgrep folds and classifies *codepoints* by default. This leaf holds the machinery that lets gist's byte automaton speak Unicode without leaving its O(1)/byte floor.
+This engine matches *bytes*, but ripgrep folds and classifies *codepoints* by default. This leaf holds the machinery that lets the byte automaton speak Unicode without leaving its O(1)/byte floor.
 
 ## Files
 

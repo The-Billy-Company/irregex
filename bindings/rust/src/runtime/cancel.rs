@@ -8,10 +8,10 @@
 //! `context.Context` on day one, which is how the gap survived: there was always
 //! a language in which it worked.
 //!
-//! It matters because these are the long calls. `relate echoes --shape distinct`
-//! is a claim about every pair in the corpus, with no cheaper form and a measured
-//! 27 seconds; a host that cannot abandon one has to either block a thread to
-//! completion or lose the whole process.
+//! It matters because these are the long calls. A repetition sweep over
+//! distinct units is a claim about every pair in the corpus, with no cheaper
+//! form and a measured 27 seconds; a host that cannot abandon one has to either
+//! block a thread to completion or lose the whole process.
 //!
 //! Rust has no ambient `Context` to bind to, so the token IS the Rust surface:
 //! clone it to whoever decides, call [`CancelToken::cancel`] there. The engine's

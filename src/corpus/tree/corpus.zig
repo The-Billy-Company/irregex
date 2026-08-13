@@ -1,9 +1,9 @@
-//! irregex — corpus loading, shared by the CLI drivers (`surface/face/gist/`), the
-//! unified search engine (`exec/cold/`) and the bench/verify harness
-//! (`gist/bench/apparatus/harness/bench.zig`). The corpus is every non-binary, non-gitignored
-//! file under the roots (rg-style: a NUL byte ⇒ binary ⇒ skipped), minus the
-//! corpus-only build/VCS skip list. Also owns the stdout results contract
-//! (`emitResults`) every search path emits through.
+//! irregex — corpus loading, shared by the CLI drivers in the sibling face
+//! repos, the unified search engine (`exec/cold/`) and their bench/verify
+//! harness. The corpus is every non-binary, non-gitignored file under the roots
+//! (rg-style: a NUL byte ⇒ binary ⇒ skipped), minus the corpus-only build/VCS
+//! skip list. Also owns the stdout results contract (`emitResults`) every
+//! search path emits through.
 
 const std = @import("std");
 const haystack = @import("haystack.zig");
@@ -24,13 +24,13 @@ pub const StdoutPolicy = drain.Policy;
 pub const per_file_cap: usize = 4 << 20; // 4 MiB
 
 /// The corpus roots for THIS working directory — the shared resolution every
-/// build verb (`gist index`, `gist codex build`, `relate index`, live relate
-/// verbs) runs when no explicit roots were given. Query paths that ride a
-/// persisted artifact prefer the roots persisted BESIDE it (`roots.list`,
+/// build verb (an index build, `codex build`, a kinship index build, live
+/// kinship verbs) runs when no explicit roots were given. Query paths that ride
+/// a persisted artifact prefer the roots persisted BESIDE it (`roots.list`,
 /// atlas roots blob) so a query always folds freshness over the corpus the
 /// artifact was actually built from; this resolver is the build-time (and
 /// no-artifact) answer. Three rungs:
-///   1. `GIST_ROOTS` — explicit override, `:`/space/comma-separated paths;
+///   1. `<prefix>ROOTS` — explicit override, `:`/space/comma-separated paths;
 ///   2. the tree's committed charter (`.irregex.toml roots`), already resolved
 ///      against the charter's own directory, so the answer does not depend on
 ///      which subdirectory the command happened to run from;
@@ -38,7 +38,7 @@ pub const per_file_cap: usize = 4 << 20; // 4 MiB
 ///      the CHECKOUT, not the working directory, which is the same principle
 ///      rung 2 states: the corpus is a property of the tree, so the answer must
 ///      not depend on which subdirectory the command happened to run from.
-///      `gist index` in `services/ai` indexes the repository, exactly as it
+///      An index build in `services/ai` indexes the repository, exactly as it
 ///      does from the root, and publishes into the one home they share. No tree
 ///      layout is ever assumed; a corpus that wants a narrower scope declares
 ///      it, passes roots positionally, or sets the env.
@@ -140,18 +140,19 @@ pub fn freeRoots(gpa: std.mem.Allocator, roots: []const []const u8) void {
 //     Once the emitted/accumulated total crosses it, irregex stops producing
 //     results and `finishOutput` prints a one-line notice to STDERR (never
 //     stdout — a redirected capture stays clean rg-shaped bytes, just fewer of
-//     them). Lifted by `--uncap` / `GIST_UNCAP` for the agent that wants the
+//     them). Lifted by `--uncap` / `<prefix>UNCAP` for the agent that wants the
 //     firehose. Applied symmetrically across every content path: the cold serial
 //     loop polls `outputFull` at file boundaries, the streaming parallel sink
 //     refuses fragments past the ceiling, and a WARM-served pre-rendered answer
 //     is cut at a whole-line boundary by `writeStdoutCapped` (so a daemon hit no
 //     longer emits the firehose a daemon-less run would truncate).
 //   • hard — the OOM ceiling. Always on, even under `--uncap`; the most irregex will
-//     ever stream/accumulate. Tunable only via `GIST_MAX_OUTPUT_BYTES` (0 ⇒ truly
-//     unlimited — the parity-harness escape hatch).
+//     ever stream/accumulate. Tunable only via `<prefix>MAX_OUTPUT_BYTES`
+//     (0 ⇒ truly unlimited — the parity-harness escape hatch).
 //
-// The parity/bench harnesses (`bench/`) diff gist byte-for-byte against ripgrep,
-// which has no such cap, so they export `GIST_UNCAP=1` to keep the oracle exact.
+// The parity/bench harnesses (`bench/`) diff this engine byte-for-byte against
+// ripgrep, which has no such cap, so they export `<prefix>UNCAP=1` to keep the
+// oracle exact.
 pub const bytes_per_token: usize = 4;
 pub const default_soft_output_bytes: usize = 100 << 10; // ~25k tokens
 pub const default_hard_output_bytes: usize = 256 << 20; // OOM ceiling
@@ -167,7 +168,7 @@ pub const Budget = struct {
     /// The effective stop for both streaming and serial accumulation, in bytes;
     /// 0 ⇒ unlimited. `--uncap` ⇒ the hard ceiling; otherwise min(soft, hard).
     ceiling: usize = @min(default_soft_output_bytes, default_hard_output_bytes),
-    /// True once the soft guard is lifted (`--uncap`/`GIST_UNCAP`) — only the hard
+    /// True once the soft guard is lifted (`--uncap`/`<prefix>UNCAP`) — only the hard
     /// OOM ceiling remains, which shapes the truncation notice's wording.
     soft_disabled: bool = false,
 
@@ -184,27 +185,29 @@ const OutputBudget = struct {
 };
 var output_budget: OutputBudget = .{};
 
-/// `GIST_UNCAP` truthiness — set to any value except `0`/`false`/`no`/empty
-/// lifts the soft guard (the bench harness sets `GIST_UNCAP=1`).
+/// `<prefix>UNCAP` truthiness — set to any value except `0`/`false`/`no`/empty
+/// lifts the soft guard (the bench harness sets `<prefix>UNCAP=1`).
 fn envUncap() bool {
     return assay.knobFlag("UNCAP");
 }
 
-/// `GIST_HINTS` — the kill switch for the stderr guidance channel (`gist:
-/// try` / `gist: note:` lines). Unset or any value except `0`/`false`/`no` keeps hints on;
-/// a byte-counting capture or parity harness exports `GIST_HINTS=0`. Shared
-/// by the CLI hint module (`exec/cold/emit/hints.zig`) and the
-/// truncation notice below — one env read, one policy. Results on stdout are
-/// untouched either way; this only governs stderr guidance.
+/// `<prefix>HINTS` — the kill switch for the stderr guidance channel (the
+/// tagged `try` / `note:` lines). Unset or any value except `0`/`false`/`no`
+/// keeps hints on; a byte-counting capture or parity harness exports
+/// `<prefix>HINTS=0`. Shared by the CLI hint module
+/// (`exec/cold/emit/hints.zig`) and the truncation notice below — one env read,
+/// one policy. Results on stdout are untouched either way; this only governs
+/// stderr guidance.
 pub fn hintsEnabled() bool {
     return if (assay.knob("HINTS")) |s| !assay.envFalsy(s) else true;
 }
 
-/// Read this process's ceilings out of the `--uncap` flag and the `GIST_UNCAP` /
-/// `GIST_MAX_OUTPUT_TOKENS` / `GIST_MAX_OUTPUT_BYTES` env knobs. Consulting the
-/// environment is ALL it does — that is what lets the install below be driven by
-/// a caller that has none, and what keeps "which knobs bind a run" one readable
-/// expression instead of a side effect buried in a setter.
+/// Read this process's ceilings out of the `--uncap` flag and the
+/// `<prefix>UNCAP` / `<prefix>MAX_OUTPUT_TOKENS` / `<prefix>MAX_OUTPUT_BYTES`
+/// env knobs. Consulting the environment is ALL it does — that is what lets the
+/// install below be driven by a caller that has none, and what keeps "which
+/// knobs bind a run" one readable expression instead of a side effect buried in
+/// a setter.
 pub fn resolveOutputBudget(flag_uncap: bool) Budget {
     const disabled = flag_uncap or envUncap();
     const soft = if (assay.knobUsize("MAX_OUTPUT_TOKENS")) |t| t *| bytes_per_token else default_soft_output_bytes;
@@ -275,7 +278,7 @@ pub const Mark = struct {
 /// `--files-without-match`/`--files`) call this so their result SET is complete
 /// and reproducible, never a soft-cap-truncated (and, on the unordered parallel
 /// engine, nondeterministic) subset. Must run AFTER `initOutputBudget`, which it
-/// overrides. An EXPLICIT soft budget (`GIST_MAX_OUTPUT_TOKENS`) is honored —
+/// overrides. An EXPLICIT soft budget (`<prefix>MAX_OUTPUT_TOKENS`) is honored —
 /// the caller asked to be bounded; only the DEFAULT ~25k-token guard is lifted.
 /// `--uncap` already leaves only the hard ceiling, so this is a no-op there.
 pub fn exemptSoftCap() void {
@@ -289,8 +292,8 @@ pub fn exemptSoftCap() void {
 /// Write RESULTS (the match list / ranked rows) to **stdout** — the Unix
 /// convention `rg` follows: data on stdout, any diagnostic (`[pipeline]`, "no
 /// index"/"bad pattern" guidance, `--rank`'s timing line) stays on stderr via
-/// `assay.diag`. This is what makes irregex agent-friendly in a shell: `gist
-/// foo -l > files` captures the paths and `gist foo | head` shows only
+/// `assay.diag`. This is what makes irregex agent-friendly in a shell: a face
+/// invoked as `foo -l > files` captures the paths and as `foo | head` shows only
 /// results. A raw `posix.write` loop (handling partial writes) mirrors the
 /// blocking-syscall idiom the read path already uses, and sidesteps the std
 /// Io.Writer surface churn. Returns whether every byte was accepted — `false`
@@ -426,7 +429,7 @@ fn carbonCopy(bytes: []const u8, how: enum { whole, torn }) void {
 /// `false` ⇒ stdout is spent/closed (nothing more to send), like `writeStdout`.
 pub fn writeStdoutCapped(bytes: []const u8) bool {
     const ceiling = output_budget.limit.ceiling;
-    if (ceiling == 0) return drain.write(rawWriteStdout, bytes); // GIST_MAX_OUTPUT_BYTES=0 ⇒ truly unbounded
+    if (ceiling == 0) return drain.write(rawWriteStdout, bytes); // <prefix>MAX_OUTPUT_BYTES=0 ⇒ truly unbounded
     const already = output_budget.written.load(.monotonic);
     if (already >= ceiling) {
         if (bytes.len != 0) output_budget.truncated.store(true, .monotonic);
@@ -527,8 +530,8 @@ pub fn appendBudgeted(a: std.mem.Allocator, out: *std.ArrayList(u8), buf: []cons
 /// (idempotent, a no-op when nothing was cut). Kept off stdout so a redirected
 /// capture stays clean rg-shaped bytes. Under `--uncap` it still fires if the
 /// hard OOM ceiling did the cutting, so a firehose caller still learns the output
-/// was clipped. The outcome line always prints; the follow-up `gist: try`
-/// lines respect the `GIST_HINTS` gate (shared grammar with `hints.zig`).
+/// was clipped. The outcome line always prints; the follow-up tagged `try`
+/// lines respect the `<prefix>HINTS` gate (shared grammar with `hints.zig`).
 pub fn finishOutput() void {
     // Every terminal emit path lands here, so this is where a buffering policy
     // settles its debt — before any notice, and unconditionally, since a clean
@@ -554,10 +557,10 @@ test "the ceiling counts what is read, not the escapes around it" {
     // The regression this pins: the budget once measured emitted bytes, so a
     // colored or clickable run answered roughly half as many rows as the same
     // query in plain text — you paid for results in bytes nobody ever saw.
-    // Stated, not resolved: `initOutputBudget` reads `GIST_UNCAP` and the two
+    // Stated, not resolved: `initOutputBudget` reads `<prefix>UNCAP` and the two
     // override knobs, so a test that called it would assert the default ceiling
     // while bound by whatever the operator's shell exported (the bench harness
-    // exports `GIST_UNCAP=1`). The claim here is about the default budget, so the
+    // exports `<prefix>UNCAP=1`). The claim here is about the default budget, so the
     // test hands itself that budget.
     defer installOutputBudget(.default);
     installOutputBudget(.default);
@@ -729,9 +732,9 @@ pub fn census(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8) !Ce
     return @import("loadpar.zig").census(gpa, io, roots);
 }
 
-/// `GIST_NO_PARALLEL_LOAD` truthy (any value but `0`/`false`/`no`/empty) forces
+/// `<prefix>NO_PARALLEL_LOAD` truthy (any value but `0`/`false`/`no`/empty) forces
 /// the serial loader — the parity gate + escape hatch, mirroring the search
-/// engine's `GIST_NO_PARALLEL`.
+/// engine's `<prefix>NO_PARALLEL`.
 fn parallelLoadDisabled() bool {
     return assay.knobFlag("NO_PARALLEL_LOAD");
 }
@@ -745,7 +748,7 @@ pub const Layout = enum {
     /// instead of restarting it 175k times (Layer C: 52.8 vs 28.7 GB/s).
     contiguous,
     /// Bodies left where the walk put them. For a corpus read a FIXED, small
-    /// number of times and then dropped — `gist index` extracts trigrams once
+    /// number of times and then dropped — an index build extracts trigrams once
     /// and writes the shard once, so the copy is pure cost. Measured on
     /// llvm-project (1926 MiB, 175,110 docs): scattered loads ~1.0 s faster,
     /// finishes the whole build ~1.2 s faster, and peaks 1027 MiB lower.
@@ -756,7 +759,7 @@ pub const Layout = enum {
 /// an unreadable root is reported to stderr and skipped, matching rg's walk-on
 /// behavior). Dispatches to the fused parallel walk+read (`loadpar`) by default
 /// — ~3× faster on a broad build — and to the serial walk below under
-/// `GIST_NO_PARALLEL_LOAD` (parity gate) or when the parallel path fails to
+/// `<prefix>NO_PARALLEL_LOAD` (parity gate) or when the parallel path fails to
 /// start (fail-open: the result is never worse than the serial build).
 pub fn load(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8, layout: Layout) !Corpus {
     var c = blk: {
@@ -769,9 +772,9 @@ pub fn load(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8, layou
     return c;
 }
 
-/// `GIST_NO_COMPACT` truthy (any value but `0`/`false`/`no`/empty) keeps the
+/// `<prefix>NO_COMPACT` truthy (any value but `0`/`false`/`no`/empty) keeps the
 /// scattered per-worker-arena doc layout — the A/B toggle for the contiguity
-/// win and a parity escape hatch, mirroring `GIST_NO_PARALLEL_LOAD`.
+/// win and a parity escape hatch, mirroring `<prefix>NO_PARALLEL_LOAD`.
 pub fn compactDisabled() bool {
     return assay.knobFlag("NO_COMPACT");
 }
@@ -842,7 +845,7 @@ fn compactFallible(gpa: std.mem.Allocator, c: *Corpus) !void {
 
 /// The single-cursor reference loader: walk one directory at a time, read each
 /// member as it is yielded. Kept as the parallel loader's fallback + parity
-/// oracle (`GIST_NO_PARALLEL_LOAD`, and `loadpar`'s membership test).
+/// oracle (`<prefix>NO_PARALLEL_LOAD`, and `loadpar`'s membership test).
 pub fn loadSerial(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8) !Corpus {
     var arena = std.heap.ArenaAllocator.init(gpa);
     const a = arena.allocator();

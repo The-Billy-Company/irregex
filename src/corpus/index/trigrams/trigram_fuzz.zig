@@ -1,9 +1,10 @@
-//! gist T0 index-loader LONG fuzz target — the nightly companion to the CI-safe
-//! fuzz-lite in `trigram_load_test.zig`. It drives many more iterations over a
-//! seed corpus (valid + malformed blobs + real built indexes) plus aggressive
-//! mutations (bit flips, byte overwrites, truncation), asserting three things on
-//! every input — matching the crate's deterministic-PRNG fuzz convention
-//! (`simd_test.zig`, `regex/adversarial_test.zig`) rather than `std.testing.fuzz`:
+//! irregex T0 index-loader LONG fuzz target — the nightly companion to the
+//! CI-safe fuzz-lite in `trigram_load_test.zig`. It drives many more iterations
+//! over a seed corpus (valid + malformed blobs + real built indexes) plus
+//! aggressive mutations (bit flips, byte overwrites, truncation), asserting
+//! three things on every input — matching the crate's deterministic-PRNG fuzz
+//! convention (`simd_test.zig`, `regex/adversarial_test.zig`) rather than
+//! `std.testing.fuzz`:
 //!
 //!   1. no panic / OOB / silent accept  — `fromBytes` either rejects with
 //!      `Corrupt` or returns an index that queryLiteral can walk without

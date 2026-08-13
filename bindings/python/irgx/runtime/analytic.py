@@ -1,7 +1,7 @@
 """The analytic plane: one dispatch, one row cursor, one ladder.
 
 Seventeen verbs used to mean seventeen subprocess spawns and seventeen NDJSON
-parsers. They now mean one C call — `gist_run(engine, op, params)` —
+parsers. They now mean one C call — `<face>_run(engine, op, params)` —
 returning a cursor of self-describing rows that `decode` turns into records.
 
 **Five parameter families, not seventeen argument lists.** A caller learns one
@@ -162,7 +162,7 @@ class Rows:
         return tuple(chain.from_iterable(self.batches()))
 
     def one(self) -> object | None:
-        """The single record of a one-row verb (`quote`, `blast`), or None when the answer is empty."""
+        """The single record of a one-row verb (quotation, change radius), or None when the answer is empty."""
         return next(iter(islice(iter(self), 1)), None)
 
     @property
@@ -256,7 +256,7 @@ _PLANE_SYMBOLS: Final = (
 
 
 def _run_symbol(verb: str) -> str:
-    """The C symbol that answers `verb` — `gist_run`, `relate_run`, or `blast_run`.
+    """The C symbol that answers `verb` — one `<face>_run` producer entry.
 
     Read from the generated verb table rather than kept as two sets here. Op
     numbers stayed ecosystem-wide when the producers split, so nothing about a
@@ -268,7 +268,7 @@ def _run_symbol(verb: str) -> str:
 
 
 def _face_of(symbol: str) -> str:
-    """The face that owns producer `symbol` — `gist_run` → `gist`.
+    """The face that owns producer `symbol` — `<face>_run` → `<face>`.
 
     The producer's own name carries this, so the mapping needs no table: a verb
     appended to the contract tomorrow routes itself.

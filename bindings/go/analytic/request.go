@@ -53,7 +53,7 @@ func (m Match) Column() int {
 // Request is one match-finding intent — the representable subset of
 // [request_options] every transport carries. Presentation, replace, and stdin
 // stay CLI-only; glob/type scoping and multiline are not on the in-process ABI,
-// so a query needing them uses the `gist` binary directly.
+// so a query needing them uses the exact face's binary directly.
 type Request struct {
 	// Pattern is the regex (or literal, with Fixed) to find.
 	Pattern string
@@ -105,8 +105,8 @@ func (r Request) ContextLines() (before, after uint) {
 	return r.Before, r.After
 }
 
-// Argv lowers the request into the `gist --json` argv the subprocess transport
-// runs — exactly the rg-parity flags the engine already honors, so the child and
+// Argv lowers the request into the exact face's `--json` argv the subprocess
+// transport runs — the rg-parity flags the engine already honors, so the child and
 // the in-process engine answer the same question. Quiet is deliberately absent:
 // it suppresses the record stream the caller asked for, and a transport halts at
 // the first record instead.

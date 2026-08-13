@@ -1,6 +1,6 @@
-//! gist — stdin as a haystack: admitting and draining fd 0.
+//! Stdin as a haystack: admitting and draining fd 0.
 //!
-//! `cmd | gist pat` must search the stream instead of walking the tree, which
+//! `cmd | … pat` must search the stream instead of walking the tree, which
 //! makes "is fd 0 readable?" a correctness question, not a convenience. The rule
 //! is ripgrep's (`is_readable_stdin`: not a tty, and a file / FIFO / socket),
 //! with one deliberate departure that the doc comments below justify in full: a
@@ -36,7 +36,7 @@ const oom = @import("../../../surface/cli/outcome.zig").oom;
 /// milliseconds; only the pathological silent-forever socket times out, falling
 /// through to the directory walk instead of hanging).
 ///
-/// A FIFO (pipe) gets NO such guard: `cmd | gist pat` is the canonical stream,
+/// A FIFO (pipe) gets NO such guard: `cmd | … pat` is the canonical stream,
 /// and a slow producer — bytes arriving after a pause, or the first byte only
 /// after setup work — is normal, not pathological. A pipe's blocking `read`
 /// always terminates: when the writer finishes it closes the write end and

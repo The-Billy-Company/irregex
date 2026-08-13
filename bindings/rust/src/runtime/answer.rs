@@ -3,9 +3,9 @@
 //!
 //! ## Why pulling takes `&self`
 //!
-//! Unlike the exact plane's `gist_cursor`, which recycles one submatch
+//! Unlike the exact plane's match cursor, which recycles one submatch
 //! scratch per pull, an analytic answer is materialized into a *single* arena
-//! that stays valid until close (`include/gist.h`, `irgx_rows_next_batch`).
+//! that stays valid until close (`include/irgx.h`, `irgx_rows_next_batch`).
 //! Modeling a pull as `&mut self` would therefore invent an invalidation the ABI
 //! does not have and forbid the very thing batching exists for — holding several
 //! batches at once. The read position lives in a [`Cell`] instead, which makes a

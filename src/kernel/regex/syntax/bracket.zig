@@ -1,4 +1,4 @@
-//! gist — what a `[...]` body denotes, in both engine modes.
+//! irregex — what a `[...]` body denotes, in both engine modes.
 //!
 //! Two entry points, because a bracket means two different things depending on
 //! the mode: `parseClass` accumulates a 256-bit `ByteSet` for the byte engine

@@ -1,5 +1,5 @@
-//! gist/bench/sliver — Layer J: what the sub-trigram tier is worth, in the one
-//! unit Layer D measures in.
+//! irregex bench/rungs/sliver — Layer J: what the sub-trigram tier is worth, in
+//! the one unit Layer D measures in.
 //!
 //! Layer D records that four of the twelve certificate classes reach it with
 //! **cand% = 100** — the trigram directory admits the entire corpus, because the
@@ -22,16 +22,16 @@
 //!   • No production code is instrumented and no candidate rule is re-implemented
 //!     here. `tiered` calls the SAME `sliver.candidates` production uses, so a
 //!     number in this table cannot drift from shipped behavior.
-//!   • **Soundness is asserted, not assumed.** For every class, gist's real
-//!     verify (`simd.contains` / `Regex.docMatch`) establishes ground truth over
-//!     EVERY document, and every truly-matching document must appear in the
+//!   • **Soundness is asserted, not assumed.** For every class, this engine's
+//!     real verify (`simd.contains` / `Regex.docMatch`) establishes ground truth
+//!     over EVERY document, and every truly-matching document must appear in the
 //!     tiered candidate set. A single missing match exits non-zero: that is a
 //!     correctness defect, and no measured speed-up would excuse it.
 //!   • Fail-closed on the payoff too — a class whose tiered candidate bytes
 //!     EXCEED the directory rule's is a regression and fails the audit.
 //!
 //! Output: a table on stdout, and a machine-readable TSV at
-//! `.gist/scale_tiers.tsv` for `certify_scale_report.py`.
+//! `scale_tiers.tsv` in the artifact home, for `certify_scale_report.py`.
 
 const std = @import("std");
 const gist = @import("irregex");
@@ -201,9 +201,10 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io) !void {
         const tier = try tierCandidates(&idx, gpa, corpus.docs.len, filters, short);
         defer gpa.free(tier);
 
-        // Ground truth over EVERY document, from gist's real verify — then the
-        // tiered candidate set must contain every match. This is the assertion
-        // that makes the pruning numbers below meaningful rather than merely small.
+        // Ground truth over EVERY document, from this engine's real verify —
+        // then the tiered candidate set must contain every match. This is the
+        // assertion that makes the pruning numbers below meaningful rather than
+        // merely small.
         var admitted = try std.DynamicBitSet.initEmpty(gpa, corpus.docs.len);
         defer admitted.deinit();
         for (tier) |d| admitted.set(d);

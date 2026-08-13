@@ -19,11 +19,12 @@
 #   J    substring/positional index tiers at scale, including the tier DECLINED
 #   L    index quality head-to-head against csearch, on candidates AND on cost
 #
-# Layer A and the CLI surface (H, I) are minted by `gist`; retrieval and
-# multi-pattern (F, G, K) by `relate`. This mint neither drives nor waits on
-# them: each package publishes its own bundle, over its own corpus, with its own
-# ledger. The roster this script must satisfy is `guard/profile.py`, and the
-# completeness gate at the end reads it rather than a second list kept by hand.
+# Layer A and the CLI surface (H, I) are minted by the exact-search face;
+# retrieval and multi-pattern (F, G, K) by the kinship package. This mint
+# neither drives nor waits on them: each package publishes its own bundle, over
+# its own corpus, with its own ledger. The roster this script must satisfy is
+# `guard/profile.py`, and the completeness gate at the end reads it rather than
+# a second list kept by hand.
 #
 # Usage:  bash bench/certificate/mint/mint.sh
 #         CERT_SUDO=1 bash bench/certificate/mint/mint.sh    (PMU for B′)
@@ -51,13 +52,15 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 # nothing (or everything) admits the identical set under both, so it feeds noise
 # to a fail-closed verdict. `rungs/sieve/slate.py --audit` measures that with a
 # foreign regex engine — on the self corpus all 20 classes discriminate but the
-# tree is monoglot Zig; on gist's synthetic Go corpus 16 of 20 are degenerate.
-# Only the ecosystem tree is both polyglot and fully discriminating.
+# tree is monoglot Zig; on the exact-search face's synthetic Go corpus 16 of 20
+# are degenerate. Only the ecosystem tree is both polyglot and fully
+# discriminating.
 export CERT_CORPUS_ID="${CERT_CORPUS_ID:-ecosystem-v1}"
 
 # The vendored measurement floor: roots, corpus scope, and the rival index
 # construction Layers J and L race against. Identical bytes in all four
-# packages, so a candidate-byte number here and one in `gist` are comparable.
+# packages, so a candidate-byte number here and one minted by a face package
+# are comparable.
 # shellcheck source=../../apparatus/field.sh
 source "${HERE}/../../apparatus/field.sh"
 
@@ -100,11 +103,12 @@ if [[ -n "${dirty}" && "${CERT_ALLOW_DIRTY:-0}" != "1" ]]; then
   exit 1
 fi
 
-# Seed the document. `gist` gets its preamble from `gist-bench certify`, which
-# rewrites the whole file; this package has no such writer, and every reporter
-# below SPLICES — it replaces its own section and appends when absent. Without a
-# seed the first splice would be writing the header of a file that does not
-# exist. Rewritten every mint on purpose: a certificate is the bytes of one run.
+# Seed the document. A face package gets its preamble from its own `certify`
+# bench binary, which rewrites the whole file; this package has no such writer,
+# and every reporter below SPLICES — it replaces its own section and appends
+# when absent. Without a seed the first splice would be writing the header of a
+# file that does not exist. Rewritten every mint on purpose: a certificate is
+# the bytes of one run.
 cat > "${CERT}" << EOF
 # irregex — Dominance-and-Fit Certificate
 
@@ -118,8 +122,9 @@ reporter that reads a committed artifact in this bundle; nothing here is typed
 by hand. The machine, the tool identities, and the corpus that produced it are
 \`machine.json\`, \`tool-versions.txt\`, and \`corpus-manifest.tsv\` beside this file.
 
-Layer A (dominance over the field) and the CLI surface belong to \`gist\`;
-retrieval and multi-pattern to \`relate\`. A package certifies what it builds.
+Layer A (dominance over the field) and the CLI surface belong to the
+exact-search face; retrieval and multi-pattern to the kinship package. A
+package certifies what it builds.
 EOF
 
 # Exactly the five lane binaries this certificate splices, via the install-only
@@ -141,17 +146,17 @@ bash "${KERNEL}/bench/bounds/port/mca.sh" || die "Layer B (mca) failed"
 # Counters need root on macOS. Without them the run still emits portbound.json
 # with its cycles marked unmeasured, and Layer B's reporter renders it as such.
 echo "measuring the port bound on this machine (Layer B′)…"
-PORTBOUND="${KERNEL}/zig-out/bin/gist-portbound"
+PORTBOUND="${KERNEL}/zig-out/bin/portbound"
 [[ -x "${PORTBOUND}" ]] || die "no ${PORTBOUND} after the build-portbound step"
 case "${CERT_SUDO:-auto}" in
   0) echo "  CERT_SUDO=0 — B′ stays wall-clock (cycles labeled NOT measured)" ;;
-  1) (cd "${KERNEL}" && sudo "${PORTBOUND}") || die "sudo gist-portbound failed" ;;
+  1) (cd "${KERNEL}" && sudo "${PORTBOUND}") || die "sudo portbound failed" ;;
   *)
     if sudo -n true 2> /dev/null; then
-      (cd "${KERNEL}" && sudo -n "${PORTBOUND}") || die "sudo -n gist-portbound failed"
+      (cd "${KERNEL}" && sudo -n "${PORTBOUND}") || die "sudo -n portbound failed"
     else
       echo "  no passwordless sudo — B′ stays wall-clock; CERT_SUDO=1 to prompt once"
-      (cd "${KERNEL}" && "${PORTBOUND}") || die "gist-portbound failed"
+      (cd "${KERNEL}" && "${PORTBOUND}") || die "portbound failed"
     fi
     ;;
 esac
@@ -161,7 +166,7 @@ bash "${KERNEL}/bench/bounds/port/mca.sh" || die "Layer B re-splice failed"
 
 # ── Layer C — the roofline ───────────────────────────────────────────────────
 echo "certifying the roofline (Layer C)…"
-lane gist-roofline
+lane roofline
 python3 "${KERNEL}/bench/bounds/roofline/report.py" \
   --out-dir "${OUT}" --certificate "${CERT}" || die "Layer C splice failed"
 
@@ -170,7 +175,7 @@ python3 "${KERNEL}/bench/bounds/roofline/report.py" \
 # fewer bytes than the information-theoretic floor allows, which would mean the
 # floor is wrong or the measurement is.
 echo "auditing the algorithmic lower bound (Layer D)…"
-lane gist-lowerbound
+lane lowerbound
 python3 "${KERNEL}/bench/bounds/lowerbound/report.py" \
   --csv "${OUT}/lowerbound.csv" --certificate "${CERT}" || die "Layer D splice failed"
 
@@ -182,11 +187,11 @@ CERT_OUT="${OUT}" bash "${HERE}/crest.sh" || die "Layer E (crest) failed"
 
 # ── the shared corpus both index layers race over ────────────────────────────
 # J and L compare index tiers against real indexed rivals, so they need the
-# rivals' indexes over byte-identical files. The floor builds gist's index first
-# because `paths.list` — the doc→path table its indexer persists — is what
-# csearch is then pointed at.
+# rivals' indexes over byte-identical files. The floor builds this engine's
+# index first because `paths.list` — the doc→path table its indexer persists —
+# is what csearch is then pointed at.
 echo "building the shipped index + the rival indexes…"
-compete_build_gist_index || die "could not build gist's index over the corpus"
+compete_build_gist_index || die "could not build this engine's index over the corpus"
 compete_build_csearch
 compete_build_zoekt
 
@@ -197,7 +202,7 @@ compete_build_zoekt
 # that can silently regress. Each optional TSV is passed only if it exists, so a
 # fresh checkout mints a narrower Layer J rather than no Layer J.
 echo "certifying index tiers at scale (Layer J)…"
-lane gist-scale
+lane scale
 scale_args=(--certificate "${CERT}" --tsv "${OUT}/scale_tiers.tsv"
   --sidecar "${OUT}/scale.csv" --machine "${ARCH}" --zig "${ZIG_VERSION}")
 for pair in race:scale_race build:scale_build resident:scale_resident \
@@ -215,7 +220,7 @@ python3 "${KERNEL}/bench/rungs/sieve/csearch_plan.py" \
   --probes "${KERNEL}/bench/apparatus/harness/probes.zig" \
   --probes "${KERNEL}/bench/rungs/sieve/stress.zig" \
   --index "${CSEARCH_IDX}" --out "${OUT}/indexq_csearch.plan" || die "csearch plan lift failed"
-lane gist-indexq
+lane indexq
 bash "${KERNEL}/bench/rungs/sieve/indexcost.sh" || die "Layer L cost arm failed"
 python3 "${HERE}/../report/indexq.py" \
   --certificate "${CERT}" --tsv "${OUT}/indexq.tsv" \

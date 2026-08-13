@@ -49,7 +49,7 @@ Run the gates and their write-mode counterparts with these commands:
 python3 tools/version_parity.py          # the gate (CI's `version` job)
 python3 tools/version_parity.py --json   # the mirrors it found, for a machine
 python3 tools/sync_contract.py           # refresh the vendored copies
-python3 tools/sync_contract.py --check   # the gate (relate's `contract` job)
+python3 tools/sync_contract.py --check   # the gate (the author's `contract` job)
 python3 tools/registry_readme.py --check # the gate (CI's `version` job)
 python3 tools/registry_readme.py         # mint bindings/rust/PROJECT_README.md
 ```
@@ -74,13 +74,14 @@ this writes `bindings/rust/PROJECT_README.md`, which is gitignored and which
 never earlier: a missing file fails loudly, a stale one would ship quietly.
 
 `sync_contract.py` is the only one here that also writes, and it writes a copy
-rather than a generated file. Exactly one contract is vendored — relate's
-`kinship.toml`, which the bindings mirror — because relate is private, and a
-public package whose own tests need a clone of a private one is a package the
-public cannot test. gist's `surface.toml` is deliberately absent: gist is
-public, so CI checks it out and reads the original. The `--check` gate runs from
-relate's CI rather than this one, since only the repository that authors the
-contract can see both files at once.
+rather than a generated file. Exactly one contract is vendored — the kinship
+package's `kinship.toml`, which the bindings mirror — because that package is
+private, and a public package whose own tests need a clone of a private one is a
+package the public cannot test. The exact-search face's `surface.toml` is
+deliberately absent: that face is public, so CI checks it out and reads the
+original. The `--check` gate runs from the kinship package's CI rather than this
+one, since only the repository that authors the contract can see both files at
+once.
 
 `build.zig.zon` is the single place this package's version is written: Zig reads
 it through a build option, Rust reads `CARGO_PKG_VERSION`, Python reads its

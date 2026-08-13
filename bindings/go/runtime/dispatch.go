@@ -95,11 +95,12 @@ func dispatch(ctx context.Context, eng *Native, q Query) (*Rows, error) {
 //
 // The entry symbol comes from the generated verb table rather than the op: op
 // numbers stayed ecosystem-wide when the producers split, so `4` means `echoes`
-// whether or not librelate is here, and an op-range rule would mis-route the
-// next verb appended to a family. The symbol is then resolved against the loaded
-// process — the same lookup Python's ctypes and Rust's `sys` do, and the only one
-// that can tell "librelate is linked" from "it is not". A missing producer is an
-// absence, and the verb answers one tier down, through the child.
+// whether or not the kinship face's library is here, and an op-range rule would
+// mis-route the next verb appended to a family. The symbol is then resolved
+// against the loaded process — the same lookup Python's ctypes and Rust's `sys`
+// do, and the only one that can tell "that library is linked" from "it is not".
+// A missing producer is an absence, and the verb answers one tier down, through
+// the child.
 func producer(op analytic.Op) (C.irgx_producer, bool) {
 	verb, ok := analytic.Verb(op)
 	if !ok {

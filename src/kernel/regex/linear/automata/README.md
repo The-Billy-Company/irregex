@@ -10,9 +10,10 @@ rather than two spellings of one:
 - **`../symbolic/`** — the codepoint road. Determinization over scalar ranges,
   minimized there, then crossed with a UTF-8 decoder and transcribed to bytes.
 
-Ask `relate` how alike they are and it will tell you they are each other's
-nearest kin in the whole 21,806-file tree and *still* only weakly similar — which
-is the right answer. They are not duplicates waiting to be merged.
+Ask the kinship engine how alike they are and it will tell you they are each
+other's nearest kin in the whole 21,806-file tree and *still* only weakly
+similar — which is the right answer. They are not duplicates waiting to be
+merged.
 
 ## The Membership Rule
 

@@ -1,5 +1,5 @@
 // MONOLITHIC: rg --json emitter — the begin/match/context/end record sequence plus submatch and replacement encoding share one per-file message-stream state (sibling protocol to output.zig)
-//! gist `rg --json` — ripgrep's JSON Lines record stream (ADR-parity output).
+//! `rg --json` — ripgrep's JSON Lines record stream (ADR-parity output).
 //!
 //! Split from `run.zig`/`output.zig`: given each file's already-read bytes,
 //! this module emits ripgrep's exact `--json` message sequence — one JSON object
@@ -153,8 +153,8 @@ fn fileWeight(_: void, f: File) usize {
 /// the serial `run`. `a` is a per-query arena; `gpa` backs each shard's own arena
 /// (arenas aren't safe for concurrent allocation).
 pub fn runParallel(gpa: std.mem.Allocator, a: std.mem.Allocator, out: *std.ArrayList(u8), re: *const Matcher, caps: ?*Caps, o: Opts, files: []const File, needle: ?simd.Gate, elapsed: assay.Duration) Stats {
-    // `GIST_NO_PARALLEL` (the parity-gate idiom, via the shared `assay.serialForced`
-    // joint) forces the serial emit so `rgsuite/run.py`'s serial engine pass
+    // `<prefix>NO_PARALLEL` (the parity-gate idiom, via the shared `assay.serialForced`
+    // joint) forces the serial emit so the rgsuite runner's serial engine pass
     // actually exercises the serial `--json` path — not just the walk — closing
     // the same both-engines gap `swarm.eligible` documents. No production caller sets it.
     if (assay.serialForced()) return run(a, out, re, caps, o, files, needle, elapsed);

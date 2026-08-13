@@ -1,4 +1,4 @@
-//! gist T2 byte-class DFA tests — split from `dfa.zig` to keep the engine
+//! irregex T2 byte-class DFA tests — split from `dfa.zig` to keep the engine
 //! under the shape cap. Two layers:
 //!   1. targeted unit cases — the no-prefilter scan-tail patterns the DFA exists
 //!      to win (`;$`, `[0-9]{4}`, `panic|0x`, `\w{3,8}`), the line-anchor shapes
@@ -96,7 +96,7 @@ test "dfa: optional class preserves both concatenation seams" {
 // ─────────────────────────── differential fuzz ───────────────────────────
 
 /// A random pattern generator over the supported subset, with an optional leading
-/// `^` and/or trailing `$` — the realistic anchor placement that the gist≡rg
+/// `^` and/or trailing `$` — the realistic anchor placement that the engine≡rg
 /// equality oracle also tests. Anchors are deliberately NOT quantifiable atoms:
 /// `rg`/rust-regex reject a repeated anchor (`^*`, `${1,3}` ⇒ "nothing to
 /// repeat"), so manufacturing one would test a pattern outside the supported

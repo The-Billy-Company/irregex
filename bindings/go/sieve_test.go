@@ -50,9 +50,9 @@ func TestAnUnindexedDirectoryDeclinesRatherThanReadingAsEmpty(t *testing.T) {
 }
 
 // The same declinature through the door a host actually uses: no directory at all,
-// meaning the artifact home. GIST_DIR is what resolves it, so pointing that at an
-// empty directory makes the unindexed case deterministic instead of a question
-// about the machine the test runs on.
+// meaning the artifact home. The `<prefix>DIR` env knob is what resolves it, so
+// pointing that at an empty directory makes the unindexed case deterministic
+// instead of a question about the machine the test runs on.
 func TestTheArtifactHomeDeclinesWhenNothingHasBeenIndexed(t *testing.T) {
 	t.Setenv("GIST_DIR", t.TempDir())
 	if s, err := irgx.OpenSieve(""); !errors.Is(err, irgx.ErrNoIndex) {

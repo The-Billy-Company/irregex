@@ -1,4 +1,4 @@
-//! gist — the quotient sieve: a two-valued rung that retires haystacks the
+//! irregex — the quotient sieve: a two-valued rung that retires haystacks the
 //! deciders below it would otherwise have to walk.
 //!
 //! The sieve answers `.miss` — proven, no match anywhere in this haystack — or

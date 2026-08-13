@@ -1,4 +1,5 @@
-//! gist — regex *capture* extraction: a Pike VM that reports group boundaries.
+//! irregex — regex *capture* extraction: a Pike VM that reports group
+//! boundaries.
 //!
 //! The primary engine (`core.zig` DFA + Pike) answers *whether* / *where* a line
 //! matches — it is deliberately capture-free (a byte-class DFA can't track group

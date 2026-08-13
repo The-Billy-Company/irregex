@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Walk cost — what a live tree walk costs in memory, gist vs ripgrep.
+"""Walk cost — what a live tree walk costs in memory, this engine vs ripgrep.
 
 THE CLAIM THIS LANE EXISTS TO SETTLE
-    Layer J's residency argument turns on one matched pair. gist's query-time
+    Layer J's residency argument turns on one matched pair. Our query-time
     resident set is large; the first explanation offered was "it must hold its
     index", which `vmmap` refuted; the second was "any engine walking a live
     tree pays this", and ripgrep refutes that one by walking the same tree for a
@@ -12,7 +12,7 @@ THE CLAIM THIS LANE EXISTS TO SETTLE
 
     The pair is matched on purpose: same needle, same `-uu` scope, same cwd,
     both counting rather than printing, both a fresh process with no index in
-    play (`--no-index` + `GIST_NO_AUTOSERVE=1`, so neither a persisted index nor
+    play (`--no-index` + `<prefix>NO_AUTOSERVE=1`, so neither a persisted index nor
     a resident daemon can answer for the walk). The only difference left is the
     implementation of walking.
 
@@ -30,12 +30,12 @@ TWO METRICS, ONLY ONE OF WHICH IS A COST
 
 AND THE ANSWER IS CORPUS-SHAPED, WHICH IS WHY `--root` REPEATS
     A single tree cannot carry this claim. Measured on the same day with the
-    same binaries, a deep C++ checkout puts gist near 1.9x rg on owned memory
+    same binaries, a deep C++ checkout puts us near 1.9x rg on owned memory
     while a tree of many cloned repositories puts it UNDER rg at 0.78x — rg's
-    own footprint moves more between those two than gist's does. So one root
+    own footprint moves more between those two than ours does. So one root
     would let whoever picks it pick the verdict. Pass every tree the claim is
     supposed to hold over; each becomes its own row pair, and the reporter takes
-    its headline from gist's WORST corpus rather than its best.
+    its headline from our WORST corpus rather than its best.
     (`scale_resident.tsv` holds the history of what this instrument was built to
     settle, and what it found.)
 
@@ -43,8 +43,8 @@ Usage:
   python3 bench/rungs/sliver/walkcost.py --root <tree> [--root <tree> …]
       [--pattern pgxpool] [--reps 3] [--out bench/rungs/sliver/artifact]
 
-  The `gist` half is the sibling checkout's release build; `GIST_BIN` pins a
-  specific one (see `product.gist_cli`).
+  Our half of the pair is driven by the sibling checkout's release build;
+  `$<PREFIX>BIN` pins a specific one (see `product.gist_cli`).
 """
 
 from __future__ import annotations
@@ -110,8 +110,8 @@ def measure(a: argparse.Namespace) -> list[Sample]:
 def _measure_one(a: argparse.Namespace, root: Path) -> list[Sample]:
     # `-c` (count) so neither tool is billed for rendering a repo-wide result,
     # and `-F` so the needle is a literal to both engines rather than a regex to
-    # one of them. GIST_UNCAP=1 keeps gist's agent-context output budget from
-    # clipping the answer, the same fairness flag `_compete.sh` sets.
+    # one of them. `<prefix>UNCAP=1` keeps the product's agent-context output
+    # budget from clipping the answer, the same fairness flag `_compete.sh` sets.
     pairs = [
         ("gist", [gist_cli(), "--no-index", "-uu", "-F", "-c", a.pattern, "."]),
         ("rg", ["rg", "-uu", "--no-messages", "-F", "-c", a.pattern, "."]),
@@ -183,9 +183,9 @@ def _where(root: Path) -> str:
 
 
 def _walked(root: Path) -> int:
-    """How many files the pair actually walks — gist's own `--files` under the
-    same `-uu` scope, so the denominator is the tree as measured rather than a
-    separate traversal with its own idea of what counts."""
+    """How many files the pair actually walks — the product's own `--files`
+    under the same `-uu` scope, so the denominator is the tree as measured rather
+    than a separate traversal with its own idea of what counts."""
     p = subprocess.run(
         [gist_cli(), "--no-index", "-uu", "--files", "."],
         cwd=root,
@@ -204,7 +204,7 @@ def _pairs(samples: list[Sample]) -> dict[str, dict[str, Sample]]:
 
 
 def _ratio(pair: dict[str, Sample], metric: str) -> float | None:
-    """gist/rg on one metric, or None where either half is missing it.
+    """Our half over rg on one metric, or None where either half is missing it.
 
     Taken over the medians AS PUBLISHED, not the full-precision ones: the cells
     carry one decimal, and a reader dividing the two numbers in front of them

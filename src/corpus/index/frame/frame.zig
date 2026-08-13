@@ -9,7 +9,7 @@
 //! `ownedNulTable` to read), the shared `onDisk` deletion gate every folded
 //! view checks at emit, the shared `loadQuiet` fail-open artifact loader, and
 //! the `tree.root` binding that says which tree the whole directory describes.
-//! Consumers: the codex shelf (`../shelf/`), relate's kinship atlas,
+//! Consumers: the codex shelf (`../shelf/`), the kinship face's atlas,
 //! and the trigram pair loader (`../trigrams/persist.zig`). Framing only —
 //! magic bytes and versions stay with each format, where its own shape is
 //! described. Integrity does NOT: every artifact here seals with the one
@@ -26,7 +26,7 @@ const signet = @import("signet.zig");
 const tree_root_alias = home.ArtifactPath("tree.root");
 
 /// `<artifact dir>/tree.root` — the binding `bindingHolds` proves and the
-/// index build publishes (`surface/face/gist/verbs/index.zig`).
+/// index verb publishes.
 pub fn treeRootFile() []const u8 {
     return tree_root_alias.get();
 }
@@ -42,7 +42,7 @@ var bound_state: std.atomic.Value(u8) = .init(0);
 /// clocks against a build anchor. Both halves lie in SILENCE when the
 /// artifacts belong to a different tree: the relative paths land on unrelated
 /// files here, and the foreign anchor — minted after this tree's files were
-/// last touched — "proves" every one of them unchanged. A `GIST_DIR` left
+/// last touched — "proves" every one of them unchanged. A `<prefix>DIR` left
 /// pointing at another checkout was enough to serve that tree's `README.md`
 /// bytes as this one's, and to hand the phantom walk a root listing naming
 /// directories that don't exist. So the binding is what makes an anchor
@@ -52,7 +52,7 @@ var bound_state: std.atomic.Value(u8) = .init(0);
 /// live walk that never needed it.
 ///
 /// An ABSENT binding reads as unbound, not as consent — a pre-binding artifact
-/// carries no proof of which tree it came from, and the next `gist index`
+/// carries no proof of which tree it came from, and the next index build
 /// republishes it.
 pub fn boundHere() bool {
     switch (bound_state.load(.monotonic)) {
@@ -104,9 +104,9 @@ fn recordedIs(path: []const u8, live: []const u8) bool {
 /// the two sides agree however the tree was entered; this is the same proof
 /// the amend path already requires of the daemon's watch prefix. Identity is
 /// the PATH rather than an inode because a path is what the artifacts encode
-/// relative to, and it is the one identity `gist status` can print back. A
+/// relative to, and it is the one identity index status can print back. A
 /// moved or renamed tree therefore reads as unbound — right answers, no
-/// acceleration — until the next `gist index`.
+/// acceleration — until the next index build.
 ///
 /// It is the CHECKOUT that is asked, not the working directory. The two were
 /// the same thing back when the artifact home was resolved per-directory, and
@@ -124,7 +124,7 @@ pub fn thisTree(buf: *[std.fs.max_path_bytes]u8) ?[]const u8 {
 }
 
 /// The tree a published binding names, or null when there is none. Copied out
-/// (owned by `gpa`) so `gist status` can report a FOREIGN artifact by name
+/// (owned by `gpa`) so index status can report a FOREIGN artifact by name
 /// instead of leaving a caller to wonder why nothing is ever warm.
 pub fn treeBinding(gpa: std.mem.Allocator) ?[]u8 {
     var buf: [std.fs.max_path_bytes]u8 = undefined;
@@ -135,7 +135,7 @@ pub fn treeBinding(gpa: std.mem.Allocator) ?[]u8 {
 }
 
 /// Record `thisTree()` at `path` — the write side of `bindingHolds`, used by
-/// `gist index` for the artifact directory. Atomic (temp + rename) so a
+/// an index build for the artifact directory. Atomic (temp + rename) so a
 /// concurrent reader sees the old tree or the new one, never a torn path. Best
 /// effort: a binding that can't be written simply reads as unbound, which costs
 /// acceleration and never correctness.
@@ -144,8 +144,9 @@ pub fn publishBinding(io: std.Io, path: []const u8) void {
     fault.spare("publish the tree binding", record(io, path, thisTree(&buf)));
 }
 
-/// The write side of `standingHolds` — what `gist serve` records beside its
-/// socket. Same file, same atomicity, different question (see `standingHolds`).
+/// The write side of `standingHolds` — what the resident daemon records beside
+/// its socket. Same file, same atomicity, different question (see
+/// `standingHolds`).
 pub fn publishStanding(io: std.Io, path: []const u8) void {
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     fault.spare("publish the rendezvous standing", record(io, path, portal.realpath(".", &buf)));
@@ -162,12 +163,12 @@ fn record(io: std.Io, path: []const u8, what: ?[]const u8) !void {
 /// `.<socket>.tree` in `buf` — where a resident daemon records the tree it went
 /// resident over, beside the socket it binds.
 ///
-/// The socket lives in the artifact directory, so `GIST_DIR` pointing two trees
+/// The socket lives in the artifact directory, so `<prefix>DIR` pointing two trees
 /// at one directory aims them at one RENDEZVOUS: without this, a daemon warm
 /// over the other tree answers the dial and its resident bytes are served,
 /// silently, as if they were this tree's. The default artifact directory is
 /// anchored at the checkout (`home.anchor`) and so is one per tree, which is
-/// exactly what cannot collide; an absolute `GIST_DIR` can.
+/// exactly what cannot collide; an absolute `<prefix>DIR` can.
 ///
 /// DOTTED deliberately: a socket may be placed anywhere, including inside the
 /// corpus itself (embedders and the daemon suite do exactly that), and the
@@ -213,7 +214,7 @@ pub fn mmapFile(io: std.Io, path: []const u8) !Mapping {
 
 /// Materialize `sub_path` with `data` via the temp-then-rename pattern (POSIX
 /// `rename` is atomic on the same filesystem) instead of a plain truncate+write.
-/// Up to ~10 agents cowork this repo and any of them can run `gist index` while
+/// Up to ~10 agents cowork this repo and any of them can run an index build while
 /// another is mid-`mmapFile` on the very same blob — a plain overwrite lets that
 /// reader observe a torn (truncated / zero-length / half-written) file and
 /// silently answer from it. Atomic replace means a concurrent reader always sees
@@ -408,7 +409,7 @@ pub fn onDisk(io: std.Io, path: []const u8) bool {
 
 /// Read + parse a persisted artifact, failing OPEN to null — the shared loader
 /// every warm index shares. A missing file is the normal cold case (silent, the
-/// caller answers live like `gist` without a trigram index); any other read
+/// caller answers live, as a face does without a trigram index); any other read
 /// error or a `parse` failure (torn bytes) gets one stderr line naming `what`
 /// and returns null so no answer is served from corruption.
 pub fn loadQuiet(

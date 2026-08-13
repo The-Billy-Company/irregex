@@ -1,4 +1,4 @@
-//! gist — what a parsed pattern *is*: the byte class, the AST node, and the
+//! irregex — what a parsed pattern *is*: the byte class, the AST node, and the
 //! compiled NFA instruction, plus the one error set the whole pipeline returns.
 //!
 //! These four are one file because they are one vocabulary: a `class` node

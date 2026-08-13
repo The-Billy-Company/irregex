@@ -1,4 +1,4 @@
-//! gist resident session — what is macOS's alone about the kqueue barrier.
+//! Resident session — what is macOS's alone about the kqueue barrier.
 //!
 //! The promises every exact backend makes — an in-place edit is seen, a newcomer
 //! is covered for its later edits, a cross-directory move lands on both ends, a

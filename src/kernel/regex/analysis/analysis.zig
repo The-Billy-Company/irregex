@@ -1,4 +1,4 @@
-//! gist — regex *literal analysis*: sound, read-only AST visitors over
+//! irregex — regex *literal analysis*: sound, read-only AST visitors over
 //! `syntax.zig` that feed the scanner's accelerators. Every one is conservative
 //! (a wrong "don't know" only costs a full scan, never a missed match):
 //! required-literal extraction for the T0 trigram prefilter (the literal half of

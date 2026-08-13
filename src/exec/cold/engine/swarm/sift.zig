@@ -1,4 +1,4 @@
-//! gist — sifting ONE file: read, decode, gate, triage, match, render.
+//! Sifting ONE file: read, decode, gate, triage, match, render.
 //!
 //! The parallel twin of the serial engine's per-file loop body, built from the
 //! same `read/` primitives so the two cannot drift. The staging is what earns
@@ -37,7 +37,7 @@ const oom = @import("../../../../surface/cli/outcome.zig").oom;
 /// `notice.printWalkError` (the line an unreadable DIRECTORY already produced)
 /// and the flag is the queue's existing `walk_error` atomic, so the two halves
 /// of "could not look" reach the exit code through one path. Discovered by
-/// `gist/bench/conformance/rgsuite/fuzz.py` differentially against live rg.
+/// the rgsuite differential fuzzer, run against live rg.
 fn reportUnopenable(w: *Worker, rel: []const u8, e: slurp.OpenFault) void {
     notice.printWalkError(rel, e);
     w.q.walk_error.store(true, .release);
@@ -370,7 +370,7 @@ fn emitBody(w: *Worker, a: std.mem.Allocator, dpath: []const u8, body: []const u
 
 /// This run's binary cutoff in `body` at or after `from` — the offset of the
 /// first NUL that makes the file binary — or null when the file is text as far
-/// as gist is concerned.
+/// as this run is concerned.
 ///
 /// One definition, because the gate-miss path and the post-gate path must reach
 /// the SAME verdict about the same bytes: whether a file is listable does not
@@ -502,7 +502,7 @@ test "a stage-1 proof never reaches past the last terminator rg committed" {
     // whose first NUL is at 94015 and whose first `\n` is at 94788 — AFTER the
     // NUL. rg's reader finds no terminator to commit, the NUL-bearing fill is
     // discarded, `--stats` says `0 bytes searched`, and `rg -uu -l dog` exits 1.
-    // gist's `lits_equiv` arm scanned the raw 64 KiB prefix, proved the literal,
+    // Our `lits_equiv` arm scanned the raw 64 KiB prefix, proved the literal,
     // and published the file — two files `--rank` (which honors the cut) omitted.
     var m = Matcher{ .linear = try Regex.compile(t.allocator, "dog") };
     defer m.deinit();

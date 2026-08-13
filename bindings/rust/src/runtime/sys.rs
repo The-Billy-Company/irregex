@@ -1,4 +1,4 @@
-//! The raw C-ABI surface, mirroring `include/gist.h` symbol-for-symbol.
+//! The raw C-ABI surface, mirroring `include/irgx.h` symbol-for-symbol.
 //!
 //! Two halves with deliberately different compilation rules:
 //!
@@ -35,7 +35,7 @@ pub enum irgx_rows {}
 
 // ── the exact plane ────────────────────────────────────────────────────────
 
-/// Mirrors `gist_submatch`: a borrowed span view into the line bytes.
+/// Mirrors the C submatch record: a borrowed span view into the line bytes.
 #[repr(C)]
 pub struct Submatch {
     pub text: *const u8,
@@ -44,8 +44,8 @@ pub struct Submatch {
     pub end: usize,
 }
 
-/// Mirrors `gist_match`: one borrowed record view (valid only until the cursor
-/// is advanced again — the wrapper copies out immediately).
+/// Mirrors the C match record: one borrowed record view (valid only until the
+/// cursor is advanced again — the wrapper copies out immediately).
 #[repr(C)]
 pub struct MatchView {
     pub path: *const u8,
@@ -58,7 +58,8 @@ pub struct MatchView {
     pub kind: u32,
 }
 
-/// Mirrors `gist_search_request`: the append-only, `struct_size`-checked shape.
+/// Mirrors the C search-request struct: the append-only, `struct_size`-checked
+/// shape.
 #[repr(C)]
 pub struct SearchRequest {
     pub struct_size: u32,
@@ -94,9 +95,10 @@ pub const OPEN_FAILED: c_int = crate::contract::STATUS_OPEN_FAILED;
 pub const INVALID: c_int = crate::contract::STATUS_INVALID;
 
 // Link-time `extern "C"` declarations for the exact-plane cursor live in the
-// `gist` crate under its `native` feature. The analytic plane resolves every
-// symbol with `dlsym` (see [`symbol`]) so a missing producer is a declinature,
-// never a link failure — and this substrate crate never names `gist_*`.
+// exact face's own crate, under its `native` feature. The analytic plane
+// resolves every symbol with `dlsym` (see [`symbol`]) so a missing producer is
+// a declinature, never a link failure — and this substrate crate never names a
+// face's own producer symbols.
 
 // ── the analytic plane ───────────────────────────────────────────
 
@@ -240,7 +242,8 @@ pub struct SweepParams {
     pub reserved: u32,
 }
 
-/// `context · family · provenance · blast` — exact narrows, compression reasons.
+/// `context · family · provenance · change radius` — exact narrows, compression
+/// reasons.
 #[repr(C)]
 pub struct ComposeParams {
     pub struct_size: u32,
@@ -312,8 +315,8 @@ pub type EngineCloseFn = unsafe extern "C" fn(engine: *mut irgx_engine);
 // The cancellation trio. Resolved rather than declared for the same reason as
 // the rest of this plane — and needed at all because `AnalyticRunFn` has taken a
 // `*mut irgx_cancel` since it landed, which this crate could only ever fill with
-// null. A `relate echoes --shape distinct` sweep is a documented 27 seconds; that
-// is precisely the call a host wants to be able to give up on.
+// null. A whole-corpus repetition sweep over distinct units is a documented 27
+// seconds; that is precisely the call a host wants to be able to give up on.
 pub type CancelNewFn = unsafe extern "C" fn(out: *mut *mut irgx_cancel) -> c_int;
 pub type CancelRequestFn = unsafe extern "C" fn(cancel: *mut irgx_cancel);
 pub type CancelFreeFn = unsafe extern "C" fn(cancel: *mut irgx_cancel);

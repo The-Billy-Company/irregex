@@ -225,8 +225,9 @@ pub const SweepParams = extern struct {
     reserved: u32 = 0,
 };
 
-/// `context` · `family` · `provenance` · `blast` — an exact `PatternSet`
-/// narrows the corpus and the compression kernel reasons inside it.
+/// The composed verbs (`context` · `family` · `provenance` · change radius) —
+/// an exact `PatternSet` narrows the corpus and the compression kernel reasons
+/// inside it.
 pub const ComposeParams = extern struct {
     struct_size: u32,
     flags: u32,

@@ -1,9 +1,9 @@
 // MONOLITHIC: WHATWG encoding decoders — per-codec streaming state machines (gb18030, big5, euc-jp, shift_jis, …) share label resolution and one dispatch; each codec is a section, not a module
-//! gist `rg` — the `-E`/`--encoding` legacy-code-page decoders (WHATWG Encoding Standard).
+//! irregex `rg` — the `-E`/`--encoding` legacy-code-page decoders (WHATWG Encoding Standard).
 //!
 //! ripgrep transcodes a file's source encoding to UTF-8 (via encoding_rs) before
 //! matching, so a UTF-8 pattern hits regardless of the on-disk code page. This
-//! module is gist's decode-side equivalent: the full WHATWG label table (`fromLabel`,
+//! module is irregex's decode-side equivalent: the full WHATWG label table (`fromLabel`,
 //! generated from `encodings.json`) plus a faithful decoder for every WHATWG legacy
 //! encoding — the single-byte pages, the CJK multi-byte pages (gb18030/GBK, Big5,
 //! EUC-JP, Shift_JIS, EUC-KR), stateful ISO-2022-JP, and the `replacement` /
@@ -46,8 +46,8 @@ const oom = paths.allocFailure;
 /// Resolve an `-E`/`--encoding` label to an `Encoding`, or null for an unrecognized
 /// one (the caller fails loud). Implements WHATWG "get an encoding": strip leading
 /// and trailing ASCII whitespace, ASCII-lowercase, then match the label table
-/// (encoding_rs's `for_label`, which ripgrep uses). `auto`/`none` are gist's own
-/// pre-WHATWG spellings for BOM-sniff / passthrough.
+/// (encoding_rs's `for_label`, which ripgrep uses). `auto`/`none` are irregex's
+/// own pre-WHATWG spellings for BOM-sniff / passthrough.
 ///
 /// `gen.labels` is emitted sorted by label, so a runtime binary search resolves it
 /// with no comptime map (a ~230-key `StaticStringMap` blows the comptime sort's
@@ -59,7 +59,7 @@ const oom = paths.allocFailure;
 /// reaching into the generated file beside it.
 pub const LabelEntry = gen.LabelEntry;
 
-/// Every label `fromLabel` accepts, sorted, minus gist's own `auto`/`none`.
+/// Every label `fromLabel` accepts, sorted, minus irregex's own `auto`/`none`.
 pub const labels: []const LabelEntry = &gen.labels;
 
 pub fn fromLabel(s: []const u8) ?Encoding {
@@ -539,7 +539,7 @@ test "fromLabel: WHATWG aliases resolve, latin1 is windows-1252, junk is null" {
     // ISO-8859-9 is windows-1254; TIS-620 is windows-874.
     try t.expectEqual(Encoding.windows_1254, fromLabel("iso-8859-9").?);
     try t.expectEqual(Encoding.windows_874, fromLabel("tis-620").?);
-    // gist's own spellings + surrounding-whitespace trim (WHATWG get-an-encoding).
+    // irregex's own spellings + surrounding-whitespace trim (WHATWG get-an-encoding).
     try t.expectEqual(Encoding.auto, fromLabel("auto").?);
     try t.expectEqual(Encoding.none, fromLabel("none").?);
     try t.expectEqual(Encoding.euc_jp, fromLabel("  EUC-JP\n").?);

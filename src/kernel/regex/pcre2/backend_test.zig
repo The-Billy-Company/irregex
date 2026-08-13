@@ -1,4 +1,4 @@
-//! gist — adversarial tests for the vendored PCRE2 `-P` backend.
+//! irregex — adversarial tests for the vendored PCRE2 `-P` backend.
 //!
 //! Exercises the PCRE-only constructs the linear engine cannot express
 //! (lookaround, backreferences, named captures), the fail-closed resource
@@ -336,8 +336,8 @@ test "whole-buffer dotall lookahead crosses newlines (the -U (?s)…(?=.*…) co
     try t.expectEqual(@as(usize, 0), sp.start);
     try t.expectEqual(@as(usize, 5), sp.end); // "alpha" only — the lookahead is zero-width
     // Target absent ⇒ no match; target only BEFORE the anchor ⇒ no match (the
-    // forward `.*` cannot see it), so gist never over-matches a satisfied-earlier
-    // lookahead.
+    // forward `.*` cannot see it), so the engine never over-matches a
+    // satisfied-earlier lookahead.
     try t.expect(!re.bufMatch(&sim, "alpha x\nmid\nno target\n"));
     try t.expect(!re.bufMatch(&sim, "bar first\nalpha here\n"));
 }
@@ -473,18 +473,19 @@ test "required-literal: braced/multi-char escapes never leak their interior (ove
 }
 
 test "required-literal: lookaround/backreferences prefilter soundly (the PCRE-race premise)" {
-    // gist beats every PCRE competitor on this class BECAUSE it prunes the read
-    // set on a sound required literal these lookaround patterns still carry (the
-    // lookaround itself is zero-width, so the surrounding literal is mandatory in
-    // every match). If this regresses, gist silently loses its prefilter edge —
-    // or worse, over-claims and elides a real match. These are the exact slate
-    // patterns from gist/bench/dominance/races/pcre.sh.
+    // This package beats every PCRE competitor on this class BECAUSE it prunes
+    // the read set on a sound required literal these lookaround patterns still
+    // carry (the lookaround itself is zero-width, so the surrounding literal is
+    // mandatory in every match). If this regresses, the engine silently loses its
+    // prefilter edge — or worse, over-claims and elides a real match. These are
+    // the exact slate patterns from the face package's
+    // `bench/dominance/races/pcre.sh`.
     try expectRequired("func\\s+\\w+(?=\\()", "func"); // lookahead: "func" required
     try expectRequired("import\\s+(?!type)", "import"); // neg-lookahead: "import"
     try expectRequired("(?<=return\\s)nil", "nil"); // lookbehind: only "nil" is consumed
     try expectRequired("const\\s+\\w+(?=\\s*=)", "const");
     // Literal-free by construction — the prefilter correctly declines, so the
-    // race falls through to gist's fused parallel PCRE2-JIT scan (still a win).
+    // race falls through to the fused parallel PCRE2-JIT scan (still a win).
     try expectRequired("<(\\w+)>.*</\\1>", ""); // "</" is 2 bytes, below the trigram floor
     try expectRequired("\\b(\\w{3,})\\b.*\\b\\1\\b", ""); // pure backreference, no literal
 }

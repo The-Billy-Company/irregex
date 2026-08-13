@@ -1,9 +1,9 @@
 //! Crest — production proof harness (Layer: does it actually work + how fast).
 //!
-//! Links gist's REAL engine (`@import("irregex")` — the crest kernel ships
-//! inside it at `src/kernel/math/crest.zig`) and walks the REAL host corpus via the
-//! same `corpus.load` the certificate layers use, so this is not a toy: the
-//! baseline is gist's production `Regex.docMatch`, and every claim is a
+//! Links this package's REAL engine (`@import("irregex")` — the crest kernel
+//! ships inside it at `src/kernel/math/crest.zig`) and walks the REAL host
+//! corpus via the same `corpus.load` the certificate layers use, so this is not
+//! a toy: the baseline is our production `Regex.docMatch`, and every claim is a
 //! measured number over live source bytes.
 //!
 //! For each class-repetition query it establishes three things, fail-closed:
@@ -13,7 +13,7 @@
 //!      Sieve Theorem checked against the production matcher on 100+ MiB.
 //!   2. PRUNING. What fraction of files the k-int crest compare removes before
 //!      the matcher runs — on exactly the class where the trigram index prunes
-//!      0% (gist Certificate `regex-classcount` cand%=100%).
+//!      0% (Certificate class `regex-classcount`, cand%=100%).
 //!   3. SPEED. Wall time of (full scan with the real matcher) vs (crest compare
 //!      + real matcher on survivors), same matcher both sides, so the speedup is
 //!      purely avoided work. In the shipped integration the win is larger
@@ -71,7 +71,7 @@ const queries = [_]Query{
     .{ .label = "alpha-5 (wide)", .pattern = "[A-Za-z]{5}" },
     // The disjunctive rows: two alternatives forcing classes with no common
     // superclass. A collapsed single-vector ĝ is 0⃗ for both, so the whole sieve
-    // used to stand down — which is what `gist -e A -e B` compiles to.
+    // used to stand down — which is what a `-e A -e B` invocation compiles to.
     .{ .label = "alt hex-12|rule-60", .pattern = "[0-9a-f]{12}|~{60}" },
     .{ .label = "alt digit-6|CONST-6", .pattern = "[0-9]{6}|[A-Z]{6}" },
     // THE DEFAULT-FLAG SPELLINGS, which is how these queries are actually

@@ -5,14 +5,15 @@
 //! (`<tool>: try <flag or move> — <why>`) and explanatory lines
 //! (`<tool>: note: <fact>`) — rustc's help/note split.
 //!
-//!     gist:   no matches for 'Pattern' · 1204 files scanned
-//!     gist:   try -i — the pattern has uppercase; retry case-insensitive
-//!     relate: no strong kin for fresh.zig · nearest 0.7813 (weak)
-//!     relate: try --as shapes — byte kinship cannot see renamed vocabulary
+//!     <exact>:   no matches for 'Pattern' · 1204 files scanned
+//!     <exact>:   try -i — the pattern has uppercase; retry case-insensitive
+//!     <kinship>: no strong kin for fresh.zig · nearest 0.7813 (weak)
+//!     <kinship>: try --as shapes — byte kinship cannot see renamed vocabulary
 //!
-//! gist's no-match hints (`exec/cold/emit/hints.zig`) and relate's
-//! weak-result verdict (`grade.zig`) are the same channel wearing different
-//! evidence, so the voice lives here once and each face passes its own name.
+//! The exact face's no-match hints (`exec/cold/emit/hints.zig`) and the kinship
+//! face's weak-result verdict (`grade.zig`) are the same channel wearing
+//! different evidence, so the voice lives here once and each face passes its
+//! own name.
 //! Callers own the budget: hints are capped so a caller reads guidance
 //! instead of scrolling it.
 

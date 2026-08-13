@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""gist certify — Layer J report (index tiers at scale, vs zoekt and csearch).
+"""irregex certify — Layer J report (index tiers at scale, vs zoekt and csearch).
 
 Layer D measures the information-theoretic floor a **trigram** directory can reach,
 and records classes arriving at **cand% = 100%** — the whole corpus admitted, because
@@ -10,15 +10,15 @@ a filter. This layer certifies three things, each from its own measured side-car
 1. **the substring (sliver) tier** — `zig build scale` → `scale_tiers.tsv`, in Layer
    D's own unit (candidate BYTES delivered to verify), over the certificate corpus;
 2. **scale** — `bench/sliver/scale_race.py` → `scale_race.tsv` / `scale_build.tsv` /
-   `scale_resident.tsv` / `scale_truth.tsv`, racing gist against zoekt and csearch
-   over a multi-GB corpus of shallow clones (linux, llvm, go, rust);
+   `scale_resident.tsv` / `scale_truth.tsv`, racing this engine against zoekt and
+   csearch over a multi-GB corpus of shallow clones (linux, llvm, go, rust);
 3. **the positional tier, measured and DECLINED** — `positional_pareto.tsv`, the
    size/benefit surface over (block-position coverage threshold × per-document cap).
 
 **Fail-closed in all three directions, including the one where the answer is "no".**
 The sliver audit must show every truly-matching document surviving the filter. The
-scale race must show gist complete against the correctness-matched indexed rival and
-winning the classes this layer's own tier exists to close. And the positional
+scale race must show this engine complete against the correctness-matched indexed
+rival and winning the classes this layer's own tier exists to close. And the positional
 *decision* is gated too: if the Pareto surface ever shows a cheap threshold that buys
 a real reduction, the "declined" narrative below becomes false and this reporter
 refuses to splice it — so the honest "no" cannot rot into an excuse.
@@ -57,9 +57,9 @@ MIN_WORTH_FACTOR = 2.0
 WALK_SHORTFALL_CEILING = 0.03
 # The worst owned-memory ratio against rg this layer will certify for a live walk.
 #
-# Layer J claims gist's *implementation* of walking is no longer what costs it. That
-# claim was true, then false, then true again: the walk once materialized every path
-# it walked in the immortal per-worker arena, twice per entry, and the certificate
+# Layer J claims this engine's *implementation* of walking is no longer what costs it.
+# That claim was true, then false, then true again: the walk once materialized every
+# path it walked in the immortal per-worker arena, twice per entry, and the certificate
 # went on quoting the pre-fix figure for a whole release because the number lived in
 # prose nobody re-derived. Rendering it from the artifact fixed the staleness; only a
 # ceiling fixes the silence, because a regression would otherwise render as a larger
@@ -179,7 +179,7 @@ def audit(
                     f"(verdict={rival.get('verdict') or 'none'})"
                 )
 
-    # Judge the SAME corpus `_walkcost` puts in its headline — gist's worst — so the
+    # Judge the SAME corpus `_walkcost` puts in its headline — this engine's worst — so the
     # gate and the rendered claim can never disagree about which measurement is the
     # claim. A corpus missing either half is already dropped upstream: half a matched
     # pair is not a comparison, and the lane exits non-zero for it in its own right.
@@ -300,8 +300,8 @@ def _build_verdict(build: list[dict]) -> list[str]:
         default=None,
     )
     lead = (
-        f"**gist builds the smallest index the fastest** — {_num(gist, 'text_gib'):.2f} GiB of "
-        f"text in {_num(gist, 'wall_s'):.1f} s"
+        f"**This engine builds the smallest index the fastest** — "
+        f"{_num(gist, 'text_gib'):.2f} GiB of text in {_num(gist, 'wall_s'):.1f} s"
         + (f", {' and '.join(faster)}" if faster else "")
         + f", at {_num(gist, 'index_pct_text'):.1f}% of the text it indexed"
         + (
@@ -348,11 +348,11 @@ def _race_section(
         (
             "_Corpus: shallow clones of the Linux kernel, LLVM, the Go tree and the Rust tree — "
             "**352,316 files / 5.5 GiB on disk**, against the certificate corpus's 20.6k files "
-            "/ 204.6 MiB. Fairness per `bench/races/_compete.sh`: `GIST_UNCAP=1` so gist's "
-            "agent-context output budget cannot clip a repo-wide result and flatter its own "
-            "timing, and every engine answers in files-with-matches mode, the one output shape "
-            "all three share. Medians, bootstrap CIs and the Mann-Whitney verdict come from "
-            "`stats.py`; nothing statistical is reimplemented._"
+            "/ 204.6 MiB. Fairness per `bench/races/_compete.sh`: `<prefix>UNCAP=1` so this "
+            "engine's agent-context output budget cannot clip a repo-wide result and flatter "
+            "its own timing, and every engine answers in files-with-matches mode, the one "
+            "output shape all three share. Medians, bootstrap CIs and the Mann-Whitney verdict "
+            "come from `stats.py`; nothing statistical is reimplemented._"
         ),
         "",
     ]
@@ -397,7 +397,7 @@ def _race_section(
         "",
         (
             f"Cells are `median (files matched)`. Against csearch — the rival that agrees with "
-            f"ripgrep on what exists — gist **wins {wins}, ties {parity}, loses {losses}** of "
+            f"ripgrep on what exists — this engine **wins {wins}, ties {parity}, loses {losses}** of "
             f"{len(order)} classes, and the wins are the hard end of the suite: "
             "`literal-punct2` **16.5x**, `regex-litalt` **9.4x**, `regex-eol` 4.0x, "
             "`regex-dense-scan` 3.9x, `regex-classcount` 3.7x. The losses are the cheap-literal "
@@ -427,13 +427,13 @@ def _race_section(
         named = ", ".join(f"`{c}` {s:.1f}%" for c, s in sorted(shortfalls, key=lambda x: -x[1])[:4])
         out += [
             (
-                f"**gist's own shortfall, disclosed rather than rounded away.** Against csearch "
-                f"gist is short on {len(shortfalls)} classes, worst {worst:.1f}% ({named}). That "
+                f"**This engine's own shortfall, disclosed rather than rounded away.** Against "
+                f"csearch it is short on {len(shortfalls)} classes, worst {worst:.1f}% ({named}). That "
                 "is *not* index unsoundness, and the distinction is measured rather than "
                 "asserted: for every one of those classes the indexed and `--no-index` answers "
                 "are **byte-identical** (md5 of the sorted file list, `scale_elision.tsv`), so "
                 "the index only ever elided reads. The gap is the corpus walk's ignore/binary "
-                "heuristics — with `-uu` gist reaches 28,148 of ripgrep's 28,156 on `})`, "
+                "heuristics — with `-uu` this engine reaches 28,148 of ripgrep's 28,156 on `})`, "
                 "closing 197 files to 8 — and belongs to the lane that owns "
                 "`src/corpus/tree/**`. Layer J fails closed above a 3% gap and refuses entirely "
                 "if the parity proof is missing, so this can be seen but not hidden."
@@ -466,7 +466,7 @@ def _race_section(
             "",
             (
                 "**The index is not the toucher — and neither is walking.** An earlier "
-                "draft of this layer read gist's flat ~575 MiB as \"the signature of loading a "
+                "draft of this layer read this engine's flat ~575 MiB as \"the signature of loading a "
                 '389 MiB index rather than paging it". That was wrong, and it is retired here '
                 "by measurement rather than quietly restated. `vmmap` over a live query shows "
                 "`index.gist` at 354.9 MiB mapped but **11.5 MiB resident — 3.2% of the "
@@ -496,12 +496,12 @@ def _race_section(
             ),
             "",
             (
-                "A second draft blamed the remainder on gist's **live tree walk over all "
+                "A second draft blamed the remainder on this engine's **live tree walk over all "
                 "336,780 files**, which every query re-runs to honor *a stale index can "
                 "accelerate a live tree without owning truth* — one touched byte costing a full "
                 "16 KiB page, so residency would track file count rather than query or index "
                 "size. That reasoning predicts any engine walking a tree pays this bill, and "
-                "**ripgrep walks one and does not** — which made the remainder gist's own, and "
+                "**ripgrep walks one and does not** — which made the remainder this engine's own, and "
                 "findable. The matched pair below is the instrument that settled it: same "
                 "needle, same `-uu` scope, same cwd, both counting, both a fresh process with "
                 "no index and no daemon, so the only difference left is the implementation of "
@@ -516,12 +516,12 @@ def _race_section(
         out += [
             (
                 "> **The honest score, on the metric that is a cost — and what in it is stale.** "
-                "gist's owned working set is **flat across every query class**: a rare literal, "
+                "This engine's owned working set is **flat across every query class**: a rare literal, "
                 "a corpus-wide literal, a sub-trigram needle and a zero-candidate probe all "
                 "land within 3 MiB of each other, where zoekt spends 558 MiB on one common "
-                "term, the largest owned working set in this table. Against csearch gist loses "
-                "maxrss outright, and that is the standing shortfall: csearch does not walk, so "
-                "it is never charged for a tree it does not read. But the gist **figures** in "
+                "term, the largest owned working set in this table. Against csearch this engine "
+                "loses maxrss outright, and that is the standing shortfall: csearch does not walk, "
+                "so it is never charged for a tree it does not read. But this engine's **figures** in "
                 "the rows above predate the two walk retentions closed in the pair below — they "
                 "were captured while the walk still kept a path copy per walked entry — so read "
                 "them as a pre-fix ceiling, not as today's number. Refreshing them needs the "
@@ -552,11 +552,12 @@ def _walkcost(rows: list[dict], meta: dict[str, str]) -> list[str]:
     An absent measurement now reads as absent instead of as the last one anybody
     took.
 
-    It is a table per CORPUS, and the headline ratio is gist's WORST of them. The
-    lane measures several because the ratio turned out to be corpus-shaped — rg's
-    own footprint swings further between two real trees than gist's does — so a
-    single-tree rendering would report whichever verdict the corpus chose. Taking
-    the worst is the only reading a rival could not accuse of shopping."""
+    It is a table per CORPUS, and the headline ratio is this engine's WORST of
+    them. The lane measures several because the ratio turned out to be
+    corpus-shaped — rg's own footprint swings further between two real trees
+    than this engine's does — so a single-tree rendering would report whichever
+    verdict the corpus chose. Taking the worst is the only reading a rival could
+    not accuse of shopping."""
     per = _walkcost_corpora(rows)
     if not per:
         return [
@@ -595,14 +596,14 @@ def _walkcost(rows: list[dict], meta: dict[str, str]) -> list[str]:
         if len(ratios) < 2
         else (
             f" That is the worst of {len(ratios)} corpora — `{worst}`; the best of them puts "
-            f"gist at **{min(ratios)[0]:.2f}x**, and the honest summary of the spread is that "
-            "which tree you walk decides who wins, so both ends are published."
+            f"this engine at **{min(ratios)[0]:.2f}x**, and the honest summary of the spread is "
+            "that which tree you walk decides who wins, so both ends are published."
         )
     )
     out += [
         "",
         (
-            "So walking is not what costs it — gist's *implementation* of walking was, and "
+            "So walking is not what costs it — this engine's *implementation* of walking was, and "
             f"that is now closed to **{owned:.2f}x rg on owned memory**, the metric that is a "
             f"cost, and **{rss:.2f}x on maxrss**, which charges an engine for clean evictable "
             f"page cache a `read(2)`-based scanner is never billed for.{spread}"
@@ -645,7 +646,7 @@ def _walkcost(rows: list[dict], meta: dict[str, str]) -> list[str]:
 
 
 def _walkcost_corpora(rows: list[dict]) -> list[tuple[str, int, dict, dict]]:
-    """`(corpus, files, gist_row, rg_row)` for every corpus with BOTH halves measured.
+    """`(corpus, files, engine_row, rg_row)` for every corpus with BOTH halves measured.
 
     A corpus missing a half is dropped rather than rendered one-sided: half a
     matched pair is not a comparison, and the lane already exits non-zero for it.
@@ -722,15 +723,16 @@ def _positional_section(pareto: list[dict]) -> list[str]:
         "",
         (
             "**Declined, and the trade is the reason.** The classes positions can help are the "
-            "ones gist is *already* fastest on: `literal-rare` admits 6.5% of the corpus before "
-            "any positional work, and at multi-GB scale csearch answers it in 4 ms. The classes "
-            "that actually cost seconds at scale — `regex-dense-scan` 7.8 s, `regex-eol` 8.0 s — "
+            "ones this engine is *already* fastest on: `literal-rare` admits 6.5% of the corpus "
+            "before any positional work, and at multi-GB scale csearch answers it in 4 ms. The "
+            "classes that actually cost seconds at scale — `regex-dense-scan` 7.8 s, "
+            "`regex-eol` 8.0 s — "
             "carry no rare literal, and `func` measures **1.0x at every threshold below "
             "uniform**. Spending 40–130% of corpus to accelerate the queries that are already "
             "cheap, while the expensive ones are untouched, is zoekt's trade; the same table "
             "shows zoekt paying 8.7 GiB of index for it and still returning 0 files for `})`. "
             "Contrast the sliver tier in J.1: **0 new bytes on disk**, and at scale it is the "
-            "16.5x win over csearch. gist's postings stay document-level **by choice, at a "
+            "16.5x win over csearch. This engine's postings stay document-level **by choice, at a "
             "measured price** — not for want of a design."
         ),
         "",
@@ -818,7 +820,7 @@ def write_sidecar(
 
 def splice(cert: Path, section: str) -> None:
     """Replace the one marked block and retire pre-marker duplicates."""
-    text = cert.read_text() if cert.exists() else "# gist — Dominance-and-Fit Certificate\n\n"
+    text = cert.read_text() if cert.exists() else "# irregex — Dominance-and-Fit Certificate\n\n"
     lo = text.find(START)
     if lo != -1:
         hi = text.find(END, lo + len(START))
@@ -841,7 +843,7 @@ def splice(cert: Path, section: str) -> None:
 
 def main() -> int:
     """CLI entry point."""
-    ap = argparse.ArgumentParser(description="gist Layer J (index tiers at scale) report")
+    ap = argparse.ArgumentParser(description="irregex Layer J (index tiers at scale) report")
     ap.add_argument("--certificate", type=Path, required=True)
     ap.add_argument("--tsv", type=Path, required=True, help="scale_tiers.tsv (`zig build scale`)")
     ap.add_argument("--race", type=Path, help="scale_race.tsv from bench/sliver/scale_race.py")
@@ -850,7 +852,7 @@ def main() -> int:
     ap.add_argument("--pareto", type=Path, help="positional_pareto.tsv (size/benefit surface)")
     ap.add_argument("--elision", type=Path, help="scale_elision.tsv (indexed==--no-index proof)")
     ap.add_argument(
-        "--walkcost", type=Path, help="scale_walkcost.tsv (gist vs rg walk memory, no index)"
+        "--walkcost", type=Path, help="scale_walkcost.tsv (this engine vs rg walk memory, no index)"
     )
     ap.add_argument("--sidecar", type=Path, help="write the roster side-car here (scale.csv)")
     ap.add_argument("--machine", default="?")

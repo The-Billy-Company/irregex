@@ -31,11 +31,11 @@ it are one file each.
   every diagnostic routes through.
 - **[`brand.zig`](brand.zig)** owns program identity — the name that opens
   a diagnostic line, the namespace its environment knobs live in, and the
-  directory its artifacts are written to. `gist`, `relate`, and `blast` are
-  three binaries over one library, and a root module that declares
+  directory its artifacts are written to. The product faces are separate
+  binaries over one library, and a root module that declares
   `irgx_brand` picks its own name and artifact directory while sharing the
   ecosystem's `env_prefix` and `artifact_dir` conventions; one that declares
-  nothing gets the historical `gist` defaults byte-for-byte.
+  nothing gets the original defaults byte-for-byte.
 - **[`assay.zig`](assay.zig)** is the facade plus `Run`: it opens a `Span`
   and emits one summary line, byte-identical to the former `debug.print` in
   text mode, or a single NDJSON record in `--json` mode.
@@ -67,7 +67,7 @@ Engine lenses keep their ordinals, so adding a guest set cannot renumber a
 mask computed elsewhere. Two mistakes are compile errors rather than a lens
 that quietly never lights: naming more lenses than the 32-bit mask has bits,
 and re-spelling a name the engine already owns. A token matching neither half
-is now reported — `gist: note: TRACE names no lens 'pres'` — because an
+is now reported — `<name>: note: TRACE names no lens 'pres'` — because an
 ignored token and an unset knob were indistinguishable from outside.
 
 The root module belongs to the **compilation**, though, not to the package, and

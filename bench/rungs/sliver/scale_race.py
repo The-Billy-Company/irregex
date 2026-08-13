@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Scale race — gist vs zoekt vs csearch over a multi-GB corpus.
+"""Scale race — this engine vs zoekt vs csearch over a multi-GB corpus.
 
 The certificate corpus is 20.6k files / 204.6 MiB. The claim under test is that
-gist "is not built for GitHub scale", so this races the same three *indexed*
-engines over a corpus an order of magnitude larger (shallow clones of the Linux
-kernel, LLVM, the Go tree and the Rust tree), on the same bytes, and reports:
+this engine "is not built for GitHub scale", so this races the same three
+*indexed* engines over a corpus an order of magnitude larger (shallow clones of
+the Linux kernel, LLVM, the Go tree and the Rust tree), on the same bytes, and
+reports:
 
   · index build wall time, peak RSS, and index size as a fraction of corpus,
   · query latency across the canonical 12 probe classes, cold and warm,
@@ -15,14 +16,14 @@ kernel, LLVM, the Go tree and the Rust tree), on the same bytes, and reports:
 Statistics are NOT reimplemented here: medians, bootstrap CIs and the
 Mann-Whitney dominance verdict all come from `bench/apparatus/statcore.py`.
 
-Fairness follows `gist/bench/dominance/races/field.sh`:
-  · GIST_UNCAP=1, so gist's agent-context output budget cannot clip a
-    repo-wide result and flatter its own timing,
+Fairness follows `bench/apparatus/field.sh`:
+  · `<prefix>UNCAP=1`, so the product's agent-context output budget cannot clip
+    a repo-wide result and flatter its own timing,
   · every engine answers the same question in the same mode — files-with-matches
     (`-l`), the only output shape all three share,
-  · csearch indexes gist's exact corpus file list; zoekt takes no file list and
+  · csearch indexes our exact corpus file list; zoekt takes no file list and
     indexes the roots tree, so zoekt is a timing reference over a SUPERSET of
-    gist's bytes, not a correctness oracle. Hit counts are published per cell so
+    our bytes, not a correctness oracle. Hit counts are published per cell so
     a corpus disagreement is visible rather than hidden inside a latency ratio.
 
 Usage:
@@ -50,7 +51,8 @@ sys.path.insert(0, str(KERNEL / "bench" / "apparatus"))
 from product import gist_cli  # noqa: E402
 from statcore import dominance, median_ci  # noqa: E402
 
-# Byte-identical to gist/bench/certificate/guard/ratio.py PROBES — the canonical 12.
+# Byte-identical to the face package's `bench/certificate/guard/ratio.py`
+# PROBES — the canonical 12.
 # Needles are host-repo shaped on purpose: keeping them identical is what makes
 # a scale cell comparable to the certificate's own cell. A needle absent from
 # this corpus still measures something real (the pure index-filter path), and

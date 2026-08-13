@@ -1,7 +1,8 @@
 # `src/corpus/index/shelf/` — The Persisted Codex Shelf
 
-`codex.shelf` is the on-disk SHLF artifact three faces read: `gist codex`,
-`relate quote` / `relate index --shelf`, and `blast provenance`.
+`codex.shelf` is the on-disk SHLF artifact three faces read: the exact-search
+face's `codex` verb, the kinship face's `quote` and `index --shelf`, and the
+composed face's `provenance`.
 
 The FM-index _math_ stays in
 [`../../../kernel/codex/`](../../../kernel/codex/README.md), split from

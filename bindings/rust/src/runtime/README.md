@@ -8,7 +8,7 @@ that the slow way gives the same answer.
 
 An analytic call tries, in order:
 
-1. **In-process** (`plane.rs`) — `gist_run` over a cached engine
+1. **In-process** (`plane.rs`) — a face's producer entry over a cached engine
    handle, rows pulled from the kernel's arena with no copy and no parsing.
 2. **Subprocess** (`relay.rs`) — the certified CLI with `--json`, its NDJSON
    lowered through the _same_ schema table into the same rows.
@@ -21,7 +21,7 @@ engine is saying "I could answer this, but not from what I have warm"; the
 correct response is to ask the next tier, and the caller must never see it. An
 `Err` escaping the ladder means something genuinely broke.
 
-Exact search keeps its own two rungs — the resident `gist serve` daemon
+Exact search keeps its own two rungs — the resident daemon
 (`session.rs`, Unix) and the cold subprocess (`shell.rs`) — for the same
 fail-open reason. Its two answers are printed, not emitted, so they are parsed
 apart from the schema table in `readout.rs`: ripgrep's `--json` records are a
@@ -76,9 +76,10 @@ us is the one outcome worth failing to avoid.
 
 ## When to Edit
 
-Adding a verb is a contract change first (`irregex/contract/analytic.toml`,
-`relate/contract/kinship.toml`, or `blast/contract/compose.toml`), then a
-generator run, then a builder in the owning package's binding (`relate` /
-`blast` / gist's `exact::rank`). It should require nothing here. If it does,
+Adding a verb is a contract change first (`irregex/contract/analytic.toml`, the
+kinship package's `contract/kinship.toml`, or the composed face's
+`contract/compose.toml`), then a generator run, then a builder in the owning
+package's binding (the kinship face, the composed face, or the exact face's
+`exact::rank`). It should require nothing here. If it does,
 the ladder has grown a special case — prefer widening `Query` over branching
 on the verb.

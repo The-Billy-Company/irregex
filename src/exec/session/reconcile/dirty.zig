@@ -1,4 +1,4 @@
-//! gist resident session — the exact dirty-path log (O(changed) freshness).
+//! Resident session — the exact dirty-path log (O(changed) freshness).
 //!
 //! A `DirtyLog` is the hand-off between a path-reporting watcher backend and
 //! the session's reconcile: the backend `note`s every changed path (and

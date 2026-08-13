@@ -1,4 +1,5 @@
-//! gist — lane algebra: transformations as vectors, composition as one shuffle.
+//! irregex — lane algebra: transformations as vectors, composition as one
+//! shuffle.
 //!
 //! A transformation of a |Q|-state machine is a |Q|-byte vector: lane `i` holds
 //! where state `i` goes. Composing two of them is then a *byte shuffle* —

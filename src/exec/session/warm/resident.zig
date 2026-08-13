@@ -1,4 +1,4 @@
-//! gist resident session — the warm, in-memory search engine.
+//! Resident session — the warm, in-memory search engine.
 //!
 //! A `ResidentSession` owns the corpus bytes + trigram index for one repository,
 //! held warm across many queries so an eligible request (`request.zig`) answers
@@ -27,19 +27,19 @@
 //!   - `files` (`-l`): match only within complete buffers before the NUL one
 //!     (`binary.handleBinary`'s files_only policy).
 //!   - `count` (`-c`): an implicit binary file is suppressed entirely.
-//!   - `lines` (bare `gist <pattern>`): emit pre-NUL-buffer matches + WARNING,
+//!   - `lines` (a bare pattern): emit pre-NUL-buffer matches + WARNING,
 //!     rendered by `render.zig` through the cold Emitter itself.
 //!   - `search` (FFI record stream): a doc cold `--json` would skip (its 8 KiB
 //!     `isBinary` window) is skipped, keeping the record stream byte-identical.
 //!
 //! ## Read-your-writes: a fail-closed reconcile barrier
 //!
-//! The invariant is `resident matches == gist --no-index matches == rg matches`.
+//! The invariant is `resident matches == cold no-index matches == rg matches`.
 //! It holds because both the base corpus and every reconcile re-derive their file
 //! set from the cold path's OWN certified walk (`exec/cold/engine/serial.zig::
 //! defaultFileSet` — hidden-file exclusion, `.gitignore`/`.ignore` precedence,
 //! `.git` skip, root scope), never `haystack`'s coarse superset. The warm set is
-//! therefore byte-identical to what a rootless `gist <pattern>` would walk:
+//! therefore byte-identical to what a rootless bare-pattern query would walk:
 //!
 //!   - A query is answered from resident bytes directly ONLY when the freshness
 //!     barrier proves the roots quiescent since the last reconcile — a
@@ -175,7 +175,7 @@ pub const ResidentSession = struct {
     /// the reconcile verifies ONLY the drained paths — O(changed), not O(tree).
     dirty_log: dirtylog.DirtyLog,
     /// The never-drained sibling ledger: every exact watcher delivery accretes
-    /// as `path → last delivery instant`, so a one-shot `gist index` amend can
+    /// as `path → last delivery instant`, so a one-shot index amend can
     /// dial in and ask "what changed since anchor S?" without a stat walk.
     /// Armed by the watcher (single-root watches only, for one unambiguous
     /// prefix); fail-closed everywhere else (`annals.zig`). Like `dirty_log`, it
@@ -264,8 +264,8 @@ pub const ResidentSession = struct {
         // into stale base bytes (no false negatives). The session builds its OWN
         // in-memory index over these live bytes, so its baseline is this load
         // instant — NOT the persisted index's on-disk anchor, which belongs to a
-        // different index and predates any tree touched since the last `gist
-        // index` (using it would re-read the whole corpus on every query).
+        // different index and predates any tree touched since the last index
+        // build (using it would re-read the whole corpus on every query).
         const load_ns = std.Io.Clock.now(.real, io).nanoseconds;
         // Select the corpus with the certified rg-default walk (hidden-file
         // exclusion + `.gitignore` precedence + root scope) and mirror exactly
@@ -309,8 +309,9 @@ pub const ResidentSession = struct {
         return .{ .gpa = gpa, .io = io, .roots_arena = roots_arena, .roots = owned_roots, .mir = mir, .idx = idx, .by_path = by_path, .index_gen = gen, .fresh_ns = load_ns, .overlay = std.StringHashMap(Overlay).init(gpa), .dirty_log = dirtylog.DirtyLog.init(gpa), .annals = annalslog.Annals.init(gpa), .extras = owned_extras, .extras_arena = extras_arena, .nonascii_keys = nonascii };
     }
 
-    /// Does this daemon serve no explicit scope — the bare `gist serve` whole-CWD
-    /// tree? Then its mirror is the full corpus and admits any relative subtree.
+    /// Does this daemon serve no explicit scope — the bare whole-CWD tree it is
+    /// born serving? Then its mirror is the full corpus and admits any relative
+    /// subtree.
     fn rootless(self: *const ResidentSession) bool {
         return self.roots.len == 0 or
             (self.roots.len == 1 and (self.roots[0].len == 0 or std.mem.eql(u8, self.roots[0], ".")));
@@ -318,7 +319,7 @@ pub const ResidentSession = struct {
 
     /// May this daemon answer a request scoped to `req_roots`? A rootless query
     /// (no roots) is served over whatever this daemon mirrors — the unchanged
-    /// bare-`gist` behavior, independent of how the daemon was launched. A SCOPED
+    /// bare-pattern behavior, independent of how the daemon was launched. A SCOPED
     /// query is sound only when its mirror is a superset of the requested roots:
     /// a rootless daemon mirrors the whole CWD tree and admits any relative root,
     /// while an explicitly-scoped daemon admits a scoped query only when every
@@ -489,7 +490,7 @@ pub const ResidentSession = struct {
     pub const queryLines = present.queryLines;
     /// `queryLines` with a shared-memory transport above the caller's floor.
     pub const queryLinesShm = present.queryLinesShm;
-    /// The gist-native definition-first ranked view (`--rank`).
+    /// The native definition-first ranked view (`--rank`).
     pub const queryRank = present.queryRank;
     /// The early-halting `-q` existence probe (`stream.zig`).
     pub const queryExists = stream.queryExists;

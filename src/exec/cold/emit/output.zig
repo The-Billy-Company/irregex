@@ -1,4 +1,4 @@
-//! gist `rg` — the match + presentation layer (split from `run.zig`).
+//! The `rg` face — the match + presentation layer (split from `run.zig`).
 //!
 //! `quarry/walk.zig` owns the walk (gather files, apply type/glob scope, stdin); this
 //! module owns everything downstream of "here is one file's bytes". It is the
@@ -114,7 +114,7 @@ pub const wordOk = word.wordOk;
 /// word rule INTO the pattern (`(?:^|\W)(pat)(?:$|\W)`, reporting the capture),
 /// so a rejected candidate does not consume the region it covered: `rg -w -o
 /// '\s?ς'` over "final ς here" prints `ς`, having shifted the match past the
-/// space its greedy `\s?` would have taken. Skipping to `end` made gist answer
+/// space its greedy `\s?` would have taken. Skipping to `end` made us answer
 /// "no match" for that line (found by the differential fuzzer).
 pub fn nextSpan(re: *const Matcher, ss: *Matcher.SpanSim, o: Opts, s: []const u8, from: *usize) ?Matcher.Span {
     while (from.* <= s.len) {
@@ -465,8 +465,8 @@ pub const Emitter = struct {
     /// NOT `--field-match-separator`: rg documents that flag as "only used when
     /// printing matching lines", and a count is a summary, not a matching line —
     /// its own printer carries a separator no flag reaches. Differentially
-    /// confirmed against live rg (`gist/bench/conformance/rgsuite/fuzz.py`, which is how the leak
-    /// was found: gist was rendering `path|1` under `--field-match-separator '|'`).
+    /// confirmed against live rg (the rgsuite differential fuzzer, which is how the
+    /// leak was found: we were rendering `path|1` under `--field-match-separator '|'`).
     const summary_sep = ":";
 
     /// The inter-field separator: `--field-match-separator` (default `:`) on a
@@ -483,7 +483,7 @@ pub const Emitter = struct {
     /// Wrap `s` in `on` .. `reset` when color is active, else emit it plain.
     pub fn paint(self: *Emitter, on: []const u8, s: []const u8) void {
         // An empty prefix is an element with nothing set — `--colors match:none`,
-        // or a column number, which gist has never painted. Emitting the reset
+        // or a column number, which we have never painted. Emitting the reset
         // anyway would spend chrome to change nothing.
         if (!self.use_color or on.len == 0) return self.add(s);
         self.add(on);

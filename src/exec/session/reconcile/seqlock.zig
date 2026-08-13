@@ -1,13 +1,14 @@
 //! The freshness seqlock every resident session shares.
 //!
-//! Both warm engines — gist's `ResidentSession` (mirrors corpus bytes) and
-//! relate's `RetrievalSession` (caches an anchor overlay) — face the identical
-//! concurrency problem: a watch thread reports filesystem events while a query
-//! thread, under the session mutex, decides whether it may skip the reconcile
-//! walk. The decision is a lock-free seqlock over three atomics + one plain
-//! bool, and the memory ordering is subtle enough that it must live in ONE
-//! place, not be re-derived per session. This is that place: it owns every
-//! `.acquire`/`.release`/`.monotonic`, so no session ever touches a raw atomic.
+//! Both warm engines — the exact face's `ResidentSession` (mirrors corpus
+//! bytes) and the kinship face's `RetrievalSession` (caches an anchor overlay)
+//! — face the identical concurrency problem: a watch thread reports filesystem
+//! events while a query thread, under the session mutex, decides whether it may
+//! skip the reconcile walk. The decision is a lock-free seqlock over three
+//! atomics + one plain bool, and the memory ordering is subtle enough that it
+//! must live in ONE place, not be re-derived per session. This is that place: it
+//! owns every `.acquire`/`.release`/`.monotonic`, so no session ever touches a
+//! raw atomic.
 //!
 //! The payload — what "reconcile" actually recomputes — stays per session; the
 //! barrier only tracks *whether* a recompute is owed. The protocol:

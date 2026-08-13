@@ -1,4 +1,4 @@
-//! gist bench — `lowerbound`: Layer D of the optimality certificate (the
+//! irregex bench — `lowerbound`: Layer D of the optimality certificate (the
 //! *algorithmic* floor). It empirically audits the two claims of the
 //! information-theoretic lower bound for the search operation:
 //!
@@ -6,32 +6,33 @@
 //!      that confirms whether a pattern occurs in a candidate document must, in
 //!      the worst (adversarial) case, examine every byte of that document — an
 //!      unread byte could be the match, or could break it (Knuth-Morris-Pratt
-//!      1977; Boyer-Moore 1977, Ω(n) worst-case reads). gist's fused byte-class
-//!      DFA (`src/kernel/regex/linear/dfa/dfa.zig`) touches each candidate byte **exactly
-//!      once** — a single forward pass, no memchr-then-rescan double traffic;
+//!      1977; Boyer-Moore 1977, Ω(n) worst-case reads). This engine's fused
+//!      byte-class DFA (`src/kernel/regex/linear/dfa/dfa.zig`) touches each
+//!      candidate byte **exactly once** — a single forward pass, no
+//!      memchr-then-rescan double traffic;
 //!      its SIMD literal path (`src/kernel/scan/simd.zig`) touches **≤** N (vector
 //!      skips + early exit). This harness proves both structurally.
 //!
 //!   2. **Trigram-filter sublinearity.** Total work is sublinear in corpus size
 //!      because the trigram index prunes the candidate set *before* verify (Cox,
-//!      "Regular Expression Matching with a Trigram Index", 2012 — gist's direct
-//!      ancestor). `cand%` (candidate bytes ÷ corpus bytes) is the empirical
-//!      pruning measure.
+//!      "Regular Expression Matching with a Trigram Index", 2012 — this
+//!      index's direct ancestor). `cand%` (candidate bytes ÷ corpus bytes) is
+//!      the empirical pruning measure.
 //!
 //! Method (no production code is instrumented — the audit is *structural*):
 //!   • sum candidate bytes = the theoretical full-scan verify floor;
-//!   • run gist's REAL verify (`simd.contains` / `Regex.docMatch`) for the hit
-//!     count — the ground truth;
+//!   • run this engine's REAL verify (`simd.contains` / `Regex.docMatch`) for
+//!     the hit count — the ground truth;
 //!   • run an INDEPENDENT single-pass re-implementation that COUNTS byte touches
-//!     and asserts (a) its verdict equals gist's real verdict for every document
-//!     (correctness — a disagreement is a real defect), and (b) the DFA path
+//!     and asserts (a) its verdict equals the engine's real verdict for every
+//!     document (correctness — a disagreement is a real defect), and (b) the DFA path
 //!     touches EXACTLY `candidate_bytes` (one pass, no double traffic), the SIMD
 //!     literal path ≤ `candidate_bytes`.
 //!
-//! Fail-closed, exactly like `gist/bench/conformance/gates/parity/scan_regress.sh`:
-//! any violated invariant exits non-zero. Weakening an assertion to go green
-//! would violate the repo's anti-bandaid rule — a failure here is a real
-//! finding about gist.
+//! Fail-closed, exactly like the face package's
+//! `bench/conformance/gates/parity/scan_regress.sh`: any violated invariant
+//! exits non-zero. Weakening an assertion to go green would violate the repo's
+//! anti-bandaid rule — a failure here is a real finding about this engine.
 //!
 //! Probe set is *imported* from `bench/apparatus/harness/probes.zig` — the same
 //! module `certify.zig` (Layer A) uses — so Layer D lines up class-for-class
@@ -50,8 +51,8 @@ const Dfa = gist.regex.dfa.Dfa;
 const Dir = std.Io.Dir;
 const load = corpus_mod.load;
 // `outDir()`, not the comptime `default_out_dir`: a mint runs this lane with
-// GIST_DIR pointed at the bundle it is assembling, and a lane that wrote a
-// baked-in `./.gist` would drop a fresh CSV somewhere the reporter never looks
+// `<prefix>DIR` pointed at the bundle it is assembling, and a lane that wrote a
+// baked-in artifact home would drop a fresh CSV somewhere the reporter never looks
 // while the splice quietly re-read whatever was in the bundle from last time.
 const csv_path = gist.index.home.ArtifactPath("lowerbound.csv");
 
@@ -68,7 +69,7 @@ const Row = struct {
     examined: u64, // bytes the single-pass reference touches (DFA: ==floor, SIMD: ≤floor)
     passes: f64, // examined ÷ cand_bytes — passes over each candidate byte (DFA ≡ 1.0)
     cand_byte_frac: f64, // cand_bytes ÷ corpus_bytes — the pruning (sublinearity) measure
-    hits: usize, // gist's real verified match count
+    hits: usize, // the engine's real verified match count
     note: []const u8, // engine note (dfa / simd / pike-2pass / zero-width)
     at_floor: bool, // invariant held
 };
@@ -103,7 +104,7 @@ fn rgxCandidates(re: *const Regex, idx: *const Index, gpa: std.mem.Allocator, co
 /// Structurally identical to the production loop (same per-line `^`/`$`/`\n`
 /// handling, same `trans_fin` last-byte resolution): a `dead` sink is absorbing
 /// so declining to short-circuit it changes the touch count but never the
-/// verdict — which is asserted equal to gist's real `docMatch` for every doc.
+/// verdict — which is asserted equal to the engine's real `docMatch` for every doc.
 fn dfaDenseScan(d: *const Dfa, doc: []const u8, touches: *u64) bool {
     const n = doc.len;
     if (n == 0) return d.empty_match;
@@ -140,7 +141,7 @@ fn dfaDenseScan(d: *const Dfa, doc: []const u8, touches: *u64) bool {
     return matched;
 }
 
-/// Single-pass upper bound on the bytes gist's SIMD `contains` examines. The
+/// Single-pass upper bound on the bytes this engine's SIMD `contains` examines. The
 /// SIMD window advances monotonically and early-exits on the first match, so it
 /// reads at most `match_pos + needle.len` bytes (and fewer, via vector skips).
 /// We locate the first occurrence with std's exact search (the correctness
@@ -162,7 +163,7 @@ fn measureLiteral(corpus: *const corpus_mod.Corpus, cand: []const u32, needle: [
     var ok = true;
     for (cand) |d| {
         const doc = corpus.docs[d];
-        const real = simd.contains(doc, needle); // gist's REAL verify
+        const real = simd.contains(doc, needle); // the engine's REAL verify
         const ref = litScanBound(doc, needle, &examined); // independent oracle
         if (real != ref) { // SIMD ≢ exact search ⇒ a real correctness defect
             ok = false;
@@ -205,7 +206,7 @@ fn measureRegex(gpa: std.mem.Allocator, re: *Regex, sim: *Regex.Sim, pattern: []
     var hits: usize = 0;
     for (cand) |doc_id| {
         const doc = corpus.docs[doc_id];
-        const real = re.docMatch(sim, doc); // gist's REAL verify (class-run or DFA)
+        const real = re.docMatch(sim, doc); // the engine's REAL verify (class-run or DFA)
         const ref = dfaDenseScan(d, doc, &examined); // independent DFA one-pass count
         if (real != ref) {
             violations.* += 1;
@@ -296,10 +297,10 @@ fn measure(gpa: std.mem.Allocator, corpus: *const corpus_mod.Corpus, idx: *const
     };
 }
 
-/// Standalone entry: `gist-lowerbound` (its own executable rather than a
-/// `gist-bench` mode — Zig forbids importing a source file outside a module's
-/// root directory, so the harness roots its own module here and pulls in the
-/// shared `gist` engine module).
+/// Standalone entry: `lowerbound` (its own executable rather than a mode
+/// of the omnibus bench binary — Zig forbids importing a source file outside a
+/// module's root directory, so the harness roots its own module here and pulls
+/// in the shared engine module).
 pub fn main(init: std.process.Init) !void {
     try run(init.gpa, init.io);
 }

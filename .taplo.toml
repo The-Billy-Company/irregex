@@ -11,7 +11,7 @@ exclude = [
   "**/zig-pkg/**",
   "**/Cargo.lock",
   "mise.lock",
-  # This mirror is byte-checked against relate's authored contract.
+  # This mirror is byte-checked against the kinship package's authored contract.
   "contract/kinship.toml",
 ]
 

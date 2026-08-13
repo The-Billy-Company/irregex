@@ -4,7 +4,7 @@ was one of them, picked by matching parameters. `burstAgrees` proved the arms
 agree with the shipped `docMatch` about the ANSWER on thousands of mutated
 documents. Nothing proved they agree about the COST, and they did not: the region
 carve read 1.55x on this ladder against the bench's own `walkLanes`, and ~1.0x
-when I built the real `gist` binary before and after and timed it on real files.
+when I built the real search binary before and after and timed it on real files.
 Two spellings of one algorithm are two programs, and the compiler is allowed to
 treat them that way.
 
@@ -17,8 +17,8 @@ four-lane baseline's 0.6187), which is the result the reimplementations were
 mis-attributing to the carve.
 
 The ladder also races the wrong automata. `Regex.compile` leaves `unicode` false,
-and `gist` is Unicode-by-default for rg parity, so a slate row and the product
-compile different machines from the same pattern text: `\w+X` is 3 states with a
+and the product face is Unicode-by-default for rg parity, so a slate row and the
+product compile different machines from the same pattern text: `\w+X` is 3 states with a
 byte-indexed mirror here and 318 states with no mirror there, `\w+\.\w+\(` is 635.
 Only 6 of the 24 slate patterns reach `docMatchDense` in the product at all - the
 literal, class-run, and rung tiers answer the other 18 first - and of those 6 only

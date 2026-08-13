@@ -1,4 +1,4 @@
-//! gist resident session — the macOS kqueue coverage walk.
+//! Resident session — the macOS kqueue coverage walk.
 //!
 //! macOS pays one DESCRIPTOR per watched file, so — unlike Linux, which watches
 //! whole directories and gets their entries named for free — the watch set must

@@ -1,4 +1,4 @@
-//! The native-lens dispatch — gist's own ways of looking at a match, as opposed
+//! The native-lens dispatch — our own ways of looking at a match, as opposed
 //! to ripgrep's.
 //!
 //! A **lens** answers the same compiled query over the same PATH scope, but
@@ -115,7 +115,7 @@ pub fn dispatch(r: Run) !Claim {
 /// analysis (definition-shape ranking), so it declines LOUD under `-P` rather
 /// than silently ignoring the backend the user asked for.
 ///
-/// The ranked set is `gist -l`'s set by CONSTRUCTION, because it is produced by
+/// The ranked set is a `-l` run's set by CONSTRUCTION, because it is produced by
 /// the same walk. It used to be enumerated from the persisted index's path table
 /// instead, which made the index a semantic structure rather than an
 /// acceleration one (fault-channel law 1) and cost the view every file the index's

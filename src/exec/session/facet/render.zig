@@ -1,6 +1,6 @@
-//! gist resident session — the warm `lines` renderer.
+//! Resident session — the warm `lines` renderer.
 //!
-//! Renders the default `gist <pattern>` presentation (`path:text`, `-n` for
+//! Renders the default bare-pattern presentation (`path:text`, `-n` for
 //! `path:line:text`) for a pre-gated, path-sorted document list — through the
 //! cold engine's OWN `Emitter` and `binary.handleBinary`, not a re-derived
 //! formatter. Byte-parity is therefore by construction: the same line split
@@ -112,7 +112,7 @@ pub fn renderLines(a: std.mem.Allocator, req: request.Request, docs: []const Doc
     const needle: ?[]const u8 = if (!caseless and req_lit.len > 0) req_lit else null;
 
     // Defaults everywhere except `-n`, `-w`, and `-m N`: exactly the option
-    // state a piped rootless `gist <pattern> [-n] [-w] [-m N]` reaches the cold
+    // state a piped rootless `<pattern> [-n] [-w] [-m N]` reaches the cold
     // emit loop with. The cold Emitter owns the whole `-w` presentation (its
     // wordOk / nextSpan span filter) AND the per-file `-m` cap (it breaks each
     // file at `max_per_file` emitted lines — 0 = unlimited), so wiring the
@@ -199,7 +199,7 @@ pub fn renderLines(a: std.mem.Allocator, req: request.Request, docs: []const Doc
 /// The warm `lines` emit, data-parallel over documents (both faces).
 ///
 /// The emit walk can be the whole corpus, not a pruned candidate set: bare
-/// `gist -v` selects (nearly) EVERY line of EVERY text doc, and a common
+/// `-v` selects (nearly) EVERY line of EVERY text doc, and a common
 /// positive token (`fn`, `pub`, `import`) prunes to a candidate set so LARGE
 /// that the serial render is exactly the 1-core-vs-16-core loss to cold's fused
 /// scan. This shards the docs by byte weight (`parallel.shardBounds` →

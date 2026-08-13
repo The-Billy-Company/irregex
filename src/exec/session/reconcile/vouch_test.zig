@@ -1,4 +1,4 @@
-//! gist resident session — the epoch's vouch, driven on whichever exact backend
+//! Resident session — the epoch's vouch, driven on whichever exact backend
 //! the platform actually ships.
 //!
 //! The answer keep rests on one borrowed premise: two runs reading the same
@@ -73,7 +73,7 @@ const Tree = struct {
 
     fn init(a: std.mem.Allocator, io: std.Io, tag: []const u8, seed: usize) !Tree {
         // Stated, not inherited: this fixture writes `sub/` and grades the
-        // digest against its own ledger, so an operator whose `GIST_SKIP` or
+        // digest against its own ledger, so an operator whose `<prefix>SKIP` or
         // seeded `skips.list` happens to name a directory here would have the
         // walk prune bytes the oracle still counts.
         const scope = haystack.stateSkipOverlay(.none);

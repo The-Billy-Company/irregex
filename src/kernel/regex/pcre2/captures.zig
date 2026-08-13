@@ -1,4 +1,4 @@
-//! gist — PCRE2-backed capture extraction for `-P -r`/`--replace`.
+//! irregex — PCRE2-backed capture extraction for `-P -r`/`--replace`.
 //!
 //! The `-r` replacement path expands a template (`$1`, `${name}`) against the
 //! byte offsets of each capturing group. The linear engine serves those from
@@ -10,8 +10,8 @@
 //! — `nslots` (slot-vector width), `find` (fill the slots from one match), and
 //! `groupByName` (`${name}` → group number) — so the `Caps` union in
 //! `../captures.zig` dispatches to it with no output-layer knowledge of PCRE2.
-//! Slots use gist's convention: `out[2k]`/`out[2k+1]` bracket group `k`, `-1`
-//! for a group that did not participate (PCRE2's `UNSET`).
+//! Slots use this package's convention: `out[2k]`/`out[2k+1]` bracket group
+//! `k`, `-1` for a group that did not participate (PCRE2's `UNSET`).
 
 const std = @import("std");
 const ffi = @import("ffi.zig");

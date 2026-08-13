@@ -28,7 +28,7 @@
 //!
 //! Scope is exact: this module owns **vocabulary, payload, and disposition**,
 //! and owns no transport. Where a diagnostic goes, whether it renders as prose
-//! or as one NDJSON record, and which `GIST_*` knob gates it are `assay`'s
+//! or as one NDJSON record, and which `<prefix>*` knob gates it are `assay`'s
 //! decisions and stay there. `Detail` is an inert value, never a sink.
 //!
 //! `spare` (law 8) is the single outbound call, and it does not weaken that
@@ -272,9 +272,9 @@ pub fn scope() Scope {
 ///
 /// `what` names the intent at the site, which is what an empty block cannot do.
 /// The failure then lands on the `fault` lens instead of vanishing, so
-/// `GIST_TRACE=fault` shows every spared failure in a run while the default run
-/// stays silent. Cost when the lens is dark is one relaxed atomic load, and only
-/// on the failing branch.
+/// `<prefix>TRACE=fault` shows every spared failure in a run while the default
+/// run stays silent. Cost when the lens is dark is one relaxed atomic load, and
+/// only on the failing branch.
 ///
 /// Takes the *result*, so a call site reads as one expression:
 ///
@@ -300,8 +300,8 @@ pub fn spare(what: []const u8, result: anytype) void {
 /// user's terminal instead of a compile error here.
 ///
 /// The phrases are ripgrep's own, byte for byte. The differential harness keys
-/// on the errno phrase and the exit class (never the `rg:`/`gist:` prefix), so
-/// these strings are contract, not prose.
+/// on the errno phrase and the exit class (never the `rg:`/`<binary>:` prefix),
+/// so these strings are contract, not prose.
 pub fn pathNote(e: Corpus) []const u8 {
     return switch (e) {
         // ENOENT/EACCES/ENOTDIR carry the same number on every target we build.

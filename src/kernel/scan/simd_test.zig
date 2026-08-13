@@ -1,4 +1,4 @@
-//! gist bench SIMD `contains` test — split from `simd.zig` so the kernel file
+//! irregex bench SIMD `contains` test — split from `simd.zig` so the kernel file
 //! holds only the hot routine. Pulled into `zig build test` via `bench.zig`'s
 //! test block. A differential check that the SIMD substring-presence scan is
 //! byte-exact with `std.mem.indexOf` across the edge cases (empty needle/hay,

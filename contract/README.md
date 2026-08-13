@@ -39,7 +39,7 @@ uv run --no-project --with zoning==1.3.1 zoning verify --complete
 
 ## Kinship Vocabulary
 
-[`kinship.toml`](kinship.toml) is vendored from the sibling `relate` repository's `contract/kinship.toml` and must not be edited here — it defines compression-as-search vocabulary (sketches, channels, grades, verbs) that `relate` owns, kept as a local copy so this package's corpus and FM-index stay checkable against the same vocabulary `relate` builds kinship search on top of.
+[`kinship.toml`](kinship.toml) is vendored from the sibling kinship package's `contract/kinship.toml` and must not be edited here — it defines compression-as-search vocabulary (sketches, channels, grades, verbs) that the kinship package owns, kept as a local copy so this package's corpus and FM-index stay checkable against the same vocabulary that package builds kinship search on top of.
 
 ## Evidence Contracts
 
@@ -50,7 +50,7 @@ Two files freeze what a published claim is allowed to say, the way `engine.toml`
 
 ## Why These Files Exist
 
-The sibling `gist`, `relate`, and `blast` CLIs, this package's own Go/Python/Rust bindings, and any future consumer all speak one request shape over one engine. Freezing the enumerations in a contract file means a language binding and the engine's own version can never quietly drift apart from each other.
+The three product faces built on this library, this package's own Go/Python/Rust bindings, and any future consumer all speak one request shape over one engine. Freezing the enumerations in a contract file means a language binding and the engine's own version can never quietly drift apart from each other.
 
 ## When to Edit
 

@@ -47,8 +47,8 @@ pub fn hasUpper(s: []const u8) bool {
 // glob path here and ignore.zig's git config-key folding.
 pub const lowerDup = paths.lowerDup;
 
-/// A leading `/` anchors a gitignore-style glob to the search root; gist already
-/// matches such (slash-bearing) globs against the full path, so dropping the
+/// A leading `/` anchors a gitignore-style glob to the search root; we already
+/// match such (slash-bearing) globs against the full path, so dropping the
 /// anchor byte yields the same root-relative semantics.
 pub fn stripAnchor(g: []const u8) []const u8 {
     return if (g.len > 0 and g[0] == '/') g[1..] else g;

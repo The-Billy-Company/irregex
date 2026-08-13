@@ -1,4 +1,4 @@
-//! gist — what a backslash escape denotes, plus the POSIX class tables it is
+//! irregex — what a backslash escape denotes, plus the POSIX class tables it is
 //! defined in terms of.
 //!
 //! `\d` and `[[:digit:]]` are the same byte set spelled two ways, so the table
@@ -92,7 +92,7 @@ pub fn hexCp(p: *Parser) ParseError!u21 {
 }
 
 /// Decode a `\x` escape at the current position (the `x` already consumed):
-/// two hex digits `\xNN`, or a braced codepoint `\x{H..H}`. gist is a byte
+/// two hex digits `\xNN`, or a braced codepoint `\x{H..H}`. This is a byte
 /// engine, so a value > 0xFF is BadPattern (rg's `(?-u)` byte mode).
 fn hexByte(p: *Parser) ParseError!u8 {
     const val = try hexScan(p, null);

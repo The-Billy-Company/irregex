@@ -4,9 +4,9 @@
 //! with the handle: a host linking only `libirgx` could open a warm corpus, trip
 //! a cancel token at it, and never ask it a question. The engine underneath is
 //! not the gap — `api.Engine.search` is complete, tested, cancellable and
-//! budgeted — the gap is that its only C face was minted one repo over, in
-//! `gist`, so "the library can search a tree" was true of the Zig package and
-//! false of the C ABI it publishes.
+//! budgeted — the gap is that its only C face was minted one repo over, in a
+//! face package, so "the library can search a tree" was true of the Zig package
+//! and false of the C ABI it publishes.
 //!
 //! This plane is that face, brought home.
 //!
@@ -23,7 +23,7 @@
 //! ## This is NOT the row protocol
 //!
 //! `irgx_rows_*` (`answer.zig`) walks self-describing ANALYTIC rows — the
-//! relate/blast shape, 22 generated schemas, a value union per column. A match
+//! analytic-face shape, 22 generated schemas, a value union per column. A match
 //! line is not that shape and must not borrow it: it is a fixed record of five
 //! facts (path, 1-based line number, the line's bytes, the spans inside it, and
 //! whether it was selected or is a context neighbor) that every grep in
@@ -36,7 +36,7 @@
 //! **Every byte a `Match` points at — `path`, `line`, and `spans` — belongs to
 //! the cursor and stays valid until `irgx_matches_close`.** Nothing a host reads
 //! is invalidated by a later pull. That is the single deliberate divergence from
-//! the gist shim this ports: gist gives a record TWO lifetimes, because its
+//! the face shim this ports: it gives a record TWO lifetimes, because its
 //! submatch views alias a scratch buffer refilled on every `next`, so a struct
 //! whose other four fields survive until close has two that die at the next
 //! call. A C host cannot see that from the struct, and the cost of the fix is a
@@ -77,10 +77,10 @@ pub const flag_invert: u32 = 1 << 7;
 ///
 /// Narrower than `contract.pattern_flags`, and the gap is the point. `IRGX_PCRE`
 /// (8), `IRGX_MULTILINE` (9) and `IRGX_DOTALL` (10) have no knob on the warm
-/// engine's request to travel in, and bit 3 — gist's `-q`, existence-only early
-/// halt — is answered here by `max_results = 1` rather than by a second way to
-/// say it. A host that sets one of those has a wrong belief about what it is
-/// about to be told, and `IRGX_INVALID` now beats finding out from an answer.
+/// engine's request to travel in, and bit 3 — the CLI's `-q`, existence-only
+/// early halt — is answered here by `max_results = 1` rather than by a second
+/// way to say it. A host that sets one of those has a wrong belief about what it
+/// is about to be told, and `IRGX_INVALID` now beats finding out from an answer.
 pub const search_flags = contract.flag_fixed | contract.flag_ignore_case |
     contract.flag_word | flag_max_count | contract.flag_smart_case |
     contract.flag_no_unicode | flag_invert;
@@ -340,7 +340,7 @@ test "tree: a search pulls the whole answer, singly and in batches" {
     var cursor: *api.Cursor = undefined;
     var req = literal("needle");
     // Records exist, so the search itself answers positively — the shipped
-    // vocabulary's `.match`, not gist's unconditional `.ok`.
+    // vocabulary's `.match`, not the face shim's unconditional `.ok`.
     try t.expectEqual(Status.match, search(engine, &req, &cursor));
     defer cursor.deinit();
     try t.expectEqual(@as(usize, 3), cursor.count());
@@ -424,9 +424,9 @@ test "tree: every byte a record borrows outlives every later pull" {
     defer cursor.deinit();
 
     // The assertion this plane's whole lifetime rule exists for. Hold the FIRST
-    // record's pointers, drain the cursor, and read them again: under gist's
-    // two-lifetime shape `first.spans` would by now be pointing at the third
-    // record's span, silently and with no way for a C host to notice.
+    // record's pointers, drain the cursor, and read them again: under the face
+    // shim's two-lifetime shape `first.spans` would by now be pointing at the
+    // third record's span, silently and with no way for a C host to notice.
     var first: Match = undefined;
     try t.expectEqual(Status.match, next(cursor, &first));
     const held_path = first.path;

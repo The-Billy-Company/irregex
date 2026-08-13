@@ -21,10 +21,10 @@ import (
 // real.
 //
 // It never looks sideways. It used to fall back to <author>/contract/<name>.toml
-// in a sibling clone, with a map naming gist and blast as authors of contracts
-// this package does not read; the only two it does read, kinship and analytic,
-// are committed here. A gate that can satisfy itself from whatever happens to be
-// cloned beside it is a gate on the neighbor.
+// in a sibling clone, with a map naming the exact and composed faces as authors
+// of contracts this package does not read; the only two it does read, kinship
+// and analytic, are committed here. A gate that can satisfy itself from whatever
+// happens to be cloned beside it is a gate on the neighbor.
 func contractPath(name string) string {
 	if override := os.Getenv("IRGX_" + strings.ToUpper(name) + "_CONTRACT"); override != "" {
 		return override

@@ -47,7 +47,7 @@ substring _presence_ in an inverted index.
 | [Zoekt](#r-zoekt) (Sourcegraph)                             | positional trigram index                                           | presence + position of trigrams; class repetitions yield none                                                                          |
 | [GitHub Blackbird](#r-blackbird)                            | sparse n-gram selection over code                                  | same object class: substring presence                                                                                                  |
 | [REI](#r-rei) (SIGMOD 2025), [Zhang et al. 2025](#r-zhang)  | learned / cost-based _selection_ of which n-grams to index         | optimizes the same presence test; concedes the same literal-free hole                                                                  |
-| gist's own trigram prefilter (`src/kernel/query/query.zig`) | Cox-family required-trigram intersection                           | the Certificate records the hole honestly: `cand% = 100%` on `regex-classcount`                                                        |
+| our own trigram prefilter (`src/kernel/query/query.zig`)    | Cox-family required-trigram intersection                           | the Certificate records the hole honestly: `cand% = 100%` on `regex-classcount`                                                        |
 
 **Difference.** All of these answer "does the document contain substring s?"
 Crest answers "does the document contain a _run of class-C bytes at least r
@@ -174,7 +174,7 @@ the two inversions that make it a different object:
   single-string setting.
 
 The regex-analysis cousin is required-literal / minimum-length extraction
-([RE2](#r-re2)'s `MinMatchLength`, gist's own `analysis/` pass): also an AST
+([RE2](#r-re2)'s `MinMatchLength`, our own `analysis/` pass): also an AST
 lower-bound functional, but over _length_ and _literals_ — never over
 per-class run structure, and never paired with a per-document run index. Note
 that this concedes `min_len` outright: the scalar minimum-match-length component
@@ -201,7 +201,7 @@ contain one.
 | ---------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | [Bloom filters](#r-bloom) over n-grams                     | substring presence again, probabilistic; false positives fine, but cannot express "run ≥ r"                                                                 |
 | Class histograms / population counts (the "count cousin")  | sound but strictly dominated: forced run `n` ⇒ forced count `≥ n`, never the reverse; kept at identical thresholds in every revision-bound evidence package |
-| Suffix-automaton / FM-index exact tiers (gist's own codex) | exact substring machinery; a class repetition is not a substring                                                                                            |
+| Suffix-automaton / FM-index exact tiers (our own codex)    | exact substring machinery; a class repetition is not a substring                                                                                            |
 
 ## 7. Count-vector sieves and the Parikh ceiling (the _shape_, not the quantity)
 

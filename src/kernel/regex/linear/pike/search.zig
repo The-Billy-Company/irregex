@@ -1,7 +1,7 @@
-//! gist — the Pike VM's boolean walks: does the pattern match *anywhere* in this
-//! haystack? A generation-stamped thread list steps one byte at a time, so the
-//! cost is O(states)/byte with no backtracking and no catastrophic blowup — the
-//! capped-powerset fallback behind the DFA, and the proven oracle the DFA's
+//! irregex — the Pike VM's boolean walks: does the pattern match *anywhere* in
+//! this haystack? A generation-stamped thread list steps one byte at a time, so
+//! the cost is O(states)/byte with no backtracking and no catastrophic blowup —
+//! the capped-powerset fallback behind the DFA, and the proven oracle the DFA's
 //! differential fuzz compares against.
 //!
 //! Two haystack models share the machinery: `lineMatchPike` scans one line

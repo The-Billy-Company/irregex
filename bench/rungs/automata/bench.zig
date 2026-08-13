@@ -95,12 +95,12 @@ const Row = struct {
 };
 
 /// The slate. The first block is the **cross-engine** set: it is the pattern
-/// list `gist/bench/dominance/races/regex.sh` races binaries on, so the shape numbers
-/// here describe the same automata that race decides — a shape win on patterns
-/// nobody searches for would be a curiosity. The second block is the **width**
-/// set: "the n-th byte from the end" needs ~2^n states, which is where a
-/// `ncls`-sparse flag array stops fitting one cache line and where a table-area
-/// claim has room to be wrong.
+/// list the face package's `bench/dominance/races/regex.sh` races binaries on,
+/// so the shape numbers here describe the same automata that race decides — a
+/// shape win on patterns nobody searches for would be a curiosity. The second
+/// block is the **width** set: "the n-th byte from the end" needs ~2^n states,
+/// which is where a `ncls`-sparse flag array stops fitting one cache line and
+/// where a table-area claim has room to be wrong.
 const slate = [_]Row{
     // ── the cross-engine set (mirrors the dominance regex slate) ─────────────
     .{ .pat = "func\\s+\\w+\\(" },
@@ -1213,7 +1213,7 @@ fn elidableBytes(d: anytype, doc: []const u8, found: []const dwell_mod.Skippable
 /// It is not, and finding that out is half the value of the section: a `\p{…}`
 /// class lowers to a **codepoint** automaton and is determinized by
 /// `symbolic/determinize.zig`, then transcribed to bytes. It never reaches
-/// `subset.zig`, so the widest NFA in the crate is not in C3's blast radius at
+/// `subset.zig`, so the widest NFA in the crate is not in C3's change radius at
 /// all. Those rows are marked `symbolic` rather than counted.
 const width_slate = [_][]const u8{
     "\\w+",
@@ -1252,7 +1252,7 @@ fn runWidth(gpa: std.mem.Allocator) !void {
             // A `\p{…}` class needs `.unicode`, and under it the pattern lowers to a
             // CODEPOINT automaton that `symbolic/determinize.zig` owns — so the row
             // still reports its NFA width, marked `symbolic`, because that width is
-            // outside C3's blast radius however large it turns out to be.
+            // outside C3's change radius however large it turns out to be.
             var plain = Regex.compileOpts(gpa, pat, .{ .unicode = true, .force_dfa = true }) catch |e2| {
                 std.debug.print("{s: <36}  will not compile at all: {s}\n", .{ pat, @errorName(e2) });
                 continue;

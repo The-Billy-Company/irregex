@@ -95,8 +95,8 @@ being an argument and becomes a measurement.
 ## 3. What must not regress
 
 - **The four-command staleness demo** in
-  [`src/corpus/fresh/README.md`](../../src/corpus/fresh/README.md) — where gist
-  answers `b.txt c.txt` while csearch answers nothing and zoekt answers
+  [`src/corpus/fresh/README.md`](../../src/corpus/fresh/README.md) — where this
+  engine answers `b.txt c.txt` while csearch answers nothing and zoekt answers
   `a.txt` — is the law's headline claim and must produce byte-identical output
   before and after. It is the cheapest possible check that the repair did not
   buy speed with correctness.

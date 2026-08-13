@@ -1,4 +1,4 @@
-//! gist — subset construction over **minterms**.
+//! irregex — subset construction over **minterms**.
 //!
 //! Structurally this is `dfa/subset.zig` + `dfa/powerset.zig` with the byte
 //! alphabet swapped for the predicate one, and it is deliberately the same

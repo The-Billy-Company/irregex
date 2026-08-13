@@ -1,12 +1,13 @@
-//! gist — first-byte scan acceleration: given the set of bytes that can BEGIN a
-//! match (computed by `analysis.analyzeFirst`), find the next candidate position
-//! in a line so the Pike scanner skips dead spans instead of re-seeding a closure
-//! at every byte (the literal-prefilter trick rg uses). Pure byte hunting — no
-//! NFA/`Regex` dependency, only `ByteSet`. Three tiers by set shape: SIMD
-//! `indexOfScalar` for a singleton (`;$`), a SIMD range scan for a few contiguous
-//! ranges (`[0-9]{4}`, `[a-f0-9]{2,}`), and a scalar byteset probe for anything
-//! wider (a negated class). All accelerators are derived once at compile time;
-//! `nextStart` is the verify-hot entry the scanner calls per skip.
+//! irregex — first-byte scan acceleration: given the set of bytes that can
+//! BEGIN a match (computed by `analysis.analyzeFirst`), find the next candidate
+//! position in a line so the Pike scanner skips dead spans instead of
+//! re-seeding a closure at every byte (the literal-prefilter trick rg uses).
+//! Pure byte hunting — no NFA/`Regex` dependency, only `ByteSet`. Three tiers
+//! by set shape: SIMD `indexOfScalar` for a singleton (`;$`), a SIMD range scan
+//! for a few contiguous ranges (`[0-9]{4}`, `[a-f0-9]{2,}`), and a scalar
+//! byteset probe for anything wider (a negated class). All accelerators are
+//! derived once at compile time; `nextStart` is the verify-hot entry the
+//! scanner calls per skip.
 
 const std = @import("std");
 const syn = @import("../syntax/syntax.zig");

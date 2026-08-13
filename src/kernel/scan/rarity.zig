@@ -1,4 +1,4 @@
-//! gist — corpus-derived byte density, the statistical prior behind anchor
+//! irregex — corpus-derived byte density, the statistical prior behind anchor
 //! selection in the SIMD substring kernel (the memchr crate's "rare byte" idea,
 //! re-derived from OUR corpus instead of English prose).
 //!

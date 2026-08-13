@@ -27,7 +27,7 @@ if TYPE_CHECKING:
     from cffi import FFI
 
 
-# `[analytic]` flag bits (include/gist.h). Presence bits exist because a
+# `[analytic]` flag bits (include/irgx.h). Presence bits exist because a
 # threshold of 0.0 is a measurement, not an absence.
 _HAS_MAX_DISTANCE, _HAS_MIN_ECHO = 1 << 0, 1 << 1
 _NO_INDEX, _FIXED, _IGNORE_CASE = 1 << 2, 1 << 3, 1 << 4
@@ -196,7 +196,7 @@ class Sweep:
 
 @dataclass(frozen=True, slots=True)
 class Compose:
-    """context · family · provenance · blast — an exact pattern set narrows, compression reasons inside it."""
+    """context · family · provenance · change radius — an exact pattern set narrows, compression reasons inside it."""
 
     family: ClassVar[str] = "compose"
 

@@ -1,7 +1,7 @@
-//! gist — the EAGER driver of the subset construction: determinizes the Thompson
-//! NFA in `syntax.zig` to fixpoint at compile time and freezes the result into the
-//! immutable byte-class `Dfa` (`dfa.zig`), which is scratch-free and freely shared
-//! across threads.
+//! irregex — the EAGER driver of the subset construction: determinizes the
+//! Thompson NFA in `syntax.zig` to fixpoint at compile time and freezes the
+//! result into the immutable byte-class `Dfa` (`dfa.zig`), which is
+//! scratch-free and freely shared across threads.
 //!
 //! The construction itself — byte classes, the assertion-resolving epsilon-closure,
 //! the transition step, subset interning — lives in `subset.zig` and is shared with

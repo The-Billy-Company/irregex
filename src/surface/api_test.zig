@@ -135,8 +135,8 @@ test "api: a pre-cancelled token yields a clean empty result, not a crash" {
     try std.testing.expectEqual(@as(usize, 0), cur.count());
 }
 
-// The compose namespace (exact ∩ compression) moved to the `relate`
-// package with its kernels; that package's own wiring pins reachability now.
+// The compose namespace (exact ∩ compression) moved to the kinship package
+// with its kernels; that package's own wiring pins reachability now.
 
 test "api: an unsupported pattern declines with a named reason, never fatal" {
     const gpa = std.testing.allocator;

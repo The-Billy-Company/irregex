@@ -165,8 +165,9 @@ test "a typo'd flag is guessed at from the live catalog" {
 test "only a fault about a NAME is answered with a name" {
     // `--glob 'unclosed` faults on the quote while its last token is `--glob`,
     // a perfectly legal flag. Pairing "nearest" with the caller's own idea of
-    // which faults are name faults produced `try --glob — '--glob' is not a
-    // flag gist knows`, so the gate lives with the fault, not at the call site.
+    // which faults are name faults produced a `try --glob` suggestion telling
+    // the reader `--glob` is not a flag we know, so the gate lives with the
+    // fault, not at the call site.
     try t.expectEqualStrings("heading", preference.didYouMean(error.UnknownFlag, "--headnig").?);
     for ([_]anyerror{
         error.UnterminatedQuote,

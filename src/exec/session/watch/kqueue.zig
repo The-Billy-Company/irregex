@@ -1,4 +1,4 @@
-//! gist resident session — the macOS `kqueue` event backend.
+//! Resident session — the macOS `kqueue` event backend.
 //!
 //! Raw syscalls, no frameworks: the watcher costs the cold one-shot search
 //! nothing, where the FSEvents stream this replaced needed CoreServices +
@@ -151,7 +151,7 @@ fn applyEvent(self: anytype, ev: std.c.Kevent) void {
 }
 
 /// Note one changed absolute path into the dirty log — and, for a FILE, the
-/// annals ledger a one-shot `gist index` consults. A directory reaches only
+/// annals ledger a one-shot index build consults. A directory reaches only
 /// the dirty log: its event means "membership here moved", which the
 /// reconcile answers by diffing the subtree, while the ledger's reader
 /// amends per file and would stat a directory away — and its capacity is

@@ -12,7 +12,7 @@ Hoisting it out as `src/kernel/automata/`, a peer of `regex/`, looked appealing 
 
 The first real occupant then decided the depth. The operations shared by nature rather than by accident are shared between the two determinization roads, and both of those live under `linear/`, as does the `Dfa` type they produce. A folder hoisted to `regex/automata/` would have to import downward into `linear/dfa/dfa.zig` for the type it operates on, inverting the layering to buy nothing. So the package lands where its dependencies already are, and its membership rule is one sentence: a file belongs there when it operates on an automaton and cannot say which road produced it.
 
-That is deliberately narrower than "shared". It admits `freeze.zig` (the three ordered layout passes, previously transcribed once per road) and the refinement core discussed below; it excludes `program/`'s Thompson lowering, which produces an automaton rather than operating on a finished one. `dfa.zig`'s own path in particular stays pinned, since it is recorded inside the frozen benchmark manifests under `gist/bench/certificate/artifact/`, which are evidence rather than source.
+That is deliberately narrower than "shared". It admits `freeze.zig` (the three ordered layout passes, previously transcribed once per road) and the refinement core discussed below; it excludes `program/`'s Thompson lowering, which produces an automaton rather than operating on a finished one. `dfa.zig`'s own path in particular stays pinned, since it is recorded inside the frozen benchmark manifests under the face package's `bench/certificate/artifact/`, which are evidence rather than source.
 
 ## The Shape It Grows Into
 

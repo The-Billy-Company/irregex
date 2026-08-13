@@ -10,20 +10,21 @@
 //! either — against THEM the win is that an index here may only elide reads and
 //! never overrule live bytes, so a stale index costs speed rather than
 //! correctness (`corpus/fresh/`, which measures where both of them answer a
-//! mutated tree wrongly). See the gist package's `research/gist/PRIOR_ART.md`.
+//! mutated tree wrongly). The prior-art dossier arguing that claim ships with
+//! the product face, not here.
 //!
-//! Search, index lifecycle, and result handling are Zig-native, and the `gist`
-//! CLI in the sibling package is what surfaces them to a user. This package's
+//! Search, index lifecycle, and result handling are Zig-native, and a CLI in a
+//! sibling face package is what surfaces them to a user. This package's
 //! own C ABI (`include/irgx.h`, shims in `surface/ffi/exports.zig`) carries a
 //! pattern over a buffer the host already holds — compile, `is_match`,
 //! `find_all`, `captures` — the status/fault substrate every package's ABI
 //! returns, and the warm corpus planes the siblings share (engine · tree · walk
 //! · sieve · codex). What it does NOT carry is the resident session or the
-//! analytic producers; a host that wants those links `libgist`, `librelate`, or
-//! `libblast`. Every entry returns a status instead of `die()`ing, so a bad
+//! analytic producers; a host that wants those links the face library that
+//! owns them. Every entry returns a status instead of `die()`ing, so a bad
 //! pattern can never terminate an embedding host, and every verb is a shim over
 //! the machinery the CLI runs (`kernel/query/query.zig`, the `Caps` arms) —
-//! which is what makes an in-process answer the same answer `gist --json`
+//! which is what makes an in-process answer the same answer a face's `--json`
 //! prints.
 //!
 //! Package shape: one engine over a shared floor, grouped by concern and
@@ -35,12 +36,12 @@
 //!   corpus/   — the body of text + persisted forms: tree/ · scope/ · read/ ·
 //!               fresh/ · index/ (trigrams · postings · crest · shelf · …)
 //!   exec/     — transports: cold/ (argv in, bytes out) · session/ (the warm
-//!               resident core the daemon calls into; the daemon itself is gist's)
+//!               resident core the daemon calls into; the daemon itself is the
+//!               face package's)
 //!   surface/  — cli/ (shared primer vocabulary) · ffi/ (the `libirgx` root)
 //!
-//! The product faces live in the sibling packages, not here: `gist` (indexed
-//! pattern search), `relate` (compression-as-search kinship), and `blast` (the
-//! composed face).
+//! The product faces live in sibling packages, not here: indexed pattern
+//! search, compression-as-search kinship, and the composed face over both.
 
 const std = @import("std");
 
@@ -54,8 +55,8 @@ pub const assay = @import("assay/assay.zig");
 
 // Who the program riding this engine is: the name it signs a diagnostic with,
 // the namespace its knobs live in, where its artifacts go. A binary declares
-// `pub const irgx_brand: irregex.Brand = .{ .name = "relate" };` in its root
-// module; anything that declares nothing keeps the historical `gist` spellings.
+// `pub const irgx_brand: irregex.Brand = .{ .name = "<binary>" };` in its root
+// module; anything that declares nothing keeps the default spellings.
 pub const Brand = assay.Brand;
 
 // How a face terminates: the rg `0`/`1`/`2` exit contract (both precedences)
@@ -233,16 +234,8 @@ pub const scope = struct {
     pub const charter = @import("corpus/scope/charter.zig");
 };
 
-// atlas/frag (relate's persisted artifacts) live in the `relate` package.
-// compose (exact ∩ compression kernels) moved to the `relate` package — its
-// context/family halves run kinship inside the exact filter, so it lives above
-// this library in the ecosystem DAG.
-
 // ── the FM-index and its persisted shelf ──
 // The FM-index composition (`kernel/codex`) and the multi-doc shelf above it.
-// Both used to live in `relate`, which made gist's `codex` verb depend on
-// relate for an index tier — a cycle once the relate face also needed gist's
-// answer keep. An index tier belongs with the other index tiers.
 //
 // The floors it is BUILT from — SA-IS, RRR, the wavelet tree — are not here.
 // They were, and it made the same three files reachable at two addresses
@@ -257,8 +250,8 @@ pub const codex = struct {
     pub const shelf = @import("corpus/index/shelf/shelf.zig");
 };
 
-// The relate engine (kinship metric/cluster/recall, retrieval, the
-// Ziv–Merhav cento over this library's FM-index) is the `relate` package.
+// The kinship engine (metric/cluster/recall, retrieval, the Ziv–Merhav cento
+// over this library's FM-index) is its own package above this one.
 
 // ── the transport-neutral compiled query (the shared search core) ──
 // One deep module owns "a search intent, compiled": the fail-closed, thread-safe
@@ -275,28 +268,17 @@ pub const engine = struct {
 };
 
 // ── resident search session: the warm in-memory engine the daemon serves from
-// — its sockets, spawn and serve loop are gist's — sharing the kernels above but
-// returning errors instead of `die()`ing so a bad request can't take down the
-// daemon that hosts it. ──
+// — its sockets, spawn and serve loop belong to the face package — sharing the
+// kernels above but returning errors instead of `die()`ing so a bad request
+// can't take down the daemon that hosts it. ──
 pub const session = struct {
     pub const resident = @import("exec/session/warm/resident.zig");
     pub const corpus = @import("exec/session/warm/mirror.zig");
     pub const render = @import("exec/session/facet/render.zig");
     pub const request = @import("exec/session/answer/request.zig");
-    // conduit's UDS frame protocol lives in `gist` with the daemon proper.
+    // conduit's UDS frame protocol lives with the daemon proper, one tier up.
     pub const watch = @import("exec/session/watch/watch.zig");
 };
-
-// The session-shaped ABI (`gist_open` / `gist_run` and its pull cursor) lives in
-// the `gist` package, which owns that transport. What this library exports from
-// `surface/ffi` is the match-shaped surface plus the warm corpus planes.
-
-// `commands` retired here. It was a CLI-shaped alias namespace over library
-// tiers — `commands.scope.glob` was the math floor's glob matcher and
-// `commands.search` was the cold engine — so it named six modules after the
-// executable that happened to reach them first. The modules did not move (the
-// walk, the charter and the filter are load-bearing inside this library); the
-// address did: `math.glob`, `math.misread`, `scope.*`, `engine.search`.
 
 /// The curated Zig-native hosted API: a small vocabulary of owned
 /// handles — `Engine`, `SearchQuery`, `Cursor` (pull `next`/`nextBatch`),
@@ -309,10 +291,9 @@ pub const api = @import("surface/api.zig");
 /// three dispositions, the one fault translation, the per-incident fault pull,
 /// the pattern-semantics flag bits, and the self-describing row protocol.
 ///
-/// `librelate`, `libgist`, and `libblast` each link this library and return
-/// these types, so a host that links two of them reads one vocabulary rather
-/// than two spellings of "declined". A product's own ABI exports only its
-/// verbs on top of this.
+/// Every product ABI links this library and returns these types, so a host
+/// that links two of them reads one vocabulary rather than two spellings of
+/// "declined". A product's own ABI exports only its verbs on top of this.
 pub const ffi = struct {
     pub const contract = @import("surface/ffi/contract.zig");
     pub const rows = @import("surface/ffi/rows.zig");
@@ -370,7 +351,7 @@ pub const ffi = struct {
 };
 
 // ── the product seam ──
-// What the sibling product packages (`relate` · `gist` · `blast`) reach that
+// What the sibling product packages — exact, kinship, composed — reach that
 // is not part of the curated vocabulary above. The ecosystem's own internals,
 // re-exported through one door because the products and the library are tuned
 // together and version together — an outside embedder should prefer the
@@ -414,8 +395,8 @@ pub const inner = struct {
         pub const guide = @import("surface/cli/guide.zig");
         pub const jsonstr = @import("surface/cli/jsonstr.zig");
     };
-    /// The shared comment/code/string span lexer (regions + comment-scope +
-    /// blast all read it; pure, std-only).
+    /// The shared comment/code/string span lexer (regions, comment-scope, and
+    /// the composed face all read it; pure, std-only).
     pub const lexspan = @import("kernel/anatomy/lexspan.zig");
 };
 
@@ -438,7 +419,7 @@ pub fn abi() u32 {
 }
 
 /// The vendored PCRE2 the `-P` backend links (`kernel/regex/pcre2/ffi.zig`),
-/// reported by `gist rg --pcre2-version` in ripgrep's own phrasing. Declared
+/// reported by a face's `--pcre2-version` in ripgrep's own phrasing. Declared
 /// beside the engine semver rather than inside the FFI shim so the answer a
 /// caller reads and the library actually linked have one name between them.
 pub const pcre2_version_string = "10.47";

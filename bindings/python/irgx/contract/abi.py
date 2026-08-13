@@ -1,9 +1,10 @@
 """Runtime mirror of the contracts this engine is answerable for. The package embeds their load-bearing constants so it has no runtime dependency on a repo file (a wheel ships without them); the package's parity test reads the canonical TOML and asserts this mirror matches it — the standard mirror-plus-parity-test shape, so the two cannot silently drift.
 
-A product's own contract is mirrored in that product's package (`gist._contract`
-carries its distribution names and tool boundary), for the same reason its header
-is: a mirror can only be gated where the canonical file lives, and a substrate
-that mirrored its consumers could not be tested without checking them out.
+A product's own contract is mirrored in that product's own package (the exact
+face's contract module carries its distribution names and tool boundary), for
+the same reason its header is: a mirror can only be gated where the canonical
+file lives, and a substrate that mirrored its consumers could not be tested
+without checking them out.
 """
 
 from __future__ import annotations
@@ -15,8 +16,8 @@ from pathlib import Path
 # and version axes, `analytic` is the ecosystem-wide verb/op plane this engine
 # dispatches, and `kinship` is the compression vocabulary its row decoder must
 # know to name a grade or a channel. The first two are authored here; `kinship`
-# is authored by relate and vendored beside them by `tools/sync_contract.py`,
-# under a drift gate in relate's own CI.
+# is authored by the kinship package and vendored beside them by
+# `tools/sync_contract.py`, under a drift gate in that package's own CI.
 CONTRACTS = ("analytic", "engine", "kinship")
 
 
@@ -61,10 +62,11 @@ EXIT_MATCHED = 0
 EXIT_NO_MATCH = 1
 EXIT_ERROR = 2
 
-# The agent / code-place seam that used to be mirrored here moved to
-# `gist._contract`, beside the `surface.toml` that declares it: nothing in this
-# engine reads it, and mirroring it here meant the substrate's own parity test
-# could not run without a gist checkout to read the canonical file from.
+# The agent / code-place seam that used to be mirrored here moved to the exact
+# face's own contract module, beside the `surface.toml` that declares it:
+# nothing in this engine reads it, and mirroring it here meant the substrate's
+# own parity test could not run without that face's checkout to read the
+# canonical file from.
 
 
 def contract_path(name: str = "engine") -> Path:
@@ -80,8 +82,8 @@ def contract_path(name: str = "engine") -> Path:
 
     It never looks sideways. It used to fall back to `<author>/contract/…` in the
     authoring sibling, which is how a gate ends up passing on whatever happened to
-    be cloned beside it; all three contracts are committed here, relate's
-    `kinship.toml` included, vendored by `tools/sync_contract.py`.
+    be cloned beside it; all three contracts are committed here, the kinship
+    package's `kinship.toml` included, vendored by `tools/sync_contract.py`.
     """
     if override := os.environ.get(f"IRGX_{name.upper()}_CONTRACT"):
         return Path(override)
@@ -97,7 +99,7 @@ def contract_path(name: str = "engine") -> Path:
 # and only ever that. The engine handle, the cancellation token, and the status
 # vocabulary are the substrate's; a product's session and match record are that
 # product's, declared in that product's header and mirrored in that product's
-# package (`gist._native` for the search face). A face's declarations are
+# own package (its native module, for each face). A face's declarations are
 # appended to this text at `cdef` time by `runtime.loader`, so cffi still sees
 # one type universe while each half is checked against the header that owns it.
 CDEF = """
@@ -141,13 +143,13 @@ typedef struct {
 /* The five analytic parameter layouts. They are the SUBSTRATE's types — one
  * definition each in `src/surface/ffi/rows.zig`, which is why one dispatch can
  * lower every verb — and each product header re-declares the family its own
- * verbs take under its own prefix (`relate_kinship_params`,
- * `blast_compose_params`, `gist_rank_params`). Named `irgx_*` here because a
- * mirror should say who owns the layout; an earlier spelling called all five
- * `gist_*`, which named a struct gist.h does not declare and implied the search
- * face owned relate's and blast's parameters. A cffi struct name is local to
- * this type universe and ABI mode matches on layout, so the name is free to be
- * the true one. */
+ * verbs take under its own prefix (a kinship-params, a compose-params, and a
+ * rank-params spelling, one per face). Named `irgx_*` here because a mirror
+ * should say who owns the layout; an earlier spelling gave all five the exact
+ * face's prefix, which named a struct that face's header does not declare and
+ * implied the search face owned the other two faces' parameters. A cffi struct
+ * name is local to this type universe and ABI mode matches on layout, so the
+ * name is free to be the true one. */
 typedef struct {
   uint32_t struct_size; uint32_t flags; const uint8_t *target; size_t target_len;
   uint32_t channel; uint32_t unit; double max_distance; double min_echo;
@@ -172,8 +174,8 @@ typedef struct {
 } irgx_rank_params;
 typedef struct irgx_rows irgx_rows;
 /* No producer is declared here. `<face>_run` is EXPORTED by a product library
- * and declared in that product's header (`gist_run` in gist.h), so its mirror
- * travels with that face — `gist._native.CDEF` — and `runtime.loader` appends it
+ * and declared in that product's own header, so its mirror travels with that
+ * face — in that face's own native module — and `runtime.loader` appends it
  * to this text before the `cdef`. What is the substrate's is the plane the
  * producers hand rows back through: the cursor, the stats, the schema table,
  * and the five parameter layouts above. That split is why this mirror can be

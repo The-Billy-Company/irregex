@@ -1,18 +1,18 @@
 //! The warm corpus every analytic producer is handed, and the cancel handle any
 //! thread may trip.
 //!
-//! ## Why this is substrate and not gist's
+//! ## Why this is substrate and not one face's
 //!
-//! `gist_run`, `relate_run`, and `blast_run` all take an OPEN ENGINE. An engine
+//! Every face's `…_run` entry takes an OPEN ENGINE. An engine
 //! is only interpretable by the copy of the engine code that made it — the
 //! corpus, its arenas, and its process-global caches all belong to one image — so
 //! the opener has to be a symbol every producer resolves to the SAME function.
-//! While it lived in `libgist`, `librelate` had two ways to get one and neither
-//! worked: link `libgist` (which would make the kinship package depend on the
-//! search package for a type neither owns) or compile its own copy (which it did,
-//! and a handle from the other copy then segfaults). Down here, one opener serves
-//! all four libraries, and `relate.h` stops including `gist.h` for a struct that
-//! was never gist's.
+//! While it lived in the exact face's library, the kinship one had two ways to
+//! get one and neither worked: link that library (which would make the kinship
+//! package depend on the search package for a type neither owns) or compile its
+//! own copy (which it did, and a handle from the other copy then segfaults).
+//! Down here, one opener serves all four libraries, and the kinship header stops
+//! including the exact face's for a struct that was never that face's.
 //!
 //! `Engine` and `CancelToken` were always this package's (`surface/api.zig`);
 //! only the five C shims lived upstairs. This file is where they came home.

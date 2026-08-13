@@ -1,4 +1,4 @@
-//! gist — T2 regex execution: a linear-time Thompson NFA over bytes (RE2 /
+//! irregex — T2 regex execution: a linear-time Thompson NFA over bytes (RE2 /
 //! ripgrep philosophy — no backtracking, no catastrophic blowup), compiled from
 //! the AST in `syntax.zig` and run with a Pike simulation. Plus the public
 //! `Regex` handle carrying the required-literal that lets a regex reuse the T0

@@ -1,4 +1,4 @@
-//! gist — the Parabix rung: within-document boolean match by bit-parallel
+//! irregex — the Parabix rung: within-document boolean match by bit-parallel
 //! marker propagation. The package's front door; `plane.zig`, `stencil.zig`,
 //! and `admit.zig` are its floor, its class compiler, and its gate.
 //!

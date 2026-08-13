@@ -1,4 +1,4 @@
-//! gist `rg` — the `-r/--replace` half of the emitter.
+//! The `rg` face — the `-r/--replace` half of the emitter.
 //!
 //! Split from `output.zig`: expanding a replacement template against a match's
 //! capture slots, and building the rewritten line (or `-o` fragment) that gets

@@ -8,9 +8,9 @@
 //!
 //! There used to be three answers to that one question — an FNV-1a u64 trailer
 //! on the kinship atlas and the fragment atlas, an XxHash64 trailer on the
-//! codex, and nothing at all on the two largest blobs (`index.gist` at ~42 MB,
-//! `content.shard` at ~215 MB) — each with its own hand-written write/verify
-//! pair to keep in step. A 64-bit non-cryptographic checksum over a
+//! codex, and nothing at all on the two largest blobs (the trigram index blob
+//! at ~42 MB, `content.shard` at ~215 MB) — each with its own hand-written
+//! write/verify pair to keep in step. A 64-bit non-cryptographic checksum over a
 //! hundred-megabyte artifact is a coin flip wearing a proof's clothes: FNV-1a
 //! in particular avalanches so poorly that a torn write inside a low-entropy
 //! region (a run of zeros, a repeated path prefix) is exactly the case most
@@ -34,7 +34,7 @@
 //!   * the LZ78 phrase and winnowing hashes in `kernel/kinship/`. FNV there is
 //!     not a checksum, it IS the sketch — phrase identity feeds bottom-k
 //!     selection, so swapping the function moves every distance in the corpus
-//!     and silently re-grades every answer relate has ever given.
+//!     and silently re-grades every answer the kinship face has ever given.
 //!   * the C-ABI schema digest in `surface/ffi/`. Four languages must mint the
 //!     same constant from the same table, and it is `tools/build_schema_tables.py`
 //!     that mints it: SHA-256 is in every one of those standard libraries and
@@ -199,12 +199,12 @@ pub fn unseal(bytes: []const u8) Error![]const u8 {
 /// The body a sealed blob CLAIMS, without paying to verify it.
 ///
 /// This is the deferred half, and the reason sealing is two functions instead
-/// of one. `index.gist` and `content.shard` are MAPPED, not read: the entire
-/// value of that tier is that a query faults in the handful of pages it touches
-/// and never the other quarter-gigabyte. Digesting the blob at load would spend
-/// the whole saving to re-prove what the layout validators, the tree binding,
-/// and the freshness gate already fail closed on. So a mapped artifact takes
-/// its body here and offers `verify` for the moment someone actually asks.
+/// of one. The trigram index blob and `content.shard` are MAPPED, not read: the
+/// entire value of that tier is that a query faults in the handful of pages it
+/// touches and never the other quarter-gigabyte. Digesting the blob at load
+/// would spend the whole saving to re-prove what the layout validators, the tree
+/// binding, and the freshness gate already fail closed on. So a mapped artifact
+/// takes its body here and offers `verify` for the moment someone actually asks.
 pub fn body(bytes: []const u8) Error![]const u8 {
     if (bytes.len < len) return Error.Corrupt;
     return bytes[0 .. bytes.len - len];

@@ -7,7 +7,7 @@ tests `src/kernel/math/crest_test.zig`). Persisted sidecar:
 (`crest.bin`, generation-atomic with the trigram pair). Wiring: both
 read-elision oracles (`src/exec/cold/engine/serial.zig` +
 `parallel.zig`).
-Proof harness: `bench/rungs/crest/bench.zig` (links the real gist engine, walks
+Proof harness: `bench/rungs/crest/bench.zig` (links the real engine, walks
 the real corpus, fail-closed). Run: `zig build crest` from the repository root;
 unit tests ride `zig build test`. Prior art: `PRIOR_ART.md`; test inventory:
 `TESTING.md`.
@@ -19,7 +19,7 @@ min-of-max run calculus over the pattern AST — one such vector per top-level
 alternative, since a match satisfies one branch rather than all of them — and
 prune a document whose crest falls below **every** alternative's forced crest:
 a sound necessary condition that fires
-precisely on the literal-free class-repetition patterns where Gist's
+precisely on the literal-free class-repetition patterns where this engine's
 required-literal extractor currently yields no trigram candidates to
 intersect. An n-gram engine could instead union every class n-gram; that is a
 different, potentially exponential implementation trade-off, not impossible.
@@ -41,8 +41,8 @@ means an unfiltered scan:
 
 - Cox, _Regular Expression Matching with a Trigram Index_ (2012) — required
   trigrams, AND/OR query; a pattern with no extractable trigrams degenerates
-  to a full scan. gist's own prefilter is this family
-  (`src/kernel/query/query.zig`), and gist's Certificate records the hole
+  to a full scan. our own prefilter is this family
+  (`src/kernel/query/query.zig`), and the Certificate records the hole
   honestly: `cand% = 100%` on `regex-classcount`.
 - PostgreSQL `pg_trgm` (`trgm_regexp.c`) — color-trigram graph; same
   degeneration.
@@ -379,7 +379,7 @@ a false negative of the _instantiation_, not of the theorem.
 > must contribute `ĝ = 0` (no pruning) — sound by degradation.
 
 Refusal satisfies Theorem 2, and it was what shipped first — but it refused the
-common case. gist's linear engine folds `\d`/`\w`/`\s` over Unicode scalars at
+common case. the linear engine folds `\d`/`\w`/`\s` over Unicode scalars at
 the rg-parity default, so the ordinary spelling of the query the whole sieve
 exists for sieved by nothing: `[0-9]{6}` pruned 92.7% of the corpus while
 `\d{6}` — the same intent, the spelling people actually type — pruned 0.0% and
@@ -652,7 +652,7 @@ Corollary 1's `∃C` threshold has a blind spot with a crisp diagnosis: it fails
 exactly when `g(R,C) = 0` for every class, and the smallest pattern that does
 that is `a|b`, since `b` witnesses `g(R,{a}) = 0` and `a` witnesses
 `g(R,{b}) = 0`. Alternation is most of what makes a regex interesting, and in
-gist it is not even opt-in — **multi-`-e` reaches the engine as one alternation**,
+this engine it is not even opt-in — **multi-`-e` arrives as one alternation**,
 so every multi-pattern search collapsed to `0⃗` and ran with the sieve silently
 disarmed. §3.3's componentwise min is sound, and that is the whole problem: it
 is _too_ sound, throwing away the branch structure the grammar handed us.
@@ -785,12 +785,12 @@ reports **both** regimes plus zero-false-negative everywhere (§5).
 `bench/rungs/crest/bench.zig` links the production engine and walks the production
 corpus:
 
-- **matcher** — gist's real `Regex.docMatch`, compiled per mode with the same
+- **matcher** — the real `Regex.docMatch`, compiled per mode with the same
   flags handed to `ghat` (honoring Theorem 2);
 - **corpus** — the live host tree via the same `corpus.load` the optimality
   certificate layers use;
 - **index builder** — the production `crest_sidecar.build` (the same parallel
-  pass `gist index` persists as `crest.bin`);
+  pass an index build persists as `crest.bin`);
 - **soundness, fail-closed** — for _every_ file × _every_ query:
   `matched ⇒ ¬pruned`, plus a 400-pattern randomized adversarial sweep in
   all four engine modes (ASCII/Unicode × case-sensitive/caseless), 24,000

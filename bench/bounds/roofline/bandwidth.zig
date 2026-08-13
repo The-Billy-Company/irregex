@@ -1,14 +1,14 @@
-//! gist bench — `roofline`: Layer C of the performance certificate. A STREAM-style
+//! irregex bench — `roofline`: Layer C of the performance certificate. A STREAM-style
 //! (McCalpin 1995) single-thread **read-bandwidth** microbenchmark that measures
 //! the achievable memory bandwidth of THIS machine at three working-set tiers —
-//! L1-, L2-, and DRAM-resident — exposing the cache hierarchy. gist's verify path
+//! L1-, L2-, and DRAM-resident — exposing the cache hierarchy. This engine's verify path
 //! is then measured through a matched ladder: the same dual-window load/compare
 //! shape on one contiguous DRAM buffer, production `simd.contains` on that buffer,
 //! and production over the fragmented corpus. The roofline model (Williams,
 //! Waterman & Patterson, CACM 2009) supplies an upper bound; the ladder explains
 //! the distance to it instead of pretending that a sub-ceiling point saturates it.
 //!
-//! Zero-dep, mirroring gist's discipline: a plain vectorized sum-reduction over
+//! Zero-dep, mirroring this package's discipline: a plain vectorized sum-reduction over
 //! an aligned buffer, kept live through a global `sink` to defeat DCE (as
 //! certify.zig does), timed with `std.Io.Clock`. Single-threaded on purpose —
 //! certify's verify kernel is single-threaded, so the honest ceiling is the
@@ -50,7 +50,7 @@
 //!
 //! ## Recorded defect — the absent needle was not absent (2026-08-01)
 //!
-//! The "absent" needle was the source literal `Zq9_gist_roofline_absent_needle_`,
+//! The "absent" needle was a fixed source literal spelled out in this file,
 //! and the corpus root defaults to the package itself — so THIS FILE was one of
 //! the corpus documents, its literal was tiled into the contiguous buffer, and
 //! `simd.contains` early-exited on the benchmark's own source instead of
@@ -102,8 +102,8 @@ const pmu = @import("pmu"); // bench/apparatus/harness/pmu.zig, wired as a modul
 const corpus_mod = gist.corpus;
 const simd = gist.scan.simd;
 // `ArtifactPath`, not the comptime `default_out_dir`: `report.py --out-dir`
-// reads this JSON out of the bundle the mint is assembling (GIST_DIR), so a
-// baked-in `./.gist` would splice Layer C from an older roofline than the one
+// reads this JSON out of the bundle the mint is assembling (`<prefix>DIR`), so a
+// baked-in artifact home would splice Layer C from an older roofline than the one
 // this run just measured.
 const json_path = gist.index.home.ArtifactPath("roofline.json");
 const Span = gist.assay.Span; // package instrumentation floor: monotonic Span
@@ -392,10 +392,10 @@ fn absentNeedle(out: *[absent_len]u8, first: []const u8, rest: []const []const u
     return out;
 }
 
-/// gist's real SIMD substring scan (`scan/simd.zig` `contains`) streamed over the
-/// RAM-resident corpus — the **clean** roofline operating point. With an absent
+/// This engine's real SIMD substring scan (`scan/simd.zig` `contains`) streamed over
+/// the RAM-resident corpus — the **clean** roofline operating point. With an absent
 /// needle it reads every byte (no early exit, no verification), so corpus_bytes ÷
-/// ns is gist's true streaming bandwidth, directly comparable to the STREAM
+/// ns is the engine's true streaming bandwidth, directly comparable to the STREAM
 /// ceiling. (certify.csv's per-class bytes÷ns conflates early-exit + false-positive
 /// verification, so it is *not* a clean bandwidth — the report flags that.)
 fn measureGistScan(io: std.Io, corpus: *const corpus_mod.Corpus, needle: []const u8) f64 {

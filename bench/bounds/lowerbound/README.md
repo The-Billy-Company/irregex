@@ -2,7 +2,7 @@
 
 Layer D of [irregex's Dominance-and-Fit Certificate](../README.md#dominance-and-fit-certificate-layers-al),
 one of the seven layers this package mints itself. Where Layer A (minted by
-the sibling `gist` repo) proves empirical dominance over ripgrep on the
+the sibling face package) proves empirical dominance over ripgrep on the
 registered workloads and Layer C places cycles/byte against the *hardware*
 ceiling, Layer D proves the last thing left to prove: the engine's
 **algorithm** matches the **information-theoretic floor** for the search
@@ -10,10 +10,10 @@ operation — no algorithm on any machine can do asymptotically less work.
 
 ## What It Is
 
-A **fail-closed, structural byte-touch audit**. `gist-lowerbound` builds the
+A **fail-closed, structural byte-touch audit**. `lowerbound` builds the
 trigram index over the real host corpus, then for each of the twelve regex
 classes (imported from [`../../apparatus/harness/probes.zig`](../../apparatus/harness/probes.zig),
-the *same* module the sibling `gist` repo's `certify.zig` uses, so Layer D
+the *same* module the sibling face package's `certify.zig` uses, so Layer D
 lines up 1:1 with Layers A–C by construction, not by a hand-kept copy) it
 measures:
 
@@ -24,8 +24,8 @@ measures:
 - **cand%** — candidate bytes ÷ corpus bytes (the pruning the filter achieves).
 
 `report.py` splices the formal argument + the measured table into the mint's
-working `CERTIFICATE.md` (`.gist/` by default, or `$GIST_DIR`) as the
-`## Layer D` section.
+working `CERTIFICATE.md` (the artifact home by default, or `$<prefix>DIR`) as
+the `## Layer D` section.
 [`mint.sh`](../../certificate/mint/mint.sh) copies the finished file into the
 committed [`bench/certificate/artifact/`](../../certificate/artifact/)
 snapshot only when asked (`CERT_PUBLISH_DIR=...`).
@@ -78,7 +78,7 @@ byte-read per line drives `passes` to 1.02 and trips a hard `exit 1`.
 its own instead:
 
 ```bash
-zig build lowerbound                    # → .gist/lowerbound.csv (gist-lowerbound)
+zig build lowerbound                    # → .gist/lowerbound.csv (lowerbound)
 
 # splice the Layer D section into the certificate:
 python3 bench/bounds/lowerbound/report.py \
@@ -86,7 +86,7 @@ python3 bench/bounds/lowerbound/report.py \
     --certificate .gist/CERTIFICATE.md
 ```
 
-`gist-lowerbound` exits non-zero (mirroring the sibling `gist` repo's
+`lowerbound` exits non-zero (mirroring the sibling face package's
 `bench/conformance/gates/parity/scan_regress.sh`) if any candidate byte is
 read past the single-pass floor, or if the independent reference disagrees
 with the engine's real verify — a failure is a real finding about the
@@ -111,6 +111,6 @@ engine, never something to paper over by weakening the assertion.
   and `src/kernel/regex/linear/dfa/dfa.zig`, which cites Cox's linear-time
   NFA/DFA work). The `cand%` column is the empirical measure of this pruning.
 - [`../../apparatus/harness/probes.zig`](../../apparatus/harness/probes.zig) is
-  the shared probe-class registry the sibling `gist` repo's `certify.zig`
+  the shared probe-class registry the sibling face package's `certify.zig`
   (Layer A) also imports, so the two layers speak about the same twelve
   classes by construction.

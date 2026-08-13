@@ -1,4 +1,4 @@
-//! gist resident session — the O(changed) scoped-reconcile adversarial suite.
+//! Resident session — the O(changed) scoped-reconcile adversarial suite.
 //!
 //! `freshness_test.zig` hardens the reconcile-always barrier; this file attacks
 //! the SCOPED path (`dirty.zig` + `delta.zig` + `reconcileScoped`) — the one

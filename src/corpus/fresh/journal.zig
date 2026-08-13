@@ -91,10 +91,10 @@ pub const Token = struct {
 /// One replayed change, root-relative under the caller's roots.
 pub const Entry = struct { path: []const u8, is_dir: bool };
 
-/// `GIST_NO_JOURNAL` truthy (any value but `0`/`false`/`no`/empty) forces
+/// `<prefix>NO_JOURNAL` truthy (any value but `0`/`false`/`no`/empty) forces
 /// every caller off the replay path onto its certified fallback (the cold
 /// query's stat sweep, the warm daemon's full walk) — a parity gate and field
-/// escape hatch, the `GIST_NO_PARALLEL` idiom. The env var is the journal's
+/// escape hatch, the `<prefix>NO_PARALLEL` idiom. The env var is the journal's
 /// contract, so its predicate lives here rather than duplicated per caller.
 pub fn disabled() bool {
     return assay.knobFlag("NO_JOURNAL");
@@ -157,8 +157,8 @@ const flag_item_is_hardlink: u32 = 0x00100000;
 /// the Item* change bits (Created…XattrMod, 0xFF00) + every kind bit +
 /// IsLastHardlink/Cloned. A record carrying none of these predates FileEvents
 /// journaling and is genuinely unaccountable; a record carrying change bits
-/// but NO kind bit is a special (socket/fifo — e.g. gist's own daemon socket),
-/// which the confirm pipeline's live stat already classifies.
+/// but NO kind bit is a special (socket/fifo — e.g. the resident daemon's own
+/// socket), which the confirm pipeline's live stat already classifies.
 const flag_item_any: u32 = 0x0000FF00 | flag_item_is_file | flag_item_is_dir |
     flag_item_is_symlink | flag_item_is_hardlink | 0x00200000 | 0x00400000;
 /// Any of these ⇒ the delivered paths are NOT an exact account of the window.
@@ -294,7 +294,7 @@ const RootPrefix = struct {
 };
 
 /// Why a replay could not give an exact account — surfaced under the
-/// `journal` trace lens (`GIST_TRACE=journal`) so a persistent fallback is
+/// `journal` trace lens (`<prefix>TRACE=journal`) so a persistent fallback is
 /// diagnosable in the field instead of a silent `false`.
 const Doubt = enum { none, no_paths, flagged, flood, no_kind, oom, unrooted };
 
@@ -499,7 +499,7 @@ const noisy_candidates = [_][]const u8{
 /// exclusion the corpus walk does NOT also skip would make the replay a silent
 /// UNDER-report — and every caller reads a successful replay as an exact
 /// account. So the guest list is not a list: each candidate is admitted only if
-/// `haystack.isSkipDir` — the walk's own predicate, `GIST_SKIP` / charter /
+/// `haystack.isSkipDir` — the walk's own predicate, `<prefix>SKIP` / charter /
 /// skips.list overlay included — already drops it. That makes the excluded set a
 /// proven subset of the never-walked set on ANY tree, rather than a hardcoded
 /// roster that happens to agree with one repo's charter. Best-effort otherwise:

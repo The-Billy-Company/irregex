@@ -7,7 +7,7 @@ so binary policy, BOM/UTF-16, and stats cannot drift between walk modes.
 - **`binary.zig`** owns what a NUL costs you — rg's quit strategy, the line
   vs `-U` slice geometries, and the two binary notes.
 - **`stats.zig`** owns the search tally behind `--stats`, the `--json`
-  summary, and the `GIST_TRACE=query` diagnostic.
+  summary, and the `<prefix>TRACE=query` diagnostic.
 - **`ingest.zig`** owns content transforms before match: `-z` decompress,
   `--pre` preprocess, `-E` dispatch.
 

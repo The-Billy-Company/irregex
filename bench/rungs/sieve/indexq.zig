@@ -1,6 +1,6 @@
-//! gist bench — `indexq`: Layer L of the certificate, **index quality head to
-//! head against csearch** (Google Code Search, Russ Cox 2012 — gist's direct
-//! trigram ancestor).
+//! irregex bench — `indexq`: Layer L of the certificate, **index quality head
+//! to head against csearch** (Google Code Search, Russ Cox 2012 — this index's
+//! direct trigram ancestor).
 //!
 //! The axis is deliberately NOT wall time. Wall time confounds the index with
 //! the walk, the IO and the matcher, and none of those is what "your trigram
@@ -26,8 +26,8 @@
 //!
 //! Fail-closed on soundness, twice: every arm must report the SAME verified hit
 //! count (each is a sound superset of the true matches, so any arm that finds
-//! fewer has silently elided a real match), and gist's arm must never admit a
-//! document that gist's own full-corpus verify says matches but the filter
+//! fewer has silently elided a real match), and this planner's arm must never
+//! admit a document that our own full-corpus verify says matches but the filter
 //! dropped. A violation exits non-zero; it is a real finding, never something
 //! to paper over.
 //!
@@ -58,10 +58,11 @@ const Probe = probes_mod.Probe;
 const probes = probes_mod.probes ++ @import("stress.zig").probes;
 const shared_classes = probes_mod.probes.len;
 
-// Resolved through GIST_DIR rather than baked in at comptime: `csearch_plan.py`
-// writes the plan into whichever artifact home the mint declared, and this lane
-// has to read the plan THAT run produced — not a `./.gist` copy left behind by
-// an earlier one, which is a stale comparison wearing a fresh certificate.
+// Resolved through the artifact-home knob (`<prefix>DIR`) rather than baked in
+// at comptime: `csearch_plan.py` writes the plan into whichever artifact home
+// the mint declared, and this lane has to read the plan THAT run produced — not
+// a copy left in the default home by an earlier one, which is a stale
+// comparison wearing a fresh certificate.
 const plan_path = home.ArtifactPath("indexq_csearch.plan");
 const csv_path = home.ArtifactPath("indexq.tsv");
 
@@ -170,9 +171,9 @@ fn readPlans(arena: std.mem.Allocator, io: std.Io) !std.StringHashMap(Plan) {
     return out;
 }
 
-// ── the gist arms ────────────────────────────────────────────────────────────
+// ── this package's arms ──────────────────────────────────────────────────────
 
-/// gist's shipped-before-Layer-L formula: the single required literal (≥3 B),
+/// The shipped-before-Layer-L formula: the single required literal (≥3 B),
 /// else the per-branch alternation cover — one clause either way. Mirrors
 /// `query.regexPrefilter` exactly (the same two fields, the same 3-byte floor),
 /// which is the point: this arm is the baseline the improvement is measured on.
@@ -280,7 +281,7 @@ pub fn main(init: std.process.Init) !void {
     _ = args.skip(); // argv[0]
     while (args.next()) |a| {
         const eq = std.mem.indexOfScalar(u8, a, '=') orelse {
-            std.debug.print("usage: gist-indexq [--cover-atoms=N] [--cover-class=N] [--cover-clauses=N]\n", .{});
+            std.debug.print("usage: indexq [--cover-atoms=N] [--cover-class=N] [--cover-clauses=N]\n", .{});
             return error.BadArgument;
         };
         const v = try std.fmt.parseInt(usize, a[eq + 1 ..], 10);

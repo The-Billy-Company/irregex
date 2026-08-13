@@ -1,4 +1,4 @@
-//! gist — Thompson construction over **codepoints** instead of bytes.
+//! irregex — Thompson construction over **codepoints** instead of bytes.
 //!
 //! `compile/compile.zig` lowers a `uclass` through `lowerUtf8`: one UTF-8 byte
 //! sub-automaton per occurrence, so Unicode `\w` costs ~900 NFA states and

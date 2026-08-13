@@ -1,4 +1,4 @@
-//! gist — the bit-plane floor of the Parabix rung.
+//! irregex — the bit-plane floor of the Parabix rung.
 //!
 //! A byte-at-a-time engine holds one automaton state and consumes one byte per
 //! step. A bit-parallel engine holds one POSITION SET and consumes a whole

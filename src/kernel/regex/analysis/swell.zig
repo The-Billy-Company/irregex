@@ -1,4 +1,4 @@
-//! gist — the FORCED-CREST calculus: the query half of the Crest sieve
+//! irregex — the FORCED-CREST calculus: the query half of the Crest sieve
 //! (`../../math/crest.zig`; research/crest/PROOF.md §3).
 //!
 //! A document carries a *crest* — the longest run of consecutive bytes in each

@@ -5,15 +5,16 @@
 //! invariant anyone had written down (two trees cannot collide) while quietly
 //! breaking the one nobody had: a search from `services/ai` and a search from
 //! the tree root built two indexes and ran two daemons over the same files, and
-//! parked a `gistd.sock` in whichever source directory happened to be current.
+//! parked a daemon socket in whichever source directory happened to be current.
 //! So the central test compares the RESOLVED ABSOLUTE directory reached from two
 //! depths rather than comparing the two answers as text — `realpath` folds the
 //! `../` legs through real directories, where an equality of strings would only
 //! restate the arithmetic the implementation already did.
 //!
-//! Expectations are built from `home.default_out_dir` rather than spelling
-//! `.gist`, because an embedder that rebrands the ecosystem moves that name and
-//! this suite is about the CLIMB, not about what the directory is called.
+//! Expectations are built from `home.default_out_dir` rather than spelling the
+//! artifact directory's own name, because an embedder that rebrands the ecosystem
+//! moves that name and this suite is about the CLIMB, not about what the
+//! directory is called.
 
 const std = @import("std");
 const home = @import("home.zig");

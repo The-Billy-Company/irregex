@@ -1,8 +1,8 @@
 //! Stable C-ABI data contract shared by every package in the ecosystem.
 //!
 //! This module owns layout and status—not execution. It is the substrate the
-//! other three ABIs speak: `librelate`, `libgist`, and `libblast` each link
-//! this library and return these statuses, these faults, and these rows, so a
+//! other three ABIs speak: every product face's library links
+//! this library and returns these statuses, these faults, and these rows, so a
 //! host that links two of them still reads one vocabulary.
 //!
 //! It also owns the **one** translation from the kernel's fault vocabulary into
@@ -100,16 +100,16 @@ pub const Status = enum(i32) {
 };
 
 /// Pattern semantics — what a pattern MEANS, so they belong to the engine that
-/// compiles it rather than to any one product. `libgist` reuses these exact
-/// bit values in its own search request and adds its behavioral bits above
-/// them, which is why "ignore case" has one definition in the ecosystem.
+/// compiles it rather than to any one product. The exact face's library reuses
+/// these exact bit values in its own search request and adds its behavioral bits
+/// above them, which is why "ignore case" has one definition in the ecosystem.
 pub const flag_fixed: u32 = 1 << 0;
 pub const flag_ignore_case: u32 = 1 << 1;
 pub const flag_word: u32 = 1 << 2;
 pub const flag_smart_case: u32 = 1 << 5;
 pub const flag_no_unicode: u32 = 1 << 6;
 /// `-P`: which grammar the pattern is written in — PCRE2 rather than the
-/// linear-time syntax. Bit 8 because `libgist`'s behavioral bits already claim
+/// linear-time syntax. Bit 8 because that face's behavioral bits already claim
 /// 3, 4, and 7; the two sets share one numbering so a flag word means the same
 /// thing whichever ABI a host hands it to.
 pub const flag_pcre: u32 = 1 << 8;

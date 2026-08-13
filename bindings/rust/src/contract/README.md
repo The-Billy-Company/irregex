@@ -5,13 +5,14 @@ exactly three files, and no more:
 
 - **`irregex/contract/engine.toml`** carries versions, request options, and exit / status codes.
 - **`irregex/contract/analytic.toml`** carries `[row_schemas]`, `[row_enums]`, and `[analytic.verbs]`.
-- **`relate/contract/kinship.toml`** carries grades and channels, vendored into `irregex/contract/` by `tools/sync_contract.py`.
+- **The kinship package's `contract/kinship.toml`** carries grades and channels, vendored into `irregex/contract/` by `tools/sync_contract.py`.
 
-A product's own contract is mirrored in that product's own crate instead —
-gist's published names and tool boundary live in `gist::contract`, next to the
-`contract/surface.toml` they answer to. These three sat here while the
-packages shared one repository, which is what used to leave this crate's test
-suite unable to run without a gist checkout sitting beside it.
+A product's own contract is mirrored in that product's own crate instead — the
+exact face's published names and tool boundary live in its own crate's
+`contract` module, next to the `contract/surface.toml` they answer to. These
+three sat here while the packages shared one repository, which is what used to
+leave this crate's test suite unable to run without that face's checkout
+sitting beside it.
 
 The mirrored constants carry no logic of their own; everything here is what
 the rest of the ecosystem is allowed to assume. The crate embeds them so it

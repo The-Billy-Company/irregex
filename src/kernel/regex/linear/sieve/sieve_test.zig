@@ -1,4 +1,4 @@
-//! gist — quotient-sieve tests. The sieve's whole contract is one implication:
+//! irregex — quotient-sieve tests. The sieve's whole contract is one implication:
 //!
 //!     scan(hay) == .miss  ⟹  the real matcher finds nothing in `hay`
 //!

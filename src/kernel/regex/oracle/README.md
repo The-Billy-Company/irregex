@@ -1,6 +1,6 @@
 # kernel/regex/oracle — independent differential oracle
 
-This is the correctness backstop the in-family fuzz cannot provide. `../linear/dfa/dfa_test.zig` checks the DFA against the Pike VM, but the Pike VM is its own reference, so a bug shared by both survives. This tier cross-checks gist's engine against an *independent* oracle, and, for Unicode, against `rg`'s default semantics, so a mistake would have to be replicated in two unrelated implementations to escape.
+This is the correctness backstop the in-family fuzz cannot provide. `../linear/dfa/dfa_test.zig` checks the DFA against the Pike VM, but the Pike VM is its own reference, so a bug shared by both survives. This tier cross-checks this package's engine against an *independent* oracle, and, for Unicode, against `rg`'s default semantics, so a mistake would have to be replicated in two unrelated implementations to escape.
 
 ## Files
 

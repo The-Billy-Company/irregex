@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 r"""Lower the pinned UCD subset in tools/ucd/ into src/kernel/regex/unicode/tables.gen.zig.
 
-gist is a byte automaton; to match Unicode *codepoint* classes it needs compact,
-sorted scalar-range tables for the Perl classes (\\w \\d \\s), the simple
+The engine is a byte automaton; to match Unicode *codepoint* classes it needs
+compact, sorted scalar-range tables for the Perl classes (\\w \\d \\s), the simple
 case-fold orbits (-i / smart-case), and the \\p{...} general categories + scripts.
 This generator is the single source of those tables: it reads the vendored UCD
 16.0.0 text files (provenance in tools/ucd/README.md) and emits one generated Zig
@@ -138,8 +138,8 @@ def fold_orbits(path: Path) -> dict[int, list[int]]:
 
     Group codepoints by their common simple-fold target; every member of a group
     is case-equivalent to every other. Only non-trivial orbits (size >= 2) are
-    kept. Full (F) and Turkic (T) mappings are deliberately excluded — gist folds
-    with simple (1:1) semantics, matching rust-regex's default.
+    kept. Full (F) and Turkic (T) mappings are deliberately excluded — the engine
+    folds with simple (1:1) semantics, matching rust-regex's default.
     """
     groups: dict[int, set[int]] = {}
     for raw in path.read_text().splitlines():

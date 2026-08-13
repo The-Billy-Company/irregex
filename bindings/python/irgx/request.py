@@ -1,4 +1,4 @@
-"""The unified `SearchRequest` → `Match` contract. One request shape for every face — the importable package, the CLI, and an agent code-search tool. It carries only match-finding *intent*; presentation, ranking, stats, replace, and stdin stay CLI-only surfaces. `to_argv()` lowers a request into the exact rg-parity argv the certified `gist` binary accepts, so the package never reimplements search — it drives the same engine. The field set mirrors `irregex/contract/engine.toml`'s `[request_options]`; the package's parity test asserts the two never drift."""
+"""The unified `SearchRequest` → `Match` contract. One request shape for every face — the importable package, the CLI, and an agent code-search tool. It carries only match-finding *intent*; presentation, ranking, stats, replace, and stdin stay CLI-only surfaces. `to_argv()` lowers a request into the exact rg-parity argv the certified exact-search binary accepts, so the package never reimplements search — it drives the same engine. The field set mirrors `irregex/contract/engine.toml`'s `[request_options]`; the package's parity test asserts the two never drift."""
 
 from __future__ import annotations
 
@@ -64,7 +64,7 @@ class RankKind(StrEnum):
 @bind("ranked", absent={"snippet": ""})
 @dataclass(frozen=True, slots=True)
 class Ranked:
-    """One row of the engine's `--rank` view: a file ranked definition-first by the RRF kernel, tagged with the engine's own class. This is gist's native ranked shape (no rg equivalent) — a *presentation* result, deliberately not a wire-contract match kind, so it lives beside `Match` but outside the `SearchRequest` contract."""
+    """One row of the engine's `--rank` view: a file ranked definition-first by the RRF kernel, tagged with the engine's own class. This is the exact face's native ranked shape (no rg equivalent) — a *presentation* result, deliberately not a wire-contract match kind, so it lives beside `Match` but outside the `SearchRequest` contract."""
 
     path: str
     line_number: int  # the best line to surface (the definition, if the file has one)

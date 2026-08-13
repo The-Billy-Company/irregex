@@ -1,4 +1,4 @@
-//! gist — the SP-partition lattice harvest: where a sieve's over-approximating
+//! irregex — the SP-partition lattice harvest: where a sieve's over-approximating
 //! automata come from.
 //!
 //! A partition of a DFA's states has the **substitution property** (Hartmanis &

@@ -1,8 +1,8 @@
 # bench/rungs
 
-**Per-mechanism production proofs.** One folder per accelerator gist ships,
-each proving that specific mechanism earns its place under a real workload.
-These are the rungs of the ladder the certificate climbs
+**Per-mechanism production proofs.** One folder per accelerator this package
+ships, each proving that specific mechanism earns its place under a real
+workload. These are the rungs of the ladder the certificate climbs
 ([`src/kernel/regex/linear/ladder/`](../../src/kernel/regex/linear/ladder/README.md)),
 and each folder is self-contained: link the real engine, race the real rung
 against the real fallback, and fail closed on any disagreement before
@@ -24,7 +24,7 @@ cannot be attributed by racing the loop as a whole.
 - **[`sieve/`](sieve/README.md)** proves the quotient sieve's per-position
   soundness and Layer L's index-quality claim against csearch.
 - **[`sliver/`](sliver/README.md)** proves the sub-trigram sliver tier and
-  races gist against zoekt and csearch at multi-GB scale.
+  races this engine against zoekt and csearch at multi-GB scale.
 - **[`shuffle/`](shuffle/README.md)** proves the transformation-composition
   rung — a byte-class DFA re-expressed as a SIMD reduction.
 - **[`parabix/`](parabix/README.md)** proves the bit-parallel
@@ -57,11 +57,11 @@ proves *the number it beats it by is measured, not invented*.
 ## What Moved Out
 
 The dragnet/trawl tiers (`src/kernel/slate/`) are implemented here but
-**raced in `relate`**, whose Layer K is the multi-pattern claim: one arm
-times this engine per byte against Vectorscan, the other times
-`relate patterns` end to end. A rung lives with the certificate that reads
-it, so the arm moved to the package that can run both halves; this folder no
-longer carries a `multipattern/` sibling.
+**raced in the kinship face**, whose Layer K is the multi-pattern claim: one
+arm times this engine per byte against Vectorscan, the other times that
+face's multi-pattern verb end to end. A rung lives with the certificate that
+reads it, so the arm moved to the package that can run both halves; this
+folder no longer carries a `multipattern/` sibling.
 
 ## When To Add A Rung
 

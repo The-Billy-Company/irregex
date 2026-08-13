@@ -1,4 +1,4 @@
-//! gist — SIMD class-run kernel tests: a byte-at-a-time scalar oracle, edge
+//! irregex — SIMD class-run kernel tests: a byte-at-a-time scalar oracle, edge
 //! geometry (block seams, tails, carries), and the two-backend parity fuzz.
 //!
 //! The kernel's contract is exact three-valued equivalence with the obvious

@@ -1,7 +1,8 @@
 package analytic
 
 // The closed vocabularies a row field may hold ([row_enums]) and the one
-// calibration of what a kinship score is worth ([grades] in relate/contract/kinship.toml).
+// calibration of what a kinship score is worth ([grades] in the kinship
+// package's contract/kinship.toml).
 //
 // Ordinals are the ABI — variants are append-only and never reordered — so each
 // type here is that ordinal, and its label comes from the generated table rather

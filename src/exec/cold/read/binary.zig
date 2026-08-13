@@ -1,4 +1,4 @@
-//! gist `rg` — binary-file policy: what a NUL costs you.
+//! The `rg` face — binary-file policy: what a NUL costs you.
 //!
 //! ripgrep does not simply skip a file containing a NUL; it stops at a precise
 //! boundary that depends on how its reader happened to fill buffers, and then

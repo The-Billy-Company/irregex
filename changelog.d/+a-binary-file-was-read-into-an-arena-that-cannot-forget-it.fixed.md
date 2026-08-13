@@ -36,7 +36,7 @@ NOT FIXED, and worth saying plainly: this is 3% of the build's peak. 1926 of the
 remaining 2413 MiB is the corpus itself, held in anonymous memory because every
 consumer — the trigram build, the crest sieve, the content shard — is handed the
 whole `docs` slice after the walk has finished. That is the actual ceiling, and
-it is untouched here. `GIST_TRACE=index` now closes the attribution it needed to
+it is untouched here. `<PREFIX>_TRACE=index` now closes the attribution it needed to
 even state that: `loadpar` reports the arena capacity it reserved beside the doc
 bytes it was asked to hold, so the load phase's peak can be read as corpus or as
 bookkeeping instead of one number standing for both.

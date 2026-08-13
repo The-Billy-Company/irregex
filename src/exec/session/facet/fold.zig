@@ -328,7 +328,7 @@ const InvertFold = struct {
 
 /// Separator-aware path order for the `-l` answer — the SAME `pathLess` order
 /// cold's file sort applies (sort key `.none`), so the warm file list is
-/// byte-identical to a cold `gist -l` run, not merely set-equal.
+/// byte-identical to a cold `-l` run, not merely set-equal.
 fn lessPath(_: void, a: []const u8, b: []const u8) bool {
     return run.pathLess(a, b);
 }

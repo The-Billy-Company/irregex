@@ -1,8 +1,8 @@
 //! Parabix — production proof harness: does the bit-parallel rung agree with
 //! the shipped engine, and is it actually faster.
 //!
-//! Links gist's REAL engine (`@import("irregex")`) and arms the REAL rung
-//! through the engine's own seal (`gist.regex.parabix`), so both arms of every
+//! Links this package's REAL engine (`@import("irregex")`) and arms the REAL
+//! rung through the engine's own seal (`regex.parabix`), so both arms of every
 //! race are production code. Four things it establishes, each fail-closed:
 //!
 //!   1. **Agreement, over the real host corpus.** Every pattern is run over

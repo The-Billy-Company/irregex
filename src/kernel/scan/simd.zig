@@ -1,4 +1,5 @@
-//! gist — SIMD substring presence test (the hot primitive in the verify path).
+//! irregex — SIMD substring presence test (the hot primitive in the verify
+//! path).
 //!
 //! Why this exists (proven, not assumed — read `std/mem.zig::findPos`): Zig's
 //! `std.mem.indexOf` is SIMD only for a 1-byte needle; lengths **2–4** fall to
@@ -40,12 +41,12 @@ const Mask = std.meta.Int(.unsigned, vlen);
 
 /// Wide stride for the streaming scanners (`memchr`, `countByte`, reverse
 /// memchr, the caseless single-byte find, AND `indexOfPos`'s block loop).
-/// Measured on Apple M4 (2026-07-22, `gist/bench/apparatus/harness/flagbench` +
-/// a width sweep): a 64-byte stride runs a one-load-per-block scan ~35% faster than
-/// the 16-byte NEON register — the out-of-order core issues the four
-/// independent 16-byte loads across its NEON pipes. A `vlen`-wide second tier
-/// runs before the scalar tail so a haystack shorter than `scan_vlen` still
-/// vectorizes.
+/// Measured on Apple M4 (2026-07-22, the face package's
+/// `bench/apparatus/harness/flagbench` + a width sweep): a 64-byte stride runs a
+/// one-load-per-block scan ~35% faster than the 16-byte NEON register — the
+/// out-of-order core issues the four independent 16-byte loads across its NEON
+/// pipes. A `vlen`-wide second tier runs before the scalar tail so a haystack
+/// shorter than `scan_vlen` still vectorizes.
 const scan_vlen: usize = @max(vlen, 64);
 const ScanVec = @Vector(scan_vlen, u8);
 const ScanMask = std.meta.Int(.unsigned, scan_vlen);
@@ -363,8 +364,8 @@ pub fn planOf(needle: []const u8) Plan {
 /// candidate verify. `null` where there is no decision to make: a 1-byte needle
 /// goes straight to `memchr`, which takes no pair.
 ///
-/// `GIST_NO_PLAN` (internal, undocumented — the `GIST_MUSTER_TIER` /
-/// `GIST_NO_COVER` idiom) stands the hoist down so BOTH arms are measurable on
+/// `<prefix>NO_PLAN` (internal, undocumented — the `<prefix>MUSTER_TIER` /
+/// `<prefix>NO_COVER` idiom) stands the hoist down so BOTH arms are measurable on
 /// ONE binary. That instrument is not a nicety here. This tree is edited by ~10
 /// agents concurrently, so two binaries built even minutes apart differ by more
 /// than the change under test — a two-build A/B of this very hoist reported a
@@ -400,7 +401,7 @@ pub fn planOn(hay: []const u8, needle: []const u8) ?Plan {
     return refineOn(hay, needle, planFor(needle) orelse return null);
 }
 
-/// `GIST_NO_CALIBRATE`, answered once per PROCESS rather than once per document.
+/// `<prefix>NO_CALIBRATE`, answered once per PROCESS rather than once per document.
 ///
 /// `refineOn` is a per-FILE seam, so this used to be a `getenv` — a linear walk
 /// of `environ` with a `strcmp` per entry — for every file in the corpus. On this

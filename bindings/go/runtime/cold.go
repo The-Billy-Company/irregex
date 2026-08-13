@@ -100,10 +100,11 @@ func locate(name string) (string, error) {
 // (bindings/python/irgx/runtime/shell.py, `_locate_root`): an already-built
 // binary anywhere up the chain, then the sibling checkout that owns the name.
 // The two are describing the same fact about one filesystem, so they must agree.
-// The four packages are flat siblings of one workspace — `relate` sits at
-// ../relate/zig-out/bin/relate whether the process runs inside irregex or blast
-// — and a sibling is only believed when it carries the `build.zig` that makes it
-// that package's checkout rather than a directory that happens to share a name.
+// The four packages are flat siblings of one workspace — a face named <name>
+// sits at ../<name>/zig-out/bin/<name> whichever checkout the process runs
+// inside — and a sibling is only believed when it carries the `build.zig` that
+// makes it that package's checkout rather than a directory that happens to
+// share a name.
 //
 // Own build ahead of sibling on purpose: the checkout you are standing in is the
 // one you just rebuilt, and a sibling's zig-out may hold something older. No rung

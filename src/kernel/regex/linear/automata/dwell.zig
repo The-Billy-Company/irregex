@@ -1,4 +1,5 @@
-//! gist — dwell: the states a scan sits still in, and the bytes that get it out.
+//! irregex — dwell: the states a scan sits still in, and the bytes that get it
+//! out.
 //!
 //! A scan parked in state `s` reading byte `b` either goes somewhere — a different
 //! interior state, or a match at end-of-line — or it stays in `s`. If it stays,

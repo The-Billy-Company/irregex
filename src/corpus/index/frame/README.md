@@ -35,13 +35,13 @@ Deliberately **not sealed** — three peer entry points, not one deep module.
   concatenation of the whole corpus, and assembling it in memory just to seal
   it would have cost the build a second copy of every file it had just read.
 
-Consumers are the shelf (`../shelf/`), relate's atlas and frag, phantom, content,
-and the trigram pair loader. Magic bytes and versions stay per-format;
-integrity does not — every artifact seals with sibling `signet.zig`.
+Consumers are the shelf (`../shelf/`), the kinship face's atlas and frag,
+phantom, content, and the trigram pair loader. Magic bytes and versions stay
+per-format; integrity does not — every artifact seals with sibling `signet.zig`.
 
 ## Tree Binding
 
-`gist index` publishes `tree.root` last; every reader re-proves it before
+An index build publishes `tree.root` last; every reader re-proves it before
 trusting a byte. An absent binding reads as unbound. `socketBindingPath`
 names the hidden `.<socket>.tree` a daemon writes so a client can refuse a
 foreign rendezvous (`exec/session/daemon/`).

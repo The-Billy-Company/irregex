@@ -1,5 +1,5 @@
-//! gist — Unicode scalar-range → UTF-8 byte-range lowering. The primitive that
-//! lets gist's *byte* automaton match *codepoint* classes: a contiguous run of
+//! irregex — Unicode scalar-range → UTF-8 byte-range lowering. The primitive
+//! that lets a *byte* automaton match *codepoint* classes: a contiguous run of
 //! Unicode scalar values (`[00E9-00EF]`, `\w`, `\p{L}`, a case-fold orbit) is
 //! rewritten as an alternation of 1–4 successive byte ranges, each of which the
 //! existing `consume` state (`syntax.ByteSet`) accepts. No two emitted sequences

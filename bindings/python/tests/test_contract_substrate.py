@@ -5,12 +5,12 @@ The canonical files are split by who authors what they describe, and this suite
 asserts about the ones this engine is answerable for: `contract/engine.toml` (the
 request surface, match kinds, exit codes, version axes) and
 `contract/analytic.toml` (the wire schema, row plane, and ABI vocabulary), both
-authored here, plus `relate/contract/kinship.toml`, whose grade and channel
-vocabulary the row decoder must know and which is vendored beside them under a
-drift gate in relate's CI.
+authored here, plus the kinship package's `contract/kinship.toml`, whose grade
+and channel vocabulary the row decoder must know and which is vendored beside
+them under a drift gate in that package's CI.
 
-A product's own contract is gated in that product's repo — `surface.toml` in
-gist's `test_contract_surface.py`. Mirroring a consumer's contract here meant the
+A product's own contract is gated in that product's repo — `surface.toml` in the
+exact face's own contract suite. Mirroring a consumer's contract here meant the
 engine could not test itself without checking that consumer out.
 
 Reading them **fails closed**. It used to skip, on the reasoning that an

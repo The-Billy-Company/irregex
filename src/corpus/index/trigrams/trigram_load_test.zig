@@ -1,4 +1,4 @@
-//! gist T0 index-loader ADVERSARIAL suite — split out per the shape cap, wired
+//! irregex T0 index-loader ADVERSARIAL suite — split out per the shape cap, wired
 //! via `root.zig`'s test block.
 //!
 //! `trigram_test.zig` round-trips WELL-FORMED indexes; this file does the

@@ -1,21 +1,21 @@
-//! gist hints — the one structured stderr guidance channel.
+//! Hints — the one structured stderr guidance channel.
 //!
-//! gist's results contract is sacred: stdout carries rg-shaped bytes and
+//! The results contract is sacred: stdout carries rg-shaped bytes and
 //! nothing else. But the agent who got *nothing* back deserves to know why
 //! and what to try next — on stderr, in one stable grammar shared with the
 //! output-budget notice in `corpus.zig`: an outcome line, then suggestion
-//! lines (`gist: try <flag or move> — <why>`) and explanatory lines
-//! (`gist: note: <fact>`), rustc's help/note split:
+//! lines (`<name>: try <flag or move> — <why>`) and explanatory lines
+//! (`<name>: note: <fact>`), rustc's help/note split:
 //!
-//!     gist: no matches for 'Pattern' · 1204 files scanned · scope: services
-//!     gist: try -i — the pattern has uppercase; retry case-insensitive
-//!     gist: try -uu — gitignored and hidden files were excluded
+//!     <name>: no matches for 'Pattern' · 1204 files scanned · scope: services
+//!     <name>: try -i — the pattern has uppercase; retry case-insensitive
+//!     <name>: try -uu — gitignored and hidden files were excluded
 //!
 //! Every hint derives from the query's own shape (pattern bytes + the flags
 //! in force) — never a second scan — so the channel costs O(|pattern|) when
 //! it fires and nothing when it doesn't. At most three hints, ranked by how
 //! often each one is the actual fix. Fires only on notable outcomes (zero
-//! matches); a plain hit stays silent. `GIST_HINTS=0` mutes the channel for
+//! matches); a plain hit stays silent. `<prefix>HINTS=0` mutes the channel for
 //! parity harnesses; stdout is untouched either way.
 //!
 //! Two triggers, one grammar. An OUTCOME can be notable (`noMatches`), and so
@@ -207,7 +207,7 @@ pub const Branch = struct {
     /// only: a prefix appears here because it was FOUND, never because it was
     /// expected, which is what makes it impossible for this field to lie.
     live: ?[]const u8 = null,
-    /// Lines carrying `live` — gist's own counting unit (`-c`).
+    /// Lines carrying `live` — our own counting unit (`-c`).
     lines: usize = 0,
     /// Does this branch reduce to plain bytes at all? False for a real regex
     /// (`a.*b`, `\d+`), which can be neither looked up in an index nor searched
@@ -614,14 +614,15 @@ fn more(a: std.mem.Allocator, n: usize) ![]const u8 {
 }
 
 /// The hint voices are the shared CLI guidance grammar (`surface/cli/guide.zig`),
-/// bound to this face's name — relate's weak-result verdict speaks the same one.
+/// bound to this face's name — the kinship face's weak-result verdict speaks
+/// the same one.
 const Voice = guide.Voice;
 
 fn line(a: std.mem.Allocator, out: *std.ArrayList(u8), left: *usize, voice: Voice, text: []const u8) !void {
     try guide.line(a, out, left, "gist", voice, text);
 }
 
-/// The engines' one-call exit hook: render the hint, honoring `GIST_HINTS`.
+/// The engines' one-call exit hook: render the hint, honoring `<prefix>HINTS`.
 /// Never fails — a hint is a courtesy, not a result — and a hint that only
 /// half-rendered is not emitted at all, so a truncated courtesy never reaches a
 /// terminal.
@@ -649,7 +650,7 @@ fn emitNoMatches(s: Shape, files_scanned: ?usize, ev: Evidence) !void {
 
 /// The one hint this channel emits on a run that SUCCEEDED.
 ///
-/// `gist 'A|B|C' PATH` is several questions in one, and its answer is one exit
+/// A `'A|B|C' PATH` run is several questions in one, and its answer is one exit
 /// code. When A and C are present and B is not, the run prints matches, exits 0,
 /// and says nothing at all about B — so a bundled probe reads as three answers
 /// when it was two, and the missing one is invisible precisely because everything
@@ -720,7 +721,7 @@ fn renderDead(a: std.mem.Allocator, out: *std.ArrayList(u8), s: Shape, results: 
 /// How long a walk may stay silent before it owes the reader an explanation.
 /// Two seconds is past every warm query and nearly every cold one, so an
 /// ordinary run never speaks — and it lands before a hand reaches for ^C, which
-/// is the entire point. The run that motivated this (`gist -uu -l 'class Prism'`
+/// is the entire point. The run that motivated this (`-uu -l 'class Prism'`
 /// over a tree carrying 25 GB of vendored clones) took 78–122 s and said nothing
 /// whatsoever until it finished; it was killed at six seconds as a hang.
 const patience_s: u64 = 2;
@@ -752,7 +753,7 @@ pub const Progress = struct {
 
 /// A background explanation for a walk slow enough to look broken.
 ///
-/// Inherits this file's whole contract — stderr only, `GIST_HINTS=0` mutes it,
+/// Inherits this file's whole contract — stderr only, `<prefix>HINTS=0` mutes it,
 /// stdout is never touched — and adds the one gate the outcome hints don't need.
 pub const Vigil = struct {
     finished: std.atomic.Value(bool) = .init(false),

@@ -8,7 +8,7 @@ exits non-zero, and the fix is always the calculus, never the assertion
 The one property that matters is **soundness**: `matched ⇒ ¬pruned`, for
 every document, every pattern, every mode. A false _positive_ (a survivor the
 matcher rejects) costs only time; a false _negative_ (a pruned match) is a
-wrong answer from gist. Every suite below exists to make a false negative
+wrong answer from the engine. Every suite below exists to make a false negative
 unable to hide.
 
 ---
@@ -109,7 +109,7 @@ The sieve rides both read-elision oracles (`serial.zig` `IndexSkip`,
   sees; otherwise disabled.
 
 End-to-end: the full `zig build test` suite — including the rg-parity
-differential/adversarial oracles that diff gist's match sets against
+differential/adversarial oracles that diff the engine's match sets against
 independent oracles — runs with the sieve live in the engine, so any wiring
 false negative breaks parity loudly.
 
@@ -167,7 +167,7 @@ trail summarized in PRIOR_ART.md §7–8.
 cd <irregex-repo-root>
 zig build test        # §1 + §2 + engine parity suites
 zig build crest       # §3 — exploratory raw evidence in .local/crest-evidence/
-gist index && gist status   # §4 — sidecar persisted alongside index.gist
+<face> index && <face> status   # §4 — sidecar persisted alongside the index
 python3 bench/rungs/crest/evidence/crest_evidence.py package
 # clean committed HEAD only: source archive + manifests + samples + monograph
 ```

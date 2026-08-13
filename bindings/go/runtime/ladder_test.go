@@ -101,7 +101,8 @@ func TestDigestPolicy(t *testing.T) {
 	}
 }
 
-// The cold tier's own counters are pinned where a producer is built: gist's
-// `exact` package drives this package's `Run` through `rank` and asserts the
-// stats come back (`gist/bindings/go/exact/ladder_test.go`). Nothing in this
-// file spawns a child, which is why this package's tests need no binary at all.
+// The cold tier's own counters are pinned where a producer is built: the exact
+// face's `exact` package drives this package's `Run` through `rank` and asserts
+// the stats come back (that package's `bindings/go/exact/ladder_test.go`).
+// Nothing in this file spawns a child, which is why this package's tests need no
+// binary at all.

@@ -1,4 +1,4 @@
-//! gist resident session — the request-eligibility classifier suite. `classify` is the fail-closed gate that decides whether an
+//! Resident session — the request-eligibility classifier suite. `classify` is the fail-closed gate that decides whether an
 //! rg-style argv can be answered warm; the one unforgivable failure is
 //! classifying an INELIGIBLE request as eligible (the resident path would then
 //! answer a query it can't serve correctly), so this pins both the accepted
@@ -144,7 +144,7 @@ test "classify: a pattern carrying a newline or NUL stays cold" {
 
 test "classify: a rootless -l/-c query is eligible" {
     // The daemon serves exactly the rootless CWD tree, so a rootless eligible
-    // query is the one shape routed warm — byte-identical to `gist <pattern>`.
+    // query is the one shape routed warm — byte-identical to a bare pattern.
     const a = try ok(&.{ "-l", "needle" });
     try std.testing.expectEqual(request.Mode.files, a.mode);
     const b = try ok(&.{ "-c", "-F", "needle" });
@@ -402,7 +402,7 @@ test "classify: conflicting modes and duplicate patterns are ineligible" {
     try std.testing.expectError(request.ClassifyError.Unsupported, ok(&.{ "-l", "-c", "needle" }));
     try std.testing.expectError(request.ClassifyError.Unsupported, ok(&.{ "-l", "-e", "a", "-e", "b" }));
     // A bare token after an `-e` pattern is now a scope root, not a second
-    // pattern: `gist -e a b` == pattern `a` under path `b` (rg parity).
+    // pattern: `-e a b` == pattern `a` under path `b` (rg parity).
     {
         const a = try ok(&.{ "-l", "-e", "a", "b" });
         try std.testing.expectEqualStrings("a", a.pattern);

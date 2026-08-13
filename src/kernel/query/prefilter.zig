@@ -22,9 +22,10 @@
 //! the same escaped form the cold `-F` path and the warm renderer compile.
 //!
 //! Cold's `exec/cold/engine/{serial,ranked}.zig` (and, for the escape,
-//! `session/render.zig` · `compose/blast.zig` · `batch/patterns.zig`) import
-//! these verbatim, so warm and cold cannot drift on which literals are safe to
-//! prune by. This is `query.zig`'s private sub-module; it re-exports the surface.
+//! `session/render.zig` · the composed face's change-radius module ·
+//! `batch/patterns.zig`) import these verbatim, so warm and cold cannot drift
+//! on which literals are safe to prune by. This is `query.zig`'s private
+//! sub-module; it re-exports the surface.
 
 const std = @import("std");
 const cover = @import("cover.zig");

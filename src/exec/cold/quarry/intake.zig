@@ -1,4 +1,4 @@
-//! gist — intake: turning walked candidates into readable bytes, reading only
+//! Intake: turning walked candidates into readable bytes, reading only
 //! what might match.
 //!
 //! The walk (`walk.zig`) decides WHAT is in the corpus; this decides what is
@@ -242,7 +242,7 @@ fn readCandidates(dest: std.mem.Allocator, gpa: std.mem.Allocator, candidates: [
 // re-read of anything touched since), lets the read be elided. A skipped file
 // couldn't have produced a single line of output, so eliding its read is
 // byte-invisible — the win is turning "open+read ~16k files" into "open+read
-// only the trigram candidates" for a selective query, gist's whole thesis.
+// only the trigram candidates" for a selective query, this tier's whole thesis.
 //
 // Soundness rests on two sets drawn from the index:
 //   • `indexed`  — every path the index covers (only THESE may be elided; a path
@@ -306,7 +306,7 @@ const IndexSkip = struct {
 /// Build the read-elision oracle from the persisted index — the indexed→live
 /// seam (fault-channel law 1). It declines when there's nothing to gain (no sound
 /// prefilter, `--no-index`, or no index on disk — the last probed SILENTLY via
-/// `loadQuiet`, since a bare `gist <pattern>` outside an indexed corpus is the
+/// `loadQuiet`, since a bare `<pattern>` run outside an indexed corpus is the
 /// normal case, not a miss to nag about). `fresh_roots` scopes the freshness
 /// stat-walk to the query's own roots (else the indexed corpus) so a scoped
 /// query doesn't pay a whole-corpus stat pass.
@@ -393,8 +393,8 @@ pub const Collected = struct { files: []InFile, recursive: bool, path_error: boo
 pub fn collectFiles(a: std.mem.Allocator, gpa: std.mem.Allocator, io: std.Io, parsed: args.Parsed, filters: []const []const u8, sieve: crest.Swell, file_needle: ?simd.Gate, cfg: *const ingest.Config) Collected {
     const o = parsed.opts;
     var candidates: std.ArrayList(Candidate) = .empty;
-    // The command plane's terminal decision: the shared walk returns OOM, gist
-    // exits 2 with the canonical notice, exactly as it always has.
+    // The command plane's terminal decision: the shared walk returns OOM, the
+    // run exits 2 with the canonical notice, exactly as it always has.
     var ig = ignore.Ignore.init(a, io, ignore.Options.from(o), parsed.roots) catch oom();
 
     // The elision oracle's freshness stat-walk and the gather walk are

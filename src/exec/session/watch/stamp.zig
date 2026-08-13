@@ -1,4 +1,4 @@
-//! gist resident session — the instant a watcher delivery is stamped with.
+//! Resident session — the instant a watcher delivery is stamped with.
 //!
 //! The POSIX backends must read the wall clock at DELIVERY, not at drain: the
 //! annals compare a noted path against `base.ns` instants minted from the SAME

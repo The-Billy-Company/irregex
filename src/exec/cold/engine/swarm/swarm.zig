@@ -1,4 +1,4 @@
-//! gist `rg` — the fused work-stealing walk+read+match+emit engine (the fast path).
+//! The `rg` face — the fused work-stealing walk+read+match+emit engine (the fast path).
 //!
 //! The serial engine walks the tree single-threaded, reads candidates in a
 //! second phase, then matches+emits in a third — three passes, one core doing
@@ -82,7 +82,7 @@ const workerMain = descent.workerMain;
 /// here must ALSO hold in `serial.zig`'s dispatch (it calls this) — the serial
 /// engine remains the semantic reference for whatever this declines.
 ///
-/// The `GIST_NO_PARALLEL` parity-gate knob (which forces the serial reference so
+/// The `<prefix>NO_PARALLEL` parity-gate knob (which forces the serial reference so
 /// both engines can run one case list) is the FIRST thing checked, via the
 /// single `assay.serialForced` joint the emit shards and `json.runParallel`
 /// share — see its doc comment for why plane selection routes through one
@@ -169,7 +169,7 @@ pub fn eligible(io: std.Io, parsed: args.Parsed, o: Opts, re: ?*const Matcher) b
 /// tally); under `-U` the boolean must be PROVEN equal to the whole-buffer emit
 /// model's verdict (`bufBoolExact`).
 ///
-/// The decline is a real bug fix, not caution: `gist/bench/conformance/rgsuite/fuzz.py` caught
+/// The decline is a real bug fix, not caution: the rgsuite differential fuzzer caught
 /// `--files-without-match` paired with any of these streaming ordinary match
 /// lines, and — under `--sort path`, where the sink rewrites each delivered
 /// record as its path — listing the file set rg EXCLUDES. The serial engine's
@@ -261,7 +261,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, parsed: args.Parsed, o: Opts, re:
     // Corpus-wide freshness certificate. Per-file freshness is what makes a
     // selective cold query expensive: the elide oracle and the content shard both
     // need every walked file's clocks, which measured 32.7 ms of a 42 ms
-    // `gist -l <rare-literal>` over this 20k-file corpus — against a 7.5 ms
+    // `-l <rare-literal>` run over this 20k-file corpus — against a 7.5 ms
     // names-only walk and 4 ms of candidate reads. The OS filesystem journal
     // answers the same question for the WHOLE corpus in one round trip
     // (`fresh.unmoved`), so a quiescent tree lets the walk stay on the names-only
@@ -283,7 +283,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, parsed: args.Parsed, o: Opts, re:
     // deadline of its own: the replay is already bounded, and a query that
     // abandons it kills the prover before it can record the refusal that makes
     // every LATER query free (see `Certificate.settle`).
-    // OPT-IN (`GIST_CERTIFY=1`), because the round trip above is a property of
+    // OPT-IN (`<prefix>CERTIFY=1`), because the round trip above is a property of
     // `fseventsd`, not of this corpus. Measured on a quiescent 21k-file tree: the
     // FIRST probe after an index build replays a zero-width window and answers in
     // 10.6 ms, which is the number the design was priced against — but every later
@@ -332,8 +332,8 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, parsed: args.Parsed, o: Opts, re:
     // `--hidden`, `-g` whitelists, `--ignore-file`) at worst re-admit a
     // subtree the build never descended — which walks live via `not_walked` —
     // and explicit roots resolve to their snapshot record by name (a root the
-    // snapshot can't place just walks live). `GIST_NO_PHANTOM` (internal,
-    // undocumented — the `GIST_NO_PARALLEL` idiom) forces the live walk for
+    // snapshot can't place just walks live). `<prefix>NO_PHANTOM` (internal,
+    // undocumented — the `<prefix>NO_PARALLEL` idiom) forces the live walk for
     // parity gates.
     var snap_view: ?treemap.View = if (!assay.knobSet("NO_PHANTOM")) treemap.load(io) else null;
 
@@ -342,8 +342,8 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, parsed: args.Parsed, o: Opts, re:
     // loader uses): every unchanged corpus file the walk would open is served
     // from the mapping instead — the across-the-board full-scan win. Skipped for
     // `--files` (no bytes read) and transform runs (`-z`/`-E` need live bytes,
-    // and the shard never holds compressed inputs anyway). `GIST_NO_SHARD`
-    // (internal, undocumented — the `GIST_NO_PHANTOM` idiom) forces live reads
+    // and the shard never holds compressed inputs anyway). `<prefix>NO_SHARD`
+    // (internal, undocumented — the `<prefix>NO_PHANTOM` idiom) forces live reads
     // for the parity gate. Membership + freshness only, so it is fail-open.
     const want_shard = !assay.knobSet("NO_SHARD") and !o.no_index and o.mode != .files and !icfg.active() and elide.broadIndexedRoots(parsed.roots);
     var shard_view: ?shard_mod.View = if (want_shard) shard_mod.load(gpa, io) else null;
@@ -426,7 +426,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, parsed: args.Parsed, o: Opts, re:
     // Worker topology is OS-aware (see `defaultWorkerCount`): macOS keeps the
     // measured six-worker ceiling (kernel-serialized walk) and halves it for
     // traversal-only / narrow / selective runs; every other OS scales to all
-    // logical CPUs like ripgrep. `GIST_WORKERS` remains absolute.
+    // logical CPUs like ripgrep. `<prefix>WORKERS` remains absolute.
     const ncpu = portal.cpuCount() catch 6;
     const narrow_scope = parsed.roots.len > 0 and !elide.broadIndexedRoots(parsed.roots);
     // A transforming run (-z/--pre/-E) does CPU-bound per-file work — inflate
@@ -437,14 +437,14 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, parsed: args.Parsed, o: Opts, re:
     // contention; it throttles decode-heavy codecs (xz/zstd) below the serial
     // path, so a transforming pipeline lifts the cap to all logical CPUs.
     var nworkers = if (icfg.active()) @max(1, ncpu) else defaultWorkerCount(ncpu, o.mode == .files or want_elision or narrow_scope);
-    // -j/--threads caps the pool explicitly (rg's `--threads`); 0 keeps gist's
-    // adaptive topology. `GIST_WORKERS` still overrides everything (parity gates).
+    // -j/--threads caps the pool explicitly (rg's `--threads`); 0 keeps our
+    // adaptive topology. `<prefix>WORKERS` still overrides everything (parity gates).
     if (o.threads != 0) nworkers = @max(1, o.threads);
     if (assay.knob("WORKERS")) |s| if (std.fmt.parseInt(usize, s, 10) catch null) |n| {
         nworkers = @max(1, n);
     };
     // A walk may earn more hands than its starting width once it proves it is the
-    // I/O-bound kind (`Crew.consider`). An EXPLICIT width — `-j`, `GIST_WORKERS`,
+    // I/O-bound kind (`Crew.consider`). An EXPLICIT width — `-j`, `<prefix>WORKERS`,
     // a transform run's own `ncpu` fan-out — is the caller's answer, not a guess
     // to be revised, so those pin the ceiling to what they asked for.
     const pinned = o.threads != 0 or icfg.active() or assay.knobSet("WORKERS");
@@ -473,7 +473,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, parsed: args.Parsed, o: Opts, re:
     pool.muster(nworkers) catch oom();
     const hired = pool.hired.load(.acquire);
     // What the walk RETAINED, per worker and by cause. The certificate calls
-    // gist's scanner footprint "unattributed overhead in gist's walk path", and
+    // the scanner footprint "unattributed overhead in the walk path", and
     // it stayed unattributed because nothing could say which of the four
     // candidates it was: the arena that outlives a directory, the per-worker
     // read scratch, the coalesced path-list buffer, or the deferred backlog.

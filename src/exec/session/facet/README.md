@@ -18,7 +18,7 @@ faces can prune differently or disagree about which document is live.
 - **[`present.zig`](present.zig)** answers as finished bytes. It holds the
   rendered faces: the default `path:text` line search, its shared-memory
   sibling above the transport floor (same bytes, different carrier), and the
-  gist-native definition-first `--rank` view.
+  native definition-first `--rank` view.
 - **[`stream.zig`](stream.zig)** answers as records. It holds the per-line
   faces: the in-process FFI's `MatchRecord` stream (rg's line model,
   `-A`/`-B`/`-C` context windows, the `-m` cap, parallel shards reassembled

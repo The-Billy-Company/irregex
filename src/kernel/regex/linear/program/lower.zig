@@ -1,5 +1,5 @@
-//! gist — compilation: pattern text ⇒ the immutable `Regex` handle. Parse to an
-//! AST (`regex/syntax/`), case-fold it if `-i`, lower it to a Thompson NFA
+//! irregex — compilation: pattern text ⇒ the immutable `Regex` handle. Parse to
+//! an AST (`regex/syntax/`), case-fold it if `-i`, lower it to a Thompson NFA
 //! (`regex/compile/`), then run every verify-time analysis the scanner will consult
 //! — required literal, alternation cover, pure-literal equivalence, first-byte
 //! prefilter, zero-width reachability — and choose which engines to build: the

@@ -1,4 +1,5 @@
-//! gist — the minimal C-ABI surface of the vendored PCRE2 10.47 8-bit library.
+//! irregex — the minimal C-ABI surface of the vendored PCRE2 10.47 8-bit
+//! library.
 //!
 //! We bind PCRE2 with explicit `extern` declarations rather than `@cImport`
 //! (translate-c) so the Zig side stays self-contained: no PCRE2 include path
@@ -8,7 +9,7 @@
 //! these decls resolve against that archive at final link.
 //!
 //! All symbols carry the `_8` suffix PCRE2 mints when `PCRE2_CODE_UNIT_WIDTH=8`
-//! — the width the whole gist byte pipeline speaks. Opaque structs mirror
+//! — the width the whole byte pipeline speaks. Opaque structs mirror
 //! PCRE2's own incomplete types; we only ever hold them behind pointers.
 
 const std = @import("std");
@@ -74,7 +75,8 @@ pub const INFO_NAMEENTRYSIZE: u32 = 18;
 pub const INFO_NAMETABLE: u32 = 19;
 
 /// `PCRE2_UNSET` — the ovector sentinel for a group that did not participate in
-/// the match (`SIZE_MAX`). Mapped to gist's `-1` "unset slot" convention.
+/// the match (`SIZE_MAX`). Mapped to this package's `-1` "unset slot"
+/// convention.
 pub const UNSET: Size = std.math.maxInt(Size);
 
 // ── compile / free ──

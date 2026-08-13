@@ -1,4 +1,4 @@
-//! gist `rg` — how a walk failure reads on stderr.
+//! The `rg` face — how a walk failure reads on stderr.
 //!
 //! A descent can fail in ways the search itself never sees: a path arg that
 //! won't open, a directory that won't be entered, a `-L` symlink pointing at
@@ -37,8 +37,8 @@ pub const WalkFault = Dir.OpenError || Dir.Iterator.Error || Dir.SelectiveWalker
 /// opened or descended — an explicit PATH arg, or an unreadable directory hit
 /// mid-walk. THE one rendering, shared by both engines' `reportWalkError`, so a
 /// directory neither could enter reads byte-identically. The differential
-/// harness keys on the errno phrase and the exit class (never the `rg:`/`gist:`
-/// prefix or the number — `gist/bench/conformance/rgsuite/run.py`), so the phrases are contract.
+/// harness keys on the errno phrase and the exit class (never the `rg:`/`<bin>:`
+/// prefix or the number — the rgsuite runner), so the phrases are contract.
 ///
 /// Those phrases live in `fault.pathNoteOf`, whose `pathNote` switch is
 /// exhaustive over `fault.Corpus` (fault-channel law 2) and which falls through to the

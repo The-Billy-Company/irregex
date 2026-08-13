@@ -15,13 +15,14 @@ issue: [`SECURITY.md`](SECURITY.md). How we treat each other:
 `irregex` is the library and the C ABI floor - the regex engines, the corpus
 walk, the candidate indexes, the freshness law, the compiled query, and the
 runtimes. It ships no CLI. The products built on it live in their own
-repositories: [`gist`][gist] (indexed pattern search), [`relate`][relate]
-(compression-as-search), and [`blast`][blast] (the composed face).
+repositories: one face for indexed pattern search, one for
+compression-as-search, and one composed over both.
 
 That split matters when you file something. A wrong match, a slow engine, a
-crash in the index loader, or a C ABI question belongs here. "`gist --rank` put
-the wrong thing first" belongs in `gist`, even though the ranking math lives
-here - the maintainers move it if it turns out to be ours.
+crash in the index loader, or a C ABI question belongs here. "the ranked view
+put the wrong thing first" belongs with the face that renders it, even though
+the ranking math lives here - the maintainers move it if it turns out to be
+ours.
 
 The development model is **sibling checkouts**. The faces path-depend on
 `../irregex`; releases pin url and hash instead. If you are changing something
@@ -31,9 +32,7 @@ inside it:
 ```text
 Billy-Company/
 ├── irregex/     ← you are here
-├── gist/
-├── relate/
-└── blast/
+└── <face>/      ← one checkout per product face
 ```
 
 ## Setup
@@ -490,7 +489,3 @@ git config diff.zig.xfuncname '^((pub |export |inline |noinline )*fn .*|(pub )?(
 
 The attribute is already in place; until you run this, it simply falls back to
 git's default.
-
-[gist]: https://github.com/The-Billy-Company/gist
-[relate]: https://github.com/The-Billy-Company/relate
-[blast]: https://github.com/The-Billy-Company/blast

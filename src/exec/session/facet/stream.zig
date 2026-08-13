@@ -100,7 +100,7 @@ pub fn queryExists(self: *ResidentSession, req: Request) QueryError!answer.Answe
 /// `fold.query`, but instead of folding to a file set / line count it emits, per
 /// matching line, the path, 1-based line number, the line content, and the
 /// line's non-empty submatch spans — through the shared core's
-/// `collectSpans`, so each record is byte-identical to the cold `gist --json`
+/// `collectSpans`, so each record is byte-identical to the cold `--json`
 /// stream. Docs are emitted in ascending path order; lines within a doc
 /// ascend by number. `arena` owns only the transient candidate list; every
 /// string/span handed to the sink aliases session/scratch memory valid for

@@ -1,4 +1,4 @@
-//! gist resident session — the freshness watcher.
+//! Resident session — the freshness watcher.
 //!
 //! The watcher is a pure *accelerator* for the freshness barrier, never a
 //! correctness dependency. Its only job is to keep a session honest about when
@@ -117,9 +117,10 @@ const Watch = struct { fd: i32, path: []const u8, key: []const u8, is_dir: bool 
 /// The freshness watcher, generic over any resident `Session` that exposes the
 /// change-tracking surface it drives: `roots: []const []const u8`,
 /// `armWatcher()`, `markDirty()`, `markDoubtForever()`, and a `dirty_log`
-/// (`.armExact()` / `.note()` / `.noteDoubt()`). Gist's `ResidentSession` and
-/// relate's retrieval session both satisfy it, so one watcher backs both —
-/// the accelerator is written once, the corpus/index model stays per-session.
+/// (`.armExact()` / `.note()` / `.noteDoubt()`). The exact face's
+/// `ResidentSession` and the kinship retrieval session both satisfy it, so one
+/// watcher backs both — the accelerator is written once, the corpus/index model
+/// stays per-session.
 pub fn Watcher(comptime Session: type) type {
     return struct {
         session: *Session,
@@ -191,8 +192,8 @@ pub fn Watcher(comptime Session: type) type {
         notify_extended: bool = true,
 
         /// Does this session carry the annals ledger (the never-drained changed-path
-        /// map a one-shot `gist index` queries)? Comptime-gated so the watcher stays
-        /// generic over sessions that don't (relate's retrieval session).
+        /// map a one-shot index build queries)? Comptime-gated so the watcher stays
+        /// generic over sessions that don't (the kinship retrieval session).
         pub const has_annals = @hasField(Session, "annals");
 
         pub fn init(gpa: std.mem.Allocator, io: std.Io, session: *Session) @This() {

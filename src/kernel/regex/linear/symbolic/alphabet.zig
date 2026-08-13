@@ -1,4 +1,4 @@
-//! gist — the predicate alphabet: this engine's reading of the minterm
+//! irregex — the predicate alphabet: this engine's reading of the minterm
 //! partition, plus the one adapter that reads a byte class as a scalar set.
 //!
 //! A codepoint class (`\w`, `\p{L}`, `.`, `é`) is a predicate over Unicode

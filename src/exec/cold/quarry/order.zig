@@ -1,9 +1,9 @@
-//! gist — canonical file order: ripgrep's `--sort`/`--sortr`, exactly.
+//! Canonical file order: ripgrep's `--sort`/`--sortr`, exactly.
 //!
 //! `pathLess` is the load-bearing piece: Rust's `Path::cmp` compares
 //! component-by-component, which is byte order with `/` ranked BELOW every other
 //! byte. Get that wrong and `warroom/service.go` sorts after `warroom.go`,
-//! and gist's ordered output stops being byte-identical to ripgrep's.
+//! and our ordered output stops being byte-identical to ripgrep's.
 //!
 //! Every consumer that emits an ordered answer routes through here — the cold
 //! engine's sort, the fused parallel engine's, and the warm session's FFI match
@@ -45,7 +45,7 @@ fn lessAscPathWalk(x: InFile, y: InFile) bool {
 /// every other byte: `warroom/service.go` sorts before `warroom.go`, where a raw
 /// byte compare would flip them (`.`=0x2e < `/`=0x2f). Mapping `/`→0 and every
 /// other byte→byte+1 keeps all other orderings intact while making the separator
-/// the smallest, so gist's ordered output stays byte-identical to ripgrep's.
+/// the smallest, so our ordered output stays byte-identical to ripgrep's.
 /// `pub` so the in-process FFI match stream (`exec/session/warm/resident.zig::search`)
 /// emits docs in the SAME order the cold `--json` file sort produces — a caller
 /// gets one byte-identical record order across both transports.
@@ -93,7 +93,7 @@ pub fn sortTimeOf(io: std.Io, key: args.SortKey, path: []const u8) i96 {
 
 /// File birth time in ns, or null where the platform/filesystem doesn't record
 /// one (then the caller falls back to ctime). macOS carries it in `struct
-/// stat`, Linux in `statx` BTIME; gist declines to invent one elsewhere rather
+/// stat`, Linux in `statx` BTIME; we decline to invent one elsewhere rather
 /// than silently mislabel ctime as creation.
 fn createdTimeNs(path: []const u8) ?i96 {
     return (inode.statPath(path) orelse return null).birthtime_ns;

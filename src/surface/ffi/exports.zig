@@ -2,9 +2,9 @@
 //!
 //! This file exists to be a *different* root from `src/root.zig`. A Zig
 //! `export fn` is emitted by every compilation that reaches it, so if these
-//! shims lived in the library module, then `libgist`, `librelate`, and
-//! `libblast` — each of which imports that module — would every one of them
-//! carry its own copy of `irgx_last_fault`, and a host linking two would get
+//! shims lived in the library module, then each product face's library — every
+//! one of which imports that module — would carry its own copy of
+//! `irgx_last_fault`, and a host linking two would get
 //! a duplicate-symbol error for a symbol it asked for once. Keeping the
 //! `export fn`s in the artifact's root instead means the symbols exist exactly
 //! where the `.a`/`.dylib` named after them is, which is the whole premise of
@@ -14,8 +14,8 @@
 //! (the status vocabulary, the per-thread fault pull, the ABI/engine versions),
 //! this package's OWN verbs — a pattern over a buffer — and the warm CORPUS
 //! planes the siblings all reach for. What stays out is the resident session and
-//! the analytic producers (`gist_run` / `relate_run` / `blast_run`), which
-//! belong to the library named after each.
+//! the analytic producers (each face's own `…_run`), which belong to the
+//! library named after each.
 //!
 //! Header: `include/irgx.h`, which is the normative statement of these
 //! signatures. Bodies: `contract.zig` (substrate), `pattern.zig` (verbs), and
@@ -61,7 +61,7 @@ else
 
 /// The C-ABI compatibility integer for `libirgx` specifically. It started at
 /// 1 because this artifact is new: the `2` a host may remember belongs to the
-/// session ABI, which is `libgist`'s and versions on its own axis. Bump only
+/// session ABI, which is the face package's and versions on its own axis. Bump only
 /// for a breaking layout or signature change — an additive symbol keeps it.
 ///
 /// **2** — two changes a v1 consumer would misread rather than reject:
@@ -294,9 +294,9 @@ export fn irgx_munch_scan(
 }
 
 // ── the shared warm corpus ───────────────────────────────────────────────────
-// The thing every analytic producer is HANDED. `gist_run`, `relate_run`, and
-// `blast_run` all take an open engine, and an engine can only be read by the copy
-// of the engine code that made it — so unlike the verbs, the opener cannot be one
+// The thing every analytic producer is HANDED. Each face's own `…_run` takes an
+// open engine, and an engine can only be read by the copy of the engine code
+// that made it — so unlike the verbs, the opener cannot be one
 // symbol per library. It is here for the same reason the cursor below is.
 
 /// Stand a warm corpus up over `roots[0..nroots]` (NUL-terminated paths) and write
@@ -330,9 +330,9 @@ export fn irgx_cancel_free(token: *api.CancelToken) void {
 
 // ── the shared row cursor ────────────────────────────────────────────────────
 // The walking half of the analytic protocol. Each library exports its own
-// producer — `gist_run`, `relate_run`, `blast_run` — and every one of them
-// hands back a cursor walked by THESE symbols, so a host asking three packages
-// three questions still learns one way to read an answer.
+// producer — its face-named `…_run` — and every one of them hands back a cursor
+// walked by THESE symbols, so a host asking three packages three questions still
+// learns one way to read an answer.
 
 /// Write the next row into `*out`. 1 when one was written, 0 at the end,
 /// negative on error. Rows borrow the cursor's arena until `irgx_rows_close`.

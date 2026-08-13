@@ -1,4 +1,4 @@
-//! gist — arm selection: which engine compiles this pattern.
+//! Arm selection: which engine compiles this pattern.
 //!
 //! Two engines sit behind the `Matcher` seam: the linear-time RE2-style matcher
 //! that backs every default query, and the vendored PCRE2 JIT for the syntax a
@@ -97,9 +97,9 @@ pub fn pcreArm(gpa: std.mem.Allocator, eff: []const u8, o: Opts, route: PcreRout
 /// (`surface/ffi/pattern.zig: refuse`), so the CLI and the library now refuse
 /// the same pattern for the same stated reason.
 ///
-/// The multi-line diagnostic shares the `gist: try` / `gist: note:` grammar
+/// The multi-line diagnostic shares the `<name>: try` / `<name>: note:` grammar
 /// (`emit/hints.zig`); these lines always print — they ARE the exit-2
-/// explanation, not a courtesy (`GIST_HINTS` governs only the no-match
+/// explanation, not a courtesy (`<prefix>HINTS` governs only the no-match
 /// channel). "linear-time syntax" on line 1 is load-bearing, and now only
 /// appears when it is TRUE: the Python/Rust bindings classify
 /// unsupported-pattern exits by it, and the rg-conformance oracle reads it to
@@ -155,7 +155,7 @@ fn blame(eff: []const u8) noreturn {
 ///     linear engine first (its speed + trigram AST + `--rank`), escalating on
 ///     the same declinature. When NEITHER engine accepts the pattern, fail loud
 ///     with the PCRE2 diagnostic — never a silent wrong answer, the whole point
-///     of gist's fail-closed flag contract.
+///     of our fail-closed flag contract.
 /// Returns a compiled `Matcher`; every fault path is a `die` (noreturn), so the
 /// caller reads the resolved backend off the union tag.
 pub fn buildMatcher(gpa: std.mem.Allocator, eff: []const u8, o: Opts) Matcher {

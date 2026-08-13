@@ -7,8 +7,9 @@
 //! ABI is to compile an alternation and let the automata road carry a question
 //! that never needed a grammar. The machinery is already here — the dragnet SIMD
 //! sieve under eighteen literals and the Aho-Corasick trawl at or above it, the
-//! two tiers `relate patterns` dispatches between on slate width — and the C ABI
-//! exposes neither, so a C host cannot reach the fastest path in the package.
+//! two tiers the kinship pattern sweep dispatches between on slate width — and
+//! the C ABI exposes neither, so a C host cannot reach the fastest path in the
+//! package.
 //!
 //! The two answers worth separating, because they have different costs:
 //!

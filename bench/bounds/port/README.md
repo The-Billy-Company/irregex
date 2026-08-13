@@ -17,13 +17,13 @@ measured-here cycles/byte instead of only a cross-machine cross-check.
 - **`report.py`** renders the `## Layer B` markdown section (the static leg
   plus the Layer B′ measured subsection) from `portcert.json` and
   `portbound.json`, and splices it into the mint's working
-  `CERTIFICATE.md` (`.gist/` by default, or `$GIST_DIR`).
+  `CERTIFICATE.md` (the artifact home by default, or `$<prefix>DIR`).
   [`mint.sh`](../../certificate/mint/mint.sh) copies the finished file into
   the committed
   [`bench/certificate/artifact/`](../../certificate/artifact/) snapshot only
   when asked (`CERT_PUBLISH_DIR=...`).
 
-- **`measure.zig`** is **Layer B′** — `gist-portbound` times the same
+- **`measure.zig`** is **Layer B′** — `portbound` times the same
   drift-guarded probes natively under the PMU
   (`bench/apparatus/harness/pmu.zig`), writing `portbound.json` (measured
   cyc/byte plus cyc/step; fail-closed without root).
@@ -110,7 +110,7 @@ disassemble, and the markers that bracket the measured region (`# LLVM-MCA-
 BEGIN/END`) have to live inside the loop body so LLVM's loop rotation/cloning
 can't strand them, which the production code has no reason to carry.
 `probes_test.zig` is what keeps a copy honest: it feeds identical inputs to
-**both** the probe and the real `gist.simd.contains` / `Dfa.docMatch` and
+**both** the probe and the real `simd.contains` / `Dfa.docMatch` and
 asserts bit-identical verdicts over thousands of adversarial random cases —
 deliberately not an oracle test (the reference is the real production path,
 not a re-derivation), so a silent divergence between the probe and the
@@ -159,7 +159,7 @@ ITERS=200 bench/bounds/port/mca.sh      # more llvm-mca simulation iterations
 
 # Layer B′ — measured on this machine (unprivileged: thread_selfcounts):
 zig build -Doptimize=ReleaseFast portbound   # measures cycles; no sudo needed
-sudo zig-out/bin/gist-portbound              # only adds kperf's configurable events
+sudo zig-out/bin/portbound              # only adds kperf's configurable events
 bench/bounds/port/mca.sh                     # re-splice: the measured subsection lands in the cert
 ```
 
@@ -169,12 +169,12 @@ that is what to read before believing a cycles/byte figure, and what to read
 when there isn't one.
 
 `CERT_OUT=/path/to/bundle` targets an isolated certificate directory; otherwise
-the script uses the repo's `.gist/`.
+the script uses the repo's own artifact home.
 
 Install `llvm-mca` opt-in with `brew install llvm` (lands at
 `$(brew --prefix llvm)/bin/llvm-mca`). Missing `llvm-mca` or `zig` degrades to
 a documented skip (exit 0), never a failure — mirroring `bench/apparatus/harness/pmu.zig`'s
-"never fail the run" discipline; `gist-portbound` degrades the same way
+"never fail the run" discipline; `portbound` degrades the same way
 (wall-clock + a loud NOT-measured label instead of a crash).
 
 ## Prior Art
@@ -185,6 +185,6 @@ a documented skip (exit 0), never a failure — mirroring `bench/apparatus/harne
 - **[LLVM issue #63698](https://github.com/llvm/llvm-project/issues/63698)**
   is the reason this layer targets `znver4`/`neoverse-v2` instead of an
   Apple-Silicon `-mcpu`: no real scheduling model exists for any Apple core.
-- The sibling `gist` repo's `bench/apparatus/harness/certify.zig` (Layer A)
+- The sibling face package's `bench/apparatus/harness/certify.zig` (Layer A)
   supplies the measured cycles/byte this layer's static bound is checked
   against.

@@ -24,8 +24,8 @@ type SchemaDef struct {
 }
 
 // VerbDef binds a verb to its op code, params family, row schema, and the C
-// symbol that answers it. Ops are ecosystem-wide, so Entry is the only thing
-// that says which library to ask: gist_run, relate_run, or blast_run.
+// symbol that answers it — one run entry per face library. Ops are
+// ecosystem-wide, so Entry is the only thing that says which library to ask.
 type VerbDef struct {
 	Op     uint32
 	Name   string

@@ -95,7 +95,7 @@ candidate confirmation after trigram / crest elision.
 ## Gates
 
 Soundness (0 FN / 0 FP vs `rg (?-u)`) and the straggler-balance canary live
-in `gist/bench/conformance/gates/parity/scan_regress.sh`.
+in the face package's `bench/conformance/gates/parity/scan_regress.sh`.
 
 ## When to Edit
 

@@ -1,4 +1,4 @@
-//! gist — determinization that remembers which thread was preferred.
+//! irregex — determinization that remembers which thread was preferred.
 //!
 //! `dfa/subset.zig` interns a state as a *set* of NFA states, which is all a
 //! boolean answer needs: does anything match. A span needs more. `a|ab` must

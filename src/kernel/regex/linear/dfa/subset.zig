@@ -1,7 +1,8 @@
-//! gist — the subset construction itself, factored out of any policy about *when*
-//! to run it. This is the shared determinizer core: byte-class refinement, the
-//! epsilon-closure that resolves zero-width assertions, the one-class transition
-//! step, and the interning that gives a subset its DFA state id.
+//! irregex — the subset construction itself, factored out of any policy about
+//! *when* to run it. This is the shared determinizer core: byte-class
+//! refinement, the epsilon-closure that resolves zero-width assertions, the
+//! one-class transition step, and the interning that gives a subset its DFA
+//! state id.
 //!
 //! Two drivers sit on top and they must never disagree about what a pattern means:
 //!   * `powerset.zig` runs it **eagerly** to fixpoint over a worklist, then freezes

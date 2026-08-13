@@ -2,11 +2,12 @@
 //! bytes a `Waypoint` actually frames.
 //!
 //! The grammar cases are ripgrep's own — its `hyperlink/mod.rs` test module
-//! plus the rules its `validate`/`validate_scheme` enforce — so "gist accepts
-//! exactly what rg accepts" is checked rather than claimed. The probe cases are
-//! gist-only (rg has no probe), and each one pins a REFUSAL as hard as an
-//! acceptance: an emulator we cannot name must produce plain bytes, because the
-//! failure mode of a false positive is escape soup in every result line.
+//! plus the rules its `validate`/`validate_scheme` enforce — so "this layer
+//! accepts exactly what rg accepts" is checked rather than claimed. The probe
+//! cases are this package's alone (rg has no probe), and each one pins a REFUSAL
+//! as hard as an acceptance: an emulator we cannot name must produce plain
+//! bytes, because the failure mode of a false positive is escape soup in every
+//! result line.
 
 const std = @import("std");
 const beacon = @import("beacon.zig");

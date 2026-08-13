@@ -1,4 +1,4 @@
-//! gist resident session — the macOS watch-descriptor budget.
+//! Resident session — the macOS watch-descriptor budget.
 //!
 //! One question: how many vnode watches may this session hold? The macOS kqueue
 //! backend (`kqueue.zig`) pays one descriptor per watched vnode, so the answer

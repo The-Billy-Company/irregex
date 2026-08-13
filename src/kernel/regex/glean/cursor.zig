@@ -15,7 +15,7 @@
 //!
 //! | | `Cursor` (this file) | `query.zig`'s `walk` |
 //! |---|---|---|
-//! | audience | a library caller with a haystack | the `gist` CLI, and the C ABI over it |
+//! | audience | a library caller with a haystack | the product CLI, and the C ABI over it |
 //! | bar | Python `re`, `rust-regex`, JS — byte-identical | ripgrep — byte-identical |
 //! | empty match adjacent to the last one | reported | suppressed |
 //! | empty match at the very end | reported | only on a newline-terminated line |

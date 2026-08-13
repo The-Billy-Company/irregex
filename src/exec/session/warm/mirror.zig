@@ -1,4 +1,4 @@
-//! gist resident session — the faithful in-RAM mirror of the walked tree
+//! Resident session — the faithful in-RAM mirror of the walked tree
 //!
 //! `load` reads a pre-selected path list (the certified rg-default walk,
 //! `exec/cold/engine/serial.zig::defaultFileSet`) into resident documents with the
@@ -31,8 +31,8 @@
 //!
 //! ## Two-tier byte store
 //!
-//! An unchanged corpus file's bytes need not be re-read into the heap: `gist
-//! index` already concatenated every member body into the mmap'd, page-cache-
+//! An unchanged corpus file's bytes need not be re-read into the heap: an index
+//! build already concatenated every member body into the mmap'd, page-cache-
 //! evictable `content.shard` ([content/shard.zig](../../../corpus/index/content/shard.zig)).
 //! `load` binds each walked file to that mapping when the T3 freshness gate
 //! proves it byte-identical (`View.slice`), and only HEAP-reads the exceptions —

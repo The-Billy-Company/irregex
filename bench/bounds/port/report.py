@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""gist portcert — Layer B certificate splicer (static port-optimality bound).
+"""irregex portcert — Layer B certificate splicer (static port-optimality bound).
 
 Reads the `portcert.json` emitted by `mca.sh` (per probe x reference
 microarchitecture: Block RThroughput, bytes/iter, cycles/byte) and renders a
 `## Layer B — port-optimality (static µarch bound)` markdown section, then
-splices it into `.gist/CERTIFICATE.md`.
+splices it into the artifact home's `CERTIFICATE.md`.
 
 The section also carries **Layer B′ — the port bound measured on this
 machine**: if a sibling `portbound.json` exists (written by
@@ -16,12 +16,12 @@ certificate states plainly that cycles are cross-checked against reference
 cores only, NOT measured here, and names the rung that mints the measured
 figure. Wall-clock is never converted to cycles via an assumed frequency.
 
-Splice discipline (mirrors gist/bench/certificate/report/stats.py): replace any existing
-`## Layer B` section (from that heading to the next `## Layer` heading or EOF),
-and insert a fresh one *before* the macroscopic Layer-A header so re-running
-`certify.sh` (which rewrites from that header to EOF) never clobbers Layer B. If
-CERTIFICATE.md doesn't exist yet, write a standalone section file and tell the
-operator to run `zig build certify` first.
+Splice discipline (mirrors the face package's bench/certificate/report/stats.py):
+replace any existing `## Layer B` section (from that heading to the next
+`## Layer` heading or EOF), and insert a fresh one *before* the macroscopic
+Layer-A header so re-running `certify.sh` (which rewrites from that header to
+EOF) never clobbers Layer B. If CERTIFICATE.md doesn't exist yet, write a
+standalone section file and tell the operator to run `zig build certify` first.
 
 stdlib only. Idempotent.
 """
@@ -170,7 +170,7 @@ def render(doc: dict, measured: dict | None = None) -> str:
     lines = [LAYER_B_HEADER, ""]
     lines.append(
         f"_Static reciprocal-throughput bound from `llvm-mca {ver}`, computed by "
-        "`bench/bounds/port/mca.sh`. gist's two hot loops are byte-faithful "
+        "`bench/bounds/port/mca.sh`. This engine's two hot loops are byte-faithful "
         "copies (drift-guarded by `probes_test.zig`), cross-compiled by Zig to each "
         "reference core; llvm-mca scores the marked hot-loop region for port "
         "pressure. Lower cycles/byte is better._"
@@ -240,7 +240,7 @@ def splice(cert: Path, section: str) -> None:
 
 def main() -> int:
     """CLI entry point."""
-    ap = argparse.ArgumentParser(description="gist Layer B port-optimality certificate splicer")
+    ap = argparse.ArgumentParser(description="irregex Layer B port-optimality certificate splicer")
     ap.add_argument("--json", type=Path, required=True, help="portcert.json from mca.sh")
     ap.add_argument("--certificate", type=Path, required=True, help="CERTIFICATE.md to splice into")
     args = ap.parse_args()
@@ -250,7 +250,7 @@ def main() -> int:
         return 1
     doc = json.loads(args.json.read_text())
 
-    # Layer B′ auto-discovery: a sibling portbound.json (from `gist-portbound`)
+    # Layer B′ auto-discovery: a sibling portbound.json (from `portbound`)
     # carries the measured-on-this-machine bound. Absent or unreadable ⇒ the
     # section fail-closed labels cycles as cross-checked-only.
     measured: dict | None = None

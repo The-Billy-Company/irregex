@@ -1,13 +1,13 @@
 //! Runtime mirror of the substrate contracts — `irregex/contract/engine.toml`,
-//! `irregex/contract/analytic.toml`, and `relate/contract/kinship.toml` — plus
-//! the result records both planes report.
+//! `irregex/contract/analytic.toml`, and the kinship package's
+//! `contract/kinship.toml` — plus the result records both planes report.
 //!
 //! Only those three, on purpose. A product's own contract is mirrored in that
-//! product's crate: gist's published names and tool boundary live in
-//! `gist::contract`, beside the `contract/surface.toml` they answer to. They
-//! were mirrored here while the packages shared a repository, which left this
-//! crate's test suite unable to run without a gist checkout next to it — a
-//! substrate its consumers cannot be released without.
+//! product's crate: the exact face's published names and tool boundary live in
+//! its own crate's `contract` module, beside the `contract/surface.toml` they
+//! answer to. They were mirrored here while the packages shared a repository,
+//! which left this crate's test suite unable to run without that face's
+//! checkout next to it — a substrate its consumers cannot be released without.
 //!
 //! The package embeds the contracts' load-bearing constants so it carries no
 //! runtime dependency on the repo files (an OSS checkout ships without them); the
@@ -170,7 +170,7 @@ impl Match {
     }
 }
 
-// ── ranked view (`gist --rank`) ──────────────────────────────────────────────
+// ── ranked view (`--rank`) ───────────────────────────────────────────────────
 
 /// How the engine's `--rank` view classified a file — the property `grep` can't
 /// express (`src/rank/signals.zig`), and the `rank_kind` row enum on the wire.

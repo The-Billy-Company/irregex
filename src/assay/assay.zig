@@ -20,13 +20,13 @@
 //!                              diagnostic routes through.
 //!   * who   → `brand.zig`    — the program name a diagnostic is signed with,
 //!                              the namespace its knobs live in, and where its
-//!                              artifacts go, so `relate` stops reporting
-//!                              itself as `gist`.
+//!                              artifacts go, so a face stops reporting itself
+//!                              under a sibling's name.
 //!
 //! `Run` (below) is the ergonomic layer over the channel for the ~15 verb
 //! summary lines: it opens a `Span` and emits one line that is byte-identical to
 //! the former `debug.print` in text mode, or a single NDJSON record in `--json`
-//! mode — so an agent parsing `gist --json` gets machine-readable timing and
+//! mode — so an agent parsing a face's `--json` gets machine-readable timing and
 //! counts on stderr instead of English prose.
 
 const std = @import("std");

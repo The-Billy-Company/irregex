@@ -236,8 +236,8 @@ test "top-level alternation is a disjunction, not a componentwise min" {
 
     // THE REGRESSION. Two alternatives forcing DISJOINT classes min to 0⃗, so a
     // single-vector ĝ sieved by nothing — and every extra `-e` could only make
-    // that worse. `gist -e '[0-9a-f]{12}' -e '[~]{60}'` measured 12.8× slower
-    // than its first half alone for a byte-identical answer.
+    // that worse. A search for `-e '[0-9a-f]{12}' -e '[~]{60}'` measured 12.8×
+    // slower than its first half alone for a byte-identical answer.
     const disjoint = swellOf("[0-9a-f]{12}|[~]{60}", uni);
     try testing.expect(disjoint.active());
     try testing.expect(disjoint.prunes(crest.crest("plain prose, no hex, no tildes")));

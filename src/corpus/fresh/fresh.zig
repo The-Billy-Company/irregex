@@ -1,5 +1,5 @@
-//! gist T3 — local-filesystem freshness overlay. A persisted trigram index only
-//! elides a live read when the path was indexed and both filesystem change
+//! irregex T3 — local-filesystem freshness overlay. A persisted trigram index
+//! only elides a live read when the path was indexed and both filesystem change
 //! clocks prove it predates the build anchor. Every other file is read and
 //! verified against live bytes before output.
 //!
@@ -108,7 +108,7 @@ pub fn readAnchor(gpa: std.mem.Allocator, io: std.Io) ?assay.Anchor {
 }
 
 /// The anchor as RECORDED, without asking whose tree it dates — null only when
-/// it is missing, truncated, or in the future. `gist status` reports through
+/// it is missing, truncated, or in the future. Index status reports through
 /// this so a foreign artifact reads as what it is (built then, over there)
 /// rather than as an index that never had an anchor at all.
 pub fn anchorOnDisk(gpa: std.mem.Allocator, io: std.Io) ?assay.Anchor {
@@ -200,7 +200,7 @@ pub fn candidates(
 /// Freshness is normally asked one file at a time — "do these clocks predate the
 /// anchor?" — and asking it that way costs a metadata read per file. That is the
 /// largest single line item in a selective cold query: 32.7 ms of a 42 ms
-/// `gist -l <rare-literal>` over this 20k-file corpus, where the walk that finds
+/// `-l <rare-literal>` run over this 20k-file corpus, where the walk that finds
 /// those files is 9.3 ms and reading the survivors is 1.5 ms. The per-file shape
 /// is also why the phantom membership snapshot cannot help there — a served
 /// entry carries no clocks, so under per-file freshness it must buy them back
@@ -265,12 +265,12 @@ fn movedToken(gpa: std.mem.Allocator, io: std.Io, built_ns: i128) bool {
 
 /// `unmoved` proven CONCURRENTLY with the walk — the freshness twin of
 /// `elide.Lazy`, and for the same reason. The proof's cost is one fseventsd round
-/// trip (~10–15 ms, dominated by IPC rather than by anything gist does), which is
-/// longer than the names-only walk it unlocks (9.3 ms), so asking for it before
-/// the walk starts spends more of the query's serial prefix than the per-file
-/// clocks it replaces cost in the first place — measured: serial probe 35.8 ms vs
-/// 42.4 ms for the ordinary walk, where overlapping should reach the walk's own
-/// floor.
+/// trip (~10–15 ms, dominated by IPC rather than by anything the engine does),
+/// which is longer than the names-only walk it unlocks (9.3 ms), so asking for
+/// it before the walk starts spends more of the query's serial prefix than the
+/// per-file clocks it replaces cost in the first place — measured: serial probe
+/// 35.8 ms vs 42.4 ms for the ordinary walk, where overlapping should reach the
+/// walk's own floor.
 ///
 /// So the walk starts optimistically clock-FREE and defers each file's elision
 /// decision (`Worker.pending`, the backlog the oracle already uses). Whichever
@@ -487,14 +487,13 @@ fn journalFresh(gpa: std.mem.Allocator, io: std.Io, roots: []const []const u8, b
     // replaces and the budget retires it for good.
     //
     // The test is the ADMITTED set, which is the journal's own answer, not the
-    // raw event count — and it must be, because gist's artifact directory sits
-    // inside the walk root by default (`.gist`), so every build,
-    // amend, and skip-marker write is a real event under the root that
-    // admission then discards. A path admission discards is not in the corpus
-    // and so was never indexed and can never be elided; should a later
-    // `.gitignore` edit pull it in, that edit is itself a corpus file whose
-    // change lands in a later window, and a path absent from the index is
-    // live-read regardless.
+    // raw event count — and it must be, because this engine's own artifact
+    // directory sits inside the walk root by default, so every build, amend,
+    // and skip-marker write is a real event under the root that admission then
+    // discards. A path admission discards is not in the corpus and so was
+    // never indexed and can never be elided; should a later `.gitignore` edit
+    // pull it in, that edit is itself a corpus file whose change lands in a
+    // later window, and a path absent from the index is live-read regardless.
     //
     // A NON-empty answer certifies nothing: those paths are known only to the
     // caller now reading them, and forgetting them is precisely the blind

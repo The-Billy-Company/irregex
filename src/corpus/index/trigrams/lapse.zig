@@ -1,6 +1,6 @@
 //! lapse — the retention half of generation-atomic publish.
 //!
-//! Every `gist index` stages a new `gens/<id>/` and flips `pair.gen` to it
+//! Every index build stages a new `gens/<id>/` and flips `pair.gen` to it
 //! (`persist.zig`). Nothing ever retired the generation it replaced, so a tree
 //! that re-indexes routinely accumulated one directory per invocation — 276 of
 //! them, 8.7 GiB, on this repo, against a 208 MiB corpus. Publish minted
@@ -63,7 +63,7 @@ pub const Policy = struct {
     /// No generation younger than this lapses, whatever its rank.
     grace_ns: u64 = 10 * std.time.ns_per_min,
 
-    /// The policy this process runs — `GIST_KEEP_GENS` overrides `keep`, the
+    /// The policy this process runs — `<prefix>KEEP_GENS` overrides `keep`, the
     /// one knob worth exposing (raise it on a box where several checkouts of
     /// the same tree share an artifact directory; 0 to keep only the live
     /// generation). An unparseable value leaves the default standing.

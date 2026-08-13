@@ -1,7 +1,7 @@
 """What a match SEQUENCE is - the one thing this binding must not decide itself.
 
 Zero-width and nullable patterns are where a regex binding goes wrong, because
-there are two defensible answers. The engine can produce either: ``gist``'s walk
+there are two defensible answers. The engine can produce either: the CLI walk
 suppresses an empty match that abuts the previous one and one at unterminated
 end-of-text, which is right for printed line-oriented rows and is what ripgrep
 does. The ABI this binding sits on runs the other one, the library walk, and so
@@ -178,9 +178,9 @@ def test_a_short_window_is_resized_once_and_answers_completely(monkeypatch):
     assert calls == 2
 
 
-# The same sequence is also checked against `gist --json`, the authority the
-# header names for it — in gist's own suite, since that is where the tool being
-# compared against is built (`tests/test_span_parity.py`).
+# The same sequence is also checked against the exact face's `--json`, the
+# authority the header names for it — in that face's own suite, since that is
+# where the tool being compared against is built (`tests/test_span_parity.py`).
 
 
 # ── the buffer is one unit, and every verb has to say so ──────────────────

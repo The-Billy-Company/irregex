@@ -15,7 +15,7 @@
 //!    it, chosen on slate width — a bucketed SIMD sieve while the buckets stay
 //!    sparse, an Aho–Corasick automaton once they cannot. Per-byte cost
 //!    therefore stops growing with N, which is the property the tier exists
-//!    for. Neither is named by callers; `GIST_MUSTER_TIER` forces one for
+//!    for. Neither is named by callers; `<prefix>MUSTER_TIER` forces one for
 //!    measurement.
 //!  - `loom` executes a closed filter / group / sort / limit plan over the
 //!    attributed rows, engine-side. Every consumer that lacks it re-implements

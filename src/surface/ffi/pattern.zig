@@ -2,9 +2,9 @@
 //!
 //! What a host reaches for when it has a pattern and a buffer, and no corpus:
 //! compile once, then ask `is_match` / `find_all` / `captures` about bytes it
-//! already holds. That is the whole difference from `libgist`, which is about a
-//! *tree* — a session, a walk, freshness, an index. Splitting them is what lets
-//! a host that only wants a regex link a library that only has one.
+//! already holds. That is the whole difference from a face library, which is
+//! about a *tree* — a session, a walk, freshness, an index. Splitting them is
+//! what lets a host that only wants a regex link a library that only has one.
 //!
 //! Every verb here is a shim over `glean.Pattern` — the engine's own consumer
 //! face, the same type a Zig caller with a pattern and a string reaches for.
@@ -21,8 +21,8 @@
 //! library a host already knew, and all three bindings had to ship an apology
 //! note for it — Go's README compared its own output to `regexp`'s and asked the
 //! reader to accept the difference. A deviation with no improvement behind it is
-//! a defect, so the plane now runs the library walk. `gist` keeps the grep walk,
-//! which is rg-parity and correct for a page of line-oriented rows.
+//! a defect, so the plane now runs the library walk. The exact face keeps the
+//! grep walk, which is rg-parity and correct for a page of line-oriented rows.
 //!
 //! Two rules the whole plane keeps:
 //!
@@ -193,9 +193,9 @@ pub fn compile(pattern: ?[*]const u8, len: usize, flags: u32, out: ?**Regex) Sta
 
     // Neither of the two arms that already own the syntax gets it read for them.
     // Under `-F` the bytes `(?i)` are data — a host searching for that literal
-    // must find it, which is also rg's and gist's answer — and PCRE2 implements
-    // the whole flag grammar itself, scoping and `(?x)` included, so reading it
-    // here would only be able to make that arm worse.
+    // must find it, which is also rg's and the exact face's answer — and PCRE2
+    // implements the whole flag grammar itself, scoping and `(?x)` included, so
+    // reading it here would only be able to make that arm worse.
     //
     // `.beyond` (`(?x)`, `(?U)`, `(?R)`) is left whole on purpose: the compile
     // below then fails and `refuse` asks PCRE2 — which has all three — turning a
@@ -711,7 +711,7 @@ test "find_all reports the engine's span sequence, and sizes a short window" {
 test "find_all reports the library walk's empty matches, not the grep walk's" {
     // The sequence a host actually receives for a nullable pattern, pinned to
     // the bar its bindings are measured against rather than to rg's page rules.
-    // Both cases below used to come back one span short: `gist`'s walk drops an
+    // Both cases below used to come back one span short: the grep walk drops an
     // empty match adjacent to the previous one and an unterminated one at the
     // end of the text, which is right for printed rows and wrong for a library.
     //
@@ -1268,8 +1268,8 @@ test "the pattern's own spelling outranks the flag word, and the inference" {
 
 test "the two arms that own the flag syntax are not read for" {
     // Under `-F` the bytes are data. A host searching for the literal `(?i)x`
-    // must find it — rg and gist answer the same way — and must NOT quietly get
-    // a case-insensitive `x`.
+    // must find it — rg and the exact face answer the same way — and must NOT
+    // quietly get a case-insensitive `x`.
     const fixed = try open("(?i)x", contract.flag_fixed);
     defer free(fixed);
     try t.expectEqual(Status.match, isMatch(fixed, "see (?i)x here", 14));

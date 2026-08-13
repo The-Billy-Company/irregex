@@ -1,4 +1,4 @@
-//! gist — the Unicode data API over the generated `tables.gen.zig`. Everything
+//! irregex — the Unicode data API over the generated `tables.gen.zig`. Everything
 //! the parser, class compiler, and word-boundary engine need to be Unicode-aware
 //! lives behind this small surface: the Perl class ranges (`word`/`digit`/
 //! `space`), `\p{...}` property lookup by name, simple case-fold orbit expansion,
@@ -240,7 +240,7 @@ test "property lookup: the identifier properties every language grammar spells" 
 /// This test is the drift tripwire: a regenerated `tables.gen.zig` that emits an
 /// unsorted, overlapping, or empty range — or an asymmetric fold orbit — silently
 /// breaks lookups, and this fails closed before it can ship. (Complements the
-/// regenerate-and-diff `gen-gist-unicode-verify` byte gate: that proves the file
+/// regenerate-and-diff Unicode-table verify byte gate: that proves the file
 /// matches the generator; this proves the shape the searches rely on.)
 fn assertSortedRanges(ranges: []const Range) !void {
     for (ranges, 0..) |r, i| {

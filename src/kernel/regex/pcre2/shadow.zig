@@ -1,15 +1,15 @@
 // MONOLITHIC: PCRE2 shadow — the sound linear-time over-approximation matcher; literal/class extraction and the confirm-only automaton share one no-false-negative construction
-//! gist — the PCRE2 shadow: a sound linear-time over-approximation of a PCRE
+//! irregex — the PCRE2 shadow: a sound linear-time over-approximation of a PCRE
 //! pattern, so the backtracking engine only ever CONFIRMS candidates.
 //!
 //! PCRE2's power (backreferences, lookaround, atomic groups) costs worst-case
 //! exponential backtracking — `(\w{4,})\s+\1` spends ~11 s on one 3.6 MB file
 //! of 120 KB base64 lines, because every start position re-walks a giant `\w`
 //! run. rg pays exactly the same. The mathematical exit is a *shadow*: rewrite
-//! the pattern into gist's linear syntax such that the shadow's language is a
-//! SUPERSET of the PCRE language. Then a line/buffer the shadow rejects
-//! provably cannot match the PCRE pattern, and the O(1)/byte byte-class DFA
-//! answers it — PCRE2 never touches those bytes. The same containment makes
+//! the pattern into this package's linear syntax such that the shadow's
+//! language is a SUPERSET of the PCRE language. Then a line/buffer the shadow
+//! rejects provably cannot match the PCRE pattern, and the O(1)/byte byte-class
+//! DFA answers it — PCRE2 never touches those bytes. The same containment makes
 //! the shadow's NFA-derived required-literal/cover sound for the PCRE pattern,
 //! which hands `-P` queries the trigram index prefilter they never had.
 //!
@@ -220,8 +220,8 @@ fn escClass(e: u8) enum { copy, erase, literal_lt_gt, bail } {
         't', 'n', 'r', 'f', 'a', 'd', 'D', 'w', 'W', 's', 'S' => .copy,
         // Zero-width assertions: erasure grows the language.
         'b', 'B', 'A', 'z', 'Z', 'G' => .erase,
-        // Literal `<`/`>` in PCRE2 — but word-boundary ASSERTIONS in gist's
-        // linear syntax, so they must be emitted unescaped.
+        // Literal `<`/`>` in PCRE2 — but word-boundary ASSERTIONS in this
+        // package's linear syntax, so they must be emitted unescaped.
         '<', '>' => .literal_lt_gt,
         else => if (std.ascii.isAlphanumeric(e)) .bail else .copy, // punctuation → literal byte
     };
@@ -551,7 +551,7 @@ test "unprovable constructs bail to no shadow" {
     try expectShadow("(?R)", null); // recursion
     try expectShadow("(?(1)a|b)", null); // conditional
     try expectShadow("(?i)abc", null); // inline flags
-    try expectShadow("a\\v", null); // \v: space class in PCRE2, VT byte in gist
+    try expectShadow("a\\v", null); // \v: space class in PCRE2, VT byte here
     try expectShadow("[\\b]a", null); // in-class \b = backspace
     try expectShadow("\\Qa.b\\E", null); // quoting
     try expectShadow("(a\\1)", null); // self-reference

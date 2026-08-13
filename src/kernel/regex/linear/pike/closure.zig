@@ -1,9 +1,10 @@
-//! gist — the epsilon-closure: everything the Pike VM decides at ONE fixed input
-//! position. Zero-width assertions (`^ $ \b \B \< \> \A \z`) are resolved here
-//! against that position's flags, so the boolean walk (`search.zig`) and the span
-//! walk (`span.zig`) can never disagree about what a boundary means. Also owns
-//! the position predicates themselves: per-line, a haystack's own edges are its
-//! anchors; under multiline (`-U`) `^`/`$` hold at every `\n` adjacency.
+//! irregex — the epsilon-closure: everything the Pike VM decides at ONE fixed
+//! input position. Zero-width assertions (`^ $ \b \B \< \> \A \z`) are resolved
+//! here against that position's flags, so the boolean walk (`search.zig`) and
+//! the span walk (`span.zig`) can never disagree about what a boundary means.
+//! Also owns the position predicates themselves: per-line, a haystack's own
+//! edges are its anchors; under multiline (`-U`) `^`/`$` hold at every `\n`
+//! adjacency.
 
 const core = @import("../program/core.zig");
 const word = @import("../../syntax/word.zig");

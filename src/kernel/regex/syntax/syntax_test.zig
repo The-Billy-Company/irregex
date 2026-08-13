@@ -1,4 +1,4 @@
-//! gist T2 regex *syntax* tests — adversarial, oracle-free unit coverage of
+//! irregex T2 regex *syntax* tests — adversarial, oracle-free unit coverage of
 //! `syntax.zig` in isolation: the `ByteSet` bit-class and the recursive-descent
 //! parser (escapes, character classes, counted-repetition desugaring, the
 //! error surface). The sound AST analyses that feed the prefilter live in
@@ -231,8 +231,8 @@ test "syntax/escape: backreferences \\0-\\9 are BadPattern (rg parity), in atom 
 }
 
 test "syntax/escape: unrecognized ASCII-letter escapes are BadPattern (rg parity)" {
-    // rg exits 2 with "unrecognized escape sequence" — gist must never turn
-    // `\q` into a confident literal-'q' non-match. `\Z` is rust-regex's
+    // rg exits 2 with "unrecognized escape sequence" — this parser must never
+    // turn `\q` into a confident literal-'q' non-match. `\Z` is rust-regex's
     // deliberate omission (end-of-haystack is `\z`), so it errors too.
     inline for (.{ "\\q", "\\e", "\\y", "\\h", "\\V", "\\Z", "\\p", "a\\qb" }) |pat| {
         try std.testing.expectError(ParseError.BadPattern, parse(pat));

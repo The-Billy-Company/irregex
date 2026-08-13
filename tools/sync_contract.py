@@ -4,16 +4,17 @@
 irregex owns the row protocol — the analytic row enums, the grade bands, the
 channel vocabulary — because it owns the decode and transport layer every face
 reads rows through. It does not *author* all of the calibration that gives those
-numbers meaning: `kinship.toml` is relate's. The bindings mirror it, and a
-parity test asserts the mirror still matches what its author wrote.
+numbers meaning: `kinship.toml` is the kinship package's. The bindings mirror it,
+and a parity test asserts the mirror still matches what its author wrote.
 
 Before the split those contracts sat in one tree. Now they do not, and the
 alternative to vendoring is a CI job that clones the authoring repository to
-read one file. For gist that is fine — it is public, so CI checks it out and
-reads `surface.toml` from the original. relate is internal, and a public package
-whose own tests need a clone of a private one is a package the public cannot
-test. So exactly one file is vendored, and the drift gate lives where the
-original does: relate can read this package, because this package is public.
+read one file. For the exact-search face that is fine — it is public, so CI
+checks it out and reads `surface.toml` from the original. The kinship package is
+internal, and a public package whose own tests need a clone of a private one is a
+package the public cannot test. So exactly one file is vendored, and the drift
+gate lives where the original does: the kinship package can read this package,
+because this package is public.
 
     python3 tools/sync_contract.py            # refresh the vendored copies
     python3 tools/sync_contract.py --check    # fail if a copy has drifted
@@ -36,9 +37,10 @@ HERE = Path(__file__).resolve().parent.parent
 # Only `kinship`. The two contracts this package authors itself — analytic.toml,
 # engine.toml — are absent because a file cannot drift from itself, and listing
 # them would invite someone to overwrite an original with a copy. `surface` is
-# absent for a different reason: gist is a public repository, so CI can simply
-# check it out and read the original. relate is internal, and a public package
-# whose tests need a clone of a private one is a package the public cannot test.
+# absent for a different reason: the exact-search face lives in a public
+# repository, so CI can simply check it out and read the original. The kinship
+# package is internal, and a public package whose tests need a clone of a private
+# one is a package the public cannot test.
 # So the rule is narrow on purpose — vendor only what a stranger cannot fetch.
 AUTHORS = {"kinship": "relate"}
 

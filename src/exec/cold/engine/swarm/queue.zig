@@ -1,4 +1,4 @@
-//! gist — the work-stealing directory queue the fused walk fans out over.
+//! The work-stealing directory queue the fused walk fans out over.
 //!
 //! The shared spine, and deliberately the ONLY mutable structure every worker
 //! touches: discovered directories live on each worker's private LIFO stack

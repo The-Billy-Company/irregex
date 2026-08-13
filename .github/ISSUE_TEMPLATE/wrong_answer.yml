@@ -77,7 +77,7 @@ body:
         - Python binding
         - Rust binding
         - Go binding
-        - through one of the faces (gist / relate / blast)
+        - through one of the product faces built on this library
     validations:
       required: true
 

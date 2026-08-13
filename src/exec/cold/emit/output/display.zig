@@ -1,4 +1,4 @@
-//! gist `rg` — what a selected line LOOKS like on the way out.
+//! The `rg` face — what a selected line LOOKS like on the way out.
 //!
 //! Split from `output.zig`: the mode drivers decide *which* lines print, this
 //! module decides what their bytes are. `--trim` drops the blank prefix,

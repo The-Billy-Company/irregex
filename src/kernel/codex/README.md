@@ -12,7 +12,7 @@ FM-index composition itself, in `codex.zig`. `../../corpus/index/shelf/`
 holds the persisted `SHLF` multi-document artifact the product verbs read.
 
 The Ziv–Merhav cross-parse that quotes a query against this index
-(`cento.zig`) lives in the `relate` package; that is relate's product math,
+(`cento.zig`) lives in the kinship package; that is its product math,
 not this package's. The index itself is an index tier, so it sits here with
 the other index tiers and the succinct floors it stands on.
 
@@ -45,6 +45,6 @@ try idx.find(gpa, "pub fn ");    // ascending match positions
 try idx.restore(gpa);            // the entire original text, from the index alone
 ```
 
-Product faces read this package as `gist codex build|count|tally|status` and
-`relate quote`, both through the shelf. The cento parse itself is
-`@import("relate").codex.cento`.
+Product faces read this package as the exact face's `codex
+build|count|tally|status` verbs and the kinship face's `quote`, both through
+the shelf. The cento parse itself is the kinship package's `codex.cento`.

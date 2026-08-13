@@ -1,7 +1,7 @@
-//! gist resident session — the warm `lines` renderer correctness suite
+//! Resident session — the warm `lines` renderer correctness suite
 //!
 //! The one invariant the renderer must never break is byte-parity with the
-//! cold presentation: `resident lines bytes == gist --no-index bytes == rg
+//! cold presentation: `resident lines bytes == cold no-index bytes == rg
 //! bytes`. These tests pin the default (`path:text`) and `-n`
 //! (`path:line:text`) frames, the regex / caseless / CR-keeping line
 //! semantics, the `-w` word filter routed through the cold Emitter, the

@@ -1,8 +1,9 @@
 # `src/exec/session/` — The Resident Search Session
 
-The warm, in-memory engine behind `gist serve`. It productizes the in-memory
-bench path as a real per-repository service: corpus bytes and trigram index
-held resident so an eligible request skips the cold subprocess's startup.
+The warm, in-memory engine behind the resident daemon. It productizes the
+in-memory bench path as a real per-repository service: corpus bytes and
+trigram index held resident so an eligible request skips the cold
+subprocess's startup.
 
 The session selects its corpus with cold's own certified walk
 (`exec/cold/engine/serial.zig::defaultFileSet`), ingests each file exactly as
@@ -10,11 +11,12 @@ a cold read would, and lowers each query through the shared search core — but
 every entry point **returns errors** instead of calling `die()`.
 
 The daemon transport and the in-process C-ABI session shims live in the
-sibling `gist` repo, not here — this folder is the shared engine-side runtime
-both that daemon and relate's `RetrievalSession` are built on. What lives
-here is the fd-passed shared-memory buffer ([`conduit/`](conduit)) a large
-answer rides back through, and the barrier + watcher machinery
-([`reconcile/`](reconcile), [`watch/`](watch)) both warm engines share.
+sibling face package, not here — this folder is the shared engine-side
+runtime both that daemon and the kinship package's `RetrievalSession` are
+built on. What lives here is the fd-passed shared-memory buffer
+([`conduit/`](conduit)) a large answer rides back through, and the barrier +
+watcher machinery ([`reconcile/`](reconcile), [`watch/`](watch)) both warm
+engines share.
 
 ## The Six Planes
 
@@ -31,14 +33,14 @@ answer rides back through, and the barrier + watcher machinery
 - **[`conduit/`](conduit)** carries a large answer's bytes back to the client
   without a socket copy.
 
-The sibling `gist` repo owns the two pieces that ride on top of this: its own
-`src/exec/session/daemon/` (dial + serve loop, the transport both faces
+The sibling face package owns the two pieces that ride on top of this: its
+own `src/exec/session/daemon/` (dial + serve loop, the transport both faces
 share) and `src/exec/session/warden/` (how much memory a resident session may
 hold, enforced where it allocates).
 
 ## The Invariant
 
-`resident matches == gist --no-index matches == rg matches`. It holds because
+`resident matches == cold no-index matches == rg matches`. It holds because
 both the base corpus and every reconcile re-derive their file set from cold's
 own certified walk, and because per-file ingest is cold's own
 (`warm/mirror.zig`).
