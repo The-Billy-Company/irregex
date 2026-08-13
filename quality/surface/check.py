@@ -31,8 +31,12 @@ Read = Callable[[str], str | None]
 REPO = Path(__file__).resolve().parents[2]
 CONTRACT = REPO / "contract" / "exports.toml"
 FACADE = REPO / "src" / "root.zig"
+HEADER = REPO / "include" / "irgx.h"
 MANIFEST = REPO / "build.zig.zon"
 TIERS = ("stable", "provisional", "internal")
+# The tiers that owe a door answer. `internal` promises nothing to anyone, so
+# whether C can reach it is not a question it has to answer.
+PROMISED = ("stable", "provisional")
 
 # Top-level only: an indented `pub` is inside some struct, and what a namespace
 # exposes under its own door is that namespace's business, not this gate's.
@@ -125,6 +129,75 @@ def ver(v: tuple[int, ...]) -> str:
     return ".".join(str(p) for p in v)
 
 
+# Comments stripped, for the same reason the parity gate strips them: this very
+# header carries a paragraph naming the planes that have no C door, and a rule
+# that reads prose would take that paragraph as proof they do.
+COMMENT = re.compile(r"/\*.*?\*/|//[^\n]*", re.S)
+SYMBOL = re.compile(r"\birgx_\w+")
+
+
+def declared(header: str) -> set[str]:
+    """Every `irgx_*` name the public header declares in code."""
+    return set(SYMBOL.findall(COMMENT.sub("", header)))
+
+
+def doors(contract: dict, tier_of: dict[str, str], header: str) -> list[str]:
+    """Every promised export must say whether a C host can reach it.
+
+    The vertical gate above judges the Zig surface, and `contract/bindings.toml`
+    judges the three bindings horizontally against the ABI. Neither can see the
+    step between them: a plane that never got an `export fn` is absent from the
+    header, absent from every binding, and reported by nobody — which is how the
+    corpus planes stayed unreachable while being finished, tested and shipped.
+
+    So a row is required either way. A door is one symbol the header must
+    declare, which is a proof that a way in exists rather than an inventory of
+    the plane's verbs. No door is a decision, and it needs a reason for the same
+    purpose a waiver does: a gap that cannot say what a host does instead is not
+    a decision, it is the bug.
+    """
+    have = declared(header)
+    open_doors = {k: v for k, v in contract.get("door", {}).items() if not isinstance(v, dict)}
+    shut = contract.get("door", {}).get("none", {})
+    faults = []
+
+    both = sorted(set(open_doors) & set(shut))
+    faults += [
+        f"[door] {name}: also in [door.none] — it either has a way in or it does not"
+        for name in both
+    ]
+
+    for name in sorted(open_doors):
+        if open_doors[name] not in have:
+            faults.append(
+                f"[door] {name} = {open_doors[name]!r}, which include/irgx.h does not "
+                f"declare — name a symbol a C host can actually link"
+            )
+    faults += [
+        f"[door.none] {name}: no `why` — say what a C host does instead"
+        for name, row in sorted(shut.items())
+        if not isinstance(row, dict) or not str(row.get("why", "")).strip()
+    ]
+
+    listed = set(open_doors) | set(shut)
+    promised = {n for n, tier in tier_of.items() if tier in PROMISED}
+    faults += [
+        f"`{name}` is exported [{tier_of[name]}] and no [door] row says whether C "
+        f"can reach it — name its door, or say in [door.none] why it has none"
+        for name in sorted(promised - listed)
+    ]
+    faults += [
+        f"[door] {name}: not a promised export — "
+        + (
+            "internal names promise nothing, so they answer to nobody here"
+            if tier_of.get(name) == "internal"
+            else "delete the row or declare the export"
+        )
+        for name in sorted(listed - promised)
+    ]
+    return faults
+
+
 def schedule(contract: dict, current: tuple[int, ...]) -> list[str]:
     """A retired spelling must be scheduled for a version that has not shipped.
 
@@ -183,6 +256,7 @@ def audit(
     manifest: str | None = None,
     shipped: str | None = None,
     read: Read | None = None,
+    header: str | None = None,
 ) -> tuple[list[str], list[str]]:
     """(drift, faults) — the first is a surface that moved, the second a broken contract."""
     tier_of, faults = tiers(contract)
@@ -193,6 +267,8 @@ def audit(
             faults.append(str(e))
     if shipped is not None:
         faults += promises(shipped, root_src, contract)
+    if header is not None:
+        faults += doors(contract, tier_of, header)
     if faults:
         return [], faults
 
@@ -270,6 +346,7 @@ def main() -> int:
         MANIFEST.read_text(encoding="utf-8"),
         shipped[1] if shipped else None,
         read,
+        HEADER.read_text(encoding="utf-8"),
     )
     for line in faults + drift:
         print(f"surface: {line}", file=sys.stderr)
@@ -283,7 +360,12 @@ def main() -> int:
     removed = len(contract.get("removed", {}))
     against = f"checked against {shipped[0]}" if shipped else "no release tag reachable"
     breaks = f", {removed} declared removal(s)" if removed else ""
-    print(f"surface: {len(tier_of)} exports, all declared ({counts}){breaks} · {against}")
+    shut = len(contract.get("door", {}).get("none", {}))
+    open_doors = sum(1 for v in contract.get("door", {}).values() if not isinstance(v, dict))
+    print(
+        f"surface: {len(tier_of)} exports, all declared ({counts}){breaks} · "
+        f"{open_doors} with a C door, {shut} without and said so · {against}"
+    )
     return 0
 
 

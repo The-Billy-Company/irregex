@@ -89,7 +89,83 @@ bulkstat = { why = "the batched stat walk the freshness anchor is folded from" }
 
 [internal]
 
-inner = { why = "the product seam: what gist, relate and blast reach that is not curated vocabulary. Versions with them, promises nothing to anyone else" }
+inner = { why = "the product seam: what the faces built on this library reach that is not curated vocabulary. Versions with them, promises nothing to anyone else" }
+
+# ── which planes a non-Zig host can reach ──
+#
+# The tier tables above say what the package hands a Zig caller. This says which
+# of those a C caller can reach, and it exists because nothing said so.
+#
+# `contract/bindings.toml` is horizontal across the three bindings, and every
+# gate under it starts from the ABI. So a plane that never got an `export fn` was
+# invisible to all of them: correct in Zig, absent from the header, and reported
+# by nobody. That is how the corpus planes sat finished and unreachable for as
+# long as they did — the exact-search face minted its own cursor shim because
+# the ABI published a regex matcher and called itself a search toolkit.
+#
+# One row per stable and provisional export, in exactly one of the two tables.
+# `[door]` names ONE symbol `include/irgx.h` must declare — the cheapest proof
+# that the plane has a way in, not an inventory of its verbs, which the header
+# and the parity gate already hold. `[door.none]` is the decision that it has
+# none, and it needs a reason for the same purpose a waiver does.
+#
+# `[internal]` is exempt and may not be listed. It promises nothing to anyone,
+# so "can C reach it" is not a question anyone is owed an answer to.
+[door]
+
+# ── the two vocabularies ──
+mark = "irgx_match"
+Span = "irgx_span"
+Match = "irgx_match"
+PatternID = "irgx_slate_which"
+Window = "irgx_pattern_windows"
+Authority = "irgx_sieve_candidates"
+fault = "irgx_last_fault"
+
+# ── the engine ──
+regex = "irgx_compile"
+Pattern = "irgx_is_match"
+Munch = "irgx_munch_scan"
+Chorus = "irgx_slate_which"
+scan = "irgx_needles_compile"
+slate = "irgx_slate_compile"
+codex = "irgx_codex_build"
+
+# ── which bytes are eligible, and what is persisted about them ──
+corpus = "irgx_walk_open"
+scope = "irgx_walk_genus"
+index = "irgx_sieve_open"
+fresh = "irgx_sieve_freshness"
+
+# ── surfaces and identity ──
+api = "irgx_engine_open"
+ffi = "irgx_abi_version"
+engine = "irgx_tree_search"
+version_string = "irgx_version"
+pcre2_version_string = "irgx_pcre2_version"
+abi = "irgx_abi_version"
+
+# ── the planes a C host cannot reach, and why not ──
+#
+# Two species. One is the product: a shape an executable chooses, where an ABI
+# verb would be publishing our taste as somebody else's contract. The other is
+# the floor: a Zig-comptime surface with no C shape at all.
+[door.none]
+
+math = { why = "the floor is generic over comptime types — the semirings, the hash-consed DAG, the succinct structures. Only the pieces a search verb needs cross the ABI, and they cross inside the verb: glob and type matching as `irgx_walk_term`, the crest calculus as the plan `irgx_sieve_describe` reports" }
+assay = { why = "typed spans and comptime-checked tallies over the host's own channel. A C host has its own instrumentation, and the one thing it needs from ours is the per-incident detail, which `irgx_last_fault` hands over" }
+Brand = { why = "who the program riding the engine is. A library cannot know, and a host that signs a diagnostic already has its own name for itself" }
+Outcome = { why = "the rg 0/1/2 exit contract, which belongs to whoever calls `exit`. The ABI's own answer is a status per call, and a host maps that onto whatever its ecosystem expects" }
+fatal = { why = "a Zig `catch` that keeps an escaped error off the default panic handler. The C promise is stronger and already kept: every shim returns a status instead of aborting, so there is nothing here left to hand out" }
+portal = { why = "the platform seam the descent is written against — handle-relative open, whole-file map, argv, stdin readiness. A C host has libc, which is where these came from" }
+session = { why = "the resident core, and the one plane deliberately owned elsewhere: the pull cursor and the run entry are the exact-search face's library, with its own header and its own symbol prefix" }
+emit = { why = "rg-shaped rows and the --json record stream. Byte-for-byte output compatibility is a promise about a command line, so it belongs to the binary that has one; the ABI hands structured records and lets a host render them" }
+argv = { why = "the flag grammar a face parses. An ABI that took argv would be a second command line with no terminal behind it" }
+preference = { why = "the machine-local, TTY-gated defaults file. It is structurally invisible to a pipe on purpose, and a linked library is always the pipe case" }
+rank = { why = "weighted reciprocal-rank fusion. The weights are a product's editorial judgment about what a definition is worth against a call site, and freezing ours into the ABI would publish that judgment as a contract. A host reads the same intrinsic signals off the rows it already gets" }
+signals = { why = "the per-language declaration confidence and codegen demotion that fusion reads. It has no consumer without a ranker, and the ranker above is the product's" }
+haystack = { why = "one file's bytes as the walk hands them on. The ABI reports paths, spans and lines; a C host that wants the bytes has `read`, and handing out our buffer would put an arena's lifetime in a caller's hands for nothing" }
+bulkstat = { why = "the batched stat walk the freshness anchor folds from. What a caller needs is the verdict, not the walk, and `irgx_sieve_freshness` is the verdict" }
 
 # ── what the last release exported and this tree does not ──
 #
@@ -111,9 +187,9 @@ inner = { why = "the product seam: what gist, relate and blast reach that is not
 # exports these either, so every row goes stale and the gate says to delete them.
 #
 # Nothing here was load-bearing for a consumer: only four had a caller anywhere
-# in the ecosystem (`verify`, `captures`, `emit_json`, `matcher` — all in gist's
-# bench harness, which is the surface this pass was about), and those moved in
-# the same change.
+# in the ecosystem (`verify`, `captures`, `emit_json`, `matcher` — all in the
+# exact-search face's bench harness, which is the surface this pass was about),
+# and those moved in the same change.
 [removed]
 
 # Empty, and that is the block working. 2.0.0 shipped the thirty-three removals

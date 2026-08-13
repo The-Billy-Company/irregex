@@ -60,6 +60,35 @@ come due, so the gate treats it as a fault rather than carrying it forever
 while it looks temporary. Prose cannot notice a schedule quietly going stale;
 a comparison against the manifest can.
 
+## Which Planes C Can Reach
+
+The tiers say what a Zig caller gets. A third table says which of those a C
+caller can reach, and it exists because nothing said so.
+
+`contract/bindings.toml` is horizontal across the three bindings, and every lane
+under it starts from the ABI. A plane that never got an `export fn` is therefore
+absent from the header, absent from all three bindings, and reported by nobody.
+That is not a hypothetical either: the corpus planes were finished, tested and
+exported to Zig while a C host could not open a tree.
+
+So every `stable` and `provisional` export answers the question, in exactly one
+of two tables. A `[door]` row names one symbol `include/irgx.h` must declare —
+the cheapest proof a way in exists, not an inventory of the plane's verbs, which
+the header and the parity gate already hold.
+
+A `[door.none]` row is the decision that a plane has no C door, and it carries
+the same weight a waiver does. Two species live there. One is the product — the
+ranking weights, the rg-shaped output, the flag grammar, the preferences file —
+where an ABI verb would publish our taste as somebody else's contract. The other
+is the floor, generic over comptime types, with no C shape to publish at all.
+
+`[internal]` is exempt and may not be listed. It promises nothing to anyone, so
+whether C can reach it is not a question it owes an answer to.
+
+Comments are stripped before the header is read. This header carries a paragraph
+naming the doorless planes, and a rule that read prose would take that paragraph
+as proof they have doors.
+
 ## What It Catches
 
 - A new `pub` added to the root with no row, so the surface grew by accident.
@@ -72,6 +101,8 @@ a comparison against the manifest can.
 - A retired internal spelling with no `[deprecation]` schedule, or one whose
   `remove_in` version has already shipped.
 - A name declared in two tiers, an empty `why`, or an empty `now`.
+- A promised export that says nothing about whether C can reach it, a `[door]`
+  naming a symbol the header does not declare, or a `[door.none]` with no reason.
 
 Anything indented is out of scope on purpose. What a namespace exposes under
 its own door is that namespace's business — this gate is about the front door.
