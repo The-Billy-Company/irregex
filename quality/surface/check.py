@@ -20,10 +20,9 @@ from __future__ import annotations
 import re
 import subprocess
 import sys
+import tomllib
 from collections.abc import Callable
 from pathlib import Path
-
-import tomllib
 
 # Reads one `src/`-relative module, or returns None when it cannot be read.
 Read = Callable[[str], str | None]

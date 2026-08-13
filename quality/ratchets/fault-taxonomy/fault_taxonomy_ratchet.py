@@ -69,10 +69,9 @@ same command plus ``--refresh``.
 import bisect
 import re
 import sys
+import tomllib
 from collections.abc import Callable
 from pathlib import Path
-
-import tomllib
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 

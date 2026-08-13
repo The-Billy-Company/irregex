@@ -7,21 +7,31 @@
  *
  * Above the floor, this ABI also carries the warm corpus planes the sibling
  * products share — opening an engine over a tree, searching and walking it,
- * sieving literals, and the codex verbs over a persisted index. What is
- * deliberately NOT here is the session: the resident pull cursor and its run
- * entry live in the exact-search face's own library, which ships its own header
- * and its own symbol prefix, and the kinship / compose producers live in the
- * libraries of the other two faces.
+ * sieving literals, and the codex verbs over a persisted index.
+ *
+ * What is deliberately NOT here is the product. The session is the first half of
+ * that: the resident pull cursor and its run entry live in the exact-search
+ * face's own library, which ships its own header and its own symbol prefix, and
+ * the kinship / compose producers live in the libraries of the other two faces.
+ *
+ * The second half is every plane whose shape an executable chooses rather than a
+ * caller: the ranking fusion and the per-language signals it reads, the rg-shaped
+ * output and its --json record stream, the flag grammar, the machine-local
+ * preferences file, and the math floor under all of them (edit distance, the
+ * crest calculus, the semirings, the succinct structures). Those are exported
+ * from src/root.zig for a Zig host and have no C door on purpose. Which planes
+ * have one is declared per row in contract/exports.toml, so a gap here is a
+ * decision on the record rather than a thing nobody looked at.
  *
  * Every entry returns a status instead of aborting, so a bad pattern can never
  * terminate the host. On a negative status, irgx_last_fault gives the
  * per-incident detail behind it.
  *
- * This header is also the SUBSTRATE the rest of the ecosystem speaks:
- * librelate, libgist, and libblast each link this library and return these
- * status codes, this fault struct, these pattern flags, and the same row
- * cursor walked by the irgx_rows_* symbols below. A host that links two of
- * them reads one vocabulary, not two spellings of the same word. */
+ * This header is also the SUBSTRATE the rest of the ecosystem speaks: every
+ * face library links this one and returns these status codes, this fault
+ * struct, these pattern flags, and the same row cursor walked by the
+ * irgx_rows_* symbols below. A host that links two of them reads one
+ * vocabulary, not two spellings of the same word. */
 #ifndef IRGX_H
 #define IRGX_H
 
@@ -341,15 +351,15 @@ int32_t irgx_is_match(irgx_regex *re, const uint8_t *text, size_t len);
  * what Python's re.finditer shows for the same input.
  *
  * That is deliberate, and it is NOT what a grep prints. A grep-class tool drops
- * the trailing empty match, so a face's `--json` reports four submatches for the
- * line "abc\n" where this verb reports five for the same four bytes. The widest
- * sequence is the right thing to publish here because thinning is subtractive:
- * a binding can reproduce its own ecosystem's convention by removing spans (Go
- * and Rust both skip an empty match abutting the previous one and resume at the
- * next character; the bundled bindings do exactly that), and no binding can
- * recover a span the ABI never reported. Diff against a grep and expect the
- * trailing empty span; diff against a general-purpose regex library and expect
- * agreement.
+ * the trailing empty match, so a face's `--json` reports four submatches for
+ * the line "abc\n" where this verb reports five for the same four bytes. The
+ * widest sequence is the right thing to publish here because thinning is
+ * subtractive: a binding can reproduce its own ecosystem's convention by
+ * removing spans (Go and Rust both skip an empty match abutting the previous
+ * one and resume at the next character; the bundled bindings do exactly that),
+ * and no binding can recover a span the ABI never reported. Diff against a
+ * grep and expect the trailing empty span; diff against a general-purpose
+ * regex library and expect agreement.
  *
  * `cap` is a window over the answer, not a limit on the search: at most cap
  * spans are written, and *written reports how many the TEXT HAS -- so a short
