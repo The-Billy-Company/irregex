@@ -33,10 +33,14 @@ python3 tools/build_rarity_table.py --report   # census diagnostics, no table
 python3 tools/build_rarity_table.py            # the declaration, zig-fmt canonical
 ```
 
-Three are gates — they read the tree and answer yes or no.
+Four are gates — they read the tree and answer yes or no.
 
 - **`version_parity.py`** asks whether every mirror of `build.zig.zon`'s
   `.version` still agrees, and whether the release bot knows about each one.
+- **`mint_artifacts.py`** asks the same question of the committed files that
+  carry the version in their bytes instead of on a line — the vendored engine
+  archives, the oracle corpora, the lockfiles — and, without `--check`,
+  regenerates the ones that answered wrong.
 - **`sync_contract.py`** asks whether each contract vendored from a sibling
   still matches what its author wrote.
 - **`registry_readme.py`** asks whether every relative link in `README.md`
@@ -48,6 +52,8 @@ Run the gates and their write-mode counterparts with these commands:
 ```bash
 python3 tools/version_parity.py          # the gate (CI's `version` job)
 python3 tools/version_parity.py --json   # the mirrors it found, for a machine
+python3 tools/mint_artifacts.py --check  # what still describes the last release
+python3 tools/mint_artifacts.py          # re-mint exactly those (needs Zig)
 python3 tools/sync_contract.py           # refresh the vendored copies
 python3 tools/sync_contract.py --check   # the gate (the author's `contract` job)
 python3 tools/registry_readme.py --check # the gate (CI's `version` job)
@@ -90,6 +96,18 @@ cannot import anything, each carrying an `x-release-please-version` marker the
 release bot rewrites. The gate discovers those markers rather than holding a
 list, so it fails both on a mirror that drifted and on one
 `release-please-config.json` never learned about.
+
+`mint_artifacts.py` covers what that marker cannot reach. A vendored archive, an
+oracle corpus, and a lockfile each state the version, and none of them has a
+line anybody typed — they are build output, generator output, and resolver
+output. So a release PR bumps the number and leaves all three describing the
+release before it, which nothing catches until a binding's suite fails on a
+version contract, well after the archives' symbol lane passed. It discovers the
+same way its sibling does: archives and their rebuild commands from
+`contract/bindings.toml`, a corpus's generator from the `scripts/` sibling of the
+`testdata/` it writes into, a lockfile's package from the manifest beside it.
+`release-please.yml`'s `mint artifacts` job runs it on the release PR; running it
+by hand is for a version bumped locally.
 
 ## When to Edit Here
 

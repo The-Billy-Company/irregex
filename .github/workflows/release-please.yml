@@ -5,7 +5,7 @@
 # `x-release-please-version` marker. Merging it tags `vX.Y.Z` and cuts a GitHub
 # Release. Nothing here publishes: `release.yml` does that, triggered by the tag.
 #
-# ── Two things worth knowing before the first release
+# ── Three things worth knowing before the first release
 #
 # 1. towncrier, not release-please, owns CHANGELOG.md — the curated fragments
 #    under changelog.d/ are the notes people actually read, so the config sets
@@ -16,7 +16,16 @@
 #    someone finally merges. `release.yml`'s preflight re-checks the fold
 #    landed before it will publish anything.
 #
-# 2. This runs as a GitHub App, not as Actions, and it has to. Two independent
+# 2. The bot moves the number in every manifest that carries the marker, and it
+#    cannot move the number inside build output. The vendored engine archives,
+#    the oracle corpora, and the lockfiles all embed this package's version and
+#    none of them is a line anybody types, so a bumped PR leaves twelve
+#    archives, two corpora, and two lockfiles describing the release before it.
+#    `mint artifacts` below regenerates exactly those and pushes them onto the
+#    same branch, which is what makes the PR's own CI a real verdict. v2.1.0
+#    shipped only because all of it was minted by hand after the fact.
+#
+# 3. This runs as a GitHub App, not as Actions, and it has to. Two independent
 #    walls make the default GITHUB_TOKEN useless here: the enterprise forbids the
 #    Actions identity from creating pull requests at all, and a tag GITHUB_TOKEN
 #    pushes does not start another workflow (GitHub's recursive-CI guard), so
@@ -158,3 +167,116 @@ jobs:
           STEPS_VERSION_OUTPUTS_RESULT: ${{ steps.version.outputs.result }}
           APP_TOKEN: ${{ steps.app-token.outputs.token }}
           HEAD_BRANCH: ${{ fromJson(needs.release-please.outputs.pr).headBranchName }}
+
+  # Regenerates the committed artifacts that carry the version in their bytes
+  # rather than on a line: the vendored engine archives, the oracle corpora, and
+  # the lockfiles. `tools/mint_artifacts.py` owns which those are and how each is
+  # refreshed — discovered from `contract/bindings.toml` and from what lies
+  # beside each artifact — so this job stays a shim over a tool a maintainer can
+  # run locally, and a fourth binding is covered without editing any YAML.
+  #
+  # After `fold-changelog`, not beside it: both push to the release PR's branch,
+  # and two jobs racing the same ref means one of them loses to a non-fast-forward
+  # and the PR is left half-updated.
+  mint-artifacts:
+    name: mint artifacts
+    needs: [release-please, fold-changelog]
+    if: needs.release-please.outputs.pr != ''
+    runs-on: ubuntu-latest
+    # Twelve cross-compiled archives plus two corpora; a minute or two in
+    # practice, and a ceiling well under the six-hour default so a hung
+    # toolchain download fails the PR instead of holding a runner all day.
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          ref: ${{ fromJson(needs.release-please.outputs.pr).headBranchName }}
+          persist-credentials: false
+
+      # The whole job hangs off this answer, and the answer is cheap: reading
+      # twelve archives and four TOML files takes under half a second, where
+      # installing a toolchain to rebuild what is already current would take
+      # minutes on every push to main while the PR stays open. Exit 1 is "stale",
+      # and anything else is a fault in the tool itself — never a quiet skip.
+      - id: guard
+        name: Is anything committed still describing the previous version?
+        run: |
+          set +e
+          python3 tools/mint_artifacts.py --check
+          code=$?
+          set -e
+          case $code in
+            0) echo "stale=0" >> "$GITHUB_OUTPUT" ;;
+            1) echo "stale=1" >> "$GITHUB_OUTPUT" ;;
+            *) exit $code ;;
+          esac
+
+      # Read back through the shared command rather than re-parsed here, so the
+      # commit message names the same version the fold and the preflight do.
+      - id: version
+        if: steps.guard.outputs.stale == '1'
+        uses: The-Billy-Company/.github/actions/package-release@deb135f046122a10cabc861e96eb9941c2d09ddc # main
+        with:
+          command: version
+          args: --root .
+
+      # A cache is writable by any workflow on any branch, which is a fine trade
+      # in CI and the wrong one here: these archives are committed, vendored into
+      # the crate and the Go module, and shipped to whoever installs them. Same
+      # reasoning as release.yml's wheel build, and the same pinned version.
+      - if: steps.guard.outputs.stale == '1'
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
+        with:
+          version: 0.16.0
+          use-cache: false
+      - if: steps.guard.outputs.stale == '1'
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: false
+
+      # The corpora are generated by asking the Python binding for spans, and it
+      # reaches the engine through the library `zig build` installs. The archives
+      # are cross-compiled by their own scripts; this build is what the reference
+      # binding loads on this host.
+      - if: steps.guard.outputs.stale == '1'
+        name: Build the engine the corpora are generated against
+        run: zig build
+
+      - if: steps.guard.outputs.stale == '1'
+        name: Re-mint whatever the bump left behind, and commit it
+        run: |
+          set -euo pipefail
+          # Refreshes only the stale artifacts, and re-reads every one of them
+          # afterwards: a rebuild that succeeds and emits the same stale bytes is
+          # the one failure a mint cannot self-report.
+          python3 tools/mint_artifacts.py
+          # Porcelain rather than `git diff`: a target added since the last
+          # release mints an archive that no commit has ever held, and a tracked
+          # -only comparison would call that "nothing changed".
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "::error::the mint reported work and changed nothing — refusing" \
+                 "to leave the PR looking refreshed when it is not." >&2
+            exit 1
+          fi
+          git config user.name 'billy-company-release[bot]'
+          git config user.email 'billy-company-release[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m "chore(release): re-mint committed artifacts at v$VERSION"
+          # The checkout above declined to persist its credential, so this write
+          # carries its own auth rather than relying on git's credential store.
+          git push "https://x-access-token:${APP_TOKEN}@github.com/${{ github.repository }}.git" \
+            "HEAD:${HEAD_BRANCH}"
+        env:
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
+          HEAD_BRANCH: ${{ fromJson(needs.release-please.outputs.pr).headBranchName }}
+          VERSION: ${{ fromJson(steps.version.outputs.result).version }}
