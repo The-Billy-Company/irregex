@@ -414,18 +414,29 @@ Adding a fifth copy? Only if the language truly cannot ask. Mark the line, add
 it to `extra-files`, and the gate will hold it.
 
 **Cutting a release.** Merge the release PR that release-please opens; that tags
-`vX.Y.Z` and `release.yml` publishes the wheels. Two things ride along:
+`vX.Y.Z` and `release.yml` publishes the wheels. The PR maintains itself while it
+is open, on three axes, so that none of them is a step anyone has to remember:
 
-1. towncrier owns `CHANGELOG.md`, so run
-   `towncrier build --version <the version the PR bumps to>` and push it onto
-   the release branch - the tag and the notes should land together.
-2. Regenerate the Rust oracle: `python3 bindings/rust/scripts/python_oracle.py`.
-   Its fixture records the engine build that produced it, and
+1. **The notes.** `fold changelog` runs towncrier at the version the PR bumped to
+   and commits `CHANGELOG.md` onto the PR's branch, retiring the fragments it
+   folded. `release.yml`'s preflight refuses to publish while any fragment is
+   left, so the tag and the notes cannot separate.
+2. **The bytes that carry the version.** A marked line is rewritten by the bot; an
+   embedded string is not. `mint artifacts` re-mints the artifacts that embed
+   one - twelve vendored archives, both oracle corpora, both lockfiles - by
+   rerunning the generator that wrote each. Ask the same question locally with
+   `python3 tools/mint_artifacts.py --check`. Never hand-edit a corpus JSON: it
+   records the engine build that produced it, and
    `corpus_matches_the_linked_engine` compares that stamp against the linked
-   library - by design, so a hundred span mismatches read as "the corpus is
-   stale" instead of "the engine is wrong". A version bump moves the engine, so
-   the stamp needs re-minting from the same script that wrote it. Do not hand-edit
-   the JSON; the whole point of the stamp is that a generator put it there.
+   library by design, so a hundred span mismatches read as "the corpus is stale"
+   rather than "the engine is wrong". `quality/parity/check.py` holds the archives
+   to the same standard, and both run in CI.
+3. **The base.** release-please rebuilds the branch on every push to main
+   (`always-update`), because folding deletes fragments that a later commit on
+   main can still edit - and a conflicting PR gets no merge ref from GitHub,
+   which means no CI runs on it at all rather than failing visibly.
+
+What is left for a person: read the folded notes, and merge.
 
 This repository's tag, changelog, and publish steps are one instance of a
 model shared across every Billy-Company OSS package - see
