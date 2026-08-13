@@ -1,7 +1,7 @@
 {
  "generator": "bindings/go/scripts/python_oracle.py",
  "reference": "the irregex Python binding",
- "engine_version": "2.0.0",
+ "engine_version": "2.1.0",
  "cases": [
   {
    "name": "literal",
