@@ -225,9 +225,16 @@ jobs:
     name: mint artifacts
     needs: [release-please, fold-changelog]
     if: needs.release-please.outputs.head != ''
-    runs-on: ubuntu-latest
-    # Twelve cross-compiled archives plus two corpora; a minute or two in
-    # practice, and a ceiling well under the six-hour default so a hung
+    # A Mac because two of the twelve archives are Mach-O, and per the note at
+    # `build.zig`'s repack step those are packed by Apple's `libtool -static`:
+    # Zig's own archiver leaves Mach-O members unaligned and ld64 rejects that in
+    # a cgo link. On Linux the step dies with `failed to spawn and capture stdio
+    # from libtool: FileNotFound` after minting nothing. Every other target
+    # cross-compiles from here perfectly well, which is why release.yml already
+    # builds the published wheels on the same runner.
+    runs-on: macos-latest
+    # Twelve cross-compiled archives, two corpora, two lockfiles: about eight
+    # minutes measured, and a ceiling well under the six-hour default so a hung
     # toolchain download fails the PR instead of holding a runner all day.
     timeout-minutes: 30
     permissions:
@@ -291,11 +298,12 @@ jobs:
       # the DWARF nothing links against dominates the committed size, and going
       # ahead without it would quietly triple what a `cargo add` downloads. They
       # look for `llvm-strip` in the Rust toolchain's sysroot first, and the
-      # runner's toolchain is installed without it. Which LLVM strips is not
-      # load-bearing — the archive is Zig's output, and rustup is simply where a
-      # matched `llvm-strip` and `llvm-nm` are one command away. At the
-      # repository root, deliberately: this is the directory the scripts ask for
-      # a sysroot from, so the component lands on the toolchain they will resolve.
+      # runner's toolchain is installed without it (Xcode ships `strip`, which is
+      # not the same tool). Which LLVM strips is not load-bearing — the archive is
+      # Zig's output, and rustup is simply where a matched `llvm-strip` and
+      # `llvm-nm` are one command away. At the repository root, deliberately: this
+      # is the directory the scripts ask for a sysroot from, so the component
+      # lands on the toolchain they will resolve.
       - if: steps.guard.outputs.stale == '1'
         name: The strip the vendoring scripts require
         run: rustup component add llvm-tools
