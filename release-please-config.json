@@ -41,6 +41,20 @@
     "version live in the org standard:",
     "https://github.com/The-Billy-Company/.github/blob/main/RELEASING.md#what-picks-the-number",
     "",
+    "── No `package-name`",
+    "It used to say `irregex`, and that is what kept the bot from ever cutting",
+    "a release. With the component out of the tag, release-please writes the",
+    "release PR's body with no component and names its branch",
+    "`release-please--branches--main` with no component either; but the guard it",
+    "then runs over a merged standalone PR compares that empty component",
+    "against `component || package-name`. A name here makes those two disagree",
+    "forever, so every merge logged `PR component: undefined does not match",
+    "configured component: irregex` and returned without tagging — which then",
+    "reads as an untagged merged release PR and blocks the NEXT run too. The",
+    "name buys nothing back: with `include-component-in-tag` false, the tag is",
+    "`vX.Y.Z` and the release is titled `vX.Y.Z` whatever the package is",
+    "called. v2.1.0 had to be tagged and published by hand because of this.",
+    "",
     "── The tag cascades",
     "Merging the release PR tags `vX.Y.Z`, which is what `release.yml` waits",
     "for to publish the wheels. A tag pushed by GITHUB_TOKEN does NOT trigger",
@@ -74,7 +88,6 @@
   "packages": {
     ".": {
       "release-type": "simple",
-      "package-name": "irregex",
       "skip-changelog": true,
       "extra-files": [
         { "type": "generic", "path": "build.zig.zon" },
