@@ -18,10 +18,16 @@ from __future__ import annotations
 
 import ctypes
 import enum
-from typing import Any, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 from ._abi import _VOID, MATCH, STALE, Text, check, declare, error, lib
 from ._shape import Handle, borrowed, sink, sized
+
+if TYPE_CHECKING:
+    # The one thing this module needs from the pattern module is its name, and
+    # only for the signature. Imported under the type-checking guard because a
+    # runtime import here would be a load-order edge for a docstring's benefit.
+    from ._pattern import Pattern
 
 _U8P = ctypes.c_char_p
 _SIZE = ctypes.c_size_t
@@ -153,6 +159,19 @@ class Literals(Handle):
     def __init__(self, ptr: Any) -> None:
         super().__init__(ptr, lib.irgx_literals_free)
 
+    def __repr__(self) -> str:
+        # The promise, because it is the one thing a caller reaches this handle
+        # for and the thing a bare object address cannot tell them. Read live
+        # rather than cached: a closed handle says so instead of lying.
+        try:
+            facts = self.facts()
+        except Exception:  # noqa: BLE001 - a repr never raises
+            return "<irgx.Literals closed>"
+        return (
+            f"<irgx.Literals min_len={facts.min_len} max_len={facts.max_len} "
+            f"anchored={facts.anchored} sets={sum(facts.counts)}>"
+        )
+
     def facts(self) -> Facts:
         """The whole-pattern promise, and the size of every set, in one read.
 
@@ -200,9 +219,9 @@ class Literals(Handle):
         return _verdict(verdict.value), rows
 
 
-def literals(pattern: Any) -> Literals | None:
-    """What ``pattern`` promises about its matches, or ``None`` when the engine
-    declines to say.
+def literals(pattern: Pattern) -> Literals | None:
+    """What a compiled ``pattern`` promises about its matches, or ``None`` when the
+    engine declines to say.
 
     ``None`` for a PCRE2-compiled pattern (``pcre=True``), and it is a
     declinature rather than a failure: that arm keeps no AST to under-claim from.
@@ -211,8 +230,17 @@ def literals(pattern: Any) -> Literals | None:
     on instead of an exception it has to catch to discover a fact about its own
     pattern.
     """
+    pool = getattr(pattern, "_pool", None)
+    if pool is None:
+        # A pattern's TEXT is the obvious thing to pass and the wrong one: the
+        # promise is read off the compiled AST. Said here, because the alternative
+        # is an AttributeError naming a private field.
+        raise TypeError(
+            f"literals() reads a compiled pattern, not {type(pattern).__name__} — "
+            f"compile it first with irgx.compile()"
+        )
     out = _VOID()
-    status = lib.irgx_literals_open(pattern._pool.handle(), ctypes.byref(out))
+    status = lib.irgx_literals_open(pool.handle(), ctypes.byref(out))
     if status == STALE:
         return None
     check(
