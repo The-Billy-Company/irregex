@@ -233,9 +233,10 @@ jobs:
     # cross-compiles from here perfectly well, which is why release.yml already
     # builds the published wheels on the same runner.
     runs-on: macos-latest
-    # Twelve cross-compiled archives, two corpora, two lockfiles: about eight
-    # minutes measured, and a ceiling well under the six-hour default so a hung
-    # toolchain download fails the PR instead of holding a runner all day.
+    # Twelve cross-compiled archives, two corpora, two lockfiles: sixteen minutes
+    # measured on this runner (seven on a developer's own Mac), and a ceiling well
+    # under the six-hour default so a hung toolchain download fails the PR instead
+    # of holding a runner all day.
     timeout-minutes: 30
     permissions:
       contents: read
