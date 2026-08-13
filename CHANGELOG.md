@@ -5,6 +5,1455 @@ All notable changes to the `irregex` kernel (formerly `gist`; the gist CLI is it
 
 <!-- towncrier release notes start -->
 
+## [2.1.0] - 2026-08-13
+
+### Added
+
+- A horizontal parity gate over the bindings - `contract/bindings.toml` plus
+  `quality/parity/check.py` - and the five capability gaps it found, now closed.
+
+  Every gate in this package was **vertical**: does the Zig root export what
+  `contract/exports.toml` says, does the header declare it, does each binding compile
+  against it. Each binding passed. Nothing ever compared them to *each other*, and
+  that is exactly how they drifted:
+
+  - **go** had no windowed-search plane at all (`irgx_is_match_in`,
+    `irgx_find_all_in`, `irgx_pattern_windows`) - a capability a Go caller simply did
+    not have, with nothing anywhere saying so.
+  - **rust** declared the opaque `irgx_cancel` type and threaded a `*mut irgx_cancel`
+    through its analytic request struct, and never bound the three functions that
+    make one. The field could only ever be null: a cancellation surface that looks
+    present and cannot work. A `--shape distinct` sweep is a documented 27 seconds,
+    which is precisely the call a host wants to be able to give up on.
+  - **python** was complete, which is the only reason none of it was visible - there
+    was always one binding that could do the thing, so no bug report ever said
+    "irregex cannot", only "irregex cannot from here".
+
+  None of it was decided; it was just never looked at. So the rule is blunt and
+  horizontal: every symbol `exports.zig` exports is named in every binding's own
+  sources, or waived *for that binding* with a reason. A waiver is a design decision
+  on the record - `Set.Len()` is a field in both Go and Rust, and both waive
+  `irgx_slate_len` for the same reason, arrived at independently, which is the
+  outcome this gate is for. A gap without a reason is the drift above, and fails.
+
+  What closed, per binding:
+
+  - **Rust** gains `CancelToken` (`Send + Sync + Clone`, freeing the C token when the
+    last handle drops) and a `run_until`, plus `Regex::windows` and
+    `Regex::is_match_within`. An `Error::BadWindow` names a crossed pair rather than
+    passing it down, since the ABI answers a crossed window and an out-of-range one
+    with the same code and the caller would not learn which mistake it made.
+  - **Go** gains `Regexp.Windows`, `MatchStringIn`/`MatchIn`, and
+    `FindAllStringIndexIn`/`FindAllIndexIn`, with a bad window panicking the way a
+    slice expression does rather than returning an error Go would not expect.
+
+  It has a **second lane**, for a binding that ships the engine instead of linking
+  one. The Go module commits a static archive per platform, because Go has no
+  `build.rs` and a consumer with no Zig has to be able to `go get` and build - build
+  output under version control, whose only instruction to keep up with the engine was
+  a sentence in a README. That did not hold: the archives went behind the day the
+  munch plane landed, so the *default* `go test` path - the one CI and every consumer
+  takes - died at the linker on undefined `irgx_munch_*` while the source-built path
+  was green. Same species as the `build.rs` above, found the same way, by hand. So a
+  declared archive is now read for the ABI names it actually carries, by scanning its
+  bytes: the symbol table spells them in ASCII in ELF, Mach-O and COFF alike, which
+  keeps it a stdlib check rather than an `nm` that would have to exist and understand
+  three object formats. Waivers do not reach this lane - an archive is not a host
+  choosing a different route, it is the engine, and it either has the plane compiled
+  in or is old. A glob matching nothing is a contract fault, since a lane that reads
+  nothing approves everything.
+
+  The gate reads only code that could actually *call* a symbol, which took two
+  iterations to get right and both are pinned by its own proofs. Comments are
+  stripped, because prose about a symbol is the false pass: `sys.rs` contains the
+  sentence "`irgx_find_all` is deliberately not declared", and a rule that reads it
+  concludes the symbol is bound - the sentence should fail and the waiver row should
+  pass. But cgo's preamble is *spelled* as a block comment and *compiled* as C, and it
+  is the only place the Go binding calls the engine at all, so blanking it reported a
+  complete binding as reaching nothing - the same rule's inverse failure. The preamble
+  adjacent to `import "C"` is read back as code; a `/* */` genuinely used as prose in
+  Go still is not.
+- Crest's Unicode-default lanes (`digit+u`, `hex+u`, `word+u`, `space+u`) counted
+  UTF-8 *bytes*, and `[0x80,0xFF]` — the escape valve every one of them shares —
+  cannot tell a continuation byte from a lead byte. So two CJK ideographs priced
+  the same as a six-byte forced run: any 6+ consecutive non-ASCII bytes anywhere
+  in a document, whether or not they resembled the target class, satisfied every
+  `+u` lane at once and made the whole document unprunable. `\d{6}` — the
+  ordinary way anyone spells "six digits" under the engine's own Unicode default
+  — pruned 62.5% of the corpus where its ASCII twin `[0-9]{6}` pruned 92.7%, and
+  most of that gap was this tax, not genuine ambiguity about what the document
+  contained.
+
+  The repair adds a third alphabet that counts codepoints without decoding one.
+  A UTF-8 lead byte (`0xC0-0xFF`) always advances a codepoint-run lane; a
+  continuation byte (`0x80-0xBF`) is transparent — neither advancing the run nor
+  resetting it, because self-synchronization guarantees it can only ever belong
+  to the codepoint the lead byte already opened. That "hold" rule is exact, not
+  approximate: `n` consecutive scalars of the target class advance the counter
+  exactly `n` times regardless of how many bytes each one costs, so a genuine
+  two-character CJK run now measures as 2, not 6, and correctly fails to satisfy
+  `ĝ=6`. A byte class holding a continuation byte in its own right
+  (`[\x80-\xFF]{6}`, read as raw bytes) refuses the lane outright rather than
+  resolve the ambiguity — `ĝ=0`, sound by degradation, the same rule the rest of
+  the calculus already lives by. Measured on the 21,854-file corpus, stacking
+  `+cp` on the already-shipped `+u` lane: `\d{6}` 62.5% → 72.7% (1.94x → 3.05x),
+  `\d{4}` 40.9% → 48.3%, `\s{4}` 4.8% → 14.6%; `\w{8}`, the adverse case where the
+  word class is nearly the whole alphabet, honestly stays at 0.0%.
+
+  The lane count `K` this needed (16 → 24, one codepoint twin per family member)
+  uncovered a real bug in the block scan rather than just costing more cycles:
+  `@Vector(24, u16)` occupies the same 64 bytes / 4 NEON registers the target
+  already rounds `@Vector(32, u16)` up to, but a microbenchmark of this exact
+  recurrence measured the *odd* width at 0.089 GiB/s against the *clean* one's
+  0.713 — 8x slower for identical storage, the signature of a lane count LLVM
+  cannot autovectorize cleanly rather than genuinely more work. Padding the
+  scan's internal vector to the width the backend already pays for (truncating
+  back to the real `K` only at the persisted `Vector` boundary) recovered it:
+  shipped throughput dropped from 2.07 to ~1.0 GiB/s on this machine — a third
+  alphabet is real extra state, and that part of the cost is honest — but the
+  speedup over the naive per-byte reference *improved*, 1.87x → 7.9x, because the
+  odd-width penalty is gone. `ways` (how many pieces the scan interleaves) had
+  to be re-picked by measurement rather than carried over: its register
+  footprint doubled alongside `K`, so the `ways=4` tuned for 16 lanes now
+  overflows NEON's register file where `ways=2` does not.
+
+  `Vector`/`Mask` grew accordingly (`Mask` is `u24` now, `u32`-serialized), and
+  the sidecar format bumped to v4 — a stale v3 (`K=16`) sidecar decodes to
+  `null` rather than being silently misread.
+- Layer J refuses to certify at all when a live walk owns more than **2.5x** ripgrep's
+  memory on its worst measured corpus.
+
+  The walk-cost figure was measured, rendered from its artifact, and completely unguarded:
+  `audit()` - the function whose whole job is refusing to splice when the layer's claims
+  do not hold - never received `walkcost` as an argument. So the per-entry arena
+  materialization could come back in full and Layer J would splice happily, publishing a
+  larger number inside a well-formed table. That is not hypothetical; it is what already
+  happened once, in the direction of a stale figure rather than a live regression.
+
+  The ceiling is set to catch the regression it exists for, not to pin the current
+  measurement. The growth it guards against measured **6.01x** while it was live; the fix
+  lands between 0.69x and 1.79x depending on the tree. It is deliberately no tighter than
+  that, because the denominator is another engine - ripgrep's own walk footprint moves 3.5x
+  across the two real corpora on record (31.8 -> 110.4 MiB), so a ratio pinned near the
+  worst observation would fault on corpus shape rather than on a defect.
+
+  It judges gist's **worst** corpus, which is the same one `_walkcost` puts in its headline,
+  so the gate and the rendered prose cannot disagree about which measurement is the claim.
+  It binds without `--race`, so a narrow mint is still guarded even where the surrounding
+  section does not render. And the bound is disclosed in the certificate rather than
+  enforced silently, in both directions: a mint carrying the artifact prints the threshold
+  beside the ratio, and a mint carrying none says in prose that the ratchet has nothing to
+  bind and the claim is unguarded on that mint.
+- The C ABI went from 38 symbols to 100, and five planes that only ever existed in Zig
+  got a door: `tree` (search a corpus, not a buffer you already hold), `walk` (which
+  files a search is even allowed to read), `sieve` (narrowing, so most of the corpus is
+  never opened), `codex` (the FM-index - count, locate and restore a text it does not
+  store), and the `lines` / `literals` / `needles` trio.
+
+  None of this is new capability. Every one of these engines was finished, tested and
+  driven daily by the sibling binaries; the gap was that `libirgx` published a regex
+  matcher and called itself a search toolkit. A C host could compile a pattern and run
+  it over a buffer it had already read - which is the one part of a search engine that
+  is not the hard part. It could not ask which files to read, could not skip the ones
+  that cannot match, and could not search a tree at all. `gist` could, because `gist`
+  minted its own cursor shim in its own repo. That shim is now here, where it belongs.
+
+  Freezing the surface turned up one real hole rather than just plumbing. `tree`'s own
+  header comment promised `irgx_matches_count` and `irgx_matches_close`, and neither
+  function existed - so a C host had no release path and leaked the cursor, its arena,
+  and every path and line byte the records had borrowed, on every search. Both are
+  written now, and `count` is the total the answer HOLDS rather than the remainder
+  still unread, which is the distinction the batch verb's `*written` deliberately
+  cannot make.
+
+  Two verbs read `_describe` instead of `_facts` (`irgx_sieve_describe`,
+  `irgx_winnow_describe`), because in C a typedef shares a namespace with a function
+  and the out-param structs own those nouns; the verb matches `irgx_needles_describe`,
+  which was already there. `irgx_walk_count` returns `size_t` bare instead of a status
+  plus an out param, like every other infallible read of already-materialized state.
+
+  The header and the export table now agree exactly, in both directions, and the parity
+  gate is what says so rather than a reviewer. It parses clean as C99 and as C++17.
+- The Go module named 38 of the C ABI's 100 symbols, and the 62 it did not name
+  were not corners - they were five whole planes. A Go host could match a pattern
+  against a `[]byte` it already held, and could not ask which files a search may
+  read, search a corpus, narrow one so most files are never opened, index a text it
+  then throws away, or read the line grid and the literal promises the engine
+  derives for itself. Every one of those questions was already exported; only Go
+  could not ask them.
+
+  All 62 are bound now, one file per plane: `tree.go` (a warm engine over roots,
+  searched under a `context.Context`), `walk.go` (the eligible set as a question
+  instead of a side effect), `sieve.go` (the persisted narrowing tier plus a
+  pattern's plan), `codex.go` (the FM-index, including the backward-search interval
+  driven by hand), `lines.go`, `literals.go`, `needles.go`. Iteration crosses the
+  cgo boundary once per batch rather than once per record, because a cgo call costs
+  about a hundred Go calls and a corpus search reports thousands of rows; every
+  string, path and span is copied into Go memory at the boundary, so a result
+  outlives the handle it came from and a finalizer can never free memory a live
+  slice still aliases. A stale index and an unbuilt locate layer come back as
+  `(value, ok)` rather than as errors, because neither is a fault - one is the index
+  declining to answer, the other a structure nobody asked to build.
+
+  Three doors `regexp` has and this package did not come along with them, now that
+  the engine holds the facts they need: `QuoteMeta`, `LiteralPrefix` read out of the
+  pattern's own literal plane rather than re-derived, and the
+  `encoding.TextMarshaler` pair so a `*Regexp` is a field type in a config file. An
+  option with no inline spelling refuses to marshal instead of silently
+  downgrading; a case-insensitive pattern that reads correctly in a config and
+  matches case-sensitively at runtime is the failure a config file is least able to
+  explain.
+- The Python binding has an import contract: `bindings/python/binding.zone`,
+  governing `irgx` the way `charter.zone` governs the Zig side.
+
+  It is the floor `gist`, `relate`, and `blast` all import, so its layering is the
+  one that propagates - the generated contract surface at the bottom, the runtime
+  and request model above it, tests on top. The one cycle in it is declared rather
+  than tolerated: `request` is decoded by `runtime/decode`, and `decode` reaches
+  back for the calibrated enum types through a cached deferred import, so a
+  decoded grade is comparable instead of a bare string and the load-time graph
+  still has no loop.
+
+  Needs `zoning` 1.3.1, which is where the `python` dialect and root-anchored
+  contracts both arrive.
+- The Python binding reaches the whole engine now, not just the regex plane. It
+  named 38 of the C ABI's 100 symbols; it names all 100.
+
+  The 62 that were missing are not odds and ends - they are six whole planes the
+  binding had no word for. `irgx.walk` decides which files a search may read.
+  `irgx.corpus` searches a tree instead of a buffer. `irgx.sieve` narrows against a
+  persisted artifact so most files are never opened. `irgx.build_codex` answers
+  `count` and `locate` about a text it does not keep. `irgx.line_context` puts the
+  byte-offset-to-row conversion in one place instead of in every caller.
+  `irgx.literals` says what a pattern promises before it runs, and
+  `irgx.compile_needles` sweeps N literals in one pass while keeping which one hit -
+  the fact an alternation throws away. Each is one module that declares its own
+  prototypes beside the wrappers calling them, loaded lazily, so a program that only
+  calls `search` still pays for nothing else and a wheel built against an older
+  engine still imports - the absent plane raises when it is reached for, naming the
+  symbol it wanted.
+
+  Two hazards specific to a ctypes host got closed rather than avoided.
+
+  ctypes defaults an unset `restype` to `c_int`, and seven verbs return `size_t`,
+  so an unset one truncates on any 64-bit host - a wrong answer, not a crash, and
+  invisible to any test whose numbers stay under 2^31. Every prototype now declares
+  `argtypes` and `restype`, and `declare()` records what it bound into a table the
+  suite audits: all 100 symbols compared against the types parsed out of
+  `include/irgx.h`, plus a test that derives the seven `size_t` verbs from the
+  header rather than listing them, so a new one is covered the day it lands. The
+  audit is also demonstrated rather than asserted - one test borrows libc's
+  `strtoull`, parses `4294967296` with `restype = c_size_t` and gets it back, then
+  parses it again through a handle with the restype left at its default and gets 0.
+  The reason for the rule, in the test file, next to the rule.
+
+  Borrowed bytes look exactly like owned bytes in Python, so every borrowed range
+  is copied at the boundary - tree record paths and lines, walk entry paths, sieve
+  candidates and literals - with one decoder, `borrowed()`, doing it. A keepalive
+  reference only works if the discipline is total, and Python offers no way to make
+  it total: a `str` that escapes into a set or a log line takes its arena's last
+  reference with it and faults a week later somewhere else. The copies are tens of
+  bytes against the `stat` or the file read that produced them. Two tests close the
+  handle, `gc.collect()`, and only then read the values.
+
+  `IRGX_STALE` is a declinature, so it returns `None` and never raises - for a PCRE
+  pattern with no inspectable program, a tree with no artifact, a codex built with no
+  locate layer. `Sieve.candidates` keeps `None` and `()` distinct, because "nothing
+  narrowed" and "narrowed to nothing" are different answers and collapsing them is
+  how a fallback ends up never running.
+
+  `match` and `fullmatch` arrive with them, and neither is faked. `match` is a
+  leftmost search plus a start comparison, which is exact rather than approximate
+  because this engine is leftmost-first exactly as `re` is. `fullmatch` asks
+  `irgx_munch_scan` under `IRGX_MUNCH_LONGEST` for the longest match beginning at
+  one offset - a real anchored automaton, since `a|ab` proves an unanchored search
+  cannot answer it. Where the full span and the leftmost span disagree and the
+  pattern declares groups, there is no anchored capture verb to ask, so it refuses
+  loudly at match time rather than reporting groups from the wrong span.
+- `Caps.matchAt` - the anchored twin of `find`, on every arm of the union.
+
+  `find` searches forward and reports the first match at or after the offset it was
+  handed. That is the right question for a search and the wrong one for a caller
+  deciding what a byte position IS - a lexer probe asking "does a fenced-code
+  opener start here" got `true` for one starting six bytes along, and the group
+  slots it read back described text it never reached. There was no way to ask the
+  other question, so the only spelling available was the one that silently answers
+  about somewhere else.
+
+  It is a specialization rather than a second engine, and each arm already had the
+  shape for it. The Pike VM's `find` and `matchAt` are one `run` that either does or
+  does not seed a new thread at each later position, which is precisely what
+  "anchored" means for a Pike VM; anchored also stops the moment no thread survives,
+  since nothing will reseed and the rest of the line cannot matter. `OnePass` is its
+  existing walk with the candidate-start restart loop removed - and needs no visit
+  budget, because one walk is O(1) per byte by construction and the quadratic shape
+  `find` guards against cannot arise. PCRE2 needs no second compile at all:
+  `PCRE2_ANCHORED` is a match-time bit, so one program serves both.
+
+  Tested as parity rather than in isolation. The onepass/Pike differential now runs
+  `matchAt` alongside `find` on every case it already had, requiring identical
+  verdicts and slot-exact agreement, plus that the reported match begins exactly
+  where it was asked. A new case table pins the distinction the twin exists for -
+  patterns whose `find` is true and whose `matchAt` is false at the same offset -
+  across the linear arm and the PCRE2 one, so a silent substitution of one for the
+  other fails rather than passes.
+- `Pattern.earliest` / `earliestIn` / `walk`, and `Pattern.halts` to ask first - the
+  match that ENDS first, which is not the leftmost one and cannot be filtered out of
+  it.
+
+  Every span entry in this engine was leftmost-first, because that is what a match IS
+  to a consumer of a span. But leftmost-first picks a match by where it STARTS and
+  then extends it by priority, so it is frequently neither the earliest-ending match
+  nor reducible to one: `a+` over `aaa` is one leftmost span `(0,3)` and three
+  earliest ones `(0,1) (1,2) (2,3)`, and no predicate over the first yields the
+  second, since the second sequence holds spans the first never reported. So the
+  request bit existed and the span verb refused it - correctly, rather than shipping
+  a leftmost answer under an earliest label.
+
+  It needed a machine, and the machine was already built. `subset.zig` determinizes
+  both an unanchored automaton, whose re-seed makes its first acceptance the earliest
+  end of any match in the region, and an anchored one; nothing above it could ask a
+  determinized walk to stop AT an acceptance. `lazy.Cache.onset` is that halt, and
+  `dfa/onset.zig` is the policy over it - which automaton a mode needs, built on the
+  first ask that needs it, per-thread scratch shelved beside the Pike VM's.
+
+  A forward recognizer knows where a match ended and never which one, so an earliest
+  SPAN is the halt plus one leftmost pass under the position it found. That is exact
+  rather than an approximation: every match in the region ends exactly there by
+  minimality, so the leftmost-first answer inside it is the earliest end and the
+  leftmost start reaching it. It is also the reason there is no O(log n)
+  binary-search-over-the-bound version of this - one bounded pass, not a ladder of
+  them.
+
+  Two compiles have no such machine and say so instead of guessing: the PCRE2 arm,
+  whose program is not inspectable, and a pattern carrying a positional assertion,
+  where a determinized state's meaning depends on the gap it was entered at. Those
+  raise `Unsupported`. `halts` answers it once after compiling, so a host is never
+  surprised mid-walk.
+- `deadBranches` - the note on a SUCCESSFUL run whose alternation was partly dead.
+
+  `A|B|C` where `B` matches nothing exits 0, prints rows, and looks like a complete
+  answer. It is the failure mode of asking three questions at once: the run reports
+  matches, so nothing prompts you to notice that a third of what you asked was
+  never found, and the usual next step is to trust a set you have not got. Every
+  line on this channel had until now been reserved for empty runs, which is exactly
+  why the case was invisible.
+
+  A branch whose bytes appear nowhere in the printed results now earns one note. The
+  check reads `out` rather than the corpus, so it costs one pass over bytes already
+  in hand and cannot claim anything the caller did not just see.
+
+  It is gated on `results_faithful`, which is the soundness condition rather than a
+  preference: `-l` prints paths, `-c` prints counts, `--json` reshapes the text, `-r`
+  rewrites it, and `-m` truncates it. In each of those a branch can match without
+  leaving its bytes in the output, so absence proves nothing and the note is
+  withheld instead of guessed. Tested on both sides of that line - a partly dead
+  alternation in a faithful mode must speak, the same alternation under `-l` / `-c`
+  / `-r` must stay silent, and an alternation whose every branch landed must stay
+  silent in every mode.
+- `irgx_munch_*` - the maximal-munch plane, so a host can ask *what is the longest
+  thing that starts right here, and which terminal was it*. Bound in all three
+  bindings: `Munch`/`MunchBuilder` in Rust, `compile_munch` in Python, `CompileMunch`
+  in Go.
+
+  `Munch` has existed in the Zig kernel for a while. The ABI did not carry it, and
+  the shape of that gap is worth naming because it was not a missing convenience:
+  nothing else on the surface answers this question. `irgx_slate_*` says *which of
+  these patterns match somewhere in this text*, which is set membership - a lexer
+  needs the reading at one cursor, the longest of them, and the identity of every
+  terminal that tied for it. Built out of the pieces that were exported, that is one
+  anchored `is_match_at` per terminal per cursor, comparing lengths in the host, and
+  a token-per-byte tokenizer paying N crossings for a question the automaton answers
+  in one walk.
+
+  What a munch returns is deliberately not a winner. `if` is both the keyword and an
+  identifier and both reach length 2; which one a lexer wants is its own business,
+  usually declaration order, so the engine names **both** and resolves nothing.
+  Picking one here would make keyword recognition impossible to build on top.
+
+  Three things fall out of it determinizing every terminal together:
+
+  - **Flags are the slate's, not a terminal's** - there is nowhere to put "terminal
+    3 folds case", so `ignore_case` and `dotall` are properties of the munch.
+    `IRGX_MULTILINE` is *refused* rather than accepted-and-ignored: it asks for the
+    line-anchor reading, and an anchored scan cannot observe the difference either
+    way, so taking it would be answering a question that was not asked.
+  - **A refusal is partial.** A slate of a hundred and fifty terminals where one is
+    outside the linear grammar is a working lexer. So the terminals that determinize
+    are seated, the rest are readable as `(index, why)` from `irgx_munch_declined`,
+    and only a slate where *nothing* seated is an error - there being no handle to
+    read the reasons from in that case.
+  - **A restriction is per call.** The allow list is an argument to the scan, not a
+    second compile, which is how context-sensitive lexing works without a munch per
+    context.
+
+  Each binding answers in its own host's text domain, on purpose: byte offsets in Go
+  and Rust, character offsets in Python, where the existing `TextView` does the
+  translation. Tested in every binding against the same oracle - one anchored
+  `^(?:terminal)` per terminal via that language's stdlib regex engine, maximum taken
+  in the test - over every cursor of every text, including the end of the input.
+- `irgx_walk_limits()` now reports `brace_cap` and `brace_group_cap`, so a host
+  sizing a user's glob reads the numbers this build enforces instead of copying
+  1,024 and 64 out of a changelog and holding them wrongly forever.
+
+  The ceilings were already real and already the right call - a braced term
+  multiplies, so sixty-five bytes of spec can name 8,192 globs, and a host that
+  accepted one from a stranger accepted an OOM. But they were only discoverable by
+  refusal. A service validating a user-supplied glob before sending it had no way
+  to ask, so its options were to guess the limit, hardcode it against a future
+  build that moves it, or send the term and treat `IRGX_OOM` as a user error -
+  which means reading `irgx_last_fault()->name` to tell `BudgetExceeded` apart from
+  the machine genuinely running out. The struct that should have answered this was
+  already there, already `struct_size`-guarded, and already says in its own comment
+  that it exists "so a host sizes its request against the truth instead of a
+  constant it copied". It just didn't carry these two.
+
+  Both are published, not one, because they bound different things and the second
+  is invisible from the first. `brace_cap` bounds the PRODUCT; `{a}{a}{a}…` has a
+  product of one and slips past it however long it grows, while still recursing
+  once per group. A host that validated only against `brace_cap` would still build
+  a term the open refuses.
+
+  Appending is how this struct was always meant to grow, so an older host reading
+  through its own smaller `struct_size` is unaffected. Go, Python, and Rust each
+  carry the pair.
+
+  The tests do not compare the field to a constant, which would only prove the
+  constant equals itself. Each ceiling is driven to its own boundary in all three
+  bindings - exactly at the cap opens, one past it refuses - so the published
+  number is checked against the enforced one, in the arithmetic a host does.
+- `math.dafsa` - a set of strings stored as the smallest automaton accepting it,
+  built by inserting sorted keys and hash-consing each state the moment nothing can
+  be added to it again, so it is minimal at every step rather than built large and
+  minimized afterwards.
+
+  The reason to reach for it over a sorted array is not the size. It is the
+  **ordinal**. Every state knows how many keys it accepts, so the same walk that
+  answers `contains` can count the keys sorting before the one it is walking:
+  `rank` is an order-preserving minimal perfect hash onto `0..count`, obtained from
+  the bytes that already answer membership. Put the payloads in a flat array, index
+  it with `rank`, and no key is stored twice. `spell` inverts it, which is what
+  makes this a bijection rather than a one-way hash you hope is injective.
+
+  Which matters because the size claim, measured, does not hold in general.
+  Compression here is entirely the tails the keys have in common, so it is a
+  property of the corpus and not of the structure. At a fixed 4,096 keys, moving
+  from 4,096 distinct tails to 64 tails shared 64 ways moves the resident size from
+  1.33x a sorted array's to 11.1x. Point it at 34-byte keys with genuinely unshared
+  25-byte stems - file paths, roughly - and it **loses to a sorted array by 7 to
+  8x**, at every count from 128 keys to 32,768, with no crossing. `rank` holds
+  across all of it at 27 to 108 ns per key, pointer-free, and is unavailable from
+  the array at any size. Come here for the ordinal.
+
+  Sorted input is required and checked, because ascending order is what lets a
+  state be sealed the moment the next key diverges from it. Daciuk et al. give a
+  second algorithm for unsorted input that clones states on the way; it is a much
+  larger piece of code and a caller who sorts first does not need it. So unsorted
+  input is `error.NonCanonical` rather than a wrong automaton - equal neighbors
+  included, since a set has no duplicates and silently dropping one would make
+  `rank` disagree with the caller's own array.
+
+  It deliberately does not sit on `dag.zig`, which looks like the right floor and
+  is not: a `Dag` node is a payload plus exactly `arity` children fixed at comptime,
+  where a DAFSA state's fan-out is whatever the keys gave it. That would mean a
+  wasted `[256]Id` per state or an edge list smuggled into the payload, at which
+  point `Dag` contributes a hash table and nothing else. What is shared is the
+  discipline, not the type: structural identity, and children interned before
+  parents, so every id points strictly downward and one ascending sweep counts what
+  each state accepts.
+
+  Tested against a third route rather than against itself. The oracle builds the
+  plain trie over the same keys and quotients it with `math.refine` - Revuz's road
+  instead of Daciuk's - and the state counts must agree exactly, which also gives
+  `refine` its first in-package consumer. Language exactness, the rank/spell
+  bijection over the whole set, and near-misses (every key with one byte changed,
+  truncated, and extended) are checked besides.
+- `math.refine` - the coarsest partition a transition table cannot tell apart.
+  Hand it a delta, a coloring, and a plan; get back the blocks that no input word
+  separates. That is DFA minimization when the color is acceptance, an LR table's
+  action-bisimulation when it is a reduce decision, and behavior classes whenever
+  the color means something else.
+
+  It ships **both** engines, and the reason is a measurement that contradicts the
+  asymptotics. Moore is O(n²k), Hopcroft O(nk log n), so the argument reads as
+  settled. On a blown-up quotient - wide and shallow, which is the shape a
+  determinizer actually hands you - Moore settles in 2 to 6 passes and beats
+  Hopcroft by 3 to 5x at every size up to 65,536 states, because a splitter queue
+  and an inverted delta are overhead a shallow partition never amortizes. On a
+  chain, where the coarsest stable partition is the discrete one and can only be
+  reached one state at a time, Moore pays a full n·k sweep per state and loses by
+  2,634x at 16,384 states.
+
+  Neither threshold is guessable from a paper, so `.auto` does not guess one: it
+  runs Moore and escalates to Hopcroft - from the partition Moore already reached,
+  not from scratch - only once Moore has spent more passes than log₂ n, which is
+  the point where its constant-factor advantage has already been paid back. That
+  lands within 3.2x of Hopcroft on the chain while staying on Moore everywhere
+  else. The `Engine` that actually ran is in the result rather than hidden, because
+  a caller measuring a regression needs to know which one answered.
+
+  Having both is also how each is checked. `refine_test.zig` adds a third route -
+  the textbook pairwise marking algorithm, O(n³k), too slow to ship and too simple
+  to be wrong - and all three must agree state for state, which is the property an
+  implementation that over-splits fails distinguishably from one that under-splits.
+
+  A missing transition goes to an implicit sink rather than being skipped, and that
+  is a correctness decision rather than a convenience. A state with no transition
+  on `a` and a state that loops on `a` are distinguishable; treating the hole as
+  "no constraint" merges them and silently yields a machine accepting more than it
+  was given. Both engines agree byte for byte because both see the same sink.
+
+  Measured in `bench/rungs/partition/`, whose generator carries the trap worth
+  naming: a *random* delta looks like the obvious benchmark and is worthless, since
+  nothing merges, every state ends alone, and the board times queue overhead
+  against a refinement that never happened. Its quotient is known by construction
+  instead, and the rung's own tests hold it to that.
+- `math.semiring` — the algebra that lets one shortest-path routine answer four
+  different questions depending on which arithmetic you hand it: is there a path
+  (Boolean), what is the cheapest (tropical, min-plus), which is likeliest
+  (Viterbi, max-times), and how many are there (counting, plus-times).
+
+  Ships the carriers plus two algorithms over any of them: `closure`, all-pairs
+  asteration in O(n³) (Lehmann 1977 - Floyd-Warshall's shape, derived from the
+  semiring axioms rather than from arithmetic on reals), and `shortestDistance`,
+  Mohri's single-source worklist with the residual trick that makes one loop
+  correct for idempotent and non-idempotent semirings alike.
+
+  The generic dispatch is free. `add`/`mul` are comptime declarations, so
+  `closure`'s inner statement compiles to the same compare and add a
+  hand-specialized Floyd-Warshall would: measured 0.43 ns per relaxed cell
+  tropical and 0.30 ns Boolean at n = 256 over dense random graphs (M-series,
+  ReleaseFast), under two cycles a cell.
+
+  Two decisions in the tropical carrier are load-bearing, because it is the one a
+  least-cost error repair actually runs on.
+
+  **The carrier is unsigned, refused at compile time otherwise.** A signed cost
+  admits a negative cycle; a negative cycle means `a*` does not exist; and
+  without `a*` neither algorithm here has a termination argument, so `closure`
+  would return a number that is not the answer to any question. Making that a
+  `@compileError` on the type rather than a runtime check on the weights means a
+  consumer cannot construct the broken case at all. What it buys in return is
+  that `star` is *total* on this carrier - `a* = min over k of k·a`, which is 0
+  for every a ≥ 0 - so tropical closure never refuses.
+
+  **Costs saturate to infinity, never wrap.** `mul` is `@addWithOverflow` and
+  maps a carry to `zero`, which in this semiring is unreachable. Wrapping would
+  be the worst possible failure here: a path too expensive to represent would
+  come back as a *cheap* path, and a least-cost repair would confidently pick the
+  one route it cannot afford. Saturating instead makes an unrepresentable path
+  read as no path, which is conservative in the only direction that is safe. The
+  property test pins exactly this: a graph whose second hop overflows `u32`
+  reports the far vertex unreachable, and it is the first test to fail if the
+  saturation is removed.
+
+  Counting is the carrier where `star` genuinely does not exist - a reachable
+  cycle means infinitely many derivations - so `star` returns an optional and
+  `closure` fails with `error.Unsupported` rather than returning a wrong finite
+  number. Viterbi's `star` is `one` on `[0, 1]` and refuses above it, since a
+  probability greater than one has a divergent series.
+
+  Tested in two halves. Every axiom - both identities, commutativity of `⊕`,
+  associativity of both, distributivity on both sides, annihilation by `zero`,
+  and the `a* = 1 ⊕ a ⊗ a*` fixpoint - checked over random elements in all four
+  carriers, with generators that deliberately include the boundary values
+  (`zero`, `one`, and the saturation edge). Then the algorithms against
+  independent oracles: tropical `closure` and `shortestDistance` against a
+  textbook Bellman-Ford, Boolean `closure` against a BFS reachability oracle, and
+  counting `closure` on DAGs against a topological-order dynamic program, over
+  random graphs including the empty graph, the edgeless graph, isolated
+  vertices, and self-loops.
+- `math.succinct.parens` — an ordinal tree stored as a balanced-parenthesis bit
+  string with a range min-max tree over it, so a tree of n nodes costs 2n bits
+  plus a small index and still answers parent, children, siblings, depth, subtree
+  size, preorder, ancestor, and LCA.
+
+  The three succinct structures already here (`sais`, `rrr`, `wavelet`) all
+  answer questions about a *sequence*; there was nothing that answered questions
+  about a *tree*, so anyone needing one paid for pointers - 8 or 16 bytes a node
+  against 2 bits, three orders of magnitude, plus a pointer chase per hop.
+
+  The whole file rests on one observation: a parenthesis string is a ±1 walk, and
+  the excess after k parens is `2·rank1(k) - k`, which `rrr.Plain` already
+  answers in O(1). Every tree question is then the same question about that
+  walk - "the nearest position, forward or back, holding this target excess". The
+  matching close is the next position at the same excess; the parent is the
+  previous position one below; the LCA of a and b is the previous position one
+  below the minimum excess over `[a, b]`. So there is one primitive in two
+  directions, and `findClose` / `findOpen` / `enclose` / `lca` / `firstChild` /
+  `lastChild` / `nextSibling` / `prevSibling` / `subtreeSize` / `isAncestor` are
+  all spellings of it rather than separate machinery.
+
+  Making that walk sublinear is the range min-max tree (Sadakane & Navarro, SODA
+  2010): a segment tree over 512-bit blocks storing the min and max excess each
+  block reaches. A block whose `[min, max]` excludes the target cannot contain it
+  and is skipped whole; a block that might contain it is scanned a byte at a time
+  through a 256-entry table of per-byte (sum, min, max). That is
+  O(b/8 + log(n/b)) - about 64 table lookups worst case plus a shallow descent -
+  against the O(n) a naive rescan of the bit string costs. `rank`/`excess`/`depth`/`preorder` stay
+  O(1) on the rank sample; `select` is O(log n) by binary search over it.
+
+  Measured on random shapes from 1e3 to 1e7 nodes (M-series, ReleaseFast, 1e6
+  cold random probes): 2.65-2.96 total bits per node, `depth` 6.6 ns,
+  `findClose` and `enclose` 23-31 ns, `lca` 104-254 ns, build 87.9 ms at 1e7
+  nodes. Four orders of magnitude of n buys 1.35x on `findClose`, which is what a
+  log-depth descent over a tree that does not fit in cache should look like. The
+  space figure is stated as measured rather than as "2n + o(n)": with `b` fixed
+  at 512 the index is Θ(n/b), a small constant fraction of n, and only o(n) in
+  the textbook setting where `b` grows.
+
+  **This is the static structure**, and that is a deliberate stopping point. A
+  tree that survives edits needs the bit string itself to become a balanced tree
+  of blocks so an insert is O(log n) rather than a memmove, which means it cannot
+  ride `rrr.Plain` at all. That is a different substrate, not a flag on this one.
+
+  Every operation is tested against a naive stack walk over randomized balanced
+  sequences up to 2,000 pairs - the oracle builds the parent, depth, and match
+  tables by pushing and popping, and knows nothing about excess, blocks, or
+  min-max trees - plus the shapes random generation will not produce on its own:
+  empty, one node, a left chain 900 deep, a flat comb whose excess never leaves
+  {0, 1}, a maximum-fan-out star, and a match placed to land at `blk-2`,
+  `blk-1`, `blk`, `blk+1`, `2·blk` and `2·blk+1`, which is exactly the case an
+  in-block scan alone cannot answer and so is the climb-and-descend path or
+  nothing.
+
+### Changed
+
+- An anchored search no longer pays for a leftmost hunt it throws away.
+
+  `findAt`, `isMatchAt`, and the anchored walk all meant the same thing: search
+  leftmost, then discard the answer unless it began exactly where the search did.
+  Exact, and it paid for every position it was never allowed to report from - the
+  whole distance to a match that could not be the answer. On a megabyte whose only
+  match sits at the far end, deciding that nothing begins at offset 0 cost 146 us.
+
+  The anchored determinization has existed since the determinizer was written - it is
+  the `anchored` argument to `Subset.init`. It just had no route up: seeded once and
+  never renewed, so an acceptance proves a match begins where the walk began, and a
+  drained thread set proves none does. Wired through the match seam as
+  `Matcher.Probe`, an anchored ask now stops at `min(first accept, death)` instead of
+  scanning on.
+
+  Measured per function rather than by re-running a suite, inherited algorithm against
+  new one in one binary over one haystack, best of five alternating rounds:
+
+  | case | bytes | before | after |
+  |---|---|---|---|
+  | `findAt`, nothing begins at `from` | 1 Ki | 116 ns | 12.1 ns |
+  | `findAt`, nothing begins at `from` | 1 Mi | 145,750 ns | 11.9 ns |
+  | `isMatchAt`, nothing begins at `from` | 1 Mi | 151,313 ns | 8.0 ns |
+  | anchored walk, 8 matches then a gap | 64 Ki | 9,066 ns | 161 ns |
+  | `findAt`, a match DOES begin at `from` | 64 Ki | 8,977 ns | 8,969 ns |
+  | anchored walk, dense run, no gap | 16 Ki | 281,625 ns | 286,625 ns |
+  | `findIn`, unanchored (control) | 64 Ki | 9,367 ns | 9,172 ns |
+
+  Flat where it used to be linear in the distance to a match it would reject. The last
+  three rows are the honest other side: where a match really does begin at `from` the
+  halting walk cannot save the leftmost pass, so its cost is added rather than traded -
+  about 8 ns fixed, and 2-3% on a walk whose every step matches. The unanchored path
+  opens no machine at all and measures unchanged.
+
+  Output is identical, and not by inspection: the inherited algorithm is written out
+  inside `glean_test.zig` as the oracle and a generated slate of 1,500 patterns over
+  six haystacks requires the anchored walk to agree with it span for span, on both
+  the patterns that get a machine and the patterns that decline one.
+- An index can now be built over a corpus nobody is holding.
+
+  Every consumer of a build — the trigram extractor, the crest sieve, the content
+  shard — was handed the whole `docs` slice after the walk finished, so the corpus
+  sat in anonymous memory from the first read to the last write. On llvm-project
+  that is 1926 of the build's 2464 MiB peak: not a leak, not slack, just the shape
+  insisting the corpus be resident because two passes wanted to read it.
+
+  The shape now has a second form. `corpus.census` runs the same walk under the
+  same membership rule and in the same doc order, keeping only each member's path
+  and stated size — 107 MiB for 175,110 documents, where holding them costs 1926.
+  `Census.recall` reads one of them back into a caller's buffer, allocating
+  nothing. `kiln.Source` is the seam that makes it useful: the block builder never
+  saw the corpus as one array to begin with, it saw a doc range and asked for one
+  doc at a time, so where those bytes come from is not a fact the index format can
+  observe. A worker holds one buffer sized to the largest doc in its own range,
+  and the footprint stops scaling with the input.
+
+  Two things ride along rather than pay a second read. `kiln.Witness` hands each
+  doc's bytes to a second consumer while the extractor has them, which is how the
+  crest sieve stops being its own pass, and how the build records what it
+  ACTUALLY read — the only honest input to a content shard's offset catalog, since
+  the catalog precedes the bodies and every reader trusts it without re-checking.
+  `shard.buildRecalled` builds from those lengths and declines the whole tier if a
+  body has since disagreed with one, because losing the shard costs a query its
+  fast path where a skewed catalog would cost it the right answer.
+
+  Reading a doc back is also parallel, which is most of what makes this viable.
+  Writing the shard is sequential — the bodies are a concatenation in doc order —
+  but reading them is not, and a doc at a time is 175k dependent opens on one
+  thread. A 64 MiB window is filled by every core and handed to the writer as one
+  region: the shard tier fell from 42.1 s to 6.7 s on llvm-project, and that one
+  change is the difference between streaming costing 2.2x wall and costing 1.7x.
+
+  MEASURED: llvm-project (175,110 docs, 1926.3 MiB), 128 GiB machine, warm page
+  cache, interleaved — peak RSS 2464 → 597 MiB, a 4.1x cut, for 8.2 → 13.8 s wall.
+  The wall is the honest cost and it is structural, not slack: a held build's
+  second pass over the corpus is a memcpy where a streamed build's is a file read.
+  On a 149.4 MiB tree (16,325 files) the same trade is 314 → 165 MiB peak with
+  wall inside the machine's own spread, because there the corpus never dominated
+  the reads. The census phase peaks at 107 MiB regardless.
+
+  PROVEN IDENTICAL, at llvm scale: `index.gist` (161,773,006 bytes), `crest.bin`
+  (8,405,376) and `paths.list` (9,107,770) compare byte-for-byte equal between a
+  held and a streamed build. `content.shard` (2,030,371,064) and `tree.map` agree
+  across every byte of catalog, path table, and body — they differ only in the
+  8-byte build anchor and the 32-byte seal that covers it, which is exactly what
+  differs between two runs of the SAME binary. The `kiln.Source` refactor was
+  proven inert on its own first, against a binary built minutes before it.
+
+  Held builds are untouched. `fire` is still `fireFrom(.{ .held = docs })`, still
+  degrades to the serial builder on an allocation failure, and still reaches the
+  same bytes. `buildStreamed` deliberately has no such fallback: a held build can
+  degrade because its caller already paid for the corpus in memory, and quietly
+  materializing it to recover would spend the exact peak the stream exists to
+  avoid.
+
+  The window this opens is real and worth naming. A streamed build reads a file
+  after the walk classified it, so a file edited or deleted in between is indexed
+  as it is at read time, or as empty if it is gone. That is not a new hazard — it
+  is the window the freshness anchor already exists to close. The anchor is
+  stamped before the walk, so any file whose clocks moved after it is folded in
+  live at query time regardless of which bytes the build saw. A held build narrows
+  the window; it has never closed it, because the corpus keeps changing while the
+  index is written either way.
+- The `burst` ladder has been reporting that twelve lanes beat the shipped four by
+  ~1.17x on the rows whose documents drive the automaton across states, and that the
+  engine could not capture it because nothing at freeze time predicts whether a
+  given document will wander - a `burst_control` block proves that part properly, by
+  re-running the same automata over a document their own class rejects and watching
+  every one of them flip. So the `win`/`ship` gap sat there as standing evidence of
+  headroom out of reach.
+
+  It was not headroom. It was the document. Every line in the ladder's corpus is
+  exactly 80 bytes, and a burst runs to the shortest lane's line end - so with all
+  lanes the same length the minimum over N remainders does not fall with N at all,
+  and width is free in the only place it is ever charged. Real source is not shaped
+  like that. Over ~100k non-empty lines of this repository the expected minimum is
+  22.5 bytes at four lanes, 12.2 at eight, 8.1 at twelve, 5.8 at sixteen, so a wider
+  walk trades overlap for bytes it spends in the per-line `trans_fin` tail instead.
+
+  The ladder now runs both geometries: `uniform`, which every prior number was taken
+  over, and `source`, whose line lengths are drawn from that measured distribution.
+  On `source` the ordering is monotone in width at every single row - four lanes is
+  the fastest arm on the wanderers and the parked rows alike, and twelve loses 1.35x
+  exactly where it had looked like a 1.14x win. There is no dispatch a perfect
+  oracle could make that beats always choosing four, which retires the open question
+  rather than answering it: `burst_control` still shows the choice is undecidable at
+  freeze time, and that no longer matters to anyone.
+
+  No production behavior changed by this fragment. `docMatchDense` already fixed
+  `lanes = 4`, and four is the measured optimum on both carves rather than the
+  compromise the comments apologized for. The larger consequence is in the sibling
+  fragment: once the ladder could see a realistic document, the thing worth fixing
+  turned out not to be the width but the carve that made width matter.
+- The `burst` ladder raced the DFA lockstep body's bookkeeping as one bundle: either
+  you kept the per-lane `prev` copy, cursor bump, and match test, or you dropped all
+  three. The bundle loses, so the ladder's verdict was "slimming the body doesn't
+  pay" - true, and useless, because it says nothing about which of the three
+  mechanisms it was true of. That is exactly the shape a retirement has to have to
+  stop the same proposal coming back.
+
+  Each removal is now its own arm at the width and table shape the decision is made
+  on, plus a fourth for the vector spelling of the fold. Peeling `prev` to the
+  burst's final step and sharing one induction variable are washes - 0.2336 and
+  0.2353 ns/byte against the shipped body's 0.2368 - because move elimination
+  retires the copy in rename and aarch64 folds the bump into a post-indexed load.
+  Folding the four compares into one branch is the whole regression: 0.2515 through
+  a scalar `@min` tree, 0.3070 through `@reduce(.Min, @Vector(4, u32))`. Four
+  independent compares are four perfectly-predicted not-taken branches that never
+  reach the critical path; a fold puts a serial reduction in front of one branch on
+  every byte, and the vector form adds four GPR→SIMD transfers to gather states the
+  table loads already produced in general registers.
+
+  The two bundle arms run verbatim bodies rather than the flag-driven one, which is
+  not duplication left untidied. Parameterizing them was the first attempt, and it
+  moved the twelve-lane slim arm 15% while leaving every four-lane arm alone: one
+  hoisted loop bound and a cursor bump moved across the match test were enough,
+  because at the widths that spill, where a register lands is the result. A rung
+  that measures codegen cannot share a body between the thing it measures and the
+  thing it measures against.
+
+  No production behavior changed - the walk was already the fastest arm, and now the
+  comment above it cites the decomposition rather than one bundled number.
+- The artifact home resolved against the working directory: `.gist` wherever you
+  happened to be when you typed the command. That satisfies the one invariant
+  anybody had written down - two checkouts cannot collide, which is all
+  `socketBindingPath` ever needed - and quietly breaks the one nobody had. A
+  search from `services/ai` and a search from the tree root are the same corpus,
+  and they were building two indexes, running two daemons, and each paying a cold
+  walk the other had already paid for. Nothing reported this, because both answers
+  are correct; you just never got the warm one.
+
+  The sharper edge was the socket. `gistd.sock` landed in whatever source
+  directory was current, and a file watcher that cannot watch a unix socket -
+  chokidar's `fs.watch` throws EUNKNOWN out of a `process.nextTick`, which is not
+  catchable from where you'd want to catch it - takes a dev server down with it
+  mid-session. The workaround everyone reached for was pinning `GIST_DIR` to one
+  absolute path, which fixes the socket by making every checkout on the machine
+  share one home, so every repo but the pinned one goes permanently cold. Trading
+  a crash for a silent deoptimization is not a fix.
+
+  The home belongs to the TREE now. `home.seek` climbs from the working directory
+  and takes the first of: an artifact directory already sitting there - a
+  placement is a decision, and adopting it is how a nested workspace opts out -
+  then a checkout boundary, where a `.git` FILE counts exactly like a `.git`
+  directory because a worktree is still a checkout. Finding neither inside the
+  climb ceiling it stays where it stood, which is the right answer for a tree that
+  is no checkout at all. `GIST_DIR` still wins outright, so a pinned setup is
+  unaffected until it stops pinning.
+
+  `seek` takes a directory handle rather than reading the process's cwd, so it is
+  a question you can ask about a directory instead of about the program - which is
+  what let the suite prove the property that matters by comparing where two
+  answers LAND (`realpath` through real directories) instead of comparing two
+  strings, which would only restate the arithmetic the answer already did. The
+  charter walk one tier up was doing the same climb with its own copy of the
+  prefix builder and the boundary probe; it now shares this one, so a charter and
+  the `.gist` beside it can no longer disagree about which checkout they are in.
+- The examples still carried names lifted from the private corpus: wallet services,
+  session stores, backend paths, and the actual packages those snippets happened to
+  search. That made a public toolkit read like a window into one company's tree.
+
+  The examples now live under Acme. API names, package identity, measured benchmark
+  probes, and frozen evidence stay untouched; only illustrative vocabulary moved.
+- The import contract moved to `charter.zone` at the repository root, out of the
+  `contract/` drawer and out from under the package's own name.
+
+  Two things were wrong with the old spelling. A contract governs the directory it
+  sits in, so a folder holding one page bought nothing - the manifest, the
+  formatter config, and the CI config all already live at the root, and this
+  belongs beside them. And naming it after the package spent the filename on a
+  third copy of a name that is already on the file's first line and already in the
+  path, which meant every repository in the ecosystem called the same kind of
+  document something different.
+
+  `charter.zone` is that one name. Nested packages take a role name instead -
+  `kernel.zone`, `service.zone` - because there the path already says which one it
+  is. Identity was never in the filename: the `package` block is what every
+  verdict, every `--package` filter, and every workspace lookup reads, so nothing
+  downstream can tell the two spellings apart. Needs `zoning` 1.3.1, which is
+  where a contract at a package root is first discovered; the pin moves with this.
+- The no-match hint channel renders probed evidence now, not the pattern's spelling.
+
+  `gist -n 'KEY_THREAD_ID|__all__|globals\(\)' attrs.py` used to answer with three
+  suggestions, and all three were wrong. `-i` because the pattern has uppercase, on
+  a file holding no case variant of any branch. `-F` because `\(` contains a
+  metacharacter, when the backslash next to it is what makes it literal. `-uu`
+  because gitignored files were excluded, on a path the caller had named
+  explicitly. The one fact worth saying - the string is in `attrs.gen.py`, one
+  directory entry over - was not sayable, because every line on this channel was a
+  pure function of the pattern text and a pure function of the pattern text cannot
+  know whether its advice helps.
+
+  `Shape` is still what the query says. `Evidence` is what the corpus says, and the
+  renderer only reads the second. The `-i` line is now a counterfactual: the
+  caseless match runs over the same resident bytes, and `caseless_dead` retires the
+  suggestion when it also finds nothing, which is where most of the old noise
+  lived. A dead literal reports where it stopped being alive rather than that it is
+  absent, since `KEY_T` is here on 2 lines locates a rename to the character. Each
+  branch of an alternation is probed on its own, so a bundle of three questions no
+  longer collapses into one answer. And scope-versus-corpus goes to a new
+  `quarry/witness.zig`, which asks the trigram index the walk already prunes with
+  and then reads the candidates back to confirm them - so "try a wider scope"
+  carries a scope to widen to, and never names a file that has since stopped
+  holding the bytes.
+
+  The probes ride bytes the run already paid for, on a run that already came back
+  empty, and the index side is capped at a handful of confirming reads. Every arm
+  fails open independently: no index, an unreadable candidate, or a scope too large
+  to materialize drops its own hint and leaves the others standing. Tested as
+  rendered bytes over hand-built corpora, one case per claim, plus the inverse
+  cases that must stay silent - a caseless retry that would find nothing, a literal
+  with no live prefix, a scope that really does hold every branch.
+- The resident session now prunes the half of its walk that nothing was pruning.
+
+  A warm answer walks two sets: the base mirror, and the overlay — every file
+  edited or created since the index was built. Giving warm the cold tier's cover
+  plan and crest sieve fixed the base half and left the other one visited in full,
+  so the two halves of one walk were deciding what deserves to be read by
+  different rules.
+
+  The index genuinely cannot speak for overlay docs — they changed since the
+  build, which is exactly what the postings no longer describe. The crest sieve
+  can, and this is the first place warm prunes something cold cannot. Cold's ρ(d)
+  vectors are persisted, so its oracle must refuse any file whose timestamps fail
+  to prove it unchanged; and having read such a file, cold may as well search it.
+  A resident overlay entry inverts that: `readDocOwned` already holds the bytes
+  and already scans them once for the first-NUL offset, so ρ(d) costs a second
+  pass over a body in cache, 32 B held, and then amortizes over later queries. It
+  is `crest.crest`, the same call the persisted sidecar's builder makes per
+  document, so a resident vector and the on-disk one for the same bytes cannot
+  drift into disagreeing about ρ(d).
+
+  Three faces get it, because the sieve now rides `Candidates` instead of being
+  dropped once the base ids were compacted: the `-l`/`-c` fold, the doc gather
+  behind the lines renderer and the FFI record stream, and `--rank`. Under `-v`
+  the rule is deliberately different — a pruned overlay doc is still FOLDED, since
+  every line it holds is selected; it is merely not SCANNED, the invert twin of the
+  `is_cand` short-circuit the base walk already took. Skipping it outright would
+  lose real output, so that is the case the new test mutates to prove it fails.
+
+  MEASURED HONESTLY: this is a consistency fix, not a speedup. Against the
+  previous binary over 67.5 MiB of real source, at overlay sizes from 0 to 1000
+  files, scoped and rootless, it is a coin flip — 20 of 40 interleaved pairs, a
+  1.009x median ratio — and the reconcile that now computes ρ(d) per changed file
+  is unmoved within the same noise. The reason is structural and worth writing
+  down: the overlay is BOUNDED by construction. It holds the mutation set since
+  the last build, and a divergence large enough to matter makes the session reload
+  or decline rather than accumulate, so the sieve can only ever save the scan of a
+  modest number of documents — well under the noise floor of process spawn plus
+  the freshness walk. What is proven is correctness: a mutation-tested unit test
+  in both directions, and byte-parity with both the previous binary and the
+  `--no-index` live oracle at every overlay size tried.
+
+  Separately, the no-index tier stopped writing a candidate it was about to throw
+  away. `tier=none` — the literal-free class repetition the trigram index concedes
+  entirely — used to enumerate a u32 per document and then compact the array in
+  place, one wasted write per document on the exact path the sieve exists for.
+  Enumeration and sieve are now one pass. The allocation is still the corpus-sized
+  upper bound (the survivor count is not known until the walk ends); what shrinks
+  is the traffic through it. Both `.index` trace lines are emitted exactly as
+  before, so the grammar the certificate reads is unmoved.
+- `Dfa.patternsAt` answered "which patterns does this match state accept" by
+  scanning `pat_runs` - the (bound, mask) pairs the freeze emits - linearly per
+  call. The encoding is right for the wire, where equal pattern sets are
+  contiguous and the table serializes as a handful of pairs, and wrong for the
+  ask: a multi-voice `Munch` calls it on every accepting state of every byte,
+  so the scan sat inside the innermost DFA loop of every anchored match.
+
+  The runs are now the wire encoding only. `freeze` keeps the dense per-state
+  mask row it already had, `Dfa` carries it as `pats`, and `patternsAt` is one
+  bounds check and one index. A reader inflates the runs back to the dense row
+  on thaw, refusing non-monotone bounds as the corruption they are; a
+  single-pattern voice, which has no runs at all, keeps its zero-cost
+  `match_hi` answer.
+
+  Measured from the consumer that found it (the joints parser's lexer, where
+  the scan was 21% of a cold cpp parse): 92.8 to 82.3 ns/byte on a 129 KB
+  corpus, with the loop-hoist landed in the same pass.
+- `Munch`'s anchored walks picked a transition table per byte: `trans_fin` for
+  the final position, `trans_in` everywhere else. The choice is a function of
+  the position alone - it flips exactly once, at the end - and it was spelled
+  as a conditional inside the per-byte loop, a branch the predictor mostly wins
+  and still pays for on every one of the megabytes a corpus scan feeds through.
+
+  The loop now runs `trans_in` to the second-to-last byte and handles the final
+  byte once, peeled out below it with `trans_fin` - same states, same accepts,
+  same answers, one fewer question per byte. `reach` and `first` each carry the
+  split, and the final table's contract is unchanged: it resolves `$`, and is
+  correct only on the true last byte of the caller's slice.
+- `docMatchDense` - the multi-lane DFA walk behind every no-prefilter scan - gave
+  each of its four lanes a LINE and advanced them in lockstep to the shortest lane's
+  line end. Lines are independent in the per-line model, so that carve is the
+  obvious one, and being obvious is most of why it lasted. Its step size is a
+  minimum over four line remainders, which makes the walk hostage to a distribution:
+  on lines of identical length the minimum is the whole line and the carve costs
+  nothing, and on the line lengths of real source it is 22.5 bytes and often far
+  fewer. A burst that short never gets four dependent load chains in flight before
+  it drains them again, which is the single thing a lockstep walk exists to do.
+
+  A lane owns a contiguous REGION now, cut at a line boundary. Matches never cross
+  `\n` and this scan answers only whether some line matches, so the document can be
+  read in any order; `\n` is handled where it is met, resolving `$` through
+  `trans_fin` off the `prev` the body already keeps and resetting to `start`. The
+  lanes never have to agree about anything, so there is no minimum, no per-burst
+  lane-end test, no `memchr` to find a line's end before the walk can start it, and
+  no reseat. Two whole-document short-circuits that the per-line seed re-tested at
+  every line - a start state that already accepts, and the empty-line case - are
+  decided once. `seedLine` and its `Seed` union are gone with the carve that needed
+  them.
+
+  Measured on the `burst` rung across both document geometries: 1.52-1.59x on every
+  source-geometry row (0.5661 -> 0.3891 ns/byte where the automaton wanders), and
+  1.10-1.16x on the uniform rows where it wanders. It loses ~1.21x in exactly one
+  place - a parked automaton reading lines of identical length, where the old
+  carve's bookkeeping was already amortized to nothing and the new per-byte `\n`
+  compare is pure cost. Both carves stay on the ladder so that stays visible. The
+  rung that would close it is folding `\n` into the transition table as a reset
+  column, which needs `freeze` to own the column.
+
+  Equivalence is not argued: the doc-level DFA-vs-Pike differential fuzz passes, and
+  the rung's own mutation sweep checks every arm against the scalar oracle and the
+  shipped `docMatch` on thousands of mutated documents per row.
+- `math.minterm` - the coarsest partition of a scalar line that a family of
+  interval sets cannot tell apart. Two scalars belong together when every set in the
+  family agrees about both, so a consumer that asked the family `n` questions per
+  input asks the partition one. The blocks are the atoms of the Boolean algebra the
+  family generates: its minterms.
+
+  This is not new code so much as code that was in the wrong place. The linear
+  engine's symbolic tier had been carrying it as `alphabet.zig`, specialized to
+  `u21` and to 512 predicates, sealed behind the regex facade where nothing else
+  could reach it - even though the algorithm knows nothing about regular
+  expressions, characters, or Unicode. It is interval arithmetic. So it moved to the
+  floor as `Space(Scalar, top, capacity)`, and `alphabet.zig` is now the three-line
+  adapter that picks Unicode's numbers and keeps the one genuinely regex-shaped
+  piece, interning a `ByteSet`. The regex seal is untouched and no zone variance was
+  needed, which is the test of whether a thing was actually general: a lexer
+  generator's character classes want the same partition, and now they can have it.
+
+  The construction refuses the textbook O(2ⁿ) of intersecting every subset of the
+  family. Every set's endpoints become open and close events on one line, sorted
+  once; between two consecutive endpoints the covering set is constant, so each gap
+  is an atom whose label is the live set of sets, and atoms sharing a label are the
+  same block. The label *is* the block's identity, so the partition arrives minimal
+  rather than minimized afterwards, at O(B log B) in endpoints.
+
+  Both ceilings now refuse instead of wrapping. Too many sets for the signature word
+  and too many minterms for a `Mint` to name are both `error.Oversized` - one member,
+  because that is one fact and the two bounds checks are only where it got noticed -
+  mapped by the symbolic tier onto the `too_large` decline it already had, where the
+  previous code reached a `@intCast` and would have panicked on a pattern wide enough
+  to overflow the predicate index. A partition too large to name is an error, not a
+  truncated one.
+
+  Tested against the definition rather than against a second implementation. Over
+  small spaces the oracle computes each scalar's membership signature by brute
+  force, then asserts the two things being a minterm partition means: two scalars
+  share a block if and only if their signatures are equal - stability in one
+  direction, minimality in the other. Over-splitting and under-splitting therefore
+  fail as separate assertions, which was confirmed by removing the interning step
+  and watching only the minimality half break. Randomized families, the top of the
+  space, empty and full sets, and the set-capacity boundary are checked besides.
+
+### Fixed
+
+- A daemon-served no-match reconstructs the full query shape, scope included.
+
+  The warm client re-derives a `Shape` to emit the same guidance the cold engines
+  do, and the constructor it called took the pattern, `-F`, and the resolved case
+  state - but not the roots, and not `-v`. So the identical query answered warm and
+  cold produced different stderr: cold knew the caller had scoped the search and
+  could offer to widen it, warm silently could not, and an inverted match got advice
+  written for a normal one. The information was sitting in the `Request` the
+  classifier had already parsed; it just was not being passed.
+
+  `shapeWarm` takes both, so the two tiers say the same thing about the same query.
+  This is what lets the new scope-versus-corpus sighting reach the warm path at
+  all - an evidence probe against roots that were dropped on the floor has nothing
+  to compare against.
+- A terminal carrying `\A` or `\z` was declined with the *size* reason, which told a
+  caller to raise a bound that would never admit it. It now has its own:
+  `IRGX_MUNCH_BUFFER_ANCHOR`.
+
+  The two are the opposite advice. `IRGX_MUNCH_STATES` is a budget - this build's
+  `max_states` stopped here, and a bigger one takes the terminal. A buffer anchor is
+  a wall: the position it asserts is not something an automaton determinized over the
+  pattern alone can see, so no budget admits it at any size. Reported as the former,
+  the honest response was to go raise a ceiling and try again, forever.
+
+  It also mattered more than it looks, because a slate is refused per terminal: a
+  lexer that logs its declines was being told to buy memory for a terminal it should
+  have been told to rewrite. And the rewrite is usually nothing - a munch scan is
+  already anchored at the offset the caller passed, which leaves `\A` redundant and
+  `\z` unsatisfiable, so the fix is to drop it.
+
+  Surfaced as `Why::BufferAnchor` (Rust), `Why.BUFFER_ANCHOR` (Python), and
+  `WhyBufferAnchor` (Go).
+- Anchoring the artifact home at the tree finished half a job. The artifacts were
+  now one per checkout, but what a query thought it was standing in was still the
+  directory it was standing in, so a search from `services/ai` read the tree's
+  index, decided it belonged to somebody else, and switched every accelerator off.
+  The whole point of the move was that a subdirectory search gets to ride the
+  tree's index, and it didn't.
+
+  Making the checkout the tree identity is what closes that, and it opens
+  something worse, because two coordinate systems now name the same file.
+  Everything persisted in the home - the trigram path table, the content shard's
+  document names, the directory-membership snapshot - is written relative to the
+  CHECKOUT. A walk emits paths relative to the WORKING DIRECTORY, because that is
+  what rg prints and output parity is not up for negotiation. So an index-keyed
+  lookup crosses between them, and a lookup that forgets does not fail loudly: it
+  asks for `notes.md`, finds a real doc for a real file, and that file is a
+  different one. Two callers spend that doc id on skipping a read and one spends
+  it on serving bytes, so the cost of forgetting is a wrong answer, not a slow
+  one - a subtree file that matches, elided because its namesake at the root
+  doesn't.
+
+  The offset between the two is `home.station`, and the rebase lives in the three
+  lookups themselves rather than at their call sites: the elide oracle's path
+  table, the content shard's, and the phantom snapshot's root resolve. Those are
+  the only doors into checkout coordinates, so above them nothing has to know a
+  coordinate system exists, and a new caller cannot forget. A search at the tree
+  root - the overwhelmingly common case - pays an acquire load and a length test.
+
+  Builds go the other way. A build is a statement about the tree, so
+  `corpus.enterTree` stands the process at the checkout root before it walks:
+  `gist index` from `services/ai` indexes the repository, exactly as it does from
+  the root, and names every file from the root. Without that it indexed the
+  subtree, wrote `notes.md` for a file the tree holds at `services/ai/notes.md`,
+  stamped the result with the tree's binding, and the next query at the root
+  faithfully tried to open a file that was never there - `No such file or
+  directory`, exit 2, on a tree where nothing was wrong. Roots are re-expressed
+  through the filesystem rather than by editing path text, resolved before the
+  move and relativized after, because a charter's roots already carry `../..` to
+  reach the tree and a lexical `..`-collapse answers wrong through a symlink.
+  An explicitly named root is still a scope; it just gets named from the tree, so
+  the same command means the same corpus wherever it was typed.
+- Every arm on the `burst` ladder was a reimplementation of `docMatchDense` written
+  inside the bench, and `ship` - the column that claims to describe production -
+  was one of them, picked by matching parameters. `burstAgrees` proved the arms
+  agree with the shipped `docMatch` about the ANSWER on thousands of mutated
+  documents. Nothing proved they agree about the COST, and they did not: the region
+  carve read 1.55x on this ladder against the bench's own `walkLanes`, and ~1.0x
+  when I built the real `gist` binary before and after and timed it on real files.
+  Two spellings of one algorithm are two programs, and the compiler is allowed to
+  treat them that way.
+
+  `prod` is now an arm that calls `Dfa.docMatch` itself. `ship` and the geomean are
+  measurements of the binary instead of labels on a copy, and every other column is
+  a mechanism priced against it - so a body that only beats its neighbors in this
+  file can no longer read as a body that beats the engine. On source geometry
+  `prod` is the fastest arm on every row (0.3808 ns/byte against the classed
+  four-lane baseline's 0.6187), which is the result the reimplementations were
+  mis-attributing to the carve.
+
+  The ladder also races the wrong automata. `Regex.compile` leaves `unicode` false,
+  and `gist` is Unicode-by-default for rg parity, so a slate row and the product
+  compile different machines from the same pattern text: `\w+X` is 3 states with a
+  byte-indexed mirror here and 318 states with no mirror there, `\w+\.\w+\(` is 635.
+  Only 6 of the 24 slate patterns reach `docMatchDense` in the product at all - the
+  literal, class-run, and rung tiers answer the other 18 first - and of those 6 only
+  2 have a mirror, so the population production actually sends this walk runs the
+  classed three-load path over tables that miss L1, at 0.78-0.88 ns/byte rather than
+  the 0.38 measured here. The rung currently skips a row with no mirror outright, so
+  it cannot see that population even in principle. `prod` closes the
+  same-algorithm-two-spellings gap; the population gap is recorded here and not yet
+  fixed.
+- The FFI tree and walk fixtures now take their process identity through the
+  platform portal. Windows ARM no longer sees Zig's process handle shim where a
+  numeric PID is required, and fixture names keep the same spelling everywhere.
+- The `-F` hint no longer fires on a pattern whose metacharacters are all escaped.
+
+  The trigger was `indexOfAny` over a metacharacter set, which is a substring test
+  and not a parse: `globals\(\)` contains `(` and `)`, so it was reported as having
+  regex metacharacters and the caller was told to retry with `-F` to search those
+  bytes literally. They already were literal. The backslash the test walked past is
+  the whole reason.
+
+  `activeMeta` scans with escape state instead, so a metacharacter only counts when
+  it is actually operating - and the field it feeds is named `active_meta` rather
+  than `has_meta`, because "has" is the question that was being answered wrong. The
+  same walk skips a bracket expression's interior, where a bare `(` is also just a
+  byte.
+
+  Pinned by cases the substring test passed and a parse must fail: fully escaped
+  metacharacters, one escaped and one live, an escaped backslash followed by a real
+  metacharacter (`\\.` does have an active `.`), and a class holding punctuation.
+- The `irgx` crate declared Apache-2.0 and carried none of it. The license text and
+  the NOTICE live at the repository root, and a `.crate` tarball cannot reach above
+  its own directory, so the crate shipped an SPDX string and nothing else. Section 4
+  of that license asks a redistributor for exactly those two files - and this NOTICE
+  is also where what the vendored archives are built from is credited, so the crate
+  that ships those archives was the worst place in the repository to be missing it.
+  The wheel was already correct; only the crate was not.
+
+  `LICENSE` and `NOTICE` are now committed beside `bindings/rust/Cargo.toml`,
+  byte-identical to the root pair.
+
+  `rust-toolchain.toml` stops shipping in the crate on the same pass. It pins 1.96.0
+  so this repository's contributors lint identically - no business of anyone building
+  the extracted crate, and it would have quietly overridden the 1.85 `rust-version`
+  the sources actually ask for.
+- The caliper's prefilter memo recognized a haystack by its base address, and an
+  allocator hands a freed block straight back - so two haystacks that never
+  coexisted could share a pointer, and the second inherited the first's answer.
+  `\bcat\b` reported no match in `a cat sat`.
+
+  The memo caches a claim about BYTES - *the first byte the prefilter admits at or
+  after `from` is at `at`* - and the walk spends it by skipping `[from, at)` as
+  provably matchless. Proven over other bytes it skips a real candidate, and the
+  forward jaw then finds nothing after it. That jaw's `none` is a verdict and not a
+  decline, so the span engine returns no match and the pattern is reported absent.
+  Nothing above it can catch that, because a wrong miss looks exactly like an
+  honest one.
+
+  It surfaced through the Python `PatternSet`, which is where the shape is easiest
+  to hit: a fresh set per subset, a temporary UTF-8 buffer per call, and CPython's
+  size-class free list handing the same block back. A candidate remembered at
+  index 3 of one text skipped the real one at index 2 of the next. The same walk
+  over the same bytes with fresh scratch answered correctly, which is what made it
+  read as a flake - it moved with the interpreter's allocation history rather than
+  with the pattern, so it landed on one Python version per run and a different one
+  the next.
+
+  The memo is now a local of the walk that reads it instead of state on the jaw, so
+  it cannot outlive the region it was proven over: `forwardEnd` pins one region and
+  one prefilter for its whole length, which is exactly as long as the answer stays
+  true. Being a local is what makes the stale read unrepresentable rather than
+  merely unlikely, and it drops the address and prefilter fields from the key,
+  since inside one walk both are constant by construction. The saving the memo
+  exists for is intact - it still collapses the candidate scan across the landings
+  of one glide run - and span walks measured neutral from adjacent matches out to
+  64 KB gaps.
+- The corpus walk stopped paying to hold files it had already refused.
+
+  `readMemberRaw` allocated a member's whole body from the worker arena and only
+  then asked `isBinary` whether it was a member at all. A refused body is never
+  handed back, and an arena cannot reclaim one allocation, so every binary file
+  the walk touched sat in memory for the rest of the build — read, judged, and
+  then carried anyway. On llvm-project that is 1,863 files and 74.3 MiB of bytes
+  that were dead the instant they arrived.
+
+  The verdict now comes from the window the rule actually reads. `isBinary`
+  inspects `binary_window` bytes and ignores the rest, so the window is the whole
+  rule rather than a cheaper approximation of it: the worker reads it into one
+  reusable 8 KiB buffer, and only an admitted file reaches `a.alloc`. An admitted
+  body is still one sized allocation and still one pass over the file — the window
+  is copied into place, not re-read — and a refused one now stops after 8 KiB
+  instead of reading to its end, so the walk does less IO as well.
+
+  MEASURED: index build over llvm-project (175,110 docs, 1926.3 MiB), interleaved
+  against a baseline differing in this file alone, three reps each — peak RSS
+  2487 → 2413 MiB by median, every rep inside 3 MiB of its own median. The load
+  phase's own peak falls 2131 → 2057 MiB. Both deltas are 74 MiB, which is what
+  the census of the corpus said to expect (1,863 binary files, 74.3 MiB) before
+  the change was written, so the number landed where it was predicted to land
+  rather than being explained afterwards. Wall time is a wash: 6685 → 6630 ms by
+  median, inside a spread the machine owns.
+
+  PROVEN IDENTICAL: `index.gist` and `paths.list` hash the same before and after
+  (md5 `9775cadb…` over 161,773,006 bytes and `4864e735…` over 19,439,260), so the
+  published index is the same bytes and not merely the same answers. A 12-pattern
+  query differential across the two indexes, from 15 files to 5,570, agrees on
+  every file list, and the loadpar/serial membership parity test still holds —
+  membership was never what changed, only when the allocation happens relative to
+  the decision.
+
+  NOT FIXED, and worth saying plainly: this is 3% of the build's peak. 1926 of the
+  remaining 2413 MiB is the corpus itself, held in anonymous memory because every
+  consumer — the trigram build, the crest sieve, the content shard — is handed the
+  whole `docs` slice after the walk has finished. That is the actual ceiling, and
+  it is untouched here. `GIST_TRACE=index` now closes the attribution it needed to
+  even state that: `loadpar` reports the arena capacity it reserved beside the doc
+  bytes it was asked to hold, so the load phase's peak can be read as corpus or as
+  bookkeeping instead of one number standing for both.
+- The parity gate reads all twelve committed engine archives now, and reads them on
+  the platform everyone here develops on. It was doing neither, and it reported
+  confidently either way.
+
+  Three faults stacked. `SHIPPED` matched `\birgx_\w+`, but Mach-O spells every
+  global symbol `_irgx_foo`, and `_` is a word character - so `\b` cannot match
+  between it and the `i`, and the pattern read NOTHING out of a darwin symbol table.
+  It still returned 98 of 100 by finding those names elsewhere in the file's bytes,
+  which is worse than finding none: a plausible number that named two present,
+  global, exported symbols as absent. The two it missed were the two the linker had
+  ICF-folded onto a shared address, so they carried no second spelling to be found
+  by accident.
+
+  Second, archives were keyed by filename. Go names its six for their platforms, so
+  that worked by luck. Rust puts six identically-named `libirgx.a` under
+  `vendor/<target>/`, and the key collapsed all six into one entry - five archives
+  unread and reported current. They are keyed by path now, which also says which
+  target is stale, the thing you need next.
+
+  Third, `contract/bindings.toml` asserted that only Go ships archives and that Rust
+  "genuinely cannot go stale this way". Rust vendors six and its `build.rs` PREFERS
+  them over a source build, so it went stale in exactly the way the comment denied,
+  on the default `cargo test` path, for as long as the gate was told not to look.
+  Rust declares its glob now, and the refresh command moved out of the reporter and
+  into each binding's own row - a gate that reports a stale archive while naming
+  another binding's script has told you half of it, and `rebuild` is required
+  wherever `archives` appears.
+
+  Each fix carries a test that was proven to fail without it.
+- The two `bench/rungs/sliver/` lanes can find the `gist` CLI again, and the walk-cost
+  pair they mint is measured over more than one corpus.
+
+  Both lanes pinned the binary at `<this repo>/zig-out/bin/gist`, which stopped existing
+  when the kernel split into four packages and `gist` took its CLI with it. The lane that
+  guards the walk's memory footprint therefore died on a missing-file traceback rather
+  than naming the binary it wanted, which is how a shipped win went a release without its
+  evidence being re-taken: `scale_resident.tsv` still argued from a pre-fix capture and
+  called the walk's overhead "an open optimization target ... until it is profiled" after
+  it had been profiled and closed twice over. `product.gist_cli` resolves `$GIST_BIN`,
+  then the sibling checkout's release build, then `PATH`, and says which three it tried
+  when there is none.
+
+  `--root` now repeats, because the ratio turned out to be **corpus-shaped** and one tree
+  would let whoever picked it pick the verdict - ripgrep's own footprint swings further
+  between two real trees than gist's does. Over a zero-match `pgxpool` needle at 3 reps,
+  llvm-project (193,744 files) puts gist at 69.6 MiB maxrss / 57.0 MiB owned against
+  ripgrep's 33.8 / 31.8, an owned ratio of **1.79x**; the wider `.etc` tree (449,684
+  files) puts gist at 89.2 / 76.6 against ripgrep's 112.4 / 110.4, an owned ratio of
+  **0.69x** - gist owning less than ripgrep for the same answer. Layer J renders every
+  corpus and takes its headline from gist's **worst**, so the certificate cannot be
+  accused of shopping for a tree. Each corpus is its own row pair in the artifact, and a
+  ratio is computed from the cells as published, so dividing the two numbers in front of
+  you lands on the number printed beside them.
+
+  The narrative that pair supports is corrected with it. The certificate credited the
+  whole closure to dropping held file mappings, which moves `maxrss` and by its own note
+  left owned memory untouched; owned was closed separately, by the walk no longer
+  materializing every path it walks in the immortal per-worker arena. Both are now named
+  against the column each one moves. The `csearch`/`zoekt` rows in `scale_resident.tsv`
+  are stamped pre-fix rather than re-typed - refreshing them needs the multi-GB corpus
+  with rival indexes rebuilt over byte-identical files, and inventing the delta would be
+  worse than labeling it.
+- Windows walk paths now have one spelling from root to leaf. A caller-supplied
+  root and every discovered suffix are normalized to `/` when the walk is
+  materialized, and the Go and Rust bindings translate native paths at their
+  membership boundary. Iterating a walk and asking whether it holds that same path
+  can no longer disagree because one side used `\`.
+- `*.{js,ts}` now admits the same set through the C walk plane that it admits on a
+  command line. It used to be `IRGX_INVALID`, and the reason was nothing to do with
+  globs.
+
+  The brace expander was pure, nesting-aware and genuinely reusable, but it lived in
+  the argv value grammar and called the CLI's `oom()` at both of its allocation
+  sites. A function that can end its host's process is not one a library path may
+  call, so `walk.open` could not reach it and refused every alternation instead -
+  correctly, given it could not honor one, because a spec that quietly matched
+  nothing would have read exactly like a corpus that narrowed to nothing. Same
+  engine, same corpus, two different answers, purely because of which file the
+  expander happened to sit in.
+
+  It sits in `kernel/math/glob.zig` now, beside the matcher whose input it produces,
+  and it returns `error{OutOfMemory, BudgetExceeded}` instead of exiting. The CLI
+  keeps its loud death - `intent.Builder.addGlob` catches and calls `oom()` or
+  `die()` - which is the same division `charter.honorNoConfig` already draws for a
+  malformed charter: the kernel states the fault, the face decides it is fatal.
+
+  Expansion happens once, while the spec is materialized, not per candidate path,
+  which would have made a linear walk quadratic in the group's cartesian size. And
+  it is bounded, because `{a,b}{c,d}{e,f}…` multiplies: sixty-five bytes of spec
+  names 8,192 globs, so a host that accepted one from a stranger accepted an OOM.
+  1,024 patterns is the ceiling, plus a second one at 64 groups for `{a}{a}{a}…`,
+  whose product is ONE and which blows the stack anyway. Past either is
+  `BudgetExceeded` and never a shortened list - a truncated expansion answers about
+  a smaller corpus than the one asked about, and a glob is the least visible place in
+  a search for that to happen. It crosses as `IRGX_OOM`, with the fault name the
+  place a host learns the machine did not actually run out.
+
+  Nothing else got softer. An unclosed `{`, an unclosed `[`, and an unclosed `[`
+  hiding inside one alternative of a well-formed group are all still `IRGX_INVALID`.
+  The proof is a set comparison rather than a spot check: one walk spelled
+  `-g '*.{js,ts}'` and one spelled `-g '*.js' -g '*.ts'`, over a fixture holding
+  `app.tsx` as the near miss both have to reject, must list the same files.
+- `bench/certificate/mint/crest.sh` ran the crest proof against `CORPUS` — cd'd
+  there first, exactly as every other lane does, since a lane resolves its own
+  roots relative to wherever it stands — but then copied its evidence CSV from
+  `${KERNEL}/.local/crest-evidence/crest.csv`. `bench.zig`'s evidence writer
+  also resolves that path relative to its own CWD, so the two only agreed when
+  `CORPUS == KERNEL` (measuring the checkout against itself). Point
+  `GIST_CORPUS_ROOT` anywhere else — the certificate's own declared
+  `ecosystem-v1` corpus, the whole reason this script takes a `CORPUS` distinct
+  from `KERNEL` — and it silently copied whatever leftover file happened to sit
+  under the checkout from the last time someone ran `zig build crest` there,
+  never the run this mint had just watched pass.
+
+  It did not fail loud. The proof printed the right corpus (`corpus: 1241 files
+  · 22.4 MiB`), exited 0, and the script happily spliced a `crest.csv` from a
+  different corpus (760-ish self-checkout files) into a certificate whose header
+  claims 1241. Nothing downstream checks that the two numbers agree, so the
+  mismatch would have shipped as a plausible-looking but wrong Layer E — exactly
+  the failure mode the fail-closed proof exists to rule out, reintroduced one
+  layer up in the shell around it.
+
+  `CREST_RAW` now reads `${CORPUS}/.local/crest-evidence/crest.csv`, matching
+  where the binary that just ran actually wrote it.
+- `bindings/rust/build.rs` now watches the library file it links, so `cargo test`
+  after a `zig build` tests the engine you just built.
+
+  Every rung emitted `rerun-if-changed` for its *directory*, or for nothing at all in
+  the `IRGX_LIB_DIR` case. A directory's mtime does not move when a library inside it
+  is overwritten in place, which is exactly what rebuilding the engine does - so cargo
+  saw no reason to re-link, ran the tests against the previous archive, and reported
+  the result as the new one's.
+
+  It cost real time before it was found. A negated class and a dotall `.` were both
+  failing to match a newline in Rust while the Zig kernel demonstrably handled them,
+  which reads as an FFI bug and was investigated as one. There was no FFI bug; there
+  were two engines.
+
+  Worth stating plainly because of which rung it was missing from: `IRGX_LIB_DIR`'s
+  whole purpose is linking an engine you just rebuilt. The watch lives in the shared
+  `link` helper now rather than at each rung, so no rung can be the one that forgets,
+  and it names the library as a **file** - `libirgx.a`, `libirgx.dylib`, `libirgx.so`,
+  `irgx.lib`, `irgx.dll` - since that is the mtime that actually moves.
+- `irgx_find_all(re, "x\ny")` for the pattern `\n` now reports (1,2) under the PCRE2
+  arm, as the linear arm and every general-purpose regex library already did. It used
+  to report nothing, and the two arms of one library answering a two-byte question
+  differently is the defect - the header promises that a buffer verb "diff[ed]
+  against a general-purpose regex library" agrees with it.
+
+  The cause was not in PCRE2. It was the shadow gate, the linear over-approximation
+  that lets the backtracking engine only ever CONFIRM candidates. The shadow is
+  compiled once from the same knobs PCRE2 got, and `multiline` was among them - but
+  `multiline` does not name a language here, it names the GRAIN the gate scans at,
+  and the shadow is assertion-free by construction, so there is nothing in it for
+  `multiline` to move. Built at line grain, the gate could not find a `\n` in
+  anything, because no line contains its own terminator. It then answered a whole
+  BUFFER question with that, and gated the arm out of a buffer plainly holding one.
+
+  It is pinned to buffer grain now instead of mirrored. A gate handed a line still
+  scans that line, so nothing about the line model moved; a gate handed a buffer
+  scans the buffer. The direction is the safe one either way - a wider gate admits
+  more, and admitting more is what an over-approximation is allowed to do.
+
+  Only the buffer grain was ever wrong. Per line both arms already agreed, and agreed
+  with ripgrep, which refuses a literal `\n` outright and whose `-P` exits 1; `-U`
+  and `-UP` both matched before this and still do. That is also why it hid: every
+  CLI path was correct, and only a host calling the ABI directly could see it. The
+  regression test pins all three - the buffer answer, the line refusal it must not
+  break, and `\r`, which is not a terminator and fails the moment the gate stops
+  gating at all.
+- `irgx_needles_compile` seats every needle or none, and now says so. The header
+  described `*refused` as a count of the needles the machine declined, which reads as
+  a partial-set model: compile forty terms, get back some smaller working set, check
+  how many were dropped before trusting a negative answer. There is no such mode. A
+  needle the machine will not seat refuses the whole call, and `*refused` is written
+  only on that refusal, carrying the INDEX of the needle that caused it.
+
+  The wrong sentence was load-bearing, which is the part worth recording. Two of the
+  three bindings implemented the fiction rather than the ABI: Go grew a
+  `Needles.Refused() int` and Python a `Needles.refused` property, each reading the
+  slot on the SUCCESS path, where the engine never writes - so both were accessors
+  that could only ever return zero, and both were documented as the thing to check
+  before believing a miss. Go's tests then guarded on them, producing four
+  conditionals that could not fire and two that would have SKIPPED the assertion if
+  they had. Rust read the ABI instead of the prose and got it right.
+
+  Both accessors are gone. The refusal now names its culprit where a caller will
+  actually meet it: `irgx.error.index` in Python, the error text in Go. Go keeps its
+  own pre-crossing check for an empty needle - not for the message, but because
+  `unsafe.StringData("")` need not return a real address and pinning that panics
+  before the engine sees anything - and therefore passes NULL for a slot its own
+  guard has already caught, which the header permits.
+
+  `irgx_munch_*` and the slate verbs ARE genuinely partial. That distinction is the
+  reason the fiction was plausible, and it is why this fragment names the one plane
+  it applies to.
+- `powerset.Budget` now carries its two caps separately, so a lexer slate is no
+  longer refused by a size ceiling calibrated for a one-shot query.
+
+  The cost cap (`max_visits`) and the size cap (`max_states`) answer different
+  questions - how long an automaton takes to *find* versus how much memory it takes
+  to *hold* - and one enum member spelled both. A caller waiving the first silently
+  inherited the second, which is how `Munch` came to refuse an automaton needing
+  5,991 states against a 4,096 bound chosen for the differential oracles.
+
+  `Budget` is a struct with `visits` and `states`, and the seats are named
+  (`budgeted`, `unbudgeted`, `slate`); decl literals leave every existing call site
+  unchanged. `slate_states` is 8,192, the smallest round value admitting every
+  automaton measured to need it - a state-maxed slate at 179 byte classes is
+  11.7 MiB. Raised, not waived: the powerset is still bounded and a genuine
+  blow-up still declines.
+
+  Measured on the thirty-grammar tree-sitter corpus this admits exactly one
+  terminal that was refused before, markdown's HTML `entity_reference`, and makes
+  that grammar's slate build **2.85x faster** (1,060 ms to 372 ms) - because
+  `admit` bisects to name a refusing pattern, so one refusal cost six levels of
+  re-determinization that were built and thrown away. Grammars that never declined
+  are unchanged within noise.
+
+
 ## [2.0.0] - 2026-08-05
 
 ### Added
