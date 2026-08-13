@@ -128,6 +128,14 @@ jobs:
             <<<"${STEPS_VERSION_OUTPUTS_RESULT}")
           uv run --no-project --python 3.12 --with towncrier==25.8.0 \
             towncrier build --yes --version "$version"
+          # towncrier closes the new section with a blank line, and the blank
+          # line this file keeps under the marker rides down with the heading it
+          # used to precede — so the seam against the previous release lands with
+          # two of them, which MD012 rejects and every release so far has deleted
+          # by hand. Squeeze that one pair rather than vendoring a fork of
+          # towncrier's template: the rendering stays upstream's, and the rest of
+          # the file, fenced blocks included, is untouched.
+          python3 -c 'import pathlib, re; p = pathlib.Path("CHANGELOG.md"); p.write_text(re.sub(r"\n{3}(?=## \[)", "\n\n", p.read_text(), count=1))'
           # Against HEAD, not the index: towncrier stages its own work — it
           # adds the newsfile and retires each fragment with `git rm` — so a
           # bare `git diff` compares a tree that already matches the index and
