@@ -16,7 +16,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "irregex"
-version = "2.1.0"                                                                                                                          # x-release-please-version
+version = "2.1.1"                                                                                                                          # x-release-please-version
 description = "Linear-time regex engine for Python - no catastrophic backtracking, no ReDoS, with the native engine bundled in the wheel."
 # The long description is the repository's own README, lifted and link-corrected
 # at build time by `hatch_readme.py`. PyPI opens onto the project's front door,

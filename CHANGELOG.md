@@ -5,6 +5,117 @@ All notable changes to the `irregex` kernel (formerly `gist`; the gist CLI is it
 
 <!-- towncrier release notes start -->
 
+## [2.1.1] - 2026-08-13
+
+### Added
+
+- `tools/mint_artifacts.py`, and a `mint artifacts` job that runs it on the release
+  PR: the committed files carrying this package's version in their **bytes** are
+  regenerated when the bot bumps it, rather than by hand afterwards.
+
+  The bot rewrites every line carrying an `x-release-please-version` marker. Three
+  kinds of committed file state the version without carrying that marker, because
+  no line in them was typed by anybody:
+
+  - the **vendored engine archives** - twelve of them, build output, with the
+    version compiled into their string tables;
+  - the **oracle corpora** under each binding's `testdata/` - generated against a
+    linked engine, which records the version it linked;
+  - the **lockfiles** - resolver output, pinning this package's own name at
+    whatever its manifest declared the last time the resolver ran.
+
+  So the v2.1.0 PR bumped to 2.1.0 while twelve archives, two corpora, and two
+  lockfiles still described 2.0.0 - and nothing failed early. The archives carry
+  every symbol, so the parity gate's symbol lane passed; the first complaint came
+  from a Rust test asserting the engine it linked agrees with the crate it is part
+  of. Each artifact was then minted by hand, one red CI run at a time, and the
+  lockfile would have failed last of all, inside `cargo publish --locked`, after
+  the wheels had already gone out.
+
+  The tool discovers rather than lists, like the gate it sits beside: archives and
+  the command that rebuilds each come from `contract/bindings.toml`, a corpus names
+  its generator by lying beside it, and a lockfile names its package through the
+  manifest beside it. So a fourth binding is covered the day it commits an
+  artifact. `--check` reports staleness and touches nothing, which is what lets the
+  job skip installing a toolchain at all on a PR that is already current; after
+  minting it re-reads every artifact, because a rebuild that succeeds and emits the
+  same stale bytes is the one failure a mint cannot self-report.
+
+  Both of the jobs that maintain the release PR - this one and the changelog fold -
+  now run for as long as the PR is open, rather than only on the push where
+  release-please rewrote it. A `ci:` commit or a late fragment leaves the PR
+  untouched, and that used to skip them silently: the PR sat there unfolded and
+  unminted with nothing saying so, until the preflight refused to publish it. Both
+  are idempotent as a consequence - the mint reads what the artifacts say before it
+  installs anything, and the fold reports an already-folded branch rather than
+  handing towncrier a version it has already written.
+
+  A corpus is generated against the library **this tree** built, pinned rather than
+  left to the binding's own search order. That order honors an `IRGX_LIB` already
+  in the environment, so a maintainer pointed at a second checkout would otherwise
+  record that engine's version here - the same silently-wrong artifact, arrived at
+  from the other direction.
+
+### Fixed
+
+- The release PR is where a release is assembled: release-please writes the version
+  onto it, the fold folds the fragments into `CHANGELOG.md`, and the mint refreshes
+  the artifacts that carry the version in their bytes. Then main moves on, and none
+  of that work is rebased.
+
+  Folding deletes the fragments it folded. So the first commit on main to edit one
+  of those files puts the branch and its base in modify/delete disagreement - and
+  GitHub will not compute a merge ref for a conflicting PR, which means no
+  `pull_request` workflow runs on it at all. Not failing; not running. The PR sits
+  there with no verdict to show, `release-ready` can never appear, and the tag that
+  would carry the release has nothing to wait for. Worse, the pushes that cause it
+  are the ones release-please declines to notice: it rebuilt the branch only when
+  the release notes changed, and a `ci` or `docs` commit carrying a fragment writes
+  no note.
+
+  The branch is now rebuilt on every push while the PR is open (`always-update`,
+  which upstream documents for exactly this - "pull requests must not be
+  out-of-date with the base branch"). Both jobs that maintain the PR are idempotent,
+  so meeting a branch they already handled is a sentence rather than an error, and
+  each cancels a superseded run of itself rather than losing a push to it.
+- `release-please-config.json` named the package, and that one line is why no
+  release here has ever been cut by the bot that exists to cut them.
+
+  With `include-component-in-tag` off, release-please writes a standalone release
+  PR's body with no component in it, and names the branch
+  `release-please--branches--main` with no component either. Then, on merge, before
+  it will tag anything, it compares that empty component against
+  `component || package-name` - so a `package-name` here makes the two halves of
+  its own bookkeeping disagree permanently. Every merge logged
+  `PR component: undefined does not match configured component: irregex` and
+  returned without creating the tag or the release.
+
+  That is worse than a missed release, because it wedges: an untagged merged
+  release PR makes the *next* run abort before it opens anything, so the queue
+  stops until someone relabels the old PR by hand. v2.0.0 needed that label swap.
+  v2.1.0 needed the tag, the release, and the label, all typed by a person, and the
+  tag is what `release.yml` waits on - so nothing published until somebody noticed.
+
+  The name bought nothing back. With the component out of the tag, the tag is
+  `vX.Y.Z` and the release is titled `vX.Y.Z` whatever the package is called. The
+  config comment now says so, because the field looks harmless and reads exactly
+  like something a package config ought to declare.
+- `release.yml`'s preflight will not publish until `release-ready` is green on the
+  exact commit the tag names. That is the right gate, and it was given a quarter of
+  the time it needs.
+
+  The tag arrives within a minute of the release PR merging, and `release-ready`
+  aggregates the slate that runs on that merge commit: 31 minutes on `main` today,
+  and the check does not even appear in the API until the jobs under it finish. The
+  shared action's default patience is 15 minutes, so preflight polled for a check
+  that could not exist yet, gave up, and failed the release on a commit whose CI
+  went green shortly after. Nothing was wrong with the build - the release just
+  stopped waiting before its evidence arrived.
+
+  It now waits an hour, polling every 30 seconds, under a 75-minute job ceiling.
+  Still bounded, deliberately: a slate that is genuinely stuck fails the release
+  rather than publishing without a verdict.
+
 ## [2.1.0] - 2026-08-13
 
 ### Added
