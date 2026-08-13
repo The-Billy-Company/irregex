@@ -130,6 +130,13 @@ jobs:
     name: fold changelog
     needs: release-please
     if: needs.release-please.outputs.head != ''
+    # `always-update` rebuilds the release branch on every push to main, so two
+    # runs' folds can be in flight against the same ref at once — and the loser
+    # of that push is a red X on work the winner already did. Cancelled rather
+    # than queued: the survivor reads the branch as it is now.
+    concurrency:
+      group: fold-changelog-${{ github.ref }}
+      cancel-in-progress: true
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -225,6 +232,12 @@ jobs:
     name: mint artifacts
     needs: [release-please, fold-changelog]
     if: needs.release-please.outputs.head != ''
+    # Same reasoning as the fold, and more of it: this one holds a Mac for a
+    # quarter of an hour, so a superseded run is worth cancelling rather than
+    # letting it finish and lose the push.
+    concurrency:
+      group: mint-artifacts-${{ github.ref }}
+      cancel-in-progress: true
     # A Mac because two of the twelve archives are Mach-O, and per the note at
     # `build.zig`'s repack step those are packed by Apple's `libtool -static`:
     # Zig's own archiver leaves Mach-O members unaligned and ld64 rejects that in
