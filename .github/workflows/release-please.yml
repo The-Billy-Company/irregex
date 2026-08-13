@@ -63,9 +63,14 @@ jobs:
       # the release path entirely rather than granting it rights it cannot use.
       contents: read
     outputs:
-      # The JSON object of the currently open release PR — set only while one
-      # is unmerged. The fold-changelog job below is what actually reads it.
-      pr: ${{ steps.release.outputs.pr }}
+      # The branch of the open release PR, whether or not THIS run touched it.
+      # The action's own `pr` output is set only when it wrote something, so a
+      # push that leaves an existing PR alone — a `ci:` commit, or a new
+      # changelog fragment, neither of which changes the version — reported no
+      # PR at all and skipped both jobs below. The PR then sits open with
+      # fragments unfolded and artifacts unminted, and nothing says so until
+      # preflight refuses to publish it.
+      head: ${{ steps.target.outputs.head }}
     steps:
       # Exchange the App's signing key for an installation token scoped to this
       # repo, valid one hour. Fails loudly if the App is not installed here.
@@ -93,15 +98,38 @@ jobs:
           target-branch: main
           token: ${{ steps.app-token.outputs.token }}
 
+      # Asked of the repository's state rather than of what this run happened to
+      # do. `autorelease: pending` is release-please's own marker for the PR it is
+      # holding open — the same label its next run reads to decide whether a
+      # release is outstanding — so this is its bookkeeping, not a branch name
+      # guessed from a naming convention.
+      - id: target
+        name: Which branch the open release PR is on
+        env:
+          PR: ${{ steps.release.outputs.pr }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          head=$(python3 -c 'import json, os; print(json.loads(os.environ["PR"] or "{}").get("headBranchName", ""))')
+          if [ -z "$head" ]; then
+            head=$(gh pr list --repo "$REPO" --state open --label 'autorelease: pending' \
+                     --json headRefName --jq '.[0].headRefName // ""')
+          fi
+          echo "head=${head}" >> "$GITHUB_OUTPUT"
+          echo "release PR branch: ${head:-<none open>}"
+
   # Folds changelog.d/ into CHANGELOG.md on the release PR's own branch, at the
-  # exact version release-please just bumped `build.zig.zon` to on that
-  # branch — read back through the shared `version` command rather than
-  # re-parsed here, so this job agrees with the preflight by construction
-  # instead of by two authors keeping two regexes in sync.
+  # version `build.zig.zon` declares there — read back through the shared
+  # `version` command rather than re-parsed here, so this job agrees with the
+  # preflight by construction instead of by two authors keeping two regexes in
+  # sync. It runs for as long as the PR is open, not only on the push that
+  # created it: a fragment can land days later, and folding it then is the whole
+  # point of the job.
   fold-changelog:
     name: fold changelog
     needs: release-please
-    if: needs.release-please.outputs.pr != ''
+    if: needs.release-please.outputs.head != ''
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -117,7 +145,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           token: ${{ steps.app-token.outputs.token }}
-          ref: ${{ fromJson(needs.release-please.outputs.pr).headBranchName }}
+          ref: ${{ needs.release-please.outputs.head }}
           persist-credentials: false
 
       - id: version
@@ -166,7 +194,7 @@ jobs:
         env:
           STEPS_VERSION_OUTPUTS_RESULT: ${{ steps.version.outputs.result }}
           APP_TOKEN: ${{ steps.app-token.outputs.token }}
-          HEAD_BRANCH: ${{ fromJson(needs.release-please.outputs.pr).headBranchName }}
+          HEAD_BRANCH: ${{ needs.release-please.outputs.head }}
 
   # Regenerates the committed artifacts that carry the version in their bytes
   # rather than on a line: the vendored engine archives, the oracle corpora, and
@@ -181,7 +209,7 @@ jobs:
   mint-artifacts:
     name: mint artifacts
     needs: [release-please, fold-changelog]
-    if: needs.release-please.outputs.pr != ''
+    if: needs.release-please.outputs.head != ''
     runs-on: ubuntu-latest
     # Twelve cross-compiled archives plus two corpora; a minute or two in
     # practice, and a ceiling well under the six-hour default so a hung
@@ -200,7 +228,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           token: ${{ steps.app-token.outputs.token }}
-          ref: ${{ fromJson(needs.release-please.outputs.pr).headBranchName }}
+          ref: ${{ needs.release-please.outputs.head }}
           persist-credentials: false
 
       # The whole job hangs off this answer, and the answer is cheap: reading
@@ -291,5 +319,5 @@ jobs:
             "HEAD:${HEAD_BRANCH}"
         env:
           APP_TOKEN: ${{ steps.app-token.outputs.token }}
-          HEAD_BRANCH: ${{ fromJson(needs.release-please.outputs.pr).headBranchName }}
+          HEAD_BRANCH: ${{ needs.release-please.outputs.head }}
           VERSION: ${{ fromJson(steps.version.outputs.result).version }}

@@ -30,6 +30,12 @@ job skip installing a toolchain at all on a PR that is already current; after
 minting it re-reads every artifact, because a rebuild that succeeds and emits the
 same stale bytes is the one failure a mint cannot self-report.
 
+Both of the jobs that maintain the release PR - this one and the changelog fold -
+now run for as long as the PR is open, rather than only on the push where
+release-please rewrote it. A `ci:` commit or a late fragment leaves the PR
+untouched, and that used to skip them silently: the PR sat there unfolded and
+unminted with nothing saying so, until the preflight refused to publish it.
+
 A corpus is generated against the library **this tree** built, pinned rather than
 left to the binding's own search order. That order honors an `IRGX_LIB` already
 in the environment, so a maintainer pointed at a second checkout would otherwise
