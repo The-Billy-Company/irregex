@@ -5,6 +5,74 @@ All notable changes to the `irregex` kernel (formerly `gist`; the gist CLI is it
 
 <!-- towncrier release notes start -->
 
+## [2.1.2] - 2026-08-17
+
+### Added
+
+- A `note` fragment type, for the paragraph that frames a release rather than an
+  entry in it. Towncrier renders types in declaration order and `note` is
+  declared first, so it lands above `### Added` with no template fork and
+  retires itself on fold like any other fragment.
+
+### Fixed
+
+- A version bump moved `Cargo.toml` and left the lockfile behind, and `--locked`
+  is the flag whose whole job is to refuse to fix that. A lockfile records the
+  version of every package it locks, including the one it sits next to, so the
+  release bumping the manifest through its `x-release-please-version` annotation
+  put the two a version apart. `cargo publish --locked` then stopped with "cannot
+  update the lock file because --locked was passed", which is correct behavior and
+  a wedge: nothing about it improves on a retry, so the crate never reaches the
+  registry no matter how many times the release runs.
+
+  `gist` hit it on v1.2.0 with the wheel and the Go module already published, so
+  the tag existed and the crate did not. The committed lock was stale in the tree
+  too, which means `cargo build --locked` in `bindings/rust` was already failing
+  for anyone who tried it.
+
+  The publish now re-pins the lock's own version from the manifest beside it
+  first, hermetically - a `version = "..."` rewrite and nothing else, so no
+  third-party pin can move and the graph being published is still the one that was
+  tested, which is the reason `--locked` is there at all. `cargo update
+  --workspace` was the first attempt and the wrong one: it resolves the whole
+  graph, so it wants a sibling `irregex` checkout for the `irgx` path dependency
+  that this job has no reason to make, and relate's v1.1.0 failed exactly there
+  while `cargo publish --locked` had never needed it.
+- CI cancelled its own evidence on `main`. The concurrency group keyed on the ref
+  and cancelled unconditionally, which is right on a branch whose runs are drafts -
+  a force-push should kill the run it obsoleted rather than race it - and wrong on
+  `main`, where every commit is a candidate to be released and the run is the only
+  record of whether it may be.
+
+  `release.yml` will not publish a tag unless `release-ready` concluded success on
+  that exact commit, which is the check that makes a green release meaningful. But
+  `release-ready` gathers its dependencies under `if: always()`, so it reports on
+  jobs that never finished as readily as on jobs that failed. So the next push to
+  main revoked the previous commit's verdict: a still-running job ended
+  `cancelled`, `release-ready` read that as a failure, and preflight declined a
+  release with nothing wrong with it. On a tree several people push to, that is
+  not a rare race; it is most releases, and it looks exactly like a real test
+  failure until you notice the conclusion is `cancelled` rather than `failure`.
+
+  Caught it on `gist`, whose v1.2.0 tag was green on the pull request and then lost
+  the release commit's `python (3.14)` job to three docs commits landing behind the
+  merge. Every repository in the family had the same line, so every one has the
+  same fix: pushes to main no longer cancel each other and each commit keeps its
+  own answer, while pull request branches still supersede as before.
+- The GitHub Release page now carries the changelog section it names. Two
+  changelogs were produced per release and only one of them was towncrier's:
+  `skip-changelog` hands `CHANGELOG.md` to the fragments, but that key governs
+  the *file*, and composing the release **body** is a separate path inside
+  release-please that kept running off conventional-commit subjects. So the page
+  people land on was assembled from commit subjects while the notes someone
+  wrote sat in the changelog - irregex v2.1.1 published two lines against a
+  folded section of a hundred and ten, because eleven of its thirteen commits
+  were `ci:` or `docs:` and both are hidden. A `notes` job now posts the folded
+  `## [X.Y.Z]` section over that body on tag, waiting for the release to exist
+  rather than assuming it already does, and truncating at a whole bullet under
+  GitHub's 125,000-character body ceiling rather than failing on a tag that is
+  already immutable.
+
 ## [2.1.1] - 2026-08-13
 
 ### Added
