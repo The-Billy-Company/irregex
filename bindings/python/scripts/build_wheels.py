@@ -17,6 +17,17 @@ Every target names an explicit minimum platform version in its Zig triple, and
 its wheel tag says the same number. Letting Zig inherit the host's macOS SDK
 would produce a library that refuses to load on an older machine than the one
 that built it, under a tag promising it would.
+
+**The native target produces two wheels, not one.** Every target gets the
+portable ``py3-none-<tag>`` wheel, which is ctypes over the stdlib and installs
+on any interpreter. The one target this machine *is* additionally gets a
+``cp312-abi3-<tag>`` wheel carrying the C accelerator, which needs the target's
+own Python headers and so cannot be cross-built. pip prefers the accelerated
+wheel wherever it fits and falls back to the portable one everywhere else - a
+free-threaded build, PyPy, an architecture no release machine runs - so
+publishing both is what makes the accelerator an optimization rather than a
+narrowing of who can install this at all. Run the script once per architecture
+you want accelerated; the portable half of the matrix still comes from one host.
 """
 
 from __future__ import annotations
@@ -170,7 +181,7 @@ def build_library(target: Target, prefix: Path) -> Path:
     return built
 
 
-def build_wheel(target: Target, library: Path, outdir: Path) -> None:
+def build_wheel(target: Target, library: Path, outdir: Path, *, accel: bool = False) -> None:
     env = os.environ | {
         "IRGX_PREBUILT_LIB": str(library),
         "IRGX_WHEEL_PLATFORM": target.tag,
@@ -179,6 +190,10 @@ def build_wheel(target: Target, library: Path, outdir: Path) -> None:
         # but it keeps this matrix the single table: a source build triggered
         # with the same environment resolves the same floor.
         "IRGX_ZIG_CPU": target.cpu,
+        # Never `auto` from here. Each wheel this script makes is one of the two
+        # deliberately, so a machine that quietly lost its compiler publishes a
+        # failure rather than a second portable wheel wearing the same name.
+        "IRGX_ACCEL": "1" if accel else "0",
     }
     if shutil.which("uv"):
         command = ["uv", "build", "--wheel", "--out-dir", str(outdir)]
@@ -236,6 +251,12 @@ def main() -> int:
             with tempfile.TemporaryDirectory(prefix=f"irregex-{target.name}-") as staging:
                 library = build_library(target, Path(staging))
                 build_wheel(target, library, outdir)
+                # One library, two wheels: the accelerator is a second file
+                # beside the same `.dylib`/`.so`, so the Zig build above is not
+                # paid twice.
+                if target is here:
+                    print(f"--- {target.name}: accelerated wheel ---", flush=True)
+                    build_wheel(target, library, outdir, accel=True)
         except (subprocess.CalledProcessError, RuntimeError, OSError) as exc:
             print(f"FAILED {target.name}: {exc}", file=sys.stderr)
             failures.append((target.name, str(exc)))

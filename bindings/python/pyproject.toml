@@ -106,6 +106,12 @@ packages = [ "irgx" ]
 # The library is placed by the hook rather than read out of the source tree, so
 # a stale copy from a previous target can never be picked up by accident.
 artifacts = [ "irgx/lib/*" ]
+# The accelerator is placed the same way, and this is what makes that true. A
+# developer who ran `scripts/build_accel.py` has one sitting in the tree; without
+# this line it would be swept into every wheel, including the portable one whose
+# whole promise is that it has no compiled extension in it. The hook's own build
+# arrives by `force_include`, which outranks this.
+exclude = [ "irgx/_accel*" ]
 
 [tool.hatch.build.targets.wheel.hooks.custom]
 path = "hatch_build.py"
@@ -113,6 +119,7 @@ path = "hatch_build.py"
 [tool.hatch.build.targets.sdist]
 include = [
   "irgx",
+  "accel",
   "tests",
   "scripts",
   "hatch_build.py",
@@ -132,6 +139,13 @@ dev = [ "pytest>=8.0", "cffi>=1.17", "hatchling>=1.27" ]
 
 [tool.pytest.ini_options]
 testpaths = [ "tests" ]
+# `--strict-markers` so `-m "not accel"` cannot quietly select nothing because
+# somebody typed the name wrong. The mark itself means "needs both transports
+# resident at once", which is only true where an accelerator was compiled; the
+# ctypes-only CI pass deselects it rather than letting it skip, since this
+# suite's gate treats any skip as a tier that went dark.
+addopts = "--strict-markers"
+markers = [ "accel: requires the native accelerator alongside ctypes" ]
 
 [tool.ruff]
 line-length = 100
