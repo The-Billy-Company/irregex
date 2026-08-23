@@ -12,8 +12,10 @@ project's name, the module is the short one you type all day.
 
 That is the whole install. There is no compiler step, no Zig toolchain, and no
 separate binary to put on your PATH. The engine is written in Zig and ships as
-a shared library inside the package; Python talks to it through `ctypes`, which
-is in the standard library.
+a shared library inside the package, and Python reaches it two ways depending on
+what pip found for your interpreter - see [How it talks to the
+engine](#how-it-talks-to-the-engine). Either way there is nothing to configure
+and nothing to install alongside it.
 
 ## Why You Might Want It
 
@@ -374,6 +376,47 @@ Set `IRGX_LIB` to the path of a shared library to load that one instead of
 the bundled copy. It names a file, not a directory, and a path that is not
 there fails loudly at import rather than silently falling back.
 
+## How It Talks to the Engine
+
+Nothing in this section changes an answer. It is here because on a short string
+the interesting number is not how fast the engine matches but how much it costs
+to ask it, and that is worth being honest about.
+
+The floor is small: `irgx_is_match_in` runs in about 13 ns and `find_all` in
+about 66 ns on a short text. Calling either through `ctypes` costs 300-600 ns on
+top, because ctypes converts every argument, allocates a buffer object per call,
+and builds the result out of Python objects one at a time. On a megabyte that is
+invisible. On a 17-byte string it is most of the wall clock.
+
+So the twelve verbs that get asked *once per text* - `search`, `finditer`,
+`is_match`, the group spans behind `Match`, the set / needle / munch scans, and
+the two whole-answer verbs behind `findall`, which walk the matches, run the
+capture pass and build the finished list of texts in a single crossing - run
+through a small C extension when one is installed:
+
+```python
+from irgx import _engine
+
+_engine.native()  # the verbs answering natively; () means all ctypes
+```
+
+It takes your `str` directly, reads the UTF-8 CPython already keeps for it
+rather than encoding a copy, keeps small span buffers on the C stack, and builds
+the tuples itself. Same engine, same answers, 5-8x less overhead on a short
+text: reading three groups out of a match goes from ~1.4 us to ~180 ns, a
+one-match `finditer` from ~1.1 us to ~190 ns. The margin narrows as the text
+grows, which is the point - the fix is to overhead, and overhead is most of what
+a short string costs. The ninety-odd other symbols - opening a handle, compiling
+a slate, describing the build - stay on ctypes, because a verb you call once per
+program is not worth C.
+
+**You do not need it, and you cannot end up without a working package.** Every
+one of those verbs has its ctypes implementation sitting beside it, the routing
+is per verb, and the fallback is what this package shipped before. Set
+`IRGX_NO_ACCEL=1` to decline it for a process. If you are developing against a
+checkout and want the fast path, `python3 scripts/build_accel.py` builds it in
+place; `--clean` removes it.
+
 ## Supported Platforms
 
 Wheels are built for macOS on arm64 and x86_64, Linux on x86_64 and aarch64
@@ -383,6 +426,15 @@ the same answers, and the suite runs on each of them rather than on one and by
 assumption on the rest. The wheels are platform-tagged, because they contain a
 native library; a wheel for the wrong platform will not install rather than
 failing at import.
+
+Most platforms get two wheels, and pip picks between them for you. The
+`py3-none-<platform>` one is the ctypes build and runs on any interpreter that
+can load the library at all. The `cp312-abi3-<platform>` one additionally
+carries the accelerator above; it is built only where the release machine *is*
+the target, since a C extension needs its target's own Python headers. pip
+prefers it wherever it fits and falls back to the portable wheel everywhere else
+- a free-threaded build, PyPy, a platform no release box runs. One abi3 binary
+covers 3.12 and every version after it.
 
 ## Searching a Codebase with It
 
