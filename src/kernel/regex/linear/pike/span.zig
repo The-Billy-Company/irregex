@@ -156,6 +156,20 @@ pub fn matchWindow(re: *const Regex, sim: *SpanSim, w: Window) ?Span {
         const sp = cr.nextSpan(line[0..to], w.from) orelse return null;
         return .{ .start = sp.start, .end = sp.end };
     };
+    // The required-literal gate. A match must lie inside `[w.from, to]`, so its
+    // required literal must too — no occurrence at or after `w.from` in the
+    // region proves this window holds no match, whatever the engines below would
+    // have walked to discover. A hit proves nothing and falls through: the
+    // literal can sit anywhere inside a match, so the position is not a start.
+    //
+    // Sited after the two reductions that DECIDE (a pure-literal alternation
+    // already scans by SIMD; a span-exact class run answers outright) and before
+    // the two that WALK. That keeps the cursor loop honest: each `next()` scans
+    // only from the previous match to the next literal occurrence, so a whole
+    // `find_all` pass adds one amortized SIMD sweep — while the final call, the
+    // one that proves no match remains, replaces a full automaton walk of the
+    // tail with that sweep.
+    if (re.gate) |g| if (g.find(w.region(), w.from) == null) return null;
     // The caliper: a forward leftmost-first table walk for the end, a backward
     // one for the start (`../caliper/`). It carries the patterns no reduction
     // above covers — the multi-segment shapes that are the whole reason `-o` is

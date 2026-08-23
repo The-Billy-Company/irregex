@@ -1021,3 +1021,99 @@ test "regex/classrun: multiline keeps \\n-crossing runs when the set admits them
     try std.testing.expect(!try bufMatches("[a-z]{6}", "abc\ndef"));
     try std.testing.expect(try bufMatches("[a-z]{6}", "abc\nqwerty"));
 }
+
+/// The gate's bytes, or null when the pattern yields none.
+fn gateOf(re: *const Regex) ?[]const u8 {
+    const g = re.gate orelse return null;
+    return g.bytes;
+}
+
+test "gate: a caseless pattern gets the literal the fold erased" {
+    const gpa = std.testing.allocator;
+    // Under `-i` the fold rewrites every literal into a class BEFORE the literal
+    // pass runs, so `required` is empty — this is the defect the gate exists to
+    // repair, and asserting it keeps the test honest about what it is testing.
+    var ci = try Regex.compileOpts(gpa, "ignore\\s+all", .{ .caseless = true });
+    defer ci.deinit();
+    try std.testing.expectEqual(@as(usize, 0), ci.required.len);
+    // Mined from the raw twin, ASCII-lowered, and caseless — never an
+    // equivalence, because the window may be a strict substring of the literal.
+    try std.testing.expectEqualStrings("ignore", gateOf(&ci).?);
+    try std.testing.expect(ci.gate.?.ci);
+    try std.testing.expect(!ci.gate.?.equiv);
+
+    // Case-SENSITIVE takes `required` itself, and borrows it rather than duping.
+    var cs = try Regex.compileOpts(gpa, "ignore\\s+all", .{});
+    defer cs.deinit();
+    try std.testing.expectEqualStrings("ignore", gateOf(&cs).?);
+    try std.testing.expect(!cs.gate.?.ci);
+    try std.testing.expect(cs.gate_bytes == null);
+
+    // No required literal ⇒ no gate, rather than a gate on nothing.
+    var none = try Regex.compileOpts(gpa, "[a-z]+", .{ .caseless = true });
+    defer none.deinit();
+    try std.testing.expect(none.gate == null);
+}
+
+test "gate: fold-escaping orbits are excluded, so no real match is pruned" {
+    const gpa = std.testing.allocator;
+    // `k` also matches KELVIN SIGN (U+212A) and `s` LONG S (U+017F) under the
+    // Unicode fold, so an ASCII gate spanning one of those bytes would look for
+    // a spelling a real match need not contain. `simd.foldClosedWindow` keeps
+    // the longest window that excludes them — leftmost on a tie.
+    const cases = [_]struct { pat: []const u8, want: []const u8, hay: []const u8 }{
+        .{ .pat = "bike", .want = "bi", .hay = "a bi\u{212A}e here" }, // k ⇒ split
+        .{ .pat = "mass", .want = "ma", .hay = "a ma\u{17F}\u{17F} here" }, // ss ⇒ split
+        .{ .pat = "sun", .want = "un", .hay = "a \u{17F}un here" }, // leading s dropped
+        .{ .pat = "eventsource", .want = "event", .hay = "x event\u{17F}ource" }, // tie ⇒ leftmost
+    };
+    for (cases) |c| {
+        var re = try Regex.compileOpts(gpa, c.pat, .{ .caseless = true, .unicode = true });
+        defer re.deinit();
+        try std.testing.expectEqualStrings(c.want, gateOf(&re).?);
+        // The whole point: the gate admits the non-ASCII spelling, so the engine
+        // below still sees it and reports the match.
+        var sim = try Regex.Sim.init(gpa, &re);
+        defer sim.deinit();
+        try std.testing.expect(re.lineMatch(&sim, c.hay));
+    }
+    // ASCII fold (`(?-u)`) has no such orbits, so the whole literal gates.
+    var ascii = try Regex.compileOpts(gpa, "eventsource", .{ .caseless = true, .unicode = false });
+    defer ascii.deinit();
+    try std.testing.expectEqualStrings("eventsource", gateOf(&ascii).?);
+}
+
+test "gate: prunes the buffer and span paths without moving an answer" {
+    const gpa = std.testing.allocator;
+    // `\s` claims `\n`, so this is the shape that reaches `bufMatch` and
+    // `matchWindow` — the two entry points that could not read `literal_scan`.
+    const pat = "ignore\\s+all";
+    inline for (.{ true, false }) |ci| {
+        var re = try Regex.compileOpts(gpa, pat, .{ .caseless = ci, .multiline = true });
+        defer re.deinit();
+        try std.testing.expect(re.gate != null); // the arm under test, not a fallback
+        var sim = try Regex.Sim.init(gpa, &re);
+        defer sim.deinit();
+        // Rejected by the gate (literal absent) — and genuinely absent.
+        try std.testing.expect(!re.bufMatch(&sim, "nothing to see here at all"));
+        // Gate hit, engine decides: present-but-no-match, then a real match.
+        try std.testing.expect(!re.bufMatch(&sim, "ignore nothing" ** 4));
+        try std.testing.expect(re.bufMatch(&sim, "please ignore\nall of it"));
+
+        var ss = try Regex.SpanSim.init(gpa, &re);
+        defer ss.deinit();
+        try std.testing.expect(re.matchSpan(&ss, "no literal anywhere", 0) == null);
+        try std.testing.expect(re.matchSpan(&ss, "ignore nothing" ** 4, 0) == null);
+        const sp = re.matchSpan(&ss, "xx ignore  all yy", 0).?;
+        try std.testing.expectEqual(@as(usize, 3), sp.start);
+        try std.testing.expectEqual(@as(usize, 14), sp.end);
+    }
+    // The caseless arm must find the same span through any case spelling.
+    var re = try Regex.compileOpts(gpa, pat, .{ .caseless = true, .multiline = true });
+    defer re.deinit();
+    var ss = try Regex.SpanSim.init(gpa, &re);
+    defer ss.deinit();
+    const sp = re.matchSpan(&ss, "xx IGNORE  ALL yy", 0).?;
+    try std.testing.expectEqual(@as(usize, 3), sp.start);
+    try std.testing.expectEqual(@as(usize, 14), sp.end);
+}

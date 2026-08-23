@@ -36,6 +36,7 @@ const lazy_mod = @import("../dfa/lazy.zig");
 const caliper_mod = @import("../caliper/caliper.zig");
 const classrun_mod = @import("../../../scan/classrun.zig");
 const literal_set = @import("../../../scan/literal_set.zig");
+const simd = @import("../../../scan/simd.zig");
 const lower = @import("lower.zig");
 const verdict = @import("../ladder/verdict.zig");
 const rungs_mod = @import("../ladder/rungs.zig");
@@ -133,6 +134,31 @@ pub const Regex = struct {
     // cross `\n` so the per-line equivalence does not hold). Borrows `lits`/
     // `alts`/`required`, so it is torn down first in `deinit`.
     literal_scan: ?literal_set.LiteralSet,
+    // The required-literal presence gate the SPAN and whole-buffer paths reject
+    // on — `literal_scan`'s counterpart for the two entry points that could not
+    // read it.
+    //
+    // `literal_scan` is authority-ranked and line-scoped: `.exact` decides
+    // `lineMatch`/`docMatch` outright, which is only sound per line. `bufMatch`
+    // (`-U`, one haystack) and `matchWindow` (`-o`, leftmost-first spans) get no
+    // such equivalence, so they had no way to use a literal fact at all and ran
+    // the automaton over every byte of every haystack — even when the pattern's
+    // required literal was provably absent. This gate is the necessary condition
+    // alone: a miss REJECTS, a hit falls through to the engines below, and no
+    // authority is claimed, so it can prune work but never decide a match.
+    //
+    // It also reaches where `literal_scan` structurally cannot: under `-i` the
+    // fold rewrites every literal into a class BEFORE any analysis runs
+    // (`lower.zig::parse`), so `required` is empty and every literal fact
+    // vanishes. `lower.zig` mines this one from the raw unfolded twin and gates
+    // it caselessly (`simd.foldClosedWindow` bounds the soundness), which is
+    // what makes a caseless pattern prefilterable at all.
+    //
+    // Borrows `required` when case-sensitive; owns `gate_bytes` when caseless.
+    gate: ?simd.Gate,
+    // Backing storage for a CASELESS `gate` (the ASCII-lowered fold-closed
+    // window). Null when there is no gate, or when it borrows `required`.
+    gate_bytes: ?[]u8,
     // The accelerator tier (`ladder/rungs.zig`): every optional machine that
     // beats the byte-class DFA on the patterns it accepts — transformation
     // composition, class bitstreams, the SP-quotient sieve — behind ONE
@@ -225,6 +251,7 @@ pub const Regex = struct {
     pub fn deinit(self: *Regex) void {
         // Before the storage it borrows (`required`/`alts`/`lits`).
         if (self.literal_scan) |*set| set.deinit();
+        if (self.gate_bytes) |g| self.allocator.free(g);
         self.allocator.free(self.states);
         self.allocator.free(self.required);
         lower.freeAlts(self.allocator, self.alts);

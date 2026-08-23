@@ -30,6 +30,7 @@
 const std = @import("std");
 const cover = @import("cover.zig");
 const crest = @import("../math/crest.zig");
+const simd = @import("../scan/simd.zig");
 const regex_mod = @import("../regex/regex.zig");
 const Regex = regex_mod.Regex;
 const Matcher = regex_mod.Matcher;
@@ -86,32 +87,13 @@ pub fn matcherPrefilter(m: *const Matcher, one: *[1][]const u8) []const []const 
     return alts;
 }
 
-/// The longest ASCII-fold-CLOSED window of a literal, or null when none
-/// reaches 2 bytes. A byte is fold-closed when its case-fold orbit stays
-/// within its two ASCII spellings: non-ASCII bytes decline (multi-byte
-/// positional orbits), and under Unicode fold (rg's `-i` default) `k`/`K`
-/// (KELVIN SIGN U+212A) and `s`/`S` (LONG S U+017F) decline — the same two
-/// escape orbits `caselessVariants` excludes; ASCII fold (`(?-u)`) admits
-/// them. A caseless match must contain every segment of the raw literal in
-/// some case spelling, so gating on one admissible window stays a sound
-/// necessary condition even when the whole literal declines (`eventsource`
-/// carries an `s` whose Unicode orbit escapes ASCII — but its `event` prefix
-/// gates cleanly). Only a window covering the ENTIRE literal can ever prove
-/// match equivalence; a partial window is containment-only.
-pub fn foldClosedWindow(lit: []const u8, unicode: bool) ?[]const u8 {
-    var best: ?[]const u8 = null;
-    var start: usize = 0;
-    var i: usize = 0;
-    while (i <= lit.len) : (i += 1) {
-        const closed = i < lit.len and lit[i] < 0x80 and
-            !(unicode and (lit[i] == 'k' or lit[i] == 'K' or lit[i] == 's' or lit[i] == 'S'));
-        if (!closed) {
-            if (i - start >= 2 and (best == null or i - start > best.?.len)) best = lit[start..i];
-            start = i + 1;
-        }
-    }
-    return best;
-}
+/// The longest ASCII-fold-closed window of a literal — the soundness rule every
+/// caseless gate is built through. It moved down beside `simd.Gate.caseless`,
+/// the constructor it guards, so the regex engine can mine its own caseless gate
+/// at compile time without importing this tier (`query` sits ABOVE `regex`).
+/// Re-exported here because the caseless soundness suite below, cold's
+/// `writ/gate.zig`, and `query.zig`'s public surface all name it at this address.
+pub const foldClosedWindow = simd.foldClosedWindow;
 
 /// The sound trigram prefilter for a CASELESS query: the OR-set of case
 /// variants of one window of the pattern's raw (unfolded) required literal.

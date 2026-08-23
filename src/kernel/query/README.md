@@ -20,9 +20,12 @@ guarantee that is to give them nothing to disagree from.
   walk worker owns, and the match/count primitives over the `-F` literal
   fast path or the engine-neutral `Matcher`.
 - **`prefilter.zig`** derives the literals warm and cold must share
-  verbatim — required/alt cover, the caseless fold window, the case-variant
-  OR-set, the `-F -i` escape — plus `winnow`, which hands both faces the
-  cover plan and the crest swell from one parse.
+  verbatim — required/alt cover, the case-variant OR-set, the `-F -i`
+  escape — plus `winnow`, which hands both faces the cover plan and the
+  crest swell from one parse. The caseless fold window it re-exports rather
+  than owns: that rule moved down beside the caseless SIMD kernel it guards
+  (`scan/simd.zig`), so the regex compiler can mine its own gate without
+  importing this tier.
 - **`cover.zig`** builds the conjunctive cover: the whole boolean query a
   pattern forces, not just its best single literal (see below).
 - **`word.zig`** is the ripgrep `-w` word-boundary rule as a post-match

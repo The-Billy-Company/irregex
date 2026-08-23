@@ -25,7 +25,13 @@ strange way to ship an Aho–Corasick and a Teddy.
   document's bytes), and the `*With` entry points a caller drives a minted
   plan through. `Gate` carries a plan so the whole-file drop and the
   hit-jump loop share one decision; `Gate.on(hay)` re-decides it for one
-  body and is idempotent on purpose.
+  body and is idempotent on purpose. `foldClosedWindow` is the producer-side
+  soundness rule every caseless gate is built through — the longest run of a
+  literal whose fold orbit stays inside its two ASCII spellings, so `k`
+  (KELVIN SIGN) and `s` (LONG S) split the window under Unicode fold. It
+  lives beside the constructor it guards rather than beside any one caller,
+  because the regex compiler, the query layer and the cold CLI all mint
+  caseless gates and none of them may disagree about what is admissible.
 - **`anchor.zig`** decides which two needle offsets the block filter
   compares — the filter's only variable cost, and therefore the one place
   that decision is allowed to be made. It minimizes summed byte rarity,

@@ -125,6 +125,20 @@ pub fn bufMatch(re: *const Regex, sim: *Sim, buf: []const u8) bool {
         .miss => return false,
         .unproven => {},
     };
+    // The required-literal gate: a necessary condition, so its ABSENCE from the
+    // buffer proves no match and a presence proves nothing (fall through). This
+    // is the whole-buffer twin of the rejection `verdict.docMatch` gets from
+    // `literal_scan`, which `-U` could never read — that set's `.exact`
+    // authority is a per-line equivalence, void once a match may cross `\n`,
+    // and its `.candidate` arm was never wired here.
+    //
+    // Sited AFTER `classrun` on purpose: that kernel decides in both
+    // directions, so a pattern it settles must not pay a scan first. Sited
+    // BEFORE the tier and the DFA because those only decide by walking every
+    // byte at ~an order of magnitude more per byte than a SIMD memmem — so on a
+    // miss this replaces the whole walk, and on a hit it is dominated by the
+    // walk it precedes.
+    if (re.gate) |g| if (!g.in(buf)) return false;
     // Assertion-free multiline: the DFA is exact over the whole buffer as one
     // haystack (no `^`/`$`/`\b` to resolve; `trans_fin` ≡ `trans_in` when no
     // assert_end exists, so the last-byte table is inert) — one table lookup

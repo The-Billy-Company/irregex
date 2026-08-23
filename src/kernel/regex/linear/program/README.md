@@ -17,6 +17,16 @@ job; executing them is `../pike/` and `../dfa/`.
   last step decides three things, not one: which determinizer runs
   (`../symbolic/` or the byte powerset), whether its result is eager or on
   demand, and which optional rungs `../ladder/rungs.zig` can offer over it.
+
+  The fold's placement is load-bearing and it costs something. Folding before
+  every analysis is what keeps the prefilters and the match engines reading the
+  same classes — but it also erases the literals those analyses were going to
+  find, so a caseless pattern yields an empty `required` and declines every
+  literal acceleration. So the caseless arm re-parses the source unfolded and
+  reads the literal off that twin's AST, keeping the fold-closed window as the
+  `gate` the walking paths reject on. Only the parse and the literal pass run on
+  the twin; the literal is an AST property, so lowering it would mean building a
+  second engine to read one field.
 - **[`core_test.zig`](core_test.zig)** runs parser / Pike VM / prefilter /
   scan-accelerator cases.
 - **[`chorus.zig`](chorus.zig)** runs the same pipeline for MANY patterns: N

@@ -26,6 +26,7 @@ const rungs_mod = @import("../ladder/rungs.zig");
 const symbolic = @import("../symbolic/symbolic.zig");
 const classrun_mod = @import("../../../scan/classrun.zig");
 const literal_set = @import("../../../scan/literal_set.zig");
+const simd = @import("../../../scan/simd.zig");
 const crest = @import("../../../math/crest.zig");
 const core = @import("core.zig");
 
@@ -170,6 +171,19 @@ pub fn compileOpts(allocator: std.mem.Allocator, pattern: []const u8, opts: Opti
         else => null,
     };
     errdefer if (literal_scan) |*set| set.deinit();
+
+    // The presence gate the span and whole-buffer paths reject on (`core.zig`'s
+    // `gate`). Case-sensitive, it is `required` itself; caseless, it is mined
+    // from the raw twin, because the fold above erased every literal before any
+    // analysis ran. Owned bytes only in the caseless arm.
+    const gate_bytes: ?[]u8 = if (opts.caseless) try caselessGateBytes(allocator, arena, pattern, opts) else null;
+    errdefer if (gate_bytes) |g| allocator.free(g);
+    const gate: ?simd.Gate = if (gate_bytes) |g|
+        simd.Gate.caseless(g, false)
+    else if (!opts.caseless and required.len != 0)
+        simd.Gate.of(required)
+    else
+        null;
 
     const states = try c.states.toOwnedSlice(allocator);
     errdefer allocator.free(states);
@@ -358,6 +372,8 @@ pub fn compileOpts(allocator: std.mem.Allocator, pattern: []const u8, opts: Opti
         .caliper = cal,
         .classrun = cr,
         .literal_scan = literal_scan,
+        .gate = gate,
+        .gate_bytes = gate_bytes,
         .rungs = tier,
         .assert_free = assert_free,
         .multiline = opts.multiline,
@@ -418,6 +434,52 @@ fn literalEngine(gpa: std.mem.Allocator, lits: []const []const u8, alts: []const
     if (alts.len != 0) return try literal_set.LiteralSet.build(gpa, alts, .candidate);
     if (required.len != 0) return try literal_set.LiteralSet.build(gpa, &.{required}, .candidate);
     return null;
+}
+
+/// The ASCII-lowered fold-closed window of a CASELESS pattern's required
+/// literal, owned — or null when the pattern yields none.
+///
+/// Under `-i` the fold runs before every analysis (`parse` above, deliberately:
+/// prefilter and match engines must agree on the same classes), so by the time
+/// the literal pass sees the AST, `ignore` is six classes and `required` is
+/// empty. Every literal-derived acceleration therefore vanished for exactly the
+/// patterns that need it most — a caseless pattern ran the automaton over every
+/// byte of every haystack with no prefilter of any kind.
+///
+/// So mine the literal from the RAW twin: the same source parsed unfolded, whose
+/// `required` is the literal the fold was about to erase. That twin is a
+/// throwaway — only its literal outlives it — and this costs one extra parse per
+/// caseless COMPILE to save a scan per haystack BYTE.
+///
+/// Soundness is `simd.foldClosedWindow`'s: it returns the longest window whose
+/// every byte folds within its two ASCII spellings, so a caseless match must
+/// contain that window in some case spelling and `simd.indexOfCaselessPos` finds
+/// it. Non-ASCII bytes and the Kelvin/long-s orbits are excluded there. The
+/// window may be a strict substring of the literal, which is why the gate is
+/// built with `equiv = false`: a necessary condition only, never a decision.
+///
+/// Only the PARSE and the literal pass run on the twin — not a second program,
+/// DFA, caliper or tier. The literal is a property of the AST, so lowering the
+/// twin would be building an entire second engine to read one field off the
+/// front of it. Both ASTs share this compile's arena and die with it.
+///
+/// Every failure declines to null, which is the engine exactly as it was — an
+/// unparseable twin, no required literal, no fold-closed window, or OOM on the
+/// dupe all leave the caseless pattern on the automaton-only path.
+fn caselessGateBytes(
+    gpa: std.mem.Allocator,
+    arena: std.mem.Allocator,
+    pattern: []const u8,
+    opts: Options,
+) ParseError!?[]u8 {
+    var raw_opts = opts;
+    raw_opts.caseless = false;
+    const raw_ast = parse(arena, pattern, raw_opts) catch return null;
+    var raw = ast_mod.analyze(arena, arena, raw_ast, .{}) catch return null;
+    const win = simd.foldClosedWindow(raw.root().lit.best, opts.unicode) orelse return null;
+    const low = try gpa.dupe(u8, win);
+    for (low) |*b| b.* = std.ascii.toLower(b.*);
+    return low;
 }
 
 /// Own a copy of the pure-literal equivalence set (`analysis.pureLiterals`),

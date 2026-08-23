@@ -719,7 +719,7 @@ fn memchrPos(hay: []const u8, from: usize, c: u8) ?usize {
 /// ASCII-caseless substring presence — the `-i` twin of `contains`. `needle`
 /// MUST be pre-folded to ASCII lowercase by the caller, and the gate producers
 /// own the soundness bounds (ASCII-only literal, Kelvin/long-s orbits excluded
-/// under Unicode fold — `query.zig::foldClosedWindow`). Same first+last-byte SIMD
+/// under Unicode fold — `foldClosedWindow` below). Same first+last-byte SIMD
 /// scheme, each anchor compared against both case spellings; survivors pay one
 /// bytewise caseless verify. Presence-exact with a scalar
 /// `ascii.eqlIgnoreCase` sliding scan.
@@ -822,6 +822,35 @@ fn memchrFoldPos(hay: []const u8, from: usize, mask: u8, lo: u8) ?usize {
     }
     while (i < hay.len) : (i += 1) if (hay[i] | mask == lo) return i;
     return null;
+}
+
+/// The longest ASCII-fold-CLOSED window of a literal, or null when none
+/// reaches 2 bytes — the producer-side soundness rule for every caseless gate
+/// below, which is why it lives here rather than beside one of its callers. A
+/// byte is fold-closed when its case-fold orbit stays within its two ASCII
+/// spellings: non-ASCII bytes decline (multi-byte positional orbits), and under
+/// Unicode fold (rg's `-i` default) `k`/`K` (KELVIN SIGN U+212A) and `s`/`S`
+/// (LONG S U+017F) decline — the same two escape orbits `query`'s
+/// `caselessVariants` excludes; ASCII fold (`(?-u)`) admits them. A caseless
+/// match must contain every segment of the raw literal in some case spelling,
+/// so gating on one admissible window stays a sound necessary condition even
+/// when the whole literal declines (`eventsource` carries an `s` whose Unicode
+/// orbit escapes ASCII — but its `event` prefix gates cleanly). Only a window
+/// covering the ENTIRE literal can ever prove match equivalence; a partial
+/// window is containment-only, so `Gate.caseless` takes `equiv` separately.
+pub fn foldClosedWindow(lit: []const u8, unicode: bool) ?[]const u8 {
+    var best: ?[]const u8 = null;
+    var start: usize = 0;
+    var i: usize = 0;
+    while (i <= lit.len) : (i += 1) {
+        const closed = i < lit.len and lit[i] < 0x80 and
+            !(unicode and (lit[i] == 'k' or lit[i] == 'K' or lit[i] == 's' or lit[i] == 'S'));
+        if (!closed) {
+            if (i - start >= 2 and (best == null or i - start > best.?.len)) best = lit[start..i];
+            start = i + 1;
+        }
+    }
+    return best;
 }
 
 /// A literal presence gate, threaded from the pattern analyzers to every
