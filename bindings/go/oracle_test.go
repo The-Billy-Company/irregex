@@ -172,6 +172,51 @@ func TestPythonOracleMatch(t *testing.T) {
 	}
 }
 
+// FindStringIndex has its own engine verb too, and it is the most-called one in
+// the package: irgx_find_first stops the walk at the leftmost match, where
+// find_all's window bounds only what it WRITES and still tallies the whole text.
+// Two claims come with taking that shortcut, and this is both of them.
+//
+// The first is that the answer did not move - the leftmost match is the span the
+// full table already reports at index zero.
+//
+// The second is that Go's thinning has no opinion about it, which is why the
+// nullable rows stay in here as they do in TestPythonOracleMatch: both of
+// goSequence's rules are about the match BEFORE this one, and a first match has
+// none. So the reference's own index zero is the right expectation for every
+// row, empty match or not, and a regression that quietly routed the shortcut
+// through a differently-seeded walk would show up as a moved offset.
+func TestPythonOracleFirstSpan(t *testing.T) {
+	for _, c := range loadOracle(t).Cases {
+		re, err := c.opts().Compile(c.Pattern)
+		if err != nil {
+			t.Fatalf("compile %q: %v", c.Pattern, err)
+		}
+		var want []int
+		if len(c.Spans) > 0 {
+			want = c.Spans[0]
+		}
+		if got := re.FindStringIndex(c.Text); !reflect.DeepEqual(got, want) {
+			t.Errorf("%s: FindStringIndex(%q) = %v, reference's first span is %v",
+				c.Name, c.Text, got, want)
+		}
+		// The window spelling reaches the same verb by a different argument
+		// path, so an inert whole-text window has to land on the same span. Not
+		// every program can be asked a windowed question at all, hence the gate.
+		if !re.Windows() {
+			continue
+		}
+		var wantAll [][]int
+		if want != nil {
+			wantAll = [][]int{want}
+		}
+		if got := re.FindAllStringIndexIn(c.Text, 0, len(c.Text), 1); !reflect.DeepEqual(got, wantAll) {
+			t.Errorf("%s: FindAllStringIndexIn(%q, whole, 1) = %v, reference's first span is %v",
+				c.Name, c.Text, got, wantAll)
+		}
+	}
+}
+
 // nonEmpty maps the JSON [] onto Go's nil, which is what the Find family
 // returns for no matches, so DeepEqual compares like with like.
 func nonEmpty(spans [][]int) [][]int {

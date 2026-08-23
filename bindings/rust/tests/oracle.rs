@@ -246,6 +246,42 @@ fn is_match_agrees_with_find_all() {
     }
 }
 
+/// `find` is a third arm, and after the leftmost-single verb landed it is a
+/// genuinely different engine call rather than `find_all` with a one-span
+/// window: that window bounds what the engine WRITES and never what it walks,
+/// since `*written` owes the caller the whole text's count.
+///
+/// Two things have to survive taking that shortcut, and this checks both. The
+/// answer must not move — the leftmost match is the span `find_all` already
+/// reports at index zero — and `find_at(0)` must reach the same place by the
+/// windowed spelling of the same verb, since `Regex::find_at` is where the
+/// bound is live.
+///
+/// Nullable rows stay in, as they do in `is_match_agrees_with_find_all`:
+/// `crate_sequence` only ever drops an empty match abutting the PREVIOUS one,
+/// and a first match has no previous. So the recorded index zero is the right
+/// expectation for every row.
+#[test]
+fn find_agrees_with_the_first_span_of_find_all() {
+    for case in &corpus().cases {
+        let re = case.compile();
+        let want = case.spans.first().map(|span| (span[0], span[1]));
+        for (verb, got) in [
+            ("find", re.try_find(&case.text)),
+            ("find_at(0)", re.try_find_at(&case.text, 0)),
+        ] {
+            let got = got.unwrap_or_else(|why| panic!("{}: {verb}: {why}", case.label()));
+            let got = got.map(|m| (m.start() as i64, m.end() as i64));
+            assert_eq!(
+                got,
+                want,
+                "{}: {verb} reports {got:?} where find_all's first span is {want:?}",
+                case.label()
+            );
+        }
+    }
+}
+
 /// The corpus is only an oracle if it exercises the shapes that break bindings.
 #[test]
 fn corpus_covers_the_hard_shapes() {

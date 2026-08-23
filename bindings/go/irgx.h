@@ -372,6 +372,25 @@ int32_t irgx_is_match(irgx_regex *re, const uint8_t *text, size_t len);
 int32_t irgx_find_all(irgx_regex *re, const uint8_t *text, size_t len,
                          irgx_span *out, size_t cap, size_t *written);
 
+/* The LEFTMOST match in text[0..len], written to *out. IRGX_MATCH on a match,
+ * IRGX_OK when there is none, negative on error.
+ *
+ * The verb behind a host's search(). irgx_find_all with cap 1 reports the same
+ * span, but it is a different question underneath: cap bounds what is WRITTEN
+ * and never what is walked, because *written owes the caller the count the whole
+ * text holds. That contract is what lets a short window size its own retry, so
+ * it is worth keeping -- but it also means a host that wanted one span paid for
+ * every match in the text plus the tally, which for search() is the entire
+ * scan spent on matches the caller has no way to read. This asks only for the
+ * first, so the walk stops at it.
+ *
+ * Same walk otherwise: same modes, same iteration rules, and the span is the one
+ * irgx_find_all would have put in out[0]. Under irgx_pattern_earliest it reports
+ * whichever match the earliest walk yields first, and an undecidable pattern
+ * declines there exactly as it does for the span verbs. */
+int32_t irgx_find_first(irgx_regex *re, const uint8_t *text, size_t len,
+                        irgx_span *out);
+
 /* ── the window plane ────────────────────────────────────────────────────────
  *
  * A search bounded to [from, to] while every zero-width assertion still reads
@@ -424,6 +443,11 @@ int32_t irgx_is_match_in(irgx_regex *re, const uint8_t *text, size_t len,
 int32_t irgx_find_all_in(irgx_regex *re, const uint8_t *text, size_t len,
                          size_t from, size_t to, irgx_span *out, size_t cap,
                          size_t *written);
+
+/* irgx_find_first over the window [from, to]. The match must fit inside the
+ * region; every assertion still reads text[0..len]. */
+int32_t irgx_find_first_in(irgx_regex *re, const uint8_t *text, size_t len,
+                           size_t from, size_t to, irgx_span *out);
 
 /* Write the group spans of the leftmost match at or after `from` into
  * out[0..cap]. out[0] is the whole match, out[k] is group k, and a group that

@@ -106,12 +106,13 @@ irgx_group_index = { why = "`Regexp.SubexpIndex` reads a `map[string]int` built 
 
 [waived.python]
 
-# These three were already deliberate, and already argued — in comments inside
-# `bindings/rust/src/sys.rs`, where no gate could see them and a reader had to
-# already be in the file to find them. Lifting them here is the point: a decision
-# a reviewer can compare against the other two bindings' answers to the same
-# question.
+# Three of these four were already deliberate, and already argued — in comments
+# inside `bindings/rust/src/sys.rs`, where no gate could see them and a reader
+# had to already be in the file to find them. Lifting them here is the point: a
+# decision a reviewer can compare against the other two bindings' answers to the
+# same question.
 [waived.rust]
 irgx_find_all = { why = "the windowed `irgx_find_all_in` is this verb with an inert bound, and the crate needs the bound anyway for `find_at`. Declaring both would leave two spellings of one call for a reader to reconcile." }
+irgx_find_first = { why = "the same decision as `irgx_find_all`, and for the same reason: `irgx_find_first_in` IS bound, `Regex::find_at` needs the live bound, and `find` passes the inert one. Note the shape of the pair — this crate waives both unwindowed spellings, where Go binds both and Python binds both, and all three hosts reach the same verb." }
 irgx_slate_len = { why = "a `RegexSet` holds the patterns it was built from, so its own length is a field rather than a call. The ABI's only use for the number is sizing the `which` buffer, which the crate sizes from that field. Contrast `irgx_munch_len`, which IS bound: a munch's length is how many patterns it SEATED, a number only the engine knows once a refusal has happened." }
 irgx_group_index = { why = "the crate reads the whole group-name table at compile time, so resolving a name to a number is a lookup in memory it already holds. `irgx_group_name` — the direction that cannot be got any other way — is bound." }

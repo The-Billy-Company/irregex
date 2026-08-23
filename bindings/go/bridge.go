@@ -39,6 +39,21 @@ static int32_t go_find_all(irgx_regex *re, const uint8_t *text, size_t len,
   return st;
 }
 
+static int32_t go_find_first(irgx_regex *re, const uint8_t *text, size_t len,
+                             irgx_span *out, irgx_fault *f) {
+  int32_t st = irgx_find_first(re, text, len, out);
+  capture(st, f);
+  return st;
+}
+
+static int32_t go_find_first_in(irgx_regex *re, const uint8_t *text, size_t len,
+                                size_t from, size_t to, irgx_span *out,
+                                irgx_fault *f) {
+  int32_t st = irgx_find_first_in(re, text, len, from, to, out);
+  capture(st, f);
+  return st;
+}
+
 static int32_t go_captures(irgx_regex *re, const uint8_t *text, size_t len,
                            size_t from, irgx_span *out, size_t cap,
                            size_t *written, irgx_fault *f) {
@@ -394,10 +409,49 @@ func (re *Regexp) findSpans(h *handle, text string, limit int) [][2]int {
 	if limit == 0 {
 		return nil
 	}
+	if limit == 1 {
+		return re.firstSpan(h, text, wholeOf(text))
+	}
 	if re.nullable {
 		return truncate(goSequence(re.rawSpans(h, text, -1), text), limit)
 	}
 	return re.rawSpans(h, text, limit)
+}
+
+// region is the window a single find is asked over. The zero value is not a
+// valid one, so a caller says which it means rather than getting it by omission.
+type region struct{ from, to int }
+
+func wholeOf(text string) region { return region{0, len(text)} }
+
+// firstSpan is the leftmost match, as a sequence of nought or one.
+//
+// It exists because find_all's window bounds what is WRITTEN and never what is
+// walked - *written owes the caller the count the whole text holds, which is
+// what lets a short buffer size its own retry in one pass. So asking find_all
+// for one match still pays for every match in the text plus the tally, and
+// FindStringIndex is the most-called verb in the package. irgx_find_first is
+// the same walk stopped at the first match.
+//
+// goSequence's thinning does not reach a sequence of one: both its rules are
+// about the match BEFORE this one, and a first match has none. So a nullable
+// pattern takes this path too, and gets the same span the full fetch would have
+// left at index zero.
+func (re *Regexp) firstSpan(h *handle, text string, win region) [][2]int {
+	var (
+		out   C.irgx_span
+		fault C.irgx_fault
+	)
+	st := C.go_find_first_in(h.ptr, bytePtr(text), C.size_t(len(text)),
+		C.size_t(win.from), C.size_t(win.to), &out, &fault)
+	runtime.KeepAlive(text)
+	if st < 0 {
+		panic(newError(st, &fault, "search with "+strconv.Quote(re.expr)))
+	}
+	if st != C.IRGX_MATCH {
+		return nil
+	}
+	return [][2]int{{int(out.start), int(out.end)}}
 }
 
 // rawSpans is the engine's own sequence, unthinned.
@@ -759,6 +813,9 @@ func (re *Regexp) spansIn(text string, from, to, limit int) [][2]int {
 	}
 	h := re.acquire()
 	defer re.release(h)
+	if limit == 1 {
+		return re.firstSpan(h, text, region{from, to})
+	}
 	// A nullable pattern's sequence can be changed by the thinning, so it pays
 	// for the whole answer before the limit applies - findSpans's reasoning,
 	// which holds here for the same reason.

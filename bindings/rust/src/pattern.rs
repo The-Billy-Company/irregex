@@ -251,16 +251,10 @@ impl Regex {
     ///
     /// [`Error::Search`], [`Error::OutOfMemory`], or [`Error::NotCharBoundary`].
     pub fn try_find<'t>(&self, text: &'t str) -> Result<Option<Match<'t>>, Error> {
-        // A window of one: the engine still scans the whole text, but only the
-        // first span is written, so this costs no span buffer worth speaking of.
-        // The count that comes back is how many the text holds, which is more
-        // than this verb wants and exactly enough to answer whether there is a
-        // leftmost match at all.
-        let mut span = [sys::Span::default()];
-        if self.scan(text, 0, &mut span)? == 0 {
+        let Some(span) = self.first(text, 0)? else {
             return Ok(None);
-        }
-        let (start, end) = self.checked(text, span[0])?;
+        };
+        let (start, end) = self.checked(text, span)?;
         Ok(Some(Match::new(text, start, end)))
     }
 
@@ -294,11 +288,10 @@ impl Regex {
         self.reachable(text, start)?;
         // No thinning: `crate_sequence` only ever removes an empty match that
         // abuts the PREVIOUS one, and a single leftmost answer has no previous.
-        let mut span = [sys::Span::default()];
-        if self.scan(text, start, &mut span)? == 0 {
+        let Some(span) = self.first(text, start)? else {
             return Ok(None);
-        }
-        let (from, end) = self.checked(text, span[0])?;
+        };
+        let (from, end) = self.checked(text, span)?;
         Ok(Some(Match::new(text, from, end)))
     }
 
@@ -554,6 +547,38 @@ impl Regex {
             }));
         }
         Ok(written)
+    }
+
+    /// The leftmost match at or after `from`, or `None`.
+    ///
+    /// The sibling of [`Regex::scan`] for the question that wants one answer.
+    /// It is not that call with a one-span window: see `sys::irgx_find_first_in`
+    /// for why that still costs the whole text's worth of matching.
+    fn first(&self, text: &str, from: usize) -> Result<Option<sys::Span>, Error> {
+        let lease = self.pool.lease()?;
+        let body = text.as_bytes();
+        let mut span = sys::Span::default();
+        // SAFETY: the lease is exclusive to this thread; `body` is a live slice
+        // passed with its own length; `span` is a live slot the library writes
+        // at most once. `from <= to <= len` holds as it does in `scan` — `to` is
+        // the length, and `from` is the caller's checked start.
+        let status = unsafe {
+            sys::irgx_find_first_in(
+                lease.raw(),
+                body.as_ptr(),
+                body.len(),
+                from,
+                body.len(),
+                &raw mut span,
+            )
+        };
+        if status < 0 {
+            return Err(fault(status, |status, detail| Error::Search {
+                status,
+                detail,
+            }));
+        }
+        Ok((status == sys::MATCH).then_some(span))
     }
 
     /// Every match span in `text`, in the sequence the `regex` crate reports.

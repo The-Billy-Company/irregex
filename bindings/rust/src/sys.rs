@@ -265,6 +265,26 @@ unsafe extern "C" {
         cap: usize,
         written: *mut usize,
     ) -> i32;
+    /// The leftmost match, and then stop.
+    ///
+    /// Not `irgx_find_all_in` with a one-span window: that window bounds what
+    /// the engine WRITES and never what it walks, because `*written` owes the
+    /// caller the count the whole text holds — the contract that lets a short
+    /// buffer size its own retry in one pass. So asking it for one match still
+    /// pays for every match in the text. This verb is the same walk halted at
+    /// the first one, which is what `find` and `find_at` actually want.
+    ///
+    /// Only the windowed spelling is declared, for the reason given above
+    /// `irgx_find_all_in`: `find_at` needs the bound anyway, and `from == 0`,
+    /// `to == len` is the inert case.
+    pub fn irgx_find_first_in(
+        re: *mut Regex,
+        text: *const u8,
+        len: usize,
+        from: usize,
+        to: usize,
+        out: *mut Span,
+    ) -> i32;
     pub fn irgx_captures(
         re: *mut Regex,
         text: *const u8,
