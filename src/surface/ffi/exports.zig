@@ -172,6 +172,24 @@ export fn irgx_find_all_in(re: *pattern.Regex, text: ?[*]const u8, len: usize, f
     return @intFromEnum(pattern.findAllIn(re, text, len, from, to, out, cap, written));
 }
 
+/// Write the LEFTMOST match in `text[0..len]` into `*out`. Returns 1 on a match,
+/// 0 on none, negative on error.
+///
+/// The verb behind a host's `search()`. `irgx_find_all` with `cap = 1` answers
+/// the same span but is a different question underneath: its `cap` bounds what
+/// is written, never what is walked, because `*written` owes the caller the
+/// count the whole text holds. This asks only for the first match, so the walk
+/// stops there.
+export fn irgx_find_first(re: *pattern.Regex, text: ?[*]const u8, len: usize, out: ?*pattern.Span) i32 {
+    return @intFromEnum(pattern.findFirst(re, text, len, out));
+}
+
+/// `irgx_find_first` over the window `[from, to]` of `text[0..len]` — same
+/// region and assertion contract as `irgx_find_all_in`.
+export fn irgx_find_first_in(re: *pattern.Regex, text: ?[*]const u8, len: usize, from: usize, to: usize, out: ?*pattern.Span) i32 {
+    return @intFromEnum(pattern.findFirstIn(re, text, len, from, to, out));
+}
+
 /// Write the group spans of the leftmost match at or after `from` into
 /// `out[0..cap]`; `*written` reports how many groups the PATTERN has (so a
 /// short `cap` sizes the retry). `out[0]` is the whole match; a group that did

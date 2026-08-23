@@ -490,6 +490,67 @@ pub fn findAllIn(re: *Regex, text: ?[*]const u8, len: usize, from: usize, to: us
     return gather(re, askOf(text, len, from, to, 0, null), out, cap, written);
 }
 
+/// The leftmost match in `text[0..len]`, and nothing else: `out[0]` on a hit,
+/// `.ok` on none. The whole-text spelling of `findFirstIn`.
+pub fn findFirst(re: *Regex, text: ?[*]const u8, len: usize, out: ?*Span) Status {
+    return findFirstIn(re, text, len, 0, len, out);
+}
+
+/// `findFirst` bounded to `[from, to]` — the same window contract as
+/// `findAllIn`: the match must fit inside the region while every assertion still
+/// reads the whole text.
+pub fn findFirstIn(re: *Regex, text: ?[*]const u8, len: usize, from: usize, to: usize, out: ?*Span) Status {
+    contract.beginCall();
+    return leftmost(re, askOf(text, len, from, to, 0, null), out);
+}
+
+/// `findFirst` asked with the full request — anchored, earliest, cancellable,
+/// bounded, in any combination. The third spelling every verb on this plane has,
+/// for the same reason: the modes are fields of a request, not names of their own.
+pub fn findFirstAsk(re: *Regex, in: ?*const Input, out: ?*Span) Status {
+    contract.beginCall();
+    return leftmost(re, ask(in), out);
+}
+
+/// The one leftmost-span walk — `gather` stopped at the first match instead of
+/// run to exhaustion.
+///
+/// **Why this is a verb and not `cap = 1`.** `find_all`'s `*written` is the
+/// count the text HAS, deliberately: a saturating count makes "did I get
+/// everything?" undecidable, so reporting the true total is what lets a short
+/// window size its own retry in one search. That contract is worth keeping, and
+/// it is also why `cap = 1` cannot mean "stop" — the window bounds what is
+/// WRITTEN, never what is walked, so a host that wanted one span still paid for
+/// every match in the text plus the tally.
+///
+/// Which is what every binding's `search()` was: `re.search(s)` is the most
+/// common verb any regex library has, and on this ABI it walked the whole text
+/// to count matches the caller had no way to read. So the fix is not to weaken
+/// the total — a host that wants the count still gets it exactly — but to let a
+/// host say it does not want one. Nothing here is a second search strategy:
+/// same `walk`, same modes, same first span `find_all` would have put in
+/// `out[0]`.
+///
+/// `earliest` needs no case of its own. It changes WHICH match is first, and
+/// this returns whichever the walk yields first under the mode it was asked in,
+/// exactly as `gather` does. An `undecided` halt still refuses rather than
+/// reporting a leftmost span under an earliest label.
+fn leftmost(re: *Regex, want: ?Ask, out: ?*Span) Status {
+    const slot = out orelse return .invalid;
+    const req = want orelse return .invalid;
+    if (req.stopped()) return .stale;
+
+    var cur = re.inner.walk(req.win, .{ .anchored = req.anchored, .earliest = req.earliest }) catch |e|
+        return contract.report(.{ .code = faultOf(e) });
+    defer cur.deinit();
+    const sp = cur.next() orelse {
+        if (cur.undecided) return contract.report(.{ .code = error.Unsupported });
+        return .ok;
+    };
+    slot.* = .{ .start = @intCast(sp.start), .end = @intCast(sp.end) };
+    return .match;
+}
+
 /// How many capture groups the pattern declares, excluding group 0. Forces the
 /// capture arm, so it reports the same `.invalid` a `captures` call would for a
 /// pattern this build cannot capture.
@@ -706,6 +767,94 @@ test "find_all reports the engine's span sequence, and sizes a short window" {
     try t.expectEqual(Status.ok, findAll(re, "bbb", 3, null, 0, &n));
     try t.expectEqual(@as(usize, 0), n);
     try t.expectEqual(Status.invalid, findAll(re, "aa", 2, null, 0, null));
+}
+
+test "find_first is find_all's first span, for every pattern and every text" {
+    // The whole claim of the verb: it is the same walk stopped early, so there is
+    // nothing it can answer that `find_all` would not have put in `out[0]` — and
+    // nothing it can miss that `find_all` would have found. A differential table
+    // rather than a handful of rows, because "cheaper" is only worth having if
+    // "same" is checked over the shapes where a second walk would drift: nullable
+    // patterns, anchors under the buffer model, alternations, and the texts that
+    // hold no match at all.
+    for ([_][]const u8{ "a+", "x*", "^a", "c$", "wa(l|t)rus", "b|cd", "\\bbc", "z" }) |pat| {
+        const re = try open(pat, 0);
+        defer free(re);
+        for ([_][]const u8{ "aa b aaa", "abc", "a walrus here", "a walnut here", "\nabc", "abc\n", "" }) |text| {
+            const all = try spansOf(re, text);
+            defer t.allocator.free(all);
+
+            var got: Span = undefined;
+            const st = findFirst(re, text.ptr, text.len, &got);
+            if (all.len == 0) {
+                try t.expectEqual(Status.ok, st);
+            } else {
+                try t.expectEqual(Status.match, st);
+                try t.expectEqual(all[0], got);
+            }
+        }
+    }
+}
+
+test "find_first refuses the caller errors find_all refuses, in the same words" {
+    const re = try open("a+", 0);
+    defer free(re);
+    var got: Span = undefined;
+    // An empty text is a question, not a bug — and a null slot is the bug.
+    try t.expectEqual(Status.ok, findFirst(re, null, 0, &got));
+    try t.expectEqual(Status.invalid, findFirst(re, null, 7, &got));
+    try t.expectEqual(Status.invalid, findFirst(re, "aa", 2, null));
+}
+
+test "find_first takes the window, and reads the edges the window does not move" {
+    // The windowed verb is the bounded half of the same delegation, so it owes
+    // the same two answers: a match must fit inside the region, and every
+    // assertion still resolves against the whole text. `b$` inside [0,2] of
+    // "abc" is the row that separates a window from a slice.
+    const dollar = try open("b$", 0);
+    defer free(dollar);
+    var got: Span = undefined;
+    try t.expectEqual(Status.ok, findFirstIn(dollar, "abc", 3, 0, 2, &got));
+    try t.expectEqual(Status.match, findFirst(dollar, "ab", 2, &got));
+
+    // And the region genuinely bounds which match is reported: three `a`s at 0,
+    // 2 and 4, so a window starting at 1 reports the SECOND one as its first.
+    const a = try open("a", 0);
+    defer free(a);
+    try t.expectEqual(Status.match, findFirstIn(a, "aBaBa", 5, 1, 5, &got));
+    try t.expectEqual(Span{ .start = 2, .end = 3 }, got);
+    // An empty window is an empty answer, not an error.
+    try t.expectEqual(Status.ok, findFirstIn(a, "aBaBa", 5, 2, 2, &got));
+    // And the unbounded spelling is the inert bound, as it is for `find_all`.
+    try t.expectEqual(Status.match, findFirst(a, "aBaBa", 5, &got));
+    try t.expectEqual(Span{ .start = 0, .end = 1 }, got);
+}
+
+test "find_first reports the earliest match under earliest, and refuses what has no machine" {
+    const sc = fault.scope();
+    defer sc.end();
+
+    // `ab*` over `abbb` is one leftmost match (0,4) and one earliest match
+    // (0,1). No filter over the leftmost span produces the earliest one, so this
+    // is the row that proves the verb reports whichever match the walk yields
+    // under the mode it was asked in, rather than a leftmost span relabelled.
+    const re = try open("ab*", 0);
+    defer free(re);
+    var got: Span = undefined;
+    try t.expectEqual(Status.match, findFirstAsk(re, &asking("abbb", mode_earliest), &got));
+    try t.expectEqual(Span{ .start = 0, .end = 1 }, got);
+    try t.expectEqual(Status.match, findFirstAsk(re, &asking("abbb", 0), &got));
+    try t.expectEqual(Span{ .start = 0, .end = 4 }, got);
+
+    // And a pattern with no halting machine has no earliest answer at all. It
+    // refuses — the refusal `find_all` makes, made here for the same reason, and
+    // the whole point of routing one span through the same walk rather than a
+    // shortcut that would have answered leftmost and called it earliest.
+    const anchored = try open("^a+", 0);
+    defer free(anchored);
+    try t.expectEqual(Status.ok, earliest(anchored));
+    try t.expectEqual(Status.invalid, findFirstAsk(anchored, &asking("aaa", mode_earliest), &got));
+    try t.expectEqual(fault.Fault.Unsupported, fault.last().?.code);
 }
 
 test "find_all reports the library walk's empty matches, not the grep walk's" {
