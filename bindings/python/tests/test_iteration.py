@@ -20,7 +20,7 @@ import re
 
 import irgx
 import pytest
-from irgx import _abi
+from irgx import _abi, _engine
 from irgx._pool import Compiled
 
 
@@ -155,10 +155,17 @@ def test_asking_only_how_many_matches_there_are_costs_no_span_buffer():
     assert written.value == 4
 
 
-def test_a_short_window_is_resized_once_and_answers_completely(monkeypatch):
+def test_a_short_window_is_resized_once_by_the_ctypes_transport(monkeypatch):
     # The count the engine reports IS the size of the retry, so a text with any
     # number of matches costs two searches at most. The doubling schedule this
     # replaced paid a whole rescan per rung: five passes over the text below.
+    #
+    # Counted against the ctypes transport specifically, because counting is
+    # only possible there: the accelerator resolves the engine's function
+    # pointer once at bind time, so a Python-level patch of `lib` is invisible
+    # to it. The claim it shares with this one - a window this short still
+    # answers completely - is the black-box test below, which runs on whichever
+    # transport is live.
     calls = 0
     # The walk goes through the WINDOWED verb, because `pos`/`endpos` need its
     # `from` and the whole-text case is that verb with an inert bound. Counting
@@ -171,11 +178,23 @@ def test_a_short_window_is_resized_once_and_answers_completely(monkeypatch):
         return real(*args)
 
     monkeypatch.setattr(_abi.lib, "irgx_find_all_in", counted)
-    monkeypatch.setattr("irgx._pattern._FIRST_WINDOW", 4)
+    monkeypatch.setattr("irgx._engine._FIRST_WINDOW", 4)
 
-    text = "a" * 5_000
-    assert len(spans("a", text)) == 5_000
+    compiled = Compiled(b"a", 0)
+    text = b"a" * 5_000
+    assert len(_engine._find_all(compiled.ptr.value, text, 0, 0)) == 5_000
     assert calls == 2
+
+
+def test_a_text_with_more_matches_than_the_window_still_answers_completely():
+    # The same claim, asked of whichever transport is live and with nothing
+    # patched: 5,000 matches over a window sized at 4,096 is the retry path
+    # under its own name. A transport that silently truncated at its first
+    # window would pass every other test in this file.
+    text = "a" * 5_000
+    found = spans("a", text)
+    assert len(found) == 5_000
+    assert found[0] == (0, 1) and found[-1] == (4_999, 5_000)
 
 
 # The same sequence is also checked against the exact face's `--json`, the

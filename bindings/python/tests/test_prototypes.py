@@ -10,7 +10,7 @@ indexes and the number of records a tree search found are all among them, and al
 three are quantities a real corpus can push past 2\\ :sup:`31`.
 
 Rather than eyeball a table, this reads the header and compares it — return type
-and every parameter type, for all 100 symbols — against
+and every parameter type, for all 102 symbols — against
 :data:`irgx._abi.PROTOTYPES`, the table :func:`irgx._abi.declare` records as it
 binds. Both halves of every prototype are therefore checked mechanically, so a
 new plane added without a ``restype`` fails here instead of in someone's data.
@@ -179,7 +179,7 @@ def _declarations() -> dict[str, tuple[str, str]]:
 
 @functools.cache
 def _header() -> dict[str, tuple[Shape, tuple[Shape, ...]]]:
-    """``{name: (return shape, parameter shapes)}`` for all 100 declared functions."""
+    """``{name: (return shape, parameter shapes)}`` for all 102 declared functions."""
     return {
         name: (_reduce_c(tuple(_TOKEN.findall(ret))), _params(params))
         for name, (ret, params) in _declarations().items()
@@ -201,8 +201,8 @@ def _bound() -> dict[str, tuple[Any, tuple[Any, ...]]]:
 
 def test_the_header_parses_to_the_frozen_count() -> None:
     """Guard the extractor: a regex that matched nothing would pass every test below."""
-    assert len(_header()) == 100, (
-        f"the header parsed to {len(_header())} functions, not the frozen 100 — "
+    assert len(_header()) == 102, (
+        f"the header parsed to {len(_header())} functions, not the frozen 102 — "
         f"either the ABI grew (this number moves with it) or the extractor broke"
     )
 

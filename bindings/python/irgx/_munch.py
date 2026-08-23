@@ -37,10 +37,16 @@ import enum
 from typing import TYPE_CHECKING, Any, NamedTuple
 
 from . import _abi
-from ._abi import _VOID, MunchPattern, MunchRefusal, MunchToken, UnsupportedPattern, check, lib
+from ._abi import _VOID, MunchPattern, MunchRefusal, UnsupportedPattern, check, lib
+from ._engine import transport
 from ._flags import flag_bits
 from ._match import TextView
 from ._pool import Pool
+from ._shape import TEXTUAL
+
+# The one verb this plane crosses the FFI with per cursor - and the hottest in
+# the package, since a lexer asks it once per token rather than once per text.
+_scan = transport("munch_scan")[0]
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -219,33 +225,22 @@ class Scan:
         if not seated or permitted == ():
             return None
 
-        out = (ctypes.c_uint32 * seated)()
-        tok = MunchToken()
-        row = None if permitted is None else (ctypes.c_uint32 * len(permitted))(*permitted)
-        status = check(
-            lib.irgx_munch_scan(
-                self._munch._pool.handle(),
-                view.data,
-                len(view.data),
-                view.offset(at),
-                row,
-                0 if permitted is None else len(permitted),
-                _abi.MUNCH_SHORTEST if shortest else _abi.MUNCH_LONGEST,
-                ctypes.byref(tok),
-                out,
-                seated,
-            ),
-            "could not scan a munch",
+        cursor = view.offset(at)
+        found = _scan(
+            self._munch._pool.handle(),
+            view.subject,
+            cursor,
+            permitted,
+            _abi.MUNCH_SHORTEST if shortest else _abi.MUNCH_LONGEST,
+            seated,
         )
-        if status != _abi.MATCH:
+        if type(found) is int:
+            check(found, "could not scan a munch")
             return None
         # The engine answers in bytes from the start of the text; the caller
-        # thinks in their own units from the cursor. `seated` is the exact cap at
-        # which `count` can never exceed what was written, so this never retries.
-        return Token(
-            view.index(view.offset(at) + tok.len) - at,
-            tuple(out[i] for i in range(tok.count)),
-        )
+        # thinks in their own units from the cursor.
+        reach, winners = found
+        return Token(view.index(cursor + reach) - at, winners)
 
 
 class Munch:
@@ -265,7 +260,7 @@ class Munch:
                 "not a mixture; they answer about different kinds of text"
             )
         for pattern in patterns:
-            if not isinstance(pattern, str | bytes | bytearray | memoryview):
+            if not isinstance(pattern, TEXTUAL):
                 # `bytes(42)` is 42 zero bytes rather than an error, so without
                 # this guard an int would compile into something meaningless.
                 raise TypeError(f"a terminal must be str or bytes, not {type(pattern).__name__}")
@@ -371,7 +366,7 @@ class Munch:
         return Scan(self, text).token(at, allow=allow, shortest=shortest)
 
     def _view(self, text: str | bytes) -> TextView:
-        if not isinstance(text, str | bytes | bytearray | memoryview):
+        if not isinstance(text, TEXTUAL):
             raise TypeError(f"expected str or bytes to lex, not {type(text).__name__}")
         if isinstance(text, str) == self._is_bytes:
             wanted = "bytes" if self._is_bytes else "str"

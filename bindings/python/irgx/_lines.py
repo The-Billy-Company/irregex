@@ -20,7 +20,7 @@ import ctypes
 from typing import Any, NamedTuple
 
 from ._abi import check, declare, lib
-from ._shape import sink
+from ._shape import BINARY, sink
 
 _U8P = ctypes.c_char_p
 _SIZE = ctypes.c_size_t
@@ -111,7 +111,7 @@ def encode(text: str | bytes) -> bytes:
     """
     if isinstance(text, str):
         return text.encode("utf-8", "surrogateescape")
-    if isinstance(text, bytes | bytearray | memoryview):
+    if isinstance(text, BINARY):
         return bytes(text)
     raise TypeError(f"expected str or bytes, not {type(text).__name__}")
 

@@ -23,20 +23,31 @@ from __future__ import annotations
 
 import ctypes
 from collections.abc import Callable, Iterator
+from functools import partial
+from itertools import starmap
 from typing import Any
 
 from . import _abi
-from ._abi import Span, check, error, lib
+from ._abi import check, error, lib
+from ._engine import READS_STR, transport
 from ._match import Match, TextView, wrong_subject
 from ._pool import Compiled, Pool
 from ._replace import compile_template
+from ._shape import TEXTUAL
 
-# How many spans to ask for on the first `find_all`. The header's advice is to
-# size the window at `len + 1`, which is the most matches a text can hold; doing
-# that unconditionally would allocate 16 MB of span buffer for a 1 MB text that
-# probably has four matches. So start here, and let the count the engine reports
-# size the one retry a short window can ever need.
-_FIRST_WINDOW = 4096
+# The three verbs this plane crosses the FFI with once per text, each resolved
+# to the native transport where there is one and to the ctypes implementation
+# beside it otherwise. Bound here rather than looked up per call, so choosing a
+# transport costs nothing at all once the module is imported. Buffer sizing, the
+# short-window retry and the span objects live behind them; see `irgx._engine`.
+#
+# The seam's boolean regex verb, `is_match`, is deliberately not among them: see
+# :meth:`Pattern.is_match` for the measurement that routes it elsewhere. It stays
+# bound in the seam, and under parity test, because it is the right verb again
+# the day its kernel stops declining on a character class.
+_find_first_in, _find_all_in, _captures, _texts, _group_texts = transport(
+    "find_first", "find_all", "captures", "texts", "group_texts"
+)
 
 
 def _on_characters(spans: list[tuple[int, int]], data: bytes) -> list[tuple[int, int]]:
@@ -48,12 +59,7 @@ def _on_characters(spans: list[tuple[int, int]], data: bytes) -> list[tuple[int,
     Only an empty match can start there for a well-formed pattern, but the test
     is on the offset rather than on the width, because that is the actual rule
     and a width test would be a guess about which patterns exist.
-
-    A fast path for the ASCII case, which is most texts: no continuation byte can
-    be present, so there is nothing to remove and no copy to pay for.
     """
-    if data.isascii():
-        return spans
     size = len(data)
     # `start >= size` is the end-of-text position, which is a boundary and has no
     # byte to inspect.
@@ -78,7 +84,7 @@ class Pattern:
     )
 
     def __init__(self, pattern: str | bytes, flags: int) -> None:
-        if not isinstance(pattern, str | bytes | bytearray | memoryview):
+        if not isinstance(pattern, TEXTUAL):
             # `bytes(42)` is 42 zero bytes rather than an error, so without this
             # guard an int pattern would compile into something meaningless
             # instead of being refused.
@@ -186,14 +192,14 @@ class Pattern:
         return f"irgx.compile({self._source!r})"
 
     def _view(self, text: str | bytes) -> TextView:
-        if not isinstance(text, str | bytes | bytearray | memoryview):
+        if not isinstance(text, TEXTUAL):
             raise TypeError(f"expected str or bytes to search, not {type(text).__name__}")
         if isinstance(text, str) == self._is_bytes:
             raise wrong_subject(self, text)
         return TextView(text)
 
-    def _region(self, view: TextView, pos: int, endpos: int | None) -> tuple[bytes, int] | None:
-        """``re``'s ``pos``/``endpos`` as the bytes to search and the byte to start at.
+    def _region(self, view: TextView, pos: int, endpos: int | None) -> tuple[Any, int] | None:
+        """``re``'s ``pos``/``endpos`` as the text to search and the byte to start at.
 
         ``None`` when no match is possible at all — ``pos`` past the end, or
         ``endpos`` below ``pos``, both of which ``re`` answers with no match
@@ -212,13 +218,25 @@ class Pattern:
             re.compile("b$").search("abc", 0, 2)   # matches (1, 2)
 
         So ``pos`` is a window bound and ``endpos`` is a truncation, which is why
-        this returns a possibly-shortened ``bytes`` for the second and an offset
+        this returns a possibly-shortened subject for the second and an offset
         for the first. That also means the search it feeds has an inert end bound
         (``to == len``), so ``endpos`` costs nothing on the PCRE arm — unlike the C
         ABI's true ``to``, which that arm cannot express. The engine underneath is
         strictly more expressive than ``endpos`` here; ``re``'s spelling is what
         this method promises.
+
+        The subject comes back in whichever domain the transport reads cheapest
+        (:attr:`irgx._match.TextView.subject`), which for the untruncated case —
+        every call that does not pass ``endpos`` — means the caller's own object,
+        copied zero times. Truncation slices in the caller's domain when it can,
+        because the cut is at a character boundary either way.
         """
+        # The whole text, which is what every call that passes no bounds means -
+        # and that is nearly all of them. Worth saying separately: the clamping
+        # below is a length, four comparisons and a domain translation spent
+        # arriving at the two values already in hand.
+        if pos == 0 and endpos is None:
+            return view.subject, 0
         # Resolved in the CALLER's domain first, because that is the domain `re`
         # clamps in. Converting first and comparing after would let `pos` past the
         # end survive as a clamped offset, and a nullable pattern would then
@@ -233,64 +251,58 @@ class Pattern:
         # error, so this is a result rather than a raise.
         if first > last:
             return None
-        data = view.data
-        return (data if last == size else data[: view.offset(last)]), view.offset(first)
+        start = view.offset(first)
+        if last == size:
+            return view.subject, start
+        # A truncation is a suffix cut, so every offset before it is unchanged
+        # and `start` needs no adjusting. `original` is sliceable at `last`
+        # directly — that index is already in its domain — and is the right
+        # object to slice whenever it is also the one the transport reads.
+        if view.subject is view.original:
+            return view.original[:last], start
+        return view.data[: view.offset(last)], start
 
     # ── the engine calls ──────────────────────────────────────────────────
 
-    def _find_all(
-        self, data: bytes, start: int = 0, *, characters: bool = False
-    ) -> list[tuple[int, int]]:
-        """Every match span in ``data`` at or after ``start``, in the engine's own order.
+    def _find_all(self, subject: Any, start: int = 0, limit: int = 0) -> list[tuple[int, int]]:
+        """Every match span in ``subject`` at or after ``start``, in the engine's own order.
 
-        ``find_all`` reports how many matches the TEXT holds rather than how
-        many fit, so a window that came up short says by how much and the retry
-        is sized at the answer. There is no growth schedule: a second pass over
-        unchanged text cannot find a different number.
+        ``start`` is a window bound, not a slice: assertions still read the
+        subject from byte 0, which is what makes ``pos`` mean what ``re`` says it
+        means. The end bound is always inert here (``endpos`` shortened the
+        subject instead), so this asks nothing the PCRE arm cannot answer.
+        ``limit`` caps how many spans are wanted — one, for :meth:`search`.
 
-        ``start`` is a window bound, not a slice: assertions still read ``data``
-        from byte 0, which is what makes ``pos`` mean what ``re`` says it means.
-        The end bound is always inert here (``endpos`` shortened ``data``
-        instead), so this asks nothing the PCRE arm cannot answer.
-
-        ``characters`` thins the sequence to the positions a ``str`` subject
-        actually has. The engine reports the widest sequence — every empty match
-        at every BYTE — and for a ``str`` that includes offsets inside a
-        multi-byte character, which ``re`` has no position for and which collapse
-        onto their character's index on the way out. ``x*`` over ``"é"`` reports
-        empty at bytes 0, 1 and 2; byte 1 splits the character, so ``re`` shows
-        two matches where the raw sequence would show three, the middle one a
-        duplicate of the first. Subtractive, like every other binding's thinning
-        rule, and off for ``bytes`` subjects, whose domain IS the engine's.
+        Window sizing and the single retry a short one needs belong to the
+        transport, which is the layer that knows whether a span buffer was
+        involved at all; see :mod:`irgx._engine`. What belongs here is the
+        sentence a refusal gets told in, which is why the seam hands back the
+        engine's own status rather than raising something generic.
         """
-        handle = self._pool.handle()
-        size = len(data)
+        found = _find_all_in(self._pool.handle(), subject, start, limit)
+        if type(found) is int:
+            check(found, f"could not search with {self._source!r}", self._source)
+            return []
+        return found
 
-        def sweep(window: int) -> tuple[list[tuple[int, int]], int]:
-            out = (Span * window)()
-            written = ctypes.c_size_t()
-            check(
-                lib.irgx_find_all_in(
-                    handle, data, size, start, size, out, window, ctypes.byref(written)
-                ),
-                f"could not search with {self._source!r}",
-                self._source,
-            )
-            # At most `window` spans were written, however many the text holds,
-            # so the read is bounded by the buffer and never by the count.
-            total = written.value
-            return [(out[i].start, out[i].end) for i in range(min(total, window))], total
+    def _first(self, subject: Any, start: int = 0) -> tuple[int, int] | None:
+        """The leftmost span at or after ``start``, or ``None`` when there is none.
 
-        spans, total = sweep(min(size + 1, _FIRST_WINDOW))
-        found = spans if total <= len(spans) else sweep(total)[0]
-        return _on_characters(found, data) if characters else found
+        What :meth:`search` wants, and deliberately not ``find_all`` capped at
+        one: a cap bounds how many spans get *written* and never how many get
+        walked, because the count that comes back is the one the whole text
+        holds. Asking that way made every ``search`` pay for every later match
+        plus the tally over them — on a page of prose, an order of magnitude of
+        work for a span nobody could read.
+        """
+        found = _find_first_in(self._pool.handle(), subject, start)
+        if type(found) is int:
+            check(found, f"could not search with {self._source!r}", self._source)
+            return None
+        return found
 
     def _captures_at(self, view: TextView, start: int, end: int) -> list[tuple[int, int] | None]:
-        """Group spans for the match ``find_all`` reported at ``start``.
-
-        ``captures`` reports how many groups the PATTERN has, not how many it
-        wrote, so a window that came up short sizes its own retry.
-        """
+        """Group spans for the match ``find_all`` reported at ``start``."""
         if self._groups is None:
             raise error(
                 f"the capture engine cannot compile {self._source!r}, so group detail "
@@ -300,42 +312,29 @@ class Pattern:
         if self._groups == 0:
             return [(start, end)]
 
-        data = view.data
-        handle = self._pool.handle()
-        window = self._groups + 1
-        while True:
-            out = (Span * window)()
-            written = ctypes.c_size_t()
-            status = check(
-                lib.irgx_captures(
-                    handle, data, len(data), start, out, window, ctypes.byref(written)
-                ),
+        out = _captures(self._pool.handle(), view.subject, start, self._groups)
+        if type(out) is int:
+            check(
+                out,
                 f"could not read capture groups for {self._source!r}",
                 self._source,
             )
-            if status != _abi.MATCH:
-                # `find_all` reported a match here, so `captures` finding none
-                # means the two arms disagree. Refusing beats inventing groups.
-                raise error(
-                    f"internal disagreement in the engine: find_all reported a match at "
-                    f"byte {start} for {self._source!r}, but captures found none",
-                    self._source,
-                )
-            if written.value <= window:
-                break
-            window = written.value
+            # `find_all` reported a match here, so `captures` finding none means
+            # the two arms disagree. Refusing beats inventing groups.
+            raise error(
+                f"internal disagreement in the engine: find_all reported a match at "
+                f"byte {start} for {self._source!r}, but captures found none",
+                self._source,
+            )
 
-        whole = (out[0].start, out[0].end)
+        whole = out[0]
         if whole != (start, end):
             raise error(
                 f"internal disagreement in the engine: find_all reported {(start, end)} "
                 f"for {self._source!r}, but captures reported {whole} from the same offset",
                 self._source,
             )
-        return [
-            None if out[i].start < 0 or out[i].end < 0 else (out[i].start, out[i].end)
-            for i in range(min(window, written.value))
-        ]
+        return out
 
     # ── the search surface ────────────────────────────────────────────────
 
@@ -348,17 +347,50 @@ class Pattern:
         ``pos``/``endpos`` the stdlib search verbs do, so switching between them
         never changes which region was asked about.
         """
+        # The common call passes no bounds and the caller's own object in the
+        # pattern's own domain, and for that call a `TextView` has nothing to
+        # say: no truncation, no offset, and no `Match` to translate spans for.
+        # An exact type in the right domain IS the validation `_view` performs,
+        # so anything else — a subclass, a memoryview, a mismatch — still takes
+        # the slow path below for its diagnostics.
+        if pos == 0 and endpos is None:
+            kind = type(text)
+            if kind is bytes if self._is_bytes else kind is str:
+                # The seam call spelled inline rather than through `_first`,
+                # whose frame costs more than the verb here; a refusal still
+                # arrives as an int and still gets `_first`'s sentence. The
+                # handle is read straight off the pool's thread-local for the
+                # same reason — `handle()` is one attribute in a frame that
+                # costs more than the attribute (see `Pool.handle`, which the
+                # cold miss still goes through).
+                pool = self._pool
+                try:
+                    handle = pool._local.address
+                except AttributeError:
+                    handle = pool.handle()
+                found = _find_first_in(handle, text, 0)
+                if type(found) is tuple:
+                    return True
+                if found < 0:
+                    check(found, f"could not search with {self._source!r}", self._source)
+                return False
         view = self._view(text)
         region = self._region(view, pos, endpos)
         if region is None:
             return False
-        data, start = region
-        status = check(
-            lib.irgx_is_match_in(self._pool.handle(), data, len(data), start, len(data)),
-            f"could not search with {self._source!r}",
-            self._source,
-        )
-        return status == _abi.MATCH
+        # `find_first` and not the boolean verb, which reads backwards and is
+        # measured. Two things net out that way. The boolean kernel is ~25 ns
+        # cheaper at the ABI on a pattern it has a fast path for, and then hands
+        # back a status the caller has to run through `check` — a frame that
+        # `_first` already absorbs — so from here it arrives slower anyway. And
+        # where that fast path declines, which is every character class and
+        # every bounded repeat, it falls back to a walk without the prefilter the
+        # span verbs get: `\w+` over a line of prose costs 1012 ns to answer
+        # yes/no and 89 ns to answer WHERE. That second one is an engine defect
+        # rather than a fact about booleans, so this is a routing choice and not
+        # a claim; the span is discarded, and the walk, region and iteration
+        # rules are the same either way.
+        return self._first(*region) is not None
 
     def search(self, text: str | bytes, pos: int = 0, endpos: int | None = None) -> Match | None:
         """The first match in ``text``, or ``None``.
@@ -368,34 +400,57 @@ class Pattern:
         and ``endpos`` does (see :meth:`_region`). Both count in the units of
         ``text`` — characters for ``str``, bytes for ``bytes``.
         """
+        # Same fast path as :meth:`is_match`, with the view built only on a hit:
+        # a miss needs no object at all, and the hit builds it from the same
+        # `text` the slow path would have viewed. The engine's leftmost-first
+        # rule is what keeps the raw span safe to wrap unthinned — an empty
+        # match inside a multi-byte character would imply an equally valid one
+        # at that character's first byte, which sorts earlier.
+        if pos == 0 and endpos is None:
+            kind = type(text)
+            is_str = kind is str
+            if kind is bytes if self._is_bytes else is_str:
+                pool = self._pool
+                try:
+                    handle = pool._local.address
+                except AttributeError:
+                    handle = pool.handle()
+                found = _find_first_in(handle, text, 0)
+                if type(found) is tuple:
+                    # The view and the match built by attribute rather than by
+                    # call: two `__init__` frames cost more than everything
+                    # either one does, and on this path every input to both is
+                    # already known exactly — the type was just checked, so the
+                    # branches those constructors exist to take are settled.
+                    # `TextView.__init__` and `Match.__init__` remain the one
+                    # written form; these are those assignments, not new rules.
+                    view = TextView.__new__(TextView)
+                    view.original = view.subject = text
+                    if is_str:
+                        view.wide = wide = not text.isascii()
+                        view._marks = [(0, 0)] if wide else None
+                        view._bytes = None if READS_STR else text.encode("utf-8")
+                        if view._bytes is not None:
+                            view.subject = view._bytes
+                    else:
+                        view._bytes = text
+                        view._marks = None
+                        view.wide = False
+                    m = Match.__new__(Match)
+                    m._re = self
+                    m._view = view
+                    m._start, m._end = found
+                    m._spans = None
+                    return m
+                if found < 0:
+                    check(found, f"could not search with {self._source!r}", self._source)
+                return None
         view = self._view(text)
         region = self._region(view, pos, endpos)
         if region is None:
             return None
-        data, start = region
-        out = (Span * 1)()
-        written = ctypes.c_size_t()
-        # A one-span window, so a MATCH is out[0] and nothing else. The status
-        # is what decides it: `written` counts the matches the REGION holds, so
-        # reading it as "how many spans came back" would be right only until a
-        # text held two.
-        status = check(
-            lib.irgx_find_all_in(
-                self._pool.handle(),
-                data,
-                len(data),
-                start,
-                len(data),
-                out,
-                1,
-                ctypes.byref(written),
-            ),
-            f"could not search with {self._source!r}",
-            self._source,
-        )
-        if status != _abi.MATCH:
-            return None
-        return Match(self, view, out[0].start, out[0].end)
+        found = self._first(*region)
+        return None if found is None else Match(self, view, *found)
 
     def match(self, text: str | bytes, pos: int = 0, endpos: int | None = None) -> Match | None:
         """The match beginning at exactly ``pos``, or ``None`` — ``re``'s ``match``."""
@@ -415,23 +470,46 @@ class Pattern:
 
         return full(self, text, pos, endpos)
 
+    def _walk(
+        self, text: str | bytes, pos: int, endpos: int | None
+    ) -> tuple[TextView, list[tuple[int, int]]]:
+        """The view over ``text`` and every match span the caller can index.
+
+        One ``find_all`` call, so the sequence is the engine's own — and shared
+        by the two verbs that walk it, which otherwise repeat the region and the
+        thinning in two places that must agree.
+        """
+        view = self._view(text)
+        region = self._region(view, pos, endpos)
+        if region is None:
+            return view, []
+        found = self._find_all(*region)
+        # The engine reports the widest sequence — every empty match at every
+        # BYTE — and for a `str` that includes offsets inside a multi-byte
+        # character, which `re` has no position for and which would collapse onto
+        # their character's index on the way out. `x*` over `"é"` reports empty at
+        # bytes 0, 1 and 2; byte 1 splits the character, so `re` shows two matches
+        # where the raw sequence shows three, the middle one a duplicate. Only a
+        # text whose two domains differ can hold such a position.
+        return view, _on_characters(found, view.data) if view.wide else found
+
     def finditer(
         self, text: str | bytes, pos: int = 0, endpos: int | None = None
     ) -> Iterator[Match]:
         """Every match in ``text``, in order.
 
-        The spans come from one ``find_all`` call, so the sequence is the
-        engine's own. Group detail is filled per match on first request, so
-        iterating purely to count costs no capture passes. ``pos``/``endpos`` bound
-        the region as in :meth:`search`.
+        Group detail is filled per match on first request, so iterating purely
+        to count costs no capture passes. ``pos``/``endpos`` bound the region as
+        in :meth:`search`.
         """
-        view = self._view(text)
-        region = self._region(view, pos, endpos)
-        if region is None:
-            return
-        data, start = region
-        for at, end in self._find_all(data, start, characters=view.is_str):
-            yield Match(self, view, at, end)
+        # `starmap` rather than a `yield` loop: the walk is one `find_all` and
+        # is already done by the time there is anything to yield, so a generator
+        # would only add a Python frame resumed once per match to hand back an
+        # object the constructor could have handed back directly. The one visible
+        # difference is that a `finditer(...)` nobody iterates now does the scan,
+        # which is what `re.finditer` does too.
+        view, found = self._walk(text, pos, endpos)
+        return starmap(partial(Match, self, view), found)
 
     def findall(self, text: str | bytes, pos: int = 0, endpos: int | None = None) -> list[Any]:
         """Match texts, or group texts when the pattern declares groups.
@@ -442,13 +520,48 @@ class Pattern:
         because a group that did not participate and a group that matched empty
         are different facts and ``.groups()`` already tells them apart.
         """
+        # One crossing, whatever the group count. `findall` returns text, and a
+        # text needs no index in either domain — a UTF-8 slice decodes to the
+        # same `str` the caller would have cut — so the walk, the capture pass,
+        # the empty-match thinning and every finished slice happen behind one
+        # verb (`texts`, or `group_texts` when the pattern declares groups; see
+        # :mod:`irgx._engine`). No `Match` is built, no span comes back, and on
+        # a page of prose that is several hundred objects and as many FFI
+        # crossings not made, for answers identical to `m.group(0)`,
+        # `m.group(1)` and `m.groups()`.
+        # The common no-bounds call skips the view and the region the same way
+        # :meth:`search` does: the verbs below thin and slice in the engine's
+        # own domain, so nothing here needs a translation object — the exact
+        # type check IS the validation, and anything else takes `_view` for
+        # its diagnostics.
+        if (
+            pos == 0
+            and endpos is None
+            and (type(text) is bytes if self._is_bytes else type(text) is str)
+        ):
+            subject, start = text, 0
+        else:
+            view = self._view(text)
+            region = self._region(view, pos, endpos)
+            if region is None:
+                return []
+            subject, start = region
+        pool = self._pool
+        try:
+            handle = pool._local.address
+        except AttributeError:
+            handle = pool.handle()
         count = self._groups or 0
-        found = self.finditer(text, pos, endpos)
-        if count == 0:
-            return [m.group(0) for m in found]
-        if count == 1:
-            return [m.group(1) for m in found]
-        return [m.groups() for m in found]
+        decode = not self._is_bytes
+        found = (
+            _texts(handle, subject, start, decode)
+            if count == 0
+            else _group_texts(handle, subject, start, count, decode)
+        )
+        if type(found) is int:
+            check(found, f"could not search with {self._source!r}", self._source)
+            return []
+        return found
 
     def split(self, text: str | bytes, maxsplit: int = 0) -> list[Any]:
         """``text`` split around each match; declared groups are kept in the result."""

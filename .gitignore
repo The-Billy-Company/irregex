@@ -26,6 +26,12 @@ __pycache__/
 dist/
 .pytest_cache/
 .ruff_cache/
+# The compiled accelerator, when a checkout builds one in place to develop or
+# measure against (`scripts/build_accel.py`). The wheel's copy is compiled by
+# `hatch_build.py` into a temporary directory and force-included from there, so
+# a copy sitting here is one developer's build and must never be packaged.
+bindings/python/irgx/_accel*.so
+bindings/python/irgx/_accel*.pyd
 
 # Artifact home (index, atlas, shelf, freshness anchor, daemon socket)
 .gist/

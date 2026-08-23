@@ -25,8 +25,14 @@ from typing import Any
 
 from . import _abi
 from ._abi import _VOID, SlatePattern, UnsupportedPattern, check, lib
+from ._engine import transport
 from ._flags import flag_bits
 from ._pool import Pool
+from ._shape import TEXTUAL
+
+# The two verbs this plane crosses the FFI with per text; the compile-time ones
+# stay on ctypes, where a microsecond is noise against a determinization.
+_is_match, _which = transport("slate_is_match", "slate_which")
 
 #: The two flags a slate has nowhere to carry. Refused rather than dropped: a
 #: caller who passed one believes something about the answer they are about to
@@ -115,7 +121,7 @@ class PatternSet:
                 "a mixture; they answer about different kinds of text"
             )
         for pattern in patterns:
-            if not isinstance(pattern, str | bytes | bytearray | memoryview):
+            if not isinstance(pattern, TEXTUAL):
                 # `bytes(42)` is 42 zero bytes rather than an error, so without
                 # this guard an int would compile into something meaningless.
                 raise TypeError(f"a pattern must be str or bytes, not {type(pattern).__name__}")
@@ -163,9 +169,8 @@ class PatternSet:
         literal scan can throw out a hopeless text with no pattern running at
         all.
         """
-        data = self._bytes(text)
         status = check(
-            lib.irgx_slate_is_match(self._pool.handle(), data, len(data)),
+            _is_match(self._pool.handle(), self._subject(text)),
             "could not match a set",
         )
         return status == _abi.MATCH
@@ -179,27 +184,25 @@ class PatternSet:
         count = len(self._source)
         if not count:
             return []
-        data = self._bytes(text)
-        out = (ctypes.c_uint32 * count)()
-        written = ctypes.c_size_t()
-        check(
-            lib.irgx_slate_which(
-                self._pool.handle(), data, len(data), out, count, ctypes.byref(written)
-            ),
-            "could not match a set",
-        )
-        return [out[i] for i in range(written.value)]
+        found = _which(self._pool.handle(), self._subject(text), count)
+        if type(found) is int:
+            check(found, "could not match a set")
+            return []
+        return found
 
-    def _bytes(self, text: str | bytes) -> bytes:
-        """``text`` as the UTF-8 the engine searches.
+    def _subject(self, text: str | bytes) -> Any:
+        """``text``, checked against what this set was compiled from.
 
         A set reports pattern indices rather than offsets, so there is no domain
-        to translate back into - but the str/bytes discipline still holds, for
-        the reason :mod:`re` holds it: a set compiled from ``str`` patterns is
-        about text, and quietly encoding a caller's bytes into it would answer a
-        question they did not ask.
+        to translate back into and no :class:`irgx._match.TextView` to keep - but
+        the str/bytes discipline still holds, for the reason :mod:`re` holds it:
+        a set compiled from ``str`` patterns is about text, and quietly encoding
+        a caller's bytes into it would answer a question they did not ask.
+
+        Handed on unencoded, because the transport is what knows whether an
+        encode is needed at all; see :func:`irgx._engine.transport`.
         """
-        if not isinstance(text, str | bytes | bytearray | memoryview):
+        if not isinstance(text, TEXTUAL):
             raise TypeError(f"expected str or bytes to search, not {type(text).__name__}")
         if isinstance(text, str) == self._is_bytes:
             wanted = "bytes" if self._is_bytes else "str"
@@ -207,7 +210,7 @@ class PatternSet:
                 f"cannot search {type(text).__name__} with a set compiled from "
                 f"{wanted}; compile the set from {type(text).__name__} instead"
             )
-        return text.encode("utf-8") if isinstance(text, str) else bytes(text)
+        return text
 
 
 def compile_set(patterns: Any, **flags: bool) -> PatternSet:

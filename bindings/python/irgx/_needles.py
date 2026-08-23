@@ -22,12 +22,15 @@ import enum
 from collections.abc import Iterable, Sequence
 from typing import Any, NamedTuple
 
-from ._abi import _VOID, MATCH, check, declare, error, lib
-from ._shape import Handle, sink, sized
+from ._abi import _VOID, MATCH, Occurrence, check, declare, error, lib
+from ._engine import transport
+from ._shape import BINARY, TEXTUAL, Handle, sized
 
 _U8P = ctypes.c_char_p
 _SIZE = ctypes.c_size_t
 _U32 = ctypes.c_uint32
+
+__all__ = ["Hit", "Needles", "Occurrence", "Shape", "Tier", "compile_needles"]
 
 
 class Tier(enum.IntEnum):
@@ -46,17 +49,6 @@ class Needle(ctypes.Structure):
     """``irgx_needle``: one literal, borrowed for the compile call only."""
 
     _fields_ = (("needle", _U8P), ("len", _SIZE))
-
-
-class Occurrence(ctypes.Structure):
-    """``irgx_occurrence``: one hit, attributed to the needle that produced it."""
-
-    _fields_ = (
-        ("needle", _U32),
-        ("reserved", _U32),
-        ("start", _SIZE),
-        ("end", _SIZE),
-    )
 
 
 class NeedleShape(ctypes.Structure):
@@ -97,6 +89,11 @@ declare(
     ),
     "the needle plane",
 )
+
+# The three verbs this plane crosses the FFI with per text. Resolved after
+# `declare`, which is what registers them with the accelerator - so a plane
+# imported before the engine exported a symbol keeps ctypes for that verb alone.
+_is_match, _which, _find_all = transport("needles_is_match", "needles_which", "needles_find_all")
 
 
 class Shape(NamedTuple):
@@ -189,9 +186,8 @@ class Needles(Handle):
     def is_match(self, text: str | bytes) -> bool:
         """Whether ANY needle occurs. The cheapest question: it stops at the
         first hit and attributes nothing."""
-        data = _encode(text)
         status = check(
-            lib.irgx_needles_is_match(self.ptr, data, len(data)),
+            _is_match(self.ptr, _subject(text)),
             "could not scan for the needle set",
         )
         return status == MATCH
@@ -204,17 +200,11 @@ class Needles(Handle):
         the ABI promises, so this crosses once even for a wordlist that hits on
         every entry.
         """
-        data = _encode(text)
-        handle = self.ptr
-        _, out, count = sink(
-            _U32,
-            lambda buf, cap, written: lib.irgx_needles_which(
-                handle, data, len(data), buf, cap, written
-            ),
-            "could not scan which needles occur",
-            hint=self._seated,
-        )
-        return tuple(out[i] for i in range(count))
+        found = _which(self.ptr, _subject(text), self._seated)
+        if type(found) is int:
+            check(found, "could not scan which needles occur")
+            return ()
+        return tuple(found)
 
     def find_all(self, text: str | bytes) -> tuple[Hit, ...]:
         """Every occurrence, each carrying its needle index and span.
@@ -223,16 +213,11 @@ class Needles(Handle):
         a large document can hit far more often than it has needles, so ask
         :meth:`which` instead when presence is the actual question.
         """
-        data = _encode(text)
-        handle = self.ptr
-        _, out, count = sink(
-            Occurrence,
-            lambda buf, cap, written: lib.irgx_needles_find_all(
-                handle, data, len(data), buf, cap, written
-            ),
-            "could not scan for needle occurrences",
-        )
-        return tuple(Hit(out[i].needle, out[i].start, out[i].end) for i in range(count))
+        found = _find_all(self.ptr, _subject(text))
+        if type(found) is int:
+            check(found, "could not scan for needle occurrences")
+            return ()
+        return tuple(Hit(*row) for row in found)
 
 
 def compile_needles(needles: Sequence[str | bytes]) -> Needles:
@@ -256,16 +241,24 @@ def _tier(value: int) -> Tier:
 
 
 def _encode(text: Any) -> bytes:
-    """``text`` as the bytes the engine scans.
-
-    A ``str`` becomes UTF-8, so every offset this plane reports is a BYTE offset
-    into that encoding rather than an index into the ``str``. Spans from a
-    ``str`` subject are therefore not slice bounds for it — which is why the
-    plane reports needle indices and spans rather than the matched text, and why
-    a caller who wants slices should pass ``bytes``.
-    """
+    """``text`` as the bytes the engine compiles a needle from."""
     if isinstance(text, str):
         return text.encode("utf-8")
-    if isinstance(text, bytes | bytearray | memoryview):
+    if isinstance(text, BINARY):
         return bytes(text)
+    raise error(f"a needle and its subject must be str or bytes, not {type(text).__name__}")
+
+
+def _subject(text: Any) -> Any:
+    """``text``, type-checked and handed to the transport unencoded.
+
+    A ``str`` is scanned as UTF-8, so every offset this plane reports is a BYTE
+    offset into that encoding rather than an index into the ``str``. Spans from
+    a ``str`` subject are therefore not slice bounds for it — which is why the
+    plane reports needle indices and spans rather than the matched text, and why
+    a caller who wants slices should pass ``bytes``. Whether that encode
+    actually happens is the transport's business; see :mod:`irgx._engine`.
+    """
+    if isinstance(text, TEXTUAL):
+        return text
     raise error(f"a needle and its subject must be str or bytes, not {type(text).__name__}")

@@ -45,6 +45,19 @@ from ._abi import STALE, Text, check, error
 #: bound by the caller. Returns the raw status.
 Fill = Callable[[Any, int, Any], int]
 
+#: What this package accepts as a subject text or a pattern source.
+#:
+#: A tuple and not the ``str | bytes | bytearray | memoryview`` it reads as,
+#: because that expression is not a constant: written inline in an ``isinstance``
+#: it builds three ``UnionType`` objects **per call**, which on a per-text guard
+#: costs more than the type check it decorates. Bound once here, and shared so
+#: that "what can be searched" has one answer rather than one per plane.
+TEXTUAL = (str, bytes, bytearray, memoryview)
+
+#: :data:`TEXTUAL` minus ``str``: the byte-domain half, for the guards that ask
+#: which domain a value is in rather than whether it is text at all.
+BINARY = (bytes, bytearray, memoryview)
+
 
 def sized(kind: type[ctypes.Structure]) -> Any:
     """A zeroed ``kind`` with ``struct_size`` stamped from ctypes' own ``sizeof``.
@@ -141,7 +154,11 @@ class Handle:
         # Bound to the instance so teardown never reaches for a module global
         # that interpreter shutdown may already have cleared.
         self._release = release
-        self._ptr = ptr
+        # Held as a plain address, not the `c_void_p` the compile wrote into.
+        # ctypes converts an int to a pointer argument on its own, and the
+        # native transport can only take one - so the integer is the spelling
+        # both transports read, and NULL stays falsy either way.
+        self._ptr = getattr(ptr, "value", ptr) or 0
 
     @property
     def ptr(self) -> Any:

@@ -14,6 +14,8 @@ import bisect
 import sys
 from typing import TYPE_CHECKING, Any
 
+from ._engine import READS_STR
+
 if TYPE_CHECKING:
     from ._pattern import Pattern
 
@@ -28,27 +30,58 @@ class TextView:
 
     ``original`` is what the caller passed and what slices come from, so
     ``view.slice(m.start(), m.end()) == m.group()`` holds by construction rather
-    than by an offset calculation that could drift. ``data`` is the UTF-8 the
-    engine searched.
+    than by an offset calculation that could drift. :attr:`data` is the UTF-8 the
+    engine searched, and :attr:`subject` is whichever of the two the transport in
+    this build reads most cheaply.
     """
 
-    __slots__ = ("_marks", "data", "is_str", "original")
+    __slots__ = ("_bytes", "_marks", "original", "subject", "wide")
+
+    original: Any
+    subject: Any
+    #: Whether the caller's domain and the engine's actually differ, and
+    #: therefore whether any position needs translating or thinning at all.
+    #: False for every ASCII text and every ``bytes``, which is most of them,
+    #: and the flag every hot path branches on to skip the translation entirely.
+    wide: bool
+    _bytes: bytes | None
+    _marks: list[tuple[int, int]] | None
 
     def __init__(self, text: str | bytes) -> None:
-        if isinstance(text, str):
-            self.original: Any = text
-            self.data = text.encode("utf-8")
-            self.is_str = True
-            # ASCII is the common case and the one where the two domains are
-            # identical, so it costs nothing. `_marks` None means identity.
-            self._marks: list[tuple[int, int]] | None = None if text.isascii() else [(0, 0)]
-        else:
+        if not isinstance(text, str):
             # Normalize bytearray / memoryview to bytes so that every slice this
             # view hands back is the same type, and joining them in `sub` works.
-            self.original = text if isinstance(text, bytes) else bytes(text)
-            self.data = self.original
-            self.is_str = False
+            self.original = self.subject = self._bytes = (
+                text if isinstance(text, bytes) else bytes(text)
+            )
             self._marks = None
+            self.wide = False
+            return
+        self.original = text
+        # ASCII is the common case and the one where the two domains are
+        # identical, so it costs nothing. `_marks` None means identity.
+        self.wide = wide = not text.isascii()
+        self._marks = [(0, 0)] if wide else None
+        # The native transport reads the str's OWN cached UTF-8, which for an
+        # ASCII string is the object's storage - so a text searched twice is
+        # copied zero times. ctypes cannot, and re-encoding per call would turn
+        # a walk with groups quadratic, so on that transport the copy is made
+        # once, here.
+        self._bytes = None if READS_STR else text.encode("utf-8")
+        self.subject = text if self._bytes is None else self._bytes
+
+    @property
+    def data(self) -> bytes:
+        """The UTF-8 the engine sees.
+
+        Materialized on demand rather than in ``__init__``, because on the
+        native transport most searches never need it: the offset table is
+        derived from the ``str``, and only a non-ASCII thinning pass or an
+        ``endpos`` truncation actually has to hold the bytes.
+        """
+        if self._bytes is None:
+            self._bytes = self.original.encode("utf-8")
+        return self._bytes
 
     def index(self, offset: int) -> int:
         """The caller-domain index for an engine-domain byte offset.
@@ -125,7 +158,11 @@ class Match:
 
     def _resolve(self, group: int | str) -> int:
         if isinstance(group, str):
-            index = self._re.groupindex.get(group)
+            # The private mapping, not the `groupindex` property: that one hands
+            # out a copy so a caller cannot edit the pattern's own table, which
+            # is right for a caller and absurd here - it would rebuild the whole
+            # dict to read one key, once per named group per match.
+            index = self._re._groupindex.get(group)
             if index is None:
                 raise IndexError(f"no such group: {group!r}")
             return index
@@ -152,7 +189,14 @@ class Match:
         """The caller-domain text of one byte span, or ``default`` for a group not entered."""
         if span is None:
             return default
-        return self._view.slice(self._view.index(span[0]), self._view.index(span[1]))
+        view = self._view
+        if view.wide:
+            return view.slice(view.index(span[0]), view.index(span[1]))
+        # The two domains coincide, so the engine's byte offsets already index
+        # the caller's own object and the translation is the identity. Slicing
+        # here rather than through `index` twice and `slice` once is the same
+        # answer for three fewer calls, which on this method is most of the cost.
+        return view.original[span[0] : span[1]]
 
     def group(self, *groups: int | str) -> Any:
         """One group's text, or a tuple when several are asked for.
@@ -160,12 +204,23 @@ class Match:
         A group the match did not enter is ``None``, never ``""`` - the two are
         different answers and ``(a)|(b)`` produces one of each every time.
         """
-        if not groups:
-            groups = (0,)
-        found = tuple(self._text_of(g) for g in groups)
-        return found[0] if len(found) == 1 else found
+        # `m.group()` and `m.group(n)` are what almost every caller writes, and
+        # both want one value; building a one-tuple to immediately index it is
+        # the tuple, the generator, and the `len` all spent on nothing.
+        if len(groups) < 2:
+            return self._text_of(groups[0] if groups else 0)
+        return tuple(self._text_of(g) for g in groups)
 
     def _text_of(self, group: int | str) -> Any:
+        # Group 0 on a subject whose domains coincide - the whole match of an
+        # ASCII `str` or of `bytes` - is a slice of what the caller already
+        # holds, and `find_all` reported those offsets directly. `type(...) is
+        # int` rather than `== 0` so that `0.0` still reaches `_resolve` and is
+        # still the TypeError it was, and `True` still means group 1.
+        if type(group) is int and group == 0:
+            view = self._view
+            if not view.wide:
+                return view.original[self._start : self._end]
         return self._cut(self._span_of(group))
 
     def __getitem__(self, group: int | str) -> Any:
@@ -179,22 +234,38 @@ class Match:
         """The named groups only, keyed by name."""
         return {
             name: self._cut(self._span_of(index), default)
-            for name, index in self._re.groupindex.items()
+            for name, index in self._re._groupindex.items()
         }
 
     def start(self, group: int | str = 0) -> int:
         span = self._span_of(group)
-        return -1 if span is None else self._view.index(span[0])
+        if span is None:
+            return -1
+        view = self._view
+        return view.index(span[0]) if view.wide else span[0]
 
     def end(self, group: int | str = 0) -> int:
         span = self._span_of(group)
-        return -1 if span is None else self._view.index(span[1])
+        if span is None:
+            return -1
+        view = self._view
+        return view.index(span[1]) if view.wide else span[1]
 
     def span(self, group: int | str = 0) -> tuple[int, int]:
+        # Whole match, coinciding domains: the pair the engine reported already
+        # indexes the caller's own text, so this is the two numbers on hand
+        # rather than a resolve, a tuple and two translations to rebuild them.
+        if type(group) is int and group == 0:
+            view = self._view
+            if not view.wide:
+                return (self._start, self._end)
         span = self._span_of(group)
         if span is None:
             return (-1, -1)
-        return (self._view.index(span[0]), self._view.index(span[1]))
+        view = self._view
+        if not view.wide:
+            return span
+        return (view.index(span[0]), view.index(span[1]))
 
     def expand(self, template: str | bytes) -> Any:
         """``template`` with ``\\1`` / ``\\g<name>`` references filled from this match."""

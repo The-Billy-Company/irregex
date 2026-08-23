@@ -101,13 +101,34 @@ class Pool:
         self._recompile = recompile
         self._local = threading.local()
 
-    def handle(self) -> Any:
-        """This thread's handle, compiling one the first time it asks."""
-        compiled = getattr(self._local, "compiled", None)
-        if compiled is None:
-            compiled = self._recompile()
-            # The thread-local dies with the Pool, and each thread's entry dies
-            # with the thread, so a pool of short-lived workers frees its
-            # handles as it goes rather than accumulating them.
-            self._local.compiled = compiled
-        return compiled.ptr
+    def handle(self) -> int:
+        """This thread's handle as a plain address, compiling one on first ask.
+
+        An address rather than the ``c_void_p`` its owner holds, because both
+        transports want one: ctypes takes an ``int`` wherever a ``c_void_p`` is
+        declared, and the native path needs the number anyway. Reading
+        ``.value`` per call would put an attribute walk on the hot path for
+        nothing — the owner is what keeps the handle alive, and it is parked
+        beside the address in the same thread-local.
+        """
+        # Asked rather than tested: this is the one lookup on every verb's hot
+        # path, and `getattr(local, "address", 0)` pays for a builtin call and a
+        # default on every one of the calls that finds it there. The miss is once
+        # per thread, and since 3.11 an untaken `except` costs nothing.
+        try:
+            return self._local.address  # type: ignore[no-any-return]
+        except AttributeError:
+            pass
+        # Out of the handler before compiling, so that a pattern the grammar
+        # declines raises `UnsupportedPattern` on its own rather than trailing a
+        # "during handling of AttributeError" that describes this cache and not
+        # the caller's mistake.
+        local = self._local
+        compiled = self._recompile()
+        # The thread-local dies with the Pool, and each thread's entry dies with
+        # the thread, so a pool of short-lived workers frees its handles as it
+        # goes rather than accumulating them.
+        local.compiled = compiled
+        address: int = compiled.ptr.value or 0
+        local.address = address
+        return address

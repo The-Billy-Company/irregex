@@ -15,6 +15,14 @@ ctypes rather than cffi or a C extension is a distribution decision. ctypes is
 in the standard library, so the wheel needs no compiler, no Python headers, and
 no build step on the installing machine; the same wheel works on any CPython
 that can ``dlopen`` the bundled library.
+
+What it is not is cheap per call - ctypes converts every argument through its
+own type machinery on every crossing, which costs more than the engine does on a
+short subject. So the twelve verbs that are asked once per *text* have an optional
+second transport, :mod:`irgx._accel`, and :func:`declare` hands it the pointers
+it has just resolved. That keeps one library loaded, one ABI check and one
+``IRGX_LIB``; :mod:`irgx._engine` is where the choice between the two is made,
+and it degrades to the ctypes path here whenever the accelerator is absent.
 """
 
 from __future__ import annotations
@@ -188,6 +196,23 @@ class MunchToken(ctypes.Structure):
     _fields_ = (("len", ctypes.c_size_t), ("count", ctypes.c_size_t))
 
 
+class Occurrence(ctypes.Structure):
+    """``irgx_occurrence``: one literal hit, attributed to the needle behind it.
+
+    Declared here beside :class:`Span` rather than in :mod:`irgx._needles`,
+    because :mod:`irgx._engine` fills a buffer of these on the fallback path and
+    the needle plane is imported lazily. That module re-exports it, so the plane
+    still reads as owning its own record.
+    """
+
+    _fields_ = (
+        ("needle", ctypes.c_uint32),
+        ("reserved", ctypes.c_uint32),
+        ("start", ctypes.c_size_t),
+        ("end", ctypes.c_size_t),
+    )
+
+
 class Text(ctypes.Structure):
     """``irgx_text``: a borrowed UTF-8 span, not NUL-terminated.
 
@@ -269,12 +294,18 @@ _SIGNATURES = (
         ctypes.c_int32,
         (_VOID, _U8P, _SIZE, ctypes.POINTER(Span), _SIZE, ctypes.POINTER(_SIZE)),
     ),
+    ("irgx_find_first", ctypes.c_int32, (_VOID, _U8P, _SIZE, ctypes.POINTER(Span))),
     ("irgx_pattern_windows", ctypes.c_int32, (_VOID,)),
     ("irgx_is_match_in", ctypes.c_int32, (_VOID, _U8P, _SIZE, _SIZE, _SIZE)),
     (
         "irgx_find_all_in",
         ctypes.c_int32,
         (_VOID, _U8P, _SIZE, _SIZE, _SIZE, ctypes.POINTER(Span), _SIZE, ctypes.POINTER(_SIZE)),
+    ),
+    (
+        "irgx_find_first_in",
+        ctypes.c_int32,
+        (_VOID, _U8P, _SIZE, _SIZE, _SIZE, ctypes.POINTER(Span)),
     ),
     (
         "irgx_captures",
@@ -357,6 +388,7 @@ def declare(signatures: Signatures, plane: str = "this plane") -> None:
     is behind — additive symbols do not bump :data:`ABI_VERSION`, so the version
     probe cannot catch it.
     """
+    found: dict[str, int] = {}
     for name, restype, argtypes in signatures:
         try:
             fn = getattr(lib, name)
@@ -368,6 +400,13 @@ def declare(signatures: Signatures, plane: str = "this plane") -> None:
         fn.restype = restype
         fn.argtypes = list(argtypes)
         PROTOTYPES[name] = (restype, tuple(argtypes))
+        found[name] = ctypes.cast(fn, ctypes.c_void_p).value or 0
+    if ACCEL is not None:
+        # Offer the whole plane and let the accelerator keep the handful it can
+        # answer for. Hooked here rather than at each call site because this is
+        # already the one place every plane's symbols are resolved, so a plane
+        # added later is offered its pointers without knowing this exists.
+        ACCEL.bind(found)
 
 
 def _load() -> ctypes.CDLL:
@@ -378,7 +417,33 @@ def _load() -> ctypes.CDLL:
         raise error(f"could not load the irregex library at {path}: {exc}") from exc
 
 
+def _accelerator() -> Any | None:
+    """The native fast-path module, or ``None`` to run on ctypes alone.
+
+    Absent for a good reason more often than not: a source checkout that was
+    never built, an interpreter the extension was not compiled for, a wheel for
+    a platform the matrix does not carry an accelerated build of. None of those
+    is a failure - the ctypes path answers identically - so this asks and moves
+    on rather than reporting.
+
+    ``IRGX_NO_ACCEL=1`` declines it deliberately, which is how the suite runs
+    the whole surface twice and how a caller pins the transport when they are
+    measuring one.
+    """
+    if os.environ.get("IRGX_NO_ACCEL"):
+        return None
+    try:
+        from . import _accel
+    except ImportError:
+        return None
+    return _accel
+
+
 lib = _load()
+
+#: The native transport, or ``None``. Read by :mod:`irgx._engine`, which is
+#: where the per-verb choice between the two is actually made.
+ACCEL = _accelerator()
 
 #: The resolved path of the loaded library. Public so a caller can prove which
 #: copy answered, which matters the moment IRGX_LIB enters the picture.
