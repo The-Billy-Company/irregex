@@ -113,11 +113,49 @@ pub const Jaws = struct {
     }
 };
 
-/// Should this pattern get a caliper at all? Multiline is out (a buffer anchor
-/// has no per-line determinization, and `-U` spans are the whole-buffer model),
-/// and so is any program the reverser cannot name a single `match` in.
-pub fn eligible(states: []const State, multiline: bool) bool {
-    return !multiline and reverse.matchIndex(states) != null;
+/// Does this program read a position predicate that `gapAt` answers off the
+/// edges of the slice it was handed — `^` or `$`?
+///
+/// Only `line_anchors` makes the question interesting. `subset.passes` resolves
+/// `.assert_start` against `Gap.at_start`, and `gapAt` sets that from `i == 0`,
+/// so the claim is "the slice's own edge". Under the line model the slice IS a
+/// line and the two coincide. Under the buffer model with line anchors on they
+/// do not: `^` passes after every `\n`, and a caliper would answer it only at
+/// offset 0 — silently dropping every match but the first line's.
+///
+/// `\A`/`\z` need no case here. `reverse.matchIndex` already declines any
+/// program carrying one, which is also what keeps `subset.passes`'s
+/// `unreachable` arm unreachable.
+fn readsLineAnchor(states: []const State) bool {
+    for (states) |st| switch (st) {
+        .assert_start, .assert_end => return true,
+        else => {},
+    };
+    return false;
+}
+
+/// Should this pattern get a caliper at all? Out: any program the reverser
+/// cannot name a single `match` in, and any program whose anchors mean
+/// something the jaws' slice-edge gaps cannot say (`readsLineAnchor`).
+///
+/// **The buffer model as such is not out, and it used to be.** The gate was a
+/// blanket `!multiline`, on two grounds: a buffer anchor has no per-line
+/// determinization, and `-U` spans are the whole-buffer model. The first is
+/// real but already enforced one layer down — `matchIndex` returns null on
+/// `\A`/`\z` — so the conjunct only duplicated it. The second is a statement
+/// about WHAT is searched, not about whether two jaws can measure it: the
+/// forward jaw runs leftmost-first from the search origin and the backward jaw
+/// runs the reversed program from the end it found, and neither construction
+/// asks how many lines lie between them. What genuinely does not survive the
+/// model change is the meaning of `^`/`$`, which is now its own precondition
+/// instead of a proxy for one.
+///
+/// The blanket cost the buffer model every multi-segment span — the shapes this
+/// engine exists for — and the C ABI compiles nothing else, so no binding could
+/// reach the caliper at all.
+pub fn eligible(states: []const State, multiline: bool, line_anchors: bool) bool {
+    if (multiline and line_anchors and readsLineAnchor(states)) return false;
+    return reverse.matchIndex(states) != null;
 }
 
 /// Build the reversed program and both machine configurations. O(program), no

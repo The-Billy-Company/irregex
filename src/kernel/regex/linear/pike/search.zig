@@ -139,27 +139,34 @@ pub fn bufMatch(re: *const Regex, sim: *Sim, buf: []const u8) bool {
     // miss this replaces the whole walk, and on a hit it is dominated by the
     // walk it precedes.
     if (re.gate) |g| if (!g.in(buf)) return false;
-    // Assertion-free multiline: the DFA is exact over the whole buffer as one
-    // haystack (no `^`/`$`/`\b` to resolve; `trans_fin` ≡ `trans_in` when no
-    // assert_end exists, so the last-byte table is inert) — one table lookup
-    // per byte instead of a Pike closure per byte. Equivalence held by the
-    // multiline differential fuzz in `../dfa/dfa_test.zig`.
-    if (re.assert_free) {
-        // Whatever answers that DFA faster answers `-U` too, and this is the
-        // only place in the engine where "the whole buffer is the haystack" and
-        // "these bytes are the haystack" are literally the same call — so the
-        // tier is consulted at the LINE grain (the slice question), not the
-        // document one. A per-line rung must have proven `sliceSafe` to be here
-        // at all, which is exactly the "no match crosses a `\n`" premise `-U`
-        // otherwise discards; `lower.zig` withholds the tier entirely from the
-        // assertion-bearing multiline programs where it would not hold.
-        switch (re.rungs.line(buf)) {
-            .hit => return true,
-            .miss => return false,
-            .unproven => {},
-        }
-        if (re.dfa) |d| return d.match(buf);
-    }
+    // The tier is consulted at the LINE grain (the slice question), not the
+    // document one — this is the only place in the engine where "the whole
+    // buffer is the haystack" and "these bytes are the haystack" are literally
+    // the same call. A per-line rung must have proven `sliceSafe` to be here at
+    // all, which is exactly the "no match crosses a `\n`" premise `-U` otherwise
+    // discards, and only assertion-freeness gives it; `lower.zig` withholds the
+    // tier entirely from the multiline programs where it would not hold.
+    if (re.assert_free) switch (re.rungs.line(buf)) {
+        .hit => return true,
+        .miss => return false,
+        .unproven => {},
+    };
+    // The DFA is exact over the whole buffer as one haystack for a wider class
+    // than the tier above: everything positional in the program resolves against
+    // the haystack's own bytes and ends, so a table lookup per byte replaces a
+    // Pike closure per byte. `buf_exact` is that class, and it is deliberately
+    // NOT `assert_free` — a `\b` is haystack-local and was costing 26× for no
+    // reason (see `lower.bufExact`). Equivalence held by the multiline
+    // differential fuzz in `../dfa/dfa_test.zig`.
+    // Word-context tables take `matchWord`, exactly as the per-line ladder does
+    // (`../ladder/verdict.zig`): an ASCII-classed automaton cannot judge a gap
+    // abutting a non-ASCII scalar, so under Unicode it QUITS rather than guess,
+    // and the VM below resolves that buffer. Fail-open — a quit costs the old
+    // price, never a wrong answer.
+    if (re.buf_exact) if (re.dfa) |d| {
+        if (!d.word_ctx) return d.match(buf);
+        if (d.matchWord(buf)) |hit| return hit;
+    };
     sim.gen += 1;
     sim.cur.len = 0;
     // Position 0 (buffer start ⇒ a line start; also a line end iff empty).

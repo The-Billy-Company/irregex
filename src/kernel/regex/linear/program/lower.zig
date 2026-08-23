@@ -157,7 +157,7 @@ pub fn compileOpts(allocator: std.mem.Allocator, pattern: []const u8, opts: Opti
     errdefer allocator.free(required);
     const alts = try dupeCover(allocator, arena, &facts, req.best);
     errdefer freeAlts(allocator, alts);
-    const lits = try dupeLits(allocator, arena, ast, opts.multiline);
+    const lits = try dupeLits(allocator, arena, ast);
     errdefer freeAlts(allocator, lits);
     // One authority-ranked literal engine over the strongest fact available:
     // a pure-literal EQUIVALENCE set decides presence outright (`.exact`); a
@@ -204,6 +204,9 @@ pub fn compileOpts(allocator: std.mem.Allocator, pattern: []const u8, opts: Opti
     // O(1)/byte floor the per-line model enjoys instead of the O(states)/byte
     // Pike re-seed rg's lazy DFA was beating.
     const assert_free = assertFree(states);
+    // The buffer model's own admission, which is wider than `assert_free` — see
+    // `bufExact`. Inert in the per-line model, where the DFA serves regardless.
+    const buf_exact = bufExact(states, opts.line_anchors orelse opts.multiline, nullable, eol_empty);
 
     // SIMD class-run reduction (post-fold, so `-i` classes are final). In
     // the per-line model a haystack line never contains `\n`, so dropping
@@ -251,7 +254,7 @@ pub fn compileOpts(allocator: std.mem.Allocator, pattern: []const u8, opts: Opti
     // WITHOUT carried ranges keeps the DFA: its `.unproven` verdicts on
     // high-byte haystacks land there.
     const kernel_final = if (cr) |run| run.exact or run.cp != null else false;
-    const wants_dfa = !(opts.multiline and !assert_free) and !(kernel_final and !opts.force_dfa);
+    const wants_dfa = !(opts.multiline and !buf_exact) and !(kernel_final and !opts.force_dfa);
     // Codepoint-class patterns are offered to the symbolic determinizer first:
     // it discovers the SAME automaton without re-walking a UTF-8 trie per
     // closure, which is the entire reason the byte driver's cost budget was
@@ -307,6 +310,10 @@ pub fn compileOpts(allocator: std.mem.Allocator, pattern: []const u8, opts: Opti
     // exact over the buffer as one haystack (`search.bufMatch`) — the rung's
     // question and `-U`'s coincide, and `Rungs.line` is where that is enforced:
     // the per-line rung must prove `sliceSafe` before it may answer.
+    // Still `assert_free`, deliberately, where the DFA above is now `buf_exact`:
+    // a per-line rung answers the SLICE question, which needs "no match crosses
+    // a `\n`" — substring closure, which only assertion-freeness gives. A `\b`
+    // pattern is exactly determinizable over the buffer and still not sliceable.
     const bare_multiline = opts.multiline and !assert_free;
     const start_economics = if (dfa) |d|
         if (d.start_dwell) |exits| exits.economics else null
@@ -351,7 +358,7 @@ pub fn compileOpts(allocator: std.mem.Allocator, pattern: []const u8, opts: Opti
     // O(program): the reversal is a graph walk and neither jaw determinizes
     // anything until a haystack asks.
     const span_reduced = lits.len > 0 or if (cr) |run| run.span and (run.exact or run.cp != null) else false;
-    const cal: ?*caliper_mod.Caliper = if (!span_reduced and caliper_mod.eligible(states, opts.multiline))
+    const cal: ?*caliper_mod.Caliper = if (!span_reduced and caliper_mod.eligible(states, opts.multiline, opts.line_anchors orelse opts.multiline))
         try caliper_mod.build(allocator, states, start, opts.unicode)
     else
         null;
@@ -376,6 +383,7 @@ pub fn compileOpts(allocator: std.mem.Allocator, pattern: []const u8, opts: Opti
         .gate_bytes = gate_bytes,
         .rungs = tier,
         .assert_free = assert_free,
+        .buf_exact = buf_exact,
         .multiline = opts.multiline,
         .line_anchors = opts.line_anchors orelse opts.multiline,
         .unicode = opts.unicode,
@@ -412,6 +420,53 @@ fn settledBy(
 fn assertFree(states: []const State) bool {
     for (states) |st| switch (st) {
         .consume, .split, .match => {},
+        else => return false,
+    };
+    return true;
+}
+
+/// Whether the eager DFA is exact over the WHOLE buffer as one haystack — the
+/// buffer model's admission, which `assertFree` is too coarse to be.
+///
+/// `assertFree` answers a stronger question than this site asks: "does match
+/// validity depend on anything but the consumed bytes?". Using it here withheld
+/// the DFA from every buffer-model program carrying ANY assertion, on a reason
+/// that is only true of one of them — `^`/`$` under `(?m)`, which hold at every
+/// `\n` and so are content-dependent in a way no eager BOL/EOL table can encode.
+///
+/// A word-context assertion is not that. `\b` reads the two bytes adjacent to a
+/// position; it is haystack-local, identical in both models, and the powerset
+/// already determinizes it — which the LINE model proves every day, since it
+/// arms a DFA for exactly these programs. The buffer is just a longer haystack.
+///
+/// The cost of conflating them was not small, because the buffer model is the
+/// ONLY model a language binding compiles under (`compile/captures.zig` forces
+/// `.multiline = true`), and `\b` is in most real patterns. A 4 KB scan of one
+/// catalogue pattern — seven verbs, a hinge, a trailing alternation, one `\b` —
+/// ran 314 µs on the Pike VM where the same pattern with the `\b` deleted ran
+/// 12 µs on the DFA. Same automaton, 26× the cost, for an assertion the
+/// determinizer had never had trouble with.
+///
+/// **Zero-width matches are excluded, and that is not caution.** `bufMatch`
+/// refuses to seed a thread at the phantom position after a trailing `\n`,
+/// because rg's line model opens no empty last line there. A DFA has no such
+/// rule, so a program that can reach `match` zero-width — `\B` over `"abc\n"`
+/// is the whole case — would be answered yes by the table and no by the VM.
+/// `nullable` and `eol_empty` are exactly those programs, already computed.
+fn bufExact(states: []const State, line_anchors: bool, nullable: bool, eol_empty: bool) bool {
+    // The class the buffer model already admitted, admitted on the same terms:
+    // nothing positional to resolve, so nothing below can have an opinion on it.
+    if (assertFree(states)) return true;
+    if (nullable or eol_empty) return false;
+    for (states) |st| switch (st) {
+        .consume, .split, .match, .assert_word => {},
+        // `^`/`$`: the haystack's own ends, until `(?m)` makes them per-line.
+        .assert_start, .assert_end => if (line_anchors) return false,
+        // `\A`/`\z` stay out. Under this model they ARE the buffer's ends, so
+        // the table would be right about them — but `bufMatch` carries the
+        // phantom-position rule above for the trailing `\n`, and that rule is
+        // the VM's, not the automaton's. Admitting them needs the rule lifted
+        // into the DFA first, which is a separate change with its own proof.
         else => return false,
     };
     return true;
@@ -483,10 +538,25 @@ fn caselessGateBytes(
 }
 
 /// Own a copy of the pure-literal equivalence set (`analysis.pureLiterals`),
-/// or empty. Multiline (`-U`) changes the match model (a match may cross
-/// `\n`), so the per-line equivalence claim doesn't hold there — skip it.
-fn dupeLits(gpa: std.mem.Allocator, arena: std.mem.Allocator, ast: *Node, multiline: bool) ParseError![]const []const u8 {
-    if (multiline) return &.{};
+/// or empty.
+///
+/// **Not gated on the match model, and it used to be.** The reasoning for
+/// skipping it under multiline was that a match may cross `\n` there, so a
+/// per-line equivalence claim would not hold — but the claim `pureLiterals`
+/// makes was never per-line. It rejects every assertion (`pureLit` takes only
+/// bytes, codepoints, concatenation and transparent captures) and it rejects any
+/// literal carrying `\n` outright, so what survives is a statement about the
+/// AST: this pattern matches a text **iff** that text contains one of these
+/// literals. A literal with no `\n` in it lies inside one line wherever it
+/// occurs, so the buffer and the line read the claim identically.
+///
+/// The gate was therefore not conservative, it was lossy — and lossy on the one
+/// face that always sets the flag. A `glean.Pattern` forces the buffer model as
+/// an invariant, so every consumer of the C ABI compiled every pattern, a bare
+/// literal string included, with an empty `lits`. That left `pike/span.zig`'s
+/// literal fast path unreachable from every language binding and dropped their
+/// spans onto the Pike VM.
+fn dupeLits(gpa: std.mem.Allocator, arena: std.mem.Allocator, ast: *Node) ParseError![]const []const u8 {
     const lits = (try analysis.pureLiterals(arena, ast)) orelse return &.{};
     return dupeAll(gpa, lits);
 }

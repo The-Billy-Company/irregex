@@ -330,6 +330,72 @@ fn pikeDoc(re: *Regex, sim: *Regex.Sim, doc: []const u8) bool {
     return false;
 }
 
+test "dfa: word-bearing multiline bufMatch ≡ whole-buffer Pike (the `buf_exact` class)" {
+    // The buffer model used to admit the DFA only for `assert_free` programs,
+    // which is a stronger question than the site asks. `^`/`$` under `(?m)` hold
+    // at every `\n` and no eager BOL/EOL table can encode that; a word-context
+    // assertion is nothing like it — `\b` reads the two bytes beside a position,
+    // so it is haystack-local and the powerset has always determinized it. The
+    // per-line model proved that daily by arming a DFA for exactly these
+    // programs while the buffer model withheld one, and since the buffer model
+    // is the ONLY model a language binding compiles under, every `\b` any host
+    // ever compiled ran on the Pike VM.
+    //
+    // `lower.bufExact` is that narrower admission and this is its differential:
+    // the same generator as the assertion-free case with a word assertion welded
+    // on, held to the same whole-buffer Pike reference. The interesting rows are
+    // the ones where `\n` sits beside a word byte, since that is where a
+    // per-line reading and a whole-buffer one would part company.
+    const a = std.testing.allocator;
+    const alphabet = "abcd01_ xy\n";
+    var buf_bytes: [40]u8 = undefined;
+
+    var seed: u64 = 0;
+    var checked: usize = 0;
+    var worded: usize = 0;
+    while (seed < 6000) : (seed += 1) {
+        var prng = std.Random.DefaultPrng.init(seed *% 0x9E3779B97F4A7C15);
+        const r = prng.random();
+
+        var pat: std.ArrayList(u8) = .empty;
+        defer pat.deinit(a);
+        var g = Gen{ .r = r, .buf = &pat, .a = a };
+        if (r.boolean()) try pat.appendSlice(a, if (r.boolean()) "\\b" else "\\B");
+        try g.alt(2);
+        if (r.boolean()) try pat.appendSlice(a, if (r.boolean()) "\\b" else "\\B");
+
+        var re = Regex.compileOpts(a, pat.items, .{ .multiline = true, .dotall = r.boolean(), .force_dfa = true }) catch continue;
+        defer re.deinit();
+        // A program the widened gate does NOT admit has no claim to test here —
+        // `wants_dfa` withheld the table, so there is nothing to differ from.
+        if (!re.buf_exact) continue;
+        if (re.dfa == null) continue; // powerset cap ⇒ Pike serves; not under test
+        if (!re.assert_free) worded += 1;
+        re.classrun = null;
+        var sim = try Regex.Sim.init(a, &re);
+        defer sim.deinit();
+
+        for (0..8) |trial| {
+            const len = if (trial == 0) 0 else r.uintLessThan(usize, buf_bytes.len + 1);
+            for (0..len) |i| buf_bytes[i] = alphabet[r.uintLessThan(usize, alphabet.len)];
+            const buf = buf_bytes[0..len];
+            const got = re.bufMatch(&sim, buf);
+            const stashed = re.dfa;
+            re.dfa = null;
+            const want = re.bufMatch(&sim, buf);
+            re.dfa = stashed;
+            if (got != want) {
+                std.debug.print("WORD BUF DIVERGENCE pat=/{s}/ buf=\"{s}\" dfa={} pike={}\n", .{ pat.items, buf, got, want });
+                return error.DfaPikeWordBufDivergence;
+            }
+            checked += 1;
+        }
+    }
+    try std.testing.expect(checked > 5_000);
+    // Without this the run could pass by admitting nothing new at all.
+    try std.testing.expect(worded > 100);
+}
+
 test "dfa: assertion-free multiline bufMatch ≡ whole-buffer Pike (matches cross \\n)" {
     const a = std.testing.allocator;
     const alphabet = "abcd01_ xy\n"; // '\n' included: matches may cross lines under -U

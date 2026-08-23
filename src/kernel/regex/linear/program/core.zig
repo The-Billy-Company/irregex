@@ -106,8 +106,9 @@ pub const Regex = struct {
     // leftmost-first walk for the end, a backward anchored one for the start —
     // where the Pike VM re-closes every live thread per byte. Boolean paths
     // never consult it. Non-null whenever a span could actually reach the VM:
-    // not under multiline, and not when a pure-literal or span-exact class-run
-    // reduction already answers more cheaply than any automaton could. It
+    // not when the jaws cannot read the pattern's anchors (`caliper.eligible`),
+    // and not when a pure-literal or span-exact class-run reduction already
+    // answers more cheaply than any automaton could. It
     // carries no transition tables itself (both jaws determinize on demand into
     // the caller's `SpanSim`), so building one is O(program) at compile time
     // and either jaw may quit to the Pike VM, which stays the oracle.
@@ -180,6 +181,16 @@ pub const Regex = struct {
     // what licenses the multiline DFA above and makes any prefix-found match a
     // match of the full buffer (substring closure — see `bufMatch` callers).
     assert_free: bool,
+    // Whether the eager DFA is exact over the WHOLE buffer as one haystack — the
+    // buffer model's DFA admission, and strictly wider than `assert_free`, which
+    // was standing in for it and withholding the automaton from every `\b` a
+    // language binding ever compiled. A word-context assertion reads the two
+    // bytes beside a position, so it is haystack-local and the powerset has
+    // always determinized it; `^`/`$` are the haystack's ends until `(?m)` makes
+    // them per-line, which is the one reading no eager table can encode. See
+    // `lower.bufExact` for why zero-width-reaching programs stay out. Inert in
+    // the per-line model, where the DFA serves whatever it can determinize.
+    buf_exact: bool,
     // The regex `m` flag, decoupled from `multiline` (the `-U` whole-buffer
     // search): true ⇒ `^`/`$` anchor at every `\n` (a line boundary), false ⇒
     // only at the buffer ends. Under `-U` it defaults true (rg's `m`-on default)

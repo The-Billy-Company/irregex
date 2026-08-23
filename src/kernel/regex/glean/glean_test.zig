@@ -436,9 +436,22 @@ test "the cheap verb and the expensive one never disagree, over a generated slat
     //
     // Generated rather than enumerated because all three were patterns nobody
     // would think to write down. Deterministic PRNG, the repo's fuzz idiom.
+    // The alphabet carries the CLASS ESCAPES, not just the metacharacters. A
+    // slate of `abc.*+?()[]^$|\-\t \n` can never spell `\s`, `\d` or `\w`, so
+    // the newline-claiming family it was meant to cover was only ever reachable
+    // through a negated class — and `\s+` is the shape a real caller writes and
+    // the one whose guard costs the most. `n`, `r` and `t` join for `\n`/`\r`/
+    // `\t`, and the haystacks gain buffers whose newlines are interior, leading
+    // and trailing, since a boolean kernel that treats a newline as an edge
+    // fails differently at each.
     const gpa = t.allocator;
-    const meta = "abc.*+?()[]^$|\\-\t \n";
-    const haystacks = [_][]const u8{ "", "abc", "a\nb", "aAbBcC 123", "\x00\x01\xff\x7f", "the quick brown fox" };
+    const meta = "abc.*+?()[]^$|\\-\t \nsdwSDWnrt";
+    const haystacks = [_][]const u8{
+        "",              "abc",                "a\nb",     "aAbBcC 123",
+        "\x00\x01\xff\x7f", "the quick brown fox", "\n",       "\n\n",
+        "a\n",           "\nb",                "a \t\n b", "one\ntwo\nthree\n",
+        "x\r\ny",        "  \n  ",
+    };
     var prng = std.Random.DefaultPrng.init(0xB1A57_ADBE);
     const r = prng.random();
     var pbuf: [12]u8 = undefined;
