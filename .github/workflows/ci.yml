@@ -150,15 +150,37 @@ jobs:
       - name: Build the library the suite drives
         run: zig build --summary none
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
-      - name: pytest, and prove nothing skipped itself
+      # The binding ships two transports and a source checkout has one, so
+      # without this the suite proves the ctypes half and reports green over the
+      # C extension every published wheel for this platform actually contains.
+      # It is also what keeps the skip gate below honest: the parity tests need
+      # both implementations resident, and where there is no accelerator they
+      # would go dark rather than fail.
+      - name: Build the accelerator the wheels ship
+        working-directory: bindings/python
+        run: uv run --python ${{ matrix.python }} python scripts/build_accel.py
+      # Twice, because "the fallback still works" is a claim about a path no
+      # ordinary run takes any more. The second pass deselects the parity tests
+      # rather than skipping them — there is genuinely only one transport there,
+      # and a question deliberately not asked must not look like a tier that
+      # went dark. Everything else, including the whole FFI surface, runs on
+      # both.
+      - name: pytest on both transports, and prove nothing skipped itself
         working-directory: bindings/python
         run: |
           set -o pipefail
-          uv run --python ${{ matrix.python }} pytest -q -rs 2>&1 | tee "$RUNNER_TEMP/pytest.log"
-          if grep -qE '^SKIPPED|[0-9]+ skipped' "$RUNNER_TEMP/pytest.log"; then
-            echo "::error::a test skipped itself — a library or binary did not resolve"
-            exit 1
-          fi
+          run() {
+            echo "::group::pytest $*"
+            uv run --python ${{ matrix.python }} pytest -q -rs "$@" 2>&1 | tee "$RUNNER_TEMP/pytest.log"
+            echo "::endgroup::"
+            if grep -qE '^SKIPPED|[0-9]+ skipped' "$RUNNER_TEMP/pytest.log"; then
+              echo "::error::a test skipped itself — a library or binary did not resolve"
+              exit 1
+            fi
+          }
+          run
+          export IRGX_NO_ACCEL=1
+          run -m "not accel"
 
   go:
     # No Zig and no sibling, for two separate reasons that happen to agree.

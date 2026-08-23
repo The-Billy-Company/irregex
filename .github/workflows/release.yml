@@ -139,12 +139,21 @@ jobs:
             --find-links dist --no-index irregex
           uv pip install --python /tmp/floor/bin/python pytest
           # From a directory that is not the project, so the import resolves to
-          # the installed wheel rather than the working copy beside it.
+          # the installed wheel rather than the working copy beside it. The
+          # accelerator assertion is here and not in CI because this is the only
+          # place the *artifact* is asked: pip resolves the abi3 wheel over the
+          # portable one on 3.12, and a release that silently shipped the
+          # portable wheel twice would install, import, match, and be slow —
+          # which is precisely the failure no other gate can see.
           cd /tmp && /tmp/floor/bin/python -c "
           import irgx
+          from irgx import _engine
           m = irgx.compile(r'(?P<k>\w+)=(?P<v>\d+)').search('x=42')
           assert (m.group('k'), m.group('v')) == ('x', '42'), m
-          print('floor import + match OK')
+          irgx.compile_needles(['a'])  # the one plane that declares lazily
+          live, want = set(_engine.native()), set(_engine._FALLBACK)
+          assert live == want, 'wheel is missing native verbs: ' + repr(want - live)
+          print('floor import + match OK, all ' + str(len(live)) + ' verbs native')
           "
 
       - name: Check the metadata the index will read
