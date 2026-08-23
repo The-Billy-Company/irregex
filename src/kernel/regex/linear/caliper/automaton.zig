@@ -115,6 +115,29 @@ const Mark = struct {
 /// the same shape as the lazy boolean DFA's, and for the same reason: a large
 /// class can describe a small automaton, so the cap is on bytes spent, not
 /// states discovered.
+///
+/// The FLOOR, though, has to be stated in states, and that is what `min_states`
+/// is for. A flat byte floor sounds neutral and is not: the memo is charged in
+/// `Machine.stride` units, so the same 128 KiB buys a different number of states
+/// for every program, and it buys the FEWEST for exactly the programs that need
+/// the caliper most. A `\b` quadruples `rows` (sixteen gap shapes instead of
+/// four) and a Unicode class widens `ncls`, so a word-bearing Unicode program
+/// paid 4864 bytes per state where its word-free twin paid 1216 — 27 states
+/// affordable against 107, for two patterns one character apart.
+///
+/// Twenty-seven is below the powerset of any real multi-segment pattern, so the
+/// jaw hit `quit` mid-scan, declined, and handed a 394-state program to the Pike
+/// VM: 109 ns/byte against the 4 ns/byte the caliper was already achieving on
+/// the twin. The budget was not protecting memory there — the memo never got
+/// large — it was cutting off determinization a third of the way in and paying
+/// for the abandoned work twice.
+///
+/// So the floor scales with the stride, which keeps a program's affordable state
+/// count roughly constant instead of its byte count. 256 sits just above the
+/// ~195 states a flat 128 KiB already bought a typical assertion-free program,
+/// so nothing that fit before fits less well now, and `max_budget` still caps
+/// the absolute spend for a program whose stride is genuinely enormous.
+const min_states: usize = 256;
 const min_budget: usize = 128 * 1024;
 const max_budget: usize = 2 * 1024 * 1024;
 
@@ -216,7 +239,9 @@ pub const Cache = struct {
             .stack = try gpa.alloc(u32, 3 * n + 2),
             .order = try gpa.alloc(u32, n),
             .key_scratch = try gpa.alloc(u32, n + 1),
-            .budget = std.math.clamp(n * 64, min_budget, max_budget),
+            // In the currency the memo is actually spent in: one state costs a
+            // whole `stride` of `Cell`s, so that is what the floor multiplies.
+            .budget = std.math.clamp(m.stride() * @sizeOf(u32) * min_states, min_budget, max_budget),
         };
         errdefer c.deinit();
         return c;

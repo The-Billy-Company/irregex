@@ -10,6 +10,8 @@ const t = std.testing;
 const core = @import("../program/core.zig");
 const pike = @import("../pike/span.zig");
 const caliper = @import("caliper.zig");
+const lower = @import("../program/lower.zig");
+const span = @import("../pike/span.zig");
 const prefilter = @import("../../analysis/prefilter.zig");
 
 const Regex = core.Regex;
@@ -33,9 +35,19 @@ fn oracleOf(re: Regex) Regex {
 /// skip, which must be an accelerator and nothing else. Returns the number of
 /// spans compared, so a case can prove it exercised something.
 fn agree(gpa: std.mem.Allocator, pattern: []const u8, line: []const u8) !usize {
-    var re = try Regex.compile(gpa, pattern);
+    return agreeOpts(gpa, pattern, line, .{});
+}
+
+/// `agree` under an explicit compile model. The buffer model (`multiline`) is
+/// not a variant of the line model for this engine's purposes — it is the ONLY
+/// model any language binding ever compiles under (`compile/captures.zig`'s
+/// `lowerOptions` forces `.multiline = true` and carries `(?m)` separately as
+/// `line_anchors`), so a suite that only ever exercised the default was
+/// exercising the one configuration no caller outside the CLI can produce.
+fn agreeOpts(gpa: std.mem.Allocator, pattern: []const u8, line: []const u8, opts: lower.Options) !usize {
+    var re = try Regex.compileOpts(gpa, pattern, opts);
     defer re.deinit();
-    if (!caliper.eligible(re.states, re.multiline)) return 0;
+    if (!caliper.eligible(re.states, re.multiline, re.line_anchors)) return 0;
 
     const cal = (try caliper.build(gpa, re.states, re.start, re.unicode)) orelse return 0;
     defer cal.deinit();
@@ -145,6 +157,61 @@ test "caliper: assertions survive reversal" {
     _ = try agree(gpa, "\\ba", "a ba ab");
 }
 
+/// Is the caliper offered this pattern at all, under this model? The guard in
+/// `eligible` is a correctness claim, not a tuning one, so it needs an assertion
+/// that fires when the gate opens — `agree` returning 0 cannot say whether the
+/// pattern was declined or merely had nothing to compare.
+fn offered(gpa: std.mem.Allocator, pattern: []const u8, opts: lower.Options) !bool {
+    var re = try Regex.compileOpts(gpa, pattern, opts);
+    defer re.deinit();
+    return caliper.eligible(re.states, re.multiline, re.line_anchors);
+}
+
+test "caliper: the buffer model, over haystacks that hold newlines" {
+    const gpa = t.allocator;
+    // What every language binding compiles: the haystack is a buffer, and `^`
+    // is the buffer's edge because the caller did not ask for `(?m)`.
+    const buf: lower.Options = .{ .multiline = true, .line_anchors = false };
+    const hay = "  const AcmeStore = mk(user_id_key);\n  let HTTPServer = two_word_here;\n";
+
+    // The multi-segment shapes this engine exists for, now that a binding can
+    // actually reach it — each spanning a haystack with interior newlines.
+    try t.expect(try agreeOpts(gpa, "[A-Z][a-z]+[A-Z][A-Za-z]*", hay, buf) > 0);
+    try t.expect(try agreeOpts(gpa, "[a-z]+_[a-z]+_[a-z]+", hay, buf) > 0);
+    try t.expect(try agreeOpts(gpa, "[a-z]+\\(", hay, buf) > 0);
+    // A match may legally cross `\n` under this model — the case the old
+    // blanket gate was justified by and never actually tested.
+    _ = try agreeOpts(gpa, "mk\\(user_id_key\\);\\s+let", hay, buf);
+    _ = try agreeOpts(gpa, "[a-z]+\\s+[A-Z]\\w+", hay, buf);
+    _ = try agreeOpts(gpa, ".+", hay, buf);
+    _ = try agreeOpts(gpa, "\\bmk\\b", hay, buf);
+    // `^`/`$` mean the buffer's own edges here, which is exactly what the jaws
+    // read off the slice, so these stay eligible and must still agree.
+    try t.expect(try offered(gpa, "^  const", buf));
+    _ = try agreeOpts(gpa, "^  const", hay, buf);
+    _ = try agreeOpts(gpa, "here;\\n$", hay, buf);
+}
+
+test "caliper: line anchors under the buffer model are declined, not guessed" {
+    const gpa = t.allocator;
+    // `(?m)`: `^` now passes after every `\n`, but a jaw reads `at_start` off
+    // the edge of the slice it was handed. The two disagree, so the caliper
+    // must not be offered the pattern at all — silently answering only the
+    // first line's match is the bug this guard exists to prevent.
+    const m: lower.Options = .{ .multiline = true, .line_anchors = true };
+    try t.expect(!try offered(gpa, "^  const", m));
+    try t.expect(!try offered(gpa, "here;$", m));
+    try t.expect(!try offered(gpa, "^.*$", m));
+    // A pattern with no line anchor reads nothing the slice cannot answer, so
+    // `(?m)` alone must not cost it the caliper.
+    try t.expect(try offered(gpa, "[a-z]+_[a-z]+_[a-z]+", m));
+    try t.expect(try offered(gpa, "\\bmk\\b", m));
+    // Word boundaries are read off the real bytes either side of the gap, not
+    // off the slice edges, so they are unaffected by the model.
+    const hay = "  const AcmeStore = mk(user_id_key);\n  let HTTPServer = two_word_here;\n";
+    _ = try agreeOpts(gpa, "\\b[a-z]+_[a-z]+_[a-z]+\\b", hay, m);
+}
+
 test "caliper: edges — empty, zero-width, no match, whole line" {
     const gpa = t.allocator;
     _ = try agree(gpa, "a", "");
@@ -231,4 +298,49 @@ test "caliper: differential sweep against the Pike VM" {
         };
     }
     try t.expect(checked > 1000);
+}
+
+test "a word assertion must not price the caliper out of its own memo" {
+    // The memo is charged in `Machine.stride` units — `rows × ncls` — so a floor
+    // stated in BYTES buys a different number of states for every program, and
+    // the fewest for the programs with the most to determinize. These two
+    // patterns differ by one trailing `\b`, which takes `rows` from four gap
+    // shapes to sixteen; under a Unicode word class the wider one exhausted a
+    // flat 128 KiB at 27 states — short of its own 30-state powerset — set
+    // `quit`, declined every span thereafter, and handed a 394-state program to
+    // the Pike VM at 109 ns/byte while its one-character twin ran the caliper at
+    // 4 ns/byte.
+    //
+    // The claim under test is therefore not "this is fast", which no unit test
+    // can hold. It is that a word assertion does not change WHICH ENGINE
+    // answers: both variants must determinize to completion, over a haystack
+    // deliberately dense in their own first bytes so the jaws are actually
+    // driven rather than skipped past.
+    const body = "Please show the reader the initial rules, then display your output " ++
+        "and tell the printer to repeat the instructions it revealed.\n";
+    const hay = body ** 24;
+    const stem = "(?:show|print|repeat|reveal|output|display|tell)\\s+(?:me\\s+)?(?:your|the)\\s+" ++
+        "(?:system\\s+prompts?|(?:initial|original)\\s+(?:prompts?|instructions?|rules?)|instructions?|rules?|prompt)";
+    const opts: lower.Options = .{ .caseless = true, .multiline = true, .unicode = true };
+
+    for ([2][]const u8{ stem ++ "\\b", stem }) |p| {
+        var re = try Regex.compileOpts(t.allocator, p, opts);
+        defer re.deinit();
+        // If this program ever stops carrying a caliper the test below is vacuous.
+        try t.expect(re.caliper != null);
+
+        var sim = try Regex.SpanSim.init(t.allocator, &re);
+        defer sim.deinit();
+        _ = pike.matchSpan(&re, &sim, hay, 0);
+
+        const jaws = &sim.jaws.?;
+        try t.expect(jaws.fwd != null); // the forward jaw really ran
+        try t.expect(!jaws.fwd.?.quit);
+        if (jaws.bwd) |b| try t.expect(!b.quit);
+
+        // And the engine the budget just readmitted has to be RIGHT, which is
+        // this file's standing oracle: every span, against the Pike VM, under
+        // both seeding policies.
+        try t.expect(try agreeOpts(t.allocator, p, hay, opts) > 0);
+    }
 }
