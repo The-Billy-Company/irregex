@@ -447,10 +447,10 @@ test "the cheap verb and the expensive one never disagree, over a generated slat
     const gpa = t.allocator;
     const meta = "abc.*+?()[]^$|\\-\t \nsdwSDWnrt";
     const haystacks = [_][]const u8{
-        "",              "abc",                "a\nb",     "aAbBcC 123",
+        "",                 "abc",                 "a\nb",     "aAbBcC 123",
         "\x00\x01\xff\x7f", "the quick brown fox", "\n",       "\n\n",
-        "a\n",           "\nb",                "a \t\n b", "one\ntwo\nthree\n",
-        "x\r\ny",        "  \n  ",
+        "a\n",              "\nb",                 "a \t\n b", "one\ntwo\nthree\n",
+        "x\r\ny",           "  \n  ",
     };
     var prng = std.Random.DefaultPrng.init(0xB1A57_ADBE);
     const r = prng.random();
