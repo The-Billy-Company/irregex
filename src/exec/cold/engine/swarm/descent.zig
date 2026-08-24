@@ -172,9 +172,13 @@ fn flushPending(w: *Worker, a: std.mem.Allocator, scratch: []u8, final: bool) vo
         // read. A cheap acquire load guarding an open+read, and it never idles —
         // a page-cache-warm reread just reads until the flip, so warm is untouched.
         if (final and !ready) ready = lz.ready.load(.acquire);
-        if (ready) if (lz.val) |*el| if (el.skip(stripDot(d.rel), d.mtime_ns, d.ctime_ns)) {
-            emitElided(w, a, d.rel);
-            continue;
+        if (ready) if (lz.val) |*el| {
+            const verdict = el.judge(stripDot(d.rel), d.mtime_ns, d.ctime_ns);
+            w.elision.record(verdict);
+            if (verdict == .elide) {
+                emitElided(w, a, d.rel);
+                continue;
+            }
         };
         const dpath = shownPath(w.cfg.o, a, d.rel);
         if (servedFromShard(w, a, d.rel, dpath, d.mtime_ns, d.ctime_ns)) continue;
@@ -640,10 +644,14 @@ fn handleEntry(w: *Worker, a: std.mem.Allocator, sa: std.mem.Allocator, scratch:
     const mtime, const ctime = freshnessOf(cfg, pa, task, e);
     if (cfg.lazy) |lz| {
         if (lz.ready.load(.acquire)) {
-            if (lz.val) |*el| if (el.skip(stripDot(scope_rel), mtime, ctime)) {
-                emitElided(w, pa, rel);
-                return;
-            };
+            if (lz.val) |*el| {
+                const verdict = el.judge(stripDot(scope_rel), mtime, ctime);
+                w.elision.record(verdict);
+                if (verdict == .elide) {
+                    emitElided(w, pa, rel);
+                    return;
+                }
+            }
         } else {
             // Oracle still loading — hold the file back so it can still be
             // elided (the walk races ahead; deferring costs three slices + metadata).

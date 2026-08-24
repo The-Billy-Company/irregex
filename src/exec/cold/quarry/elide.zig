@@ -117,6 +117,34 @@ pub const IndexedPaths = struct {
     }
 };
 
+/// Why one walked file was, or was not, spared its read.
+///
+/// `Oracle.skip` answers this as a bool, which is everything the walk needs in
+/// order to act and not enough for the run to say anything true about itself
+/// afterwards. The three negative causes are not interchangeable, and only one
+/// of them is a cost:
+///
+///   • `candidate` is the index working exactly as designed — the trigrams admit
+///     this file as a possible match, so it is read and the answer comes from
+///     live bytes.
+///   • `unindexed` is a file the index never covered (born since the build, or
+///     outside its roots), so there was never a read here to spare.
+///   • `stale` is the one that is a LOSS: the file is indexed and its postings
+///     would have proven it out, but its clocks reach the build anchor, so those
+///     postings no longer describe its bytes and the read is bought back.
+///
+/// Collapsing those three is why the elision rate — the whole reason the index
+/// exists — has never been observable from outside the process, and why a days-
+/// old anchor is indistinguishable from a fresh one at the point where it costs
+/// you. Separating them lets a finished run report the rate it actually achieved
+/// rather than the one its file count implies.
+pub const Verdict = enum { elide, stale, unindexed, candidate };
+
+/// Per-worker verdict counts, folded into a run total after the walk. The
+/// schema IS `Verdict`, so a cause cannot be counted under a name that does not
+/// exist and the tally can never drift from the decision it records.
+pub const Rate = assay.Tally(Verdict);
+
 /// The per-file read-elision oracle — `intake.zig`'s `IndexSkip` minus the
 /// corpus-wide freshness stat-walk: the walk itself already learns every file's mtime and
 /// ctime for free (`getattrlistbulk` returns them with the name), so
@@ -144,10 +172,23 @@ pub const Oracle = struct {
     candidates: std.DynamicBitSet,
     anchor: i128,
 
+    /// The elision decision, resolved into its cause. Membership is tested
+    /// BEFORE freshness — the reverse of the order `skip` used — because a file
+    /// born since the anchor trips `needsLiveRead` too, and short-circuiting on
+    /// that would file every brand-new file under `stale` and inflate the one
+    /// number this whole vocabulary exists to report honestly. The reorder is
+    /// free in the common case (an unchanged file always paid the lookup) and
+    /// costs one hash probe for a changed file, which is the minority by
+    /// construction — an anchor whose changed set is the majority is the very
+    /// state the verdict is trying to tell you about.
+    pub fn judge(self: *const Oracle, rel: []const u8, mtime_ns: ?i128, ctime_ns: ?i128) Verdict {
+        const doc = self.indexed.get(self.p.paths.items, rel) orelse return .unindexed;
+        if (bulkstat.needsLiveRead(self.anchor, mtime_ns, ctime_ns)) return .stale;
+        return if (self.candidates.isSet(doc)) .candidate else .elide;
+    }
+
     pub fn skip(self: *const Oracle, rel: []const u8, mtime_ns: ?i128, ctime_ns: ?i128) bool {
-        if (bulkstat.needsLiveRead(self.anchor, mtime_ns, ctime_ns)) return false;
-        const doc = self.indexed.get(self.p.paths.items, rel) orelse return false;
-        return !self.candidates.isSet(doc);
+        return self.judge(rel, mtime_ns, ctime_ns) == .elide;
     }
     pub fn deinit(self: *Oracle) void {
         self.candidates.deinit();

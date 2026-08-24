@@ -716,6 +716,89 @@ fn renderDead(a: std.mem.Allocator, out: *std.ArrayList(u8), s: Shape, results: 
     return true;
 }
 
+// ── the accelerator that quietly stopped accelerating ────────────────────────
+
+/// What the read-elision oracle actually did, counted (`elide.Verdict`).
+///
+/// Plain values rather than the oracle itself, for the reason `shapeWarm` takes
+/// plain values: the seam that owns these counts lives a tier above this module,
+/// and a renderer must not reach up the page to read it.
+pub const Elision = struct {
+    /// Reads the index spared — the whole point of having one.
+    elided: usize = 0,
+    /// Reads it bought back: indexed files whose clocks reach the build anchor,
+    /// so their postings no longer describe their bytes.
+    stale: usize = 0,
+    /// Files the index never covered, and so never could have spared.
+    unindexed: usize = 0,
+    /// Files the trigrams admit as possible matches — the index working.
+    candidate: usize = 0,
+    /// Age of the build anchor, when one was published.
+    anchor_age_s: ?f64 = null,
+};
+
+/// The one hint about the INDEX rather than the pattern.
+///
+/// An index is a bet that most files can be proven out without reading them.
+/// When the anchor falls far enough behind the tree, the bet quietly inverts:
+/// the same files come back as `stale` and get re-read, and the run is doing
+/// bookkeeping for an accelerator that is no longer accelerating. Nothing about
+/// that is visible — the results are identical (elision is byte-invisible by
+/// construction), the exit code is 0, and the only way to learn the anchor is
+/// days old is to run a different command, `gist status`, which nobody runs
+/// BEFORE a search because there is no symptom prompting them to.
+///
+/// So this is the same failure shape `deadBranches` exists for: a success with
+/// no symptom. The claim is deliberately about counted verdicts and not about
+/// time — "it re-read more than it spared" is arithmetic on what this run did,
+/// where "the index is old" would be a guess about whether that mattered.
+pub fn indexVerdict(e: Elision) void {
+    fault.spare("render the index verdict", emitIndexVerdict(e));
+}
+
+fn emitIndexVerdict(e: Elision) !void {
+    if (!corpus_mod.hintsEnabled()) return;
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var out: std.ArrayList(u8) = .empty;
+    if (try renderVerdict(a, &out, e)) assay.diag("{s}", .{out.items});
+}
+
+/// Pure half — true when it had something to say.
+///
+/// The gate is the claim: an index that spared at least as many reads as it
+/// bought back is doing its job, however old its anchor is, and saying anything
+/// there would be noise on a healthy run. Only the inversion earns words.
+fn renderVerdict(a: std.mem.Allocator, out: *std.ArrayList(u8), e: Elision) !bool {
+    if (e.stale <= e.elided) return false;
+    const total = e.elided + e.stale + e.unindexed + e.candidate;
+    var left: usize = 2;
+    try line(a, out, &left, .note, try std.fmt.allocPrint(
+        a,
+        "the index spared {d} of {d} reads and bought back {d} that changed since its anchor{s} — it is re-reading more than it elides",
+        .{ e.elided, total, e.stale, try anchorAge(a, e.anchor_age_s) },
+    ));
+    try line(a, out, &left, .act, try std.fmt.allocPrint(
+        a,
+        "gist index — re-anchoring lets those {d} files be proven out again",
+        .{e.stale},
+    ));
+    return true;
+}
+
+/// " (set 3.6 days ago)" or nothing. Coarse on purpose: the number is here to
+/// tell a reader whether they are looking at minutes or weeks, and a figure
+/// precise enough to imply the age caused the inversion would be claiming more
+/// than the counts prove.
+fn anchorAge(a: std.mem.Allocator, age_s: ?f64) ![]const u8 {
+    const s = age_s orelse return "";
+    const day = 60 * 60 * 24;
+    if (s >= day) return std.fmt.allocPrint(a, " (set {d:.1} days ago)", .{s / day});
+    if (s >= 60 * 60) return std.fmt.allocPrint(a, " (set {d:.1} hours ago)", .{s / (60 * 60)});
+    return std.fmt.allocPrint(a, " (set {d:.0} s ago)", .{s});
+}
+
 // ── the long walk's own voice ─────────────────────────────────────────────
 
 /// How long a walk may stay silent before it owes the reader an explanation.
@@ -1277,6 +1360,73 @@ test "a probe budget keeps a courtesy from becoming the slow part" {
     const ev = probe(a, shape(&.{"KEY_THREAD_ID"}, .{}, &.{}, false), &[_]Probed{huge});
     try t.expectEqual(@as(usize, 1), ev.branches.len);
     try t.expect(!ev.branches[0].probed);
+}
+
+// ── the index verdict ────────────────────────────────────────────────────
+
+fn verdict(a: std.mem.Allocator, e: Elision) !?[]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    return if (try renderVerdict(a, &out, e)) try out.toOwnedSlice(a) else null;
+}
+
+test "a healthy index says nothing, however old its anchor" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // The bet is paying: far more reads spared than bought back. An age-based
+    // trigger would have fired here and been wrong, which is the whole reason
+    // the gate is arithmetic on verdicts instead.
+    try t.expect(try verdict(a, .{
+        .elided = 19_000,
+        .stale = 240,
+        .candidate = 61,
+        .anchor_age_s = 60 * 60 * 24 * 30,
+    }) == null);
+    // A run with no oracle at all counts nothing and must stay silent rather
+    // than divide by zero or announce a verdict it never reached.
+    try t.expect(try verdict(a, .{}) == null);
+    // The exact boundary: spared == bought back is not yet a loss.
+    try t.expect(try verdict(a, .{ .elided = 500, .stale = 500 }) == null);
+}
+
+test "an inverted index reports the counts it proved and names the fix" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // The state that motivated this: a 3.66-day-old anchor on a tree ~10 agents
+    // are editing, where the index re-reads more than it spares and every query
+    // pays for it silently.
+    try t.expectEqualStrings(
+        \\gist: note: the index spared 812 of 22442 reads and bought back 2431 that changed since its anchor (set 3.7 days ago) — it is re-reading more than it elides
+        \\gist: try gist index — re-anchoring lets those 2431 files be proven out again
+        \\
+    , (try verdict(a, .{
+        .elided = 812,
+        .stale = 2431,
+        .unindexed = 206,
+        .candidate = 18_993,
+        .anchor_age_s = 316_074,
+    })).?);
+}
+
+test "a brand-new file is unindexed, never stale — the count the verdict rests on" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // `unindexed` files carry recent clocks too, so classifying them as `stale`
+    // would manufacture the very inversion this hint reports. Here they are the
+    // majority and the index is otherwise healthy, so nothing is said.
+    try t.expect(try verdict(a, .{ .elided = 900, .stale = 100, .unindexed = 5_000 }) == null);
+}
+
+test "the anchor age reads in whatever unit a human thinks in" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try t.expectEqualStrings("", try anchorAge(a, null));
+    try t.expectEqualStrings(" (set 42 s ago)", try anchorAge(a, 42));
+    try t.expectEqualStrings(" (set 2.5 hours ago)", try anchorAge(a, 9_000));
+    try t.expectEqualStrings(" (set 3.7 days ago)", try anchorAge(a, 316_074));
 }
 
 test "activeMeta reads escapes rather than bytes" {

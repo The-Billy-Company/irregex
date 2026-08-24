@@ -165,6 +165,12 @@ pub const Worker = struct {
     // from `sink.matched_files`; `bytes_printed` from `sink.bytes_printed`).
     // Summed across workers into the trailing stats block after the walk.
     stats: Stats = .{},
+    // What the read-elision oracle decided, per cause (`elide.Verdict`). Kept
+    // apart from `stats` because that schema is ripgrep's vocabulary feeding a
+    // byte-parity `--stats` block, and the elision rate is ours alone. Plain
+    // per-worker counters, not atomics: one non-atomic increment on a path that
+    // already owns this worker's cache line, summed once after the join.
+    elision: elide.Rate = .{},
     /// Flush a worker's coalesced path-list buffer once it reaches this size — big
     /// enough that the lock+`write(2)` amortizes over hundreds of paths, small
     /// enough to stream (and to keep the soft output budget's cut at a whole-line

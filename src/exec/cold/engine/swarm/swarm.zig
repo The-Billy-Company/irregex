@@ -496,6 +496,23 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, parsed: args.Parsed, o: Opts, re:
     if (assay.lit(.query)) assay.diag("query: walk {d:.1} ms\n", .{search_span.lap(io).ms()});
     vigil.finish();
 
+    // Did the index actually accelerate this walk? Every worker has joined, so
+    // the verdict counts are final. Reported here rather than inside a mode's
+    // exit arm because this is a statement about the RUN, not about its output:
+    // a `--json` stream and a plain search that both re-read more than they
+    // elided have the same problem, and stderr is not either one's protocol.
+    if (lazy.val) |*el| {
+        const verdict = elisionVerdict(io, workers, el.anchor);
+        // The rate itself, unconditionally, for anyone measuring rather than
+        // being warned: the hint speaks only when the index lost, and a run
+        // tuning the index wants the number on a healthy run too.
+        if (assay.lit(.index)) assay.diag(
+            "index: elided {d} · stale {d} · unindexed {d} · candidate {d} · anchor {d:.1} s\n",
+            .{ verdict.elided, verdict.stale, verdict.unindexed, verdict.candidate, verdict.anchor_age_s orelse 0 },
+        );
+        hints.indexVerdict(verdict);
+    }
+
     // `--sort`/`--sortr path`: the fused walk held every worker's rendered output
     // in its arena keyed by path (`deliver`/`bufferPath`) instead of racing it to
     // stdout. Order the whole result once now and replay it through the SAME
@@ -578,4 +595,27 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, parsed: args.Parsed, o: Opts, re:
         hints.noMatches(sh, null, witness.afterStreaming(gpa, io, o.no_index, sh));
     }
     (Outcome{ .matched = sink.succeeded(), .faulted = q.walk_error.load(.acquire) or nothing_searched }).exit();
+}
+
+/// Fold every worker's verdict tally into the shape the hint renderer reads.
+///
+/// The join is the only place this is knowable: each worker counts privately on
+/// its own cache line precisely so the walk pays no atomic per file, which means
+/// no partial view is a run's rate. `anchor` comes from the oracle rather than
+/// re-read from disk — the age reported must be the age of the anchor these
+/// verdicts were judged against, not whatever is on disk by the time we print.
+fn elisionVerdict(io: std.Io, workers: []const Worker, anchor: i128) hints.Elision {
+    var rate: elide.Rate = .{};
+    for (workers) |*w| rate.fold(w.elision);
+    const age_ns = std.Io.Clock.now(.real, io).nanoseconds - anchor;
+    return .{
+        .elided = rate.get(.elide),
+        .stale = rate.get(.stale),
+        .unindexed = rate.get(.unindexed),
+        .candidate = rate.get(.candidate),
+        // A negative age means the anchor is in the future — a clock that moved
+        // under us, so the figure is withheld rather than rendered as nonsense.
+        // The counts are unaffected: they are comparisons, not durations.
+        .anchor_age_s = if (age_ns > 0) @as(f64, @floatFromInt(age_ns)) / std.time.ns_per_s else null,
+    };
 }

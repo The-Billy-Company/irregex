@@ -35,6 +35,14 @@ pub fn Tally(comptime Schema: type) type {
             self.counts[@intFromEnum(f)] += 1;
         }
 
+        /// += 1 on a counter chosen at RUNTIME — for counting a decision that was
+        /// just made, where the caller holds the outcome as a value rather than
+        /// knowing statically which counter it lands in. Same storage, same fold;
+        /// only the index is dynamic, and an `enum` tag cannot index out of range.
+        pub fn record(self: *Self, f: Schema) void {
+            self.counts[@intFromEnum(f)] += 1;
+        }
+
         /// += n on one counter.
         pub fn add(self: *Self, comptime f: Schema, n_: usize) void {
             self.counts[@intFromEnum(f)] += n_;
@@ -81,6 +89,15 @@ test "Tally counts, sets, and reads by tag" {
     try std.testing.expectEqual(@as(usize, 2), t.get(.hits));
     try std.testing.expectEqual(@as(usize, 3), t.get(.misses));
     try std.testing.expectEqual(@as(usize, 100), t.get(.bytes));
+}
+
+test "Tally.record counts a runtime-chosen counter" {
+    const Schema = enum { elide, stale };
+    var t: Tally(Schema) = .{};
+    // The shape the caller has: an outcome in a variable, not a literal tag.
+    for ([_]Schema{ .stale, .elide, .stale }) |v| t.record(v);
+    try std.testing.expectEqual(@as(usize, 1), t.get(.elide));
+    try std.testing.expectEqual(@as(usize, 2), t.get(.stale));
 }
 
 test "Tally.fold sums two partials" {

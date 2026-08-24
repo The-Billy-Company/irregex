@@ -26,11 +26,14 @@ cannot disagree with each other.
   answers differently from its line model: `-c` counts spans, not
   start-lines, and `-v` claims lines by a sequential rescan so a later
   match still hides its own line.
-- **`hints.zig`** is the stderr guidance channel, on two triggers: a
+- **`hints.zig`** is the stderr guidance channel, on three triggers: a
   notable outcome (`<name>: no matches …` plus up to three ranked
-  `<name>: try` / `<name>: note:` lines) and a notable duration (`Vigil`
+  `<name>: try` / `<name>: note:` lines), a notable duration (`Vigil`
   — a walk still running past its patience reports progress instead of
-  looking hung). The outcome arm reads an `Evidence` value probed from the bytes
+  looking hung), and a notable *accelerator* (`indexVerdict` — the index
+  re-read more than it elided; see [When the Index Stops
+  Accelerating](#when-the-index-stops-accelerating)). The outcome arm reads an
+  `Evidence` value probed from the bytes
   the run actually searched rather than from the query's spelling, so a
   suggestion is withheld unless the corpus backs it — see [A Hint Has to
   Be Earned](#a-hint-has-to-be-earned). Muted by `<prefix>HINTS=0`, never
@@ -137,6 +140,29 @@ truncates it — in every one of those a branch can match without leaving a
 trace in `out`, so the absence of its bytes proves nothing and the note is
 withheld rather than guessed.
 
+### When the Index Stops Accelerating
+
+The other success with no symptom, and the only hint about the index rather
+than the pattern. An index is a bet that most files can be proven out without
+reading them. Once the build anchor falls far enough behind the tree, the bet
+inverts: the files it used to spare come back as changed-since-anchor and are
+re-read anyway. Elision is byte-invisible by construction, so the results are
+identical, the exit code is unchanged, and the only way to learn the anchor is
+days old is `gist status` — which nobody runs *before* a search, because
+nothing prompts them to.
+
+The claim is arithmetic on what this run did, never a guess about age. The walk
+counts what the elision oracle decided per cause (`elide.Verdict`), and the
+three negatives are not interchangeable: a `candidate` is the index working, an
+`unindexed` file never had a read to spare, and only `stale` is a read the index
+bought back. The note fires when `stale` outnumbers `elided` — so a healthy
+index says nothing however old its anchor is, because age is not the complaint.
+
+Cold engine only, and that is where the failure lives: a cold process re-reads
+the whole changed set every time, while the resident session folds a change into
+its overlay once and advances `fresh_ns`, so the same edit costs it one read
+total rather than one per query.
+
 ## One Owner for "Which Literals May I Sweep For?"
 
 Before any mode walks a body, it can mark which lines are even worth
@@ -166,7 +192,8 @@ it rather than reach for `re.lits()`.
 ## When to Edit
 
 Output framing, color policy, `--json` event shapes, multiline buffer
-model, hyperlink destination/emulator detection, or either arm of the
-coaching channel (no-match hints, the long-walk vigil). Changing *what*
+model, hyperlink destination/emulator detection, or any arm of the
+coaching channel (no-match hints, the long-walk vigil, the index verdict).
+Changing *what*
 matched belongs in `kernel/regex/`; changing *which files* were searched
 belongs in walk/engine.

@@ -80,9 +80,20 @@ live read into an aborted run.
 Soundness has one direction that matters: a false *negative* (failing to
 elide) is slow; a false *positive* (eliding a file that could match) is a
 wrong answer with a clean exit code, the worst failure this engine has.
-Hence `Oracle.skip`'s refusal to skip any file whose mtime and ctime can't
+Hence the oracle's refusal to skip any file whose mtime and ctime can't
 prove it predates the index anchor — which is also the exact validity
 condition for reusing a persisted crest vector.
+
+A cost difference still has to be *observable*, though, and for a long time
+this one was not. `Oracle.judge` is the decision resolved into its cause
+(`Verdict`) and `skip` is the bool the walk acts on, because the three
+negatives price differently: a `candidate` is the index working, an
+`unindexed` file never had a read to spare, and only `stale` is a read the
+index bought back. Membership is tested *before* freshness, since a
+brand-new file trips the freshness gate too and short-circuiting there would
+file every one of them under `stale` — inflating the single number the
+verdict rests on. The walk tallies those per worker and the engine reports
+the inversion once, on the hint channel (`emit/hints.zig`).
 
 That condition is this tier's, not the sieve's. The resident session runs
 the same two prunings (`exec/session/answer/gather.zig`) with no freshness
