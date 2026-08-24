@@ -5,6 +5,409 @@ All notable changes to the `irregex` kernel (formerly `gist`; the gist CLI is it
 
 <!-- towncrier release notes start -->
 
+## [2.2.0] - 2026-08-24
+
+### Added
+
+- - A search now tells you when its index stopped being an accelerator.
+
+    An index is a bet that most files can be proven out without reading them. When
+    the build anchor falls far enough behind the tree, that bet quietly inverts:
+    the files it used to spare come back as changed-since-anchor, get re-read
+    anyway, and the run is doing bookkeeping for something that is no longer
+    buying it anything. Nothing about that is visible. Elision is byte-invisible by
+    construction, so the results are identical either way, the exit code is 0, and
+    the only way to learn the anchor is days old is to run `gist status` - which
+    nobody runs *before* a search, because there is no symptom prompting them to.
+    It is the same failure shape the no-match hints exist for: a success with no
+    symptom.
+
+    So the walk now counts what the elision oracle actually decided, per cause.
+    That distinction is the whole change. `skip` answered as a bool, which is
+    everything the walk needs to act on and not enough for the run to say anything
+    true about itself afterwards, because it collapsed three very different
+    negatives: a file the trigrams admit as a possible match (the index working),
+    a file the index never covered (nothing to spare), and an indexed file whose
+    clocks reach the anchor (a read the index bought back - the only one that is a
+    loss). Separating them means a finished run can report the elision rate it
+    actually achieved instead of the one its file count implies.
+
+    One line on stderr, and only when the run can prove it earned it - the counts
+    have to show it re-read more than it spared. A healthy index says nothing
+    however old its anchor is, because age is not the complaint; being outvoted by
+    your own stale set is. The claim is arithmetic on what this run did, not a
+    guess about whether the age mattered:
+
+    ```text
+    gist: note: the index spared 210 of 2000 reads and bought back 1400 that
+          changed since its anchor (set 3.6 days ago) - it is re-reading more
+          than it elides
+    gist: try: gist index - re-anchoring lets those 1400 files be proven out again
+    ```
+
+    Counting is a non-atomic increment on a line each worker already owns, folded
+    once at the join, and it rides the lookup an unchanged file always paid. The
+    parallel engine only, which is the default path; the serial one partitions its
+    candidate set upstream and has no equivalent seam. `GIST_HINTS=0` mutes it with
+    the rest of the channel.
+- - The Python binding gained a native transport, so a short string is no longer mostly FFI.
+
+    `irgx` was a pure ctypes binding, and ctypes charges the same toll whatever it
+    is wrapping. Measured against the engine's own floor, `irgx_is_match_in` costs
+    12.7 ns to run and 327 ns to *call*; `irgx_find_all_in` costs 66 ns to run and
+    585 ns to call. That is a linear-time engine spending eight times longer being
+    invoked than working, and no amount of effort on the Zig side can touch it -
+    which meant the guarantee this package exists to sell was being paid for out of
+    the wrong pocket on exactly the inputs most programs have.
+
+    So the twelve verbs this binding crosses the boundary with *per text* now have
+    a second transport: `irgx._accel`, a stable-ABI C extension that takes the
+    caller's own `str` and hands back finished Python objects. The other ninety-odd
+    symbols stay on ctypes, and the line between them is not a guess - a verb is
+    here if it is asked once per text (a search, a scan, a classification) and not
+    if it is asked once per program (open a handle, describe it, compile a slate,
+    free it). Adding `lines_count` would be boilerplate around a verb whose cost is
+    already O(text).
+
+    Interleaved against the ctypes path in one process, on the same handles -
+    min-of-11, because the two transports are chosen at import and comparing them
+    across two runs measures the machine (`scripts/bench_transport.py`):
+
+    ```text
+                              accel     ctypes         re    vs ctypes   vs re
+      find_all  1 match        192n      1096n       439n        5.7x     2.3x
+      find_all  9 matches      336n      1934n       869n        5.8x     2.6x
+      find_all  ~1 KiB        8.5us     23.1us     18.1us        2.7x     2.1x
+      find_all  ~64 KiB       931us     1831us     1181us        2.0x     1.3x
+      captures  3 groups       182n      1375n       197n        7.5x     1.1x
+      is_match  17 bytes       519n       870n       124n        1.7x     0.2x
+    ```
+
+    The ratios shrink as the text grows, which is the shape you want: the fix is
+    to overhead, and overhead is what a short string is made of. `is_match` is the
+    one row that stays behind `re`, and that is not the transport - through this
+    same transport, `is_match` on `(\w+)@(\w+)` costs 1845 ns where `find_all` with
+    a limit of 1, which is strictly more work, costs 73 ns. `Pattern.isMatch`'s
+    boolean kernel does not take the literal prefilter the span walk takes, so a
+    pattern with a strong literal scans the whole buffer to answer a question the
+    walk answers by skipping to the candidate. It is fast where there is no literal
+    to miss (54-78 ns, beating the walk) and 5-25x slow where there is. That is an
+    engine bug with its own fix, filed separately; it is visible here only because
+    removing the FFI floor is what made it visible.
+
+    Three things carry most of it. A `str` is handed to the engine through
+    CPython's own cached UTF-8 rather than re-encoded, and for the ASCII case that
+    cache *is* the object's storage - so a text searched twice is copied zero
+    times, where `.encode()` mints a fresh `bytes` every call. Span buffers come
+    off the C stack for the 128 rows that cover almost every answer, instead of
+    ctypes minting an array object per call. And the results are built as tuples
+    directly rather than through `Py_BuildValue`, whose format parsing costs more
+    than the integers it makes.
+
+    **Nothing requires it.** No accelerator - an interpreter it was not built for,
+    a source checkout, `IRGX_NO_ACCEL=1` - and every verb falls back to the ctypes
+    implementation beside it, which is the one this package already shipped. The
+    routing is per verb, so an engine too old to export one symbol keeps ctypes for
+    that verb alone. `irgx._engine.native()` says which answered.
+
+    Both transports are held to one answer rather than trusted to have one:
+    `tests/test_transport.py` asks the same handle the same question through both
+    in a single process and requires equal objects, over the four cases where the
+    two implementations genuinely do different work - buffer growth past the first
+    window, a non-participating group, an empty answer, and a refusal - and CI runs
+    the whole suite a second time under `IRGX_NO_ACCEL=1`.
+
+    On PyPI this arrives as a second wheel per platform, not a replacement. The
+    portable `py3-none-<platform>` wheel is unchanged and still cross-built for the
+    whole matrix from one machine; the new `cp312-abi3-<platform>` wheel carries
+    the accelerator and is built only where the host is the target, since an
+    extension needs its target's own Python headers. pip prefers the accelerated
+    one wherever it fits and takes the portable one everywhere else - a
+    free-threaded build, PyPy, an architecture no release box runs - so this is an
+    optimization for most installs and a narrowing for none. One binary serves 3.12
+    and every version after it: the wheel built here against 3.12 headers imports
+    and answers on 3.14.
+- - `irgx_find_first` / `irgx_find_first_in`: the leftmost span, without walking the rest of the text.
+
+    Every binding's `search()` was `find_all` with a cap of 1, and that is a
+    different question than it looks. `find_all`'s `*written` is the count the
+    whole text HAS, on purpose - a saturating count makes "did I get everything?"
+    undecidable, and reporting the true total is what lets a short window size its
+    own retry in one search. That contract is worth keeping. But it is also why
+    `cap = 1` cannot mean "stop": the cap bounds what is WRITTEN, never what is
+    walked. So a host that wanted one span paid for every match in the text plus
+    the tally, and `re.search(s)` - the most common verb any regex library has -
+    spent the entire scan on matches the caller had no way to read.
+
+    The fix is not to weaken the total. A host that wants the count still gets it
+    exactly. It is to let a host say it does not want one.
+
+    Nothing here is a second search strategy. Same walk, same modes, same iteration
+    rules; the span is the one `find_all` would have put in `out[0]`. `earliest`
+    needs no case of its own, because it changes which match is first and this
+    reports whichever the walk yields first under the mode it was asked in - and an
+    undecidable pattern declines here exactly as it does for the span verbs, rather
+    than handing back a leftmost span wearing an earliest label.
+
+    `irgx_find_first_in` is the same verb over `[from, to]`, with `find_all_in`'s
+    window contract: the match must fit inside the region while every assertion
+    still reads the whole text.
+
+    All three bindings now route their one-span verb through it, so the win is a
+    host user's without asking for it: Python's `search()`, Go's `FindStringIndex`
+    / `FindIndex` (and any `FindAll...(n=1)`, windowed or not), and Rust's `find`
+    / `find_at`. Go's route replaces a 4096-span buffer allocated to hold one
+    answer. Rust binds only the windowed spelling, as it already did for
+    `find_all`, since `find_at` needs the live bound and `find` passes the inert
+    one; that decision is now on the record in `contract/bindings.toml` rather
+    than in a comment only a reader already inside `sys.rs` would find.
+
+    Each host's adoption is held to its own oracle rather than to this verb's
+    word: over every case in the shared cross-binding corpus - nullable rows
+    included, since the thinning conventions that make a host's sequence its own
+    are all rules about the match BEFORE this one, and a first match has none -
+    the one-span verb must report exactly the span that host's full walk puts at
+    index zero.
+
+    Held by a differential over the shapes where a second walk would drift -
+    nullable patterns, anchors under the buffer model, alternations, and texts with
+    no match at all - each asserting the verb returns exactly `find_all`'s first
+    span, and by rows pinning that a window bounds which match is reported without
+    moving the edges the assertions read.
+
+### Changed
+
+- - `findall` is now one FFI crossing, and the no-bounds calls stopped paying for
+    bounds nobody passed.
+
+    `findall` used to come back as spans and get finished in Python: a capture
+    call per match for a grouped pattern, a slice and a decode per value, a tuple
+    per row. Two verbs on the native transport now hand back the finished list
+    itself - `texts` for a groupless pattern, `group_texts` for the rest - walking
+    the matches, running the capture pass, thinning the empty matches a `str`
+    cannot index, and building the `str`/`bytes`/tuple objects all on the C side
+    of the boundary. On a page of prose that is several hundred objects and as
+    many crossings folded into one call. Both have ctypes implementations beside
+    them, so a build without the accelerator keeps the same answers through the
+    same seam.
+
+    Independently, the call shape almost every program uses - `pos=0`, no
+    `endpos`, the caller's own `str` or `bytes` in the pattern's own domain - now
+    skips the translation object and the region arithmetic entirely in
+    `is_match`, `search` and `findall`. An exact type in the right domain *is*
+    the validation those layers performed; everything else still takes the slow
+    path for its diagnostics. A `search` hit builds its `Match` by assignment
+    rather than through two `__init__` frames, and the hot paths read the
+    per-thread handle straight off the pool's thread-local, since a method frame
+    costs more than the attribute it fetches.
+
+    Measured against `re` on 3.12 (min-of-11, one process, interleaved), the
+    bulk and scan shapes this engine exists for now win outright: `findall` on a
+    59-byte line 458 ns vs 795 ns, the same line with a character class answered
+    2.5x faster, a 17 KiB miss 6.8x faster, 17 KiB `findall` 1.6x faster. The
+    rows that remain behind `re` are the ones whose whole budget is call
+    dispatch: `re.search` answering a literal hit costs 60 ns, of which the
+    match work is single-digit - the rest is the C method call and the C match
+    object, a floor a Python-level `Pattern` and `Match` cannot undercut from
+    the wrong side of the frame. Those rows are parked at 1.2-4.6x behind with
+    the arithmetic written down rather than papered over; the next rung, if it
+    is ever worth the surface, is `Pattern`/`Match` as C types in the
+    accelerator itself.
+
+    The `METH_FASTCALL` branch the accelerator compiles under a 3.13+ limited
+    API also actually compiles now - the method table needed the `PyCFunction`
+    cast every fastcall extension carries - so a build against newer headers is
+    available the day the wheel matrix wants one.
+
+### Fixed
+
+- - A caseless pattern now gets a literal prefilter. It never had one.
+
+    `-i` folding runs before every downstream analysis, and it has to: the
+    prefilter and the match engines must agree on what a construct means, so the
+    fold happens once at parse time and everything reads the same classes
+    afterward. The cost of that ordering was invisible. By the time the literal
+    pass walks the AST, `ignore` is six two-element classes and there is no
+    literal left to find; `required` comes out empty, the literal-set engine
+    declines, and every acceleration that hangs off a literal fact quietly turns
+    itself off. A caseless search ran the automaton over every byte of every
+    haystack with no prefilter of any kind, on exactly the patterns - case-blind
+    scans of untrusted text - where a prefilter pays most.
+
+    Two more paths were dark even case-sensitively. The literal set that
+    `lineMatch` and `docMatch` consult carries an authority: `.exact` decides a
+    line outright, which is only sound *per line*. So `bufMatch` (`-U`, where the
+    buffer is one haystack and a match may cross `\n`) and `matchWindow` (`-o`
+    leftmost-first spans) had no license to read it, and never rejected on a
+    literal at all - they walked, byte by byte, past a required literal the
+    compiler had already proven absent.
+
+    So the compiled pattern now carries one presence gate, and the two walking
+    paths reject on it. Under `-i` it is mined from the raw unfolded twin: the same
+    source parsed a second time with the fold off, whose required literal is the
+    one the fold was about to erase. Only the parse and the literal pass run on the
+    twin - the literal is a property of the AST, so lowering it would mean building
+    an entire second engine to read one field off the front. One extra parse per
+    caseless *compile*, to spare a scan per haystack *byte*.
+
+    The gate is a necessary condition and nothing more. A miss rejects; a hit
+    proves nothing and falls through, because the literal can sit anywhere inside a
+    match and its position is not a start. No authority is claimed, so the gate can
+    prune work and cannot decide an answer.
+
+    Soundness is the fold-closed window, which is why the whole literal is not the
+    gate. Under Unicode fold `k` also matches KELVIN SIGN (U+212A) and `s` matches
+    LONG S (U+017F), and a non-ASCII byte's orbit is multi-byte and positional -
+    gate on those and you go looking for a spelling a real match need not contain.
+    The rule keeps the longest run of bytes whose fold orbit stays inside its two
+    ASCII spellings, so `sun` gates on `un` and still finds `ſun`, `mass` gates on
+    `ma` and still finds `maſſ`, and `café` declines rather than guess. It moved
+    down beside the caseless kernel it guards, which had been naming it across a
+    tier boundary for exactly this reason.
+
+    Measured on a 1.09 MB caseless prompt-injection corpus, this commit against its
+    own parent, the two dylibs built from the same source but for this change and
+    run interleaved against the same harness: 11.4 ms to 3.95 ms, **2.9x**, each arm
+    steady to a hundredth of a millisecond over three rounds. Disabling only the
+    consult - the gate still derived, one line - lands back on the parent's number,
+    so the win is the rejection and not a side effect of the extra parse.
+
+    That does not yet make it the fastest engine on this workload: Google RE2 runs
+    it in 0.71 ms and Python's `re` in 3.3 ms, so caseless `is_match` is still
+    losing here and closing it takes the buffer-model span fix landing beside this
+    one. With both present the same corpus answers in 0.20 ms - 3.4x RE2, 16x `re`,
+    57x this commit's parent - and gate-off/gate-on over *that* tree isolates 1.86x
+    to the gate. Two independent holes on one path, each of which hides most of the
+    other; neither number is the whole repair.
+
+    Answers are unchanged and that is the load-bearing claim, not the ratio. The
+    engine suite passes, and 96,000 randomized differential checks against `re` -
+    patterns carrying literals, haystacks spelling them through the fold-escaping
+    orbits, with and without `-i`, with and without dotall - agree exactly. They
+    also agree with the gate *off*, which is the property a prefilter owes you: it
+    buys time and is not load-bearing for a single answer. Deleting the
+    fold-closure rule breaks that differential inside a few hundred cases, every
+    failure a false negative on precisely the orbits the rule exists for - so the
+    harness can see the bug the rule prevents.
+- - Spans got their reductions back under the buffer model, which is the only model a binding can compile.
+
+    Two optimizations were gated on `!multiline`, and `multiline` down in `lower.zig`
+    does not mean what the name suggests. It is not the `(?m)` question; it is the
+    statement *the haystack is a buffer rather than one line*. A `glean.Pattern`
+    forces it as an invariant - it is handed whole buffers by definition - so every
+    consumer of the C ABI compiled with it set, and both gates were therefore always
+    closed for Python, Rust, Go and every other binding. Only the CLI, which feeds
+    one line at a time, ever saw the fast paths.
+
+    The pure-literal set was the worse of the two. `pureLiterals` already rejects
+    every assertion and rejects any literal carrying `\n`, so what survives is a
+    claim about the AST - this pattern matches a text iff that text contains one of
+    these literals - and a literal with no newline in it sits inside one line
+    wherever it lands. The buffer and the line read that claim identically, so the
+    gate was not conservative, it was just lossy. It left `pike/span.zig`'s SIMD
+    literal path unreachable from every binding and dropped their spans onto the
+    Pike VM, a bare literal string included.
+
+    The caliper's gate cited a real hazard and then over-applied it. A buffer anchor
+    has no per-line determinization, true; but `reverse.matchIndex` already declines
+    any program carrying `\A`/`\z`, so the conjunct only restated it while also
+    rejecting every multi-segment pattern that carries no anchor at all - the exact
+    family the two-jaw construction exists for. What genuinely does not survive the
+    model change is `^`/`$` when line anchors are on, since a jaw reads `at_start`
+    off the edge of the slice it was handed while `(?m)` means "after any newline".
+    That is now its own precondition instead of a proxy for one, so `(?m)^foo` is
+    declined and everything else is measured.
+
+    On a megabyte, a multi-segment pattern with no extractable literal
+    (`[A-Z][a-z]+[A-Z]\w*`) went from 9.99 ns/byte to 0.04. Against the safety
+    catalogue this repo is benchmarked on, a 300-byte scan of 31 real patterns went
+    from 323 us to 79.
+
+    The caliper suite only ever ran the line model, so it could not have caught
+    either of these; it now runs both, over haystacks whose newlines are interior,
+    leading and trailing. The `isMatch`-versus-walk differential got the same
+    treatment - its alphabet could not spell `\s`, `\d` or `\w`, so the
+    newline-claiming family its own guard exists for was unreachable by generation.
+- - The caliper's memo budget is counted in the currency it is spent in, so a `\b` no longer prices a pattern out of its own automaton.
+
+    The budget was `clamp(nfa_states * 64, 128 KiB, 2 MiB)`. The memo is charged in
+    `Machine.stride` units, and stride is `rows * ncls` - so the floor was stated
+    in bytes while the spending happens in states, and the exchange rate is
+    different for every program.
+
+    It is worst for the programs with the most to determinize. A word assertion
+    takes `rows` from four gap shapes to sixteen, because a gap's word context
+    selects the transition; a Unicode word class widens `ncls` on top of that. Put
+    both together and one state costs 4864 bytes where its word-free twin costs
+    1216. Same flat 128 KiB floor, 27 states affordable against 107, for two
+    patterns one character apart.
+
+    Twenty-seven is below the powerset of any real multi-segment pattern, so the
+    forward jaw hit `quit` partway through the first scan and stayed quit - the
+    flag is sticky. Every span after that declined, and a 394-state program went to
+    the Pike VM at 109 ns/byte while the twin ran the caliper at 4. The budget was
+    not protecting memory there; the memo never got large. It was cutting
+    determinization off a third of the way in and paying for the abandoned work.
+
+    So the floor now scales with the stride, which holds a program's affordable
+    *state* count roughly constant instead of its byte count. 256 states sits just
+    above the ~195 a flat 128 KiB already bought a typical assertion-free program,
+    so nothing that fit before fits less well, and the 2 MiB cap still bounds the
+    absolute spend for a program whose stride is genuinely enormous.
+
+    On the pattern that found this - a caseless seven-verb alternation with a
+    hinge, a trailing alternation and one `\b`, over 3.4 KB of ordinary prose -
+    the span walk goes 374 us to 17 us, and the jaw reaches its true 30-state
+    powerset instead of dying at 27.
+
+    The regression test asserts the thing that is actually invariant rather than a
+    duration: two patterns differing only by a trailing word assertion must both
+    determinize to completion, and the widened engine's spans are held to this
+    file's standing Pike oracle.
+- - `\b` no longer drops the whole program onto the Pike VM, which it did for every binding.
+
+    The buffer model armed its DFA only for `assert_free` programs. That is a
+    stronger question than the site is asking. `assert_free` means "match validity
+    depends on nothing but the consumed bytes", and the reason the buffer model
+    wants care is narrower than that: `^`/`$` under `(?m)` hold at every `\n`, so
+    their meaning is content-dependent in a way no eager BOL/EOL table can encode.
+
+    A word-context assertion is not that. `\b` reads the two bytes beside a
+    position. It is haystack-local, it means the same thing in both models, and
+    the powerset has always determinized it - `powerset.build` refines byte classes
+    by word-ness and `matchWord` resolves the axis at the DFA floor. The per-line
+    model proved this daily by arming a DFA for exactly these programs while the
+    buffer model refused one for the same bytes.
+
+    Which mattered more than it looks, because the buffer model is the only model a
+    language binding ever compiles under; `compile/captures.zig` forces it. So this
+    was not an edge case, it was most real patterns: every `\b` any host ever
+    compiled ran on the Pike VM. One catalogue pattern - seven verbs, a hinge, a
+    trailing alternation, one `\b` - took 314 us over 4 KB where the same pattern
+    with the `\b` deleted took 12 us on the DFA. Same automaton, 26x the price, for
+    an assertion the determinizer had never had trouble with.
+
+    So the gate is now `buf_exact` rather than `assert_free`: everything positional
+    in the program has to resolve against the haystack's own bytes and ends. Word
+    assertions are in, `^`/`$` under `(?m)` are still out, and `\A`/`\z` stay out
+    for now because `bufMatch` carries a phantom-position rule for the trailing
+    `\n` that is the VM's and not the automaton's - admitting them needs that rule
+    lifted into the DFA first, which is its own change with its own proof.
+    Zero-width-reaching programs are excluded for the same reason, since that rule
+    is exactly what would make the table and the VM disagree about `\B` over
+    `"abc\n"`.
+
+    The tier of per-line rungs stays on `assert_free`, deliberately. A rung answers
+    the slice question, which needs "no match crosses a `\n`" - substring closure,
+    which only assertion-freeness gives. A `\b` program is exactly determinizable
+    over the buffer and still not sliceable; those are two different claims and
+    they were sharing one flag.
+
+    Held by a new whole-buffer differential over the widened class: the same
+    generator as the assertion-free case with a word assertion welded on, every
+    verdict checked against the whole-buffer Pike reference, and a floor asserting
+    the run actually admitted programs the old gate would have refused.
+
 ## [2.1.2] - 2026-08-17
 
 ### Added
