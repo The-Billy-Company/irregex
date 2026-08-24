@@ -20,6 +20,14 @@ package irgx {
 
 // Tiers, low to high. An import may only point back up the page.
 zones {
+    // How to compile the accelerator, and the C source it is about. Stdlib
+    // only and below everything, because both of its readers run where nothing
+    // is installed: the wheel hook inside a build backend, the build script in
+    // a bare checkout. Its own zone rather than a corner of `packaging`, since
+    // it is not a hook — it is the one answer to "which compiler, which flags,
+    // which filename" that a hook and a script both ask.
+    accel      accel/**
+
     // The wheel's build hooks. They run under hatchling and never under the
     // package, so they import nothing of ours and sit at the bottom.
     packaging  *.py
@@ -61,6 +69,20 @@ use pytest by tests
 // it tokenized first. The alternative is a second copy of that tokenizer, which
 // would let the two suites disagree about what the header says.
 use test_cdef_header_parity by tests
+
+// The same shape one tier down: `accel/toolchain.py` is reached by inserting
+// its directory on `sys.path` and asking for `toolchain` by bare name, because
+// neither reader can import the package it lives in — the hook runs before the
+// package exists and the script runs in a checkout without it. So the edge
+// reads as an outside module even though the file is ours, and it is written
+// down rather than left to the `sys.path` line that makes it work.
+use toolchain by packaging scripts
+
+// The bench script borrows the suite's fixture that points `IRGX_LIB` at
+// `zig-out`, so a measurement runs against the library this checkout just
+// built. Same path insertion, same reason to name it: the alternative is a
+// second copy of that discovery, free to disagree with the one the tests use.
+use conftest by scripts
 
 // Structural laws.
 limit  reach to 1 hop
