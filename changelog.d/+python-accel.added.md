@@ -21,13 +21,15 @@
   min-of-11, because the two transports are chosen at import and comparing them
   across two runs measures the machine (`scripts/bench_transport.py`):
 
-                              accel     ctypes         re    vs ctypes   vs re
-      find_all  1 match        192n      1096n       439n        5.7x     2.3x
-      find_all  9 matches      336n      1934n       869n        5.8x     2.6x
-      find_all  ~1 KiB        8.5us     23.1us     18.1us        2.7x     2.1x
-      find_all  ~64 KiB       931us     1831us     1181us        2.0x     1.3x
-      captures  3 groups       182n      1375n       197n        7.5x     1.1x
-      is_match  17 bytes       519n       870n       124n        1.7x     0.2x
+  ```text
+                            accel     ctypes         re    vs ctypes   vs re
+    find_all  1 match        192n      1096n       439n        5.7x     2.3x
+    find_all  9 matches      336n      1934n       869n        5.8x     2.6x
+    find_all  ~1 KiB        8.5us     23.1us     18.1us        2.7x     2.1x
+    find_all  ~64 KiB       931us     1831us     1181us        2.0x     1.3x
+    captures  3 groups       182n      1375n       197n        7.5x     1.1x
+    is_match  17 bytes       519n       870n       124n        1.7x     0.2x
+  ```
 
   The ratios shrink as the text grows, which is the shape you want: the fix is
   to overhead, and overhead is what a short string is made of. `is_match` is the
