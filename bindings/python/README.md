@@ -432,9 +432,9 @@ Most platforms get two wheels, and pip picks between them for you. The
 can load the library at all. The `cp312-abi3-<platform>` one additionally
 carries the accelerator above; it is built only where the release machine *is*
 the target, since a C extension needs its target's own Python headers. pip
-prefers it wherever it fits and falls back to the portable wheel everywhere else
-- a free-threaded build, PyPy, a platform no release box runs. One abi3 binary
-covers 3.12 and every version after it.
+prefers it wherever it fits and falls back to the portable wheel everywhere
+else - a free-threaded build, PyPy, a platform no release box runs. One abi3
+binary covers 3.12 and every version after it.
 
 ## Searching a Codebase with It
 

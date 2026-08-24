@@ -15,13 +15,13 @@
  * same machine.) A linear-time engine that answers in 66 nanoseconds and then
  * spends 519 of them being called is not a linear-time engine anybody can feel.
  *
- * So this module is the same calls with the marshalling deleted: it takes the
+ * So this module is the same calls with the marshaling deleted: it takes the
  * caller's own `str`/`bytes` and returns finished Python objects, doing the
  * buffer sizing, the short-window retry and the result construction in C where
  * they cost nothing. Everything above it - Match, findall, split, sub, the
  * lexer plane, the set plane - stays Python and gets faster for free, because
  * every one of them funnels through these twelve verbs. Two of them - `texts`
- * and `group_texts` - go further than deleting the marshalling: they collapse
+ * and `group_texts` - go further than deleting the marshaling: they collapse
  * a whole findall, which used to be one crossing per match plus one for the
  * walk, into a single crossing that hands back the finished list.
  *
@@ -30,7 +30,7 @@
  * Not a second binding. It links nothing, opens nothing and knows no symbol
  * names of its own: `bind()` is handed the engine's function pointers by the
  * ctypes layer that already resolved them, so there is exactly one library
- * loaded, one ABI check, and one place where IRGX_LIB is honoured. If this
+ * loaded, one ABI check, and one place where IRGX_LIB is honored. If this
  * module is missing - an unsupported platform, a free-threaded interpreter, a
  * source checkout - the binding runs on ctypes and answers identically. It is
  * an accelerator, never a dependency.

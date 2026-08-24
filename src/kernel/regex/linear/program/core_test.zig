@@ -1065,6 +1065,7 @@ test "gate: fold-escaping orbits are excluded, so no real match is pruned" {
         .{ .pat = "bike", .want = "bi", .hay = "a bi\u{212A}e here" }, // k ⇒ split
         .{ .pat = "mass", .want = "ma", .hay = "a ma\u{17F}\u{17F} here" }, // ss ⇒ split
         .{ .pat = "sun", .want = "un", .hay = "a \u{17F}un here" }, // leading s dropped
+        // spellchecker:ignore-next-line
         .{ .pat = "eventsource", .want = "event", .hay = "x event\u{17F}ource" }, // tie ⇒ leftmost
     };
     for (cases) |c| {

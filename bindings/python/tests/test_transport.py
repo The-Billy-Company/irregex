@@ -30,9 +30,8 @@ is a path under test rather than a path in principle.
 
 from __future__ import annotations
 
-import pytest
-
 import irgx
+import pytest
 from irgx import _abi, _engine
 from irgx._munch import _CompiledMunch
 from irgx._pool import Compiled
