@@ -38,11 +38,31 @@ _DIGITS = "0123456789"
 class Template:
     """A parsed replacement: literal chunks interleaved with group numbers."""
 
-    __slots__ = ("_as_bytes", "_parts")
+    __slots__ = ("_as_bytes", "_constant", "_parts")
 
     def __init__(self, parts: list[str | int], as_bytes: bool) -> None:
         self._parts = parts
         self._as_bytes = as_bytes
+        # A template with no group reference renders the same text for every
+        # match, so the whole substitution is the subject cut at each span with
+        # one constant between the pieces - an answer the engine's own spans
+        # settle without a `Match` ever existing. Rendered once here so the
+        # caller can ask whether that shortcut applies by reading a slot.
+        # `None` means "depends on the match"; the empty replacement is a real
+        # constant and must not be confused with it.
+        self._constant: Any = (
+            None
+            if any(type(part) is int for part in parts)
+            else (b"" if as_bytes else "").join(
+                part.encode("latin-1") if as_bytes else part  # type: ignore[union-attr]
+                for part in parts
+            )
+        )
+
+    @property
+    def constant(self) -> Any:
+        """The text every match renders to, or ``None`` when a group decides it."""
+        return self._constant
 
     def render(self, match: Match) -> Any:
         pieces = []

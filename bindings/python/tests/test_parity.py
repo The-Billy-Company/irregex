@@ -113,6 +113,67 @@ def test_pos_and_endpos_bound_the_search_exactly_as_re_bounds_it(pattern, text, 
     assert irgx.compile(pattern).is_match(*args) is (theirs is not None)
 
 
+# The same regions, over patterns that DECLARE groups — a separate list because
+# the question is different: above, whether the right span was found; here,
+# whether the group detail filled in afterwards describes that span.
+BOUNDED_GROUPS = [
+    (r"(\w)(\w*)", "hello"),
+    (r"(?P<head>\w)(?P<tail>\w*)", "hello"),
+    (r"(a)|(b)", "ab"),
+    (r"(a(b(c)))", "xabcx"),
+    (r"(\w)(\w*)", "héllo"),
+    (r"(é)(\w*)", "éab"),
+    (r"(x)?(a)", "a xa"),
+]
+
+
+@pytest.mark.parametrize(("pattern", "text"), BOUNDED_GROUPS)
+@pytest.mark.parametrize(("pos", "endpos"), REGIONS)
+def test_group_detail_under_a_bound_describes_the_match_the_bound_found(pattern, text, pos, endpos):
+    # Group spans are filled in on first request, from a SECOND engine call — and
+    # that call has to be handed the same text the walk was. Handing it the whole
+    # subject let a greedy group run past `endpos` and report a wider whole-match
+    # than the walk had found, which the binding correctly refused to reconcile
+    # and the caller met as an error where `re` answers. The whole-match span
+    # agreeing is not enough to catch that, which is why this asks for the groups.
+    args = (text, pos) if endpos is None else (text, pos, endpos)
+    for ours, theirs in zip(
+        irgx.compile(pattern).finditer(*args), re.compile(pattern).finditer(*args), strict=True
+    ):
+        assert ours.span() == theirs.span()
+        assert ours.groups() == theirs.groups()
+        assert ours.groupdict() == theirs.groupdict()
+        for index in range(1, re.compile(pattern).groups + 1):
+            # `re` reports (-1, -1) for a group that did not participate too, so
+            # this comparison needs no special case for it.
+            assert ours.span(index) == theirs.span(index)
+            assert ours.group(index) == theirs.group(index)
+
+
+@pytest.mark.parametrize(("pattern", "text"), [*BOUNDED, *BOUNDED_GROUPS])
+@pytest.mark.parametrize(("pos", "endpos"), REGIONS)
+def test_fullmatch_reads_pos_as_a_window_not_as_the_start_of_the_text(pattern, text, pos, endpos):
+    # `fullmatch` is answered by the munch plane's anchored-longest automaton,
+    # which scans from a cursor and reads that cursor as the beginning of the
+    # text. `re` reads `pos` as a window into a text that still begins at byte 0,
+    # so `^` and `\b` assert differently under the two — `re.fullmatch(r"^\w+",
+    # " lead", 1)` is None because `^` cannot hold at offset 1, while the scan is
+    # happy to begin a line there. Every verb here must read the bound the same
+    # way, so this holds `fullmatch` to `re` over the same regions `search` and
+    # `finditer` are held to.
+    args = (text, pos) if endpos is None else (text, pos, endpos)
+    try:
+        ours = irgx.compile(pattern).fullmatch(*args)
+    except irgx.error:
+        # The munch plane declines some patterns outright (`\b`, `\A`/`\z`,
+        # multiline) and says so; a refusal is a documented answer, not a wrong
+        # one, and `test_fullmatch_refuses_rather_than_reporting_the_wrong_groups`
+        # is where those are pinned.
+        return
+    theirs = re.compile(pattern).fullmatch(*args)
+    assert (ours.span() if ours else None) == (theirs.span() if theirs else None)
+
+
 def test_a_bound_outside_the_text_clamps_rather_than_refusing():
     # Every one of these is a result in `re`, not an error, and the clamp happens
     # BEFORE the search — which is why a nullable pattern still matches at the
@@ -124,6 +185,32 @@ def test_a_bound_outside_the_text_clamps_rather_than_refusing():
     # An inverted region has no positions in it, so there is nothing to match.
     assert irgx.compile("a").search("abc", 2, 1) is None
     assert list(irgx.compile("x*").finditer("abc", 2, 1)) == []
+
+
+def test_expand_reads_the_template_domain_before_the_groups():
+    # A documented divergence, and the one place the differ still reports one.
+    # `re` renders a `str` template against a `bytes` match whenever every group
+    # it references came back None — the domains only collide inside the join, so
+    # a template that happens to reference nothing survives, and the same call on
+    # the next match raises. That makes the refusal depend on the subject rather
+    # than on the argument. This engine reads the template's domain first, so the
+    # answer is the same for every match of the same pattern.
+    ours, theirs = irgx.compile(b"(a)|(b)"), re.compile(b"(a)|(b)")
+    for i, (mine, yours) in enumerate(
+        zip(ours.finditer(b"ab"), theirs.finditer(b"ab"), strict=True)
+    ):
+        with pytest.raises(TypeError):
+            mine.expand(r"<\1>")
+        # `re`'s own answer flips between the two matches: group 1 participates in
+        # the first and not the second.
+        if i == 0:
+            with pytest.raises(TypeError):
+                yours.expand(r"<\1>")
+        else:
+            assert yours.expand(r"<\1>") == "<>"
+        # Spelled in the subject's domain, the two agree — which is the point: the
+        # divergence is the refusal, not the rendering.
+        assert mine.expand(rb"<\1>") == yours.expand(rb"<\1>")
 
 
 def test_the_bounds_live_on_the_compiled_pattern_only():

@@ -152,6 +152,8 @@ static const struct {
      * second pointer itself, since a build that has either has both. */
     {"texts", "irgx_find_all_in", offsetof(struct engine_table, find_all_in)},
     {"group_texts", "irgx_captures", offsetof(struct engine_table, captures)},
+    {"spliced", "irgx_find_all_in", offsetof(struct engine_table, find_all_in)},
+    {"pieces", "irgx_find_all_in", offsetof(struct engine_table, find_all_in)},
     {"slate_is_match", "irgx_slate_is_match", offsetof(struct engine_table, slate_is_match)},
     {"slate_which", "irgx_slate_which", offsetof(struct engine_table, slate_which)},
     {"munch_scan", "irgx_munch_scan", offsetof(struct engine_table, munch_scan)},
@@ -666,6 +668,857 @@ fail:
   return NULL;
 }
 
+/* Whether a kept span is one this answer stops before. Spelled once because
+ * `spliced` walks its spans twice - to size the answer and then to fill it -
+ * and the two passes have to stop in the same place or the second overruns the
+ * buffer the first measured. */
+#define TAKEN(i, limit, done) (!(limit) || (done) < (limit))
+
+/* The gap between the last cut and this span, as Python's own slice would read
+ * it. `find_all` answers ascending non-overlapping spans, so a span starting
+ * before the cut is unreachable - but a size_t subtraction that wrapped would
+ * be a buffer overrun rather than a wrong answer, and `data[cut:at]` is empty
+ * there, so the floor is both the safe reading and the faithful one. */
+static size_t gap_at(int64_t start, size_t cut) {
+  return (size_t)start > cut ? (size_t)start - cut : 0;
+}
+
+/* `sub` with a constant replacement, as one crossing: the walk, the thinning,
+ * every piece and the join, with the answer sized before it is built so the
+ * whole substitution is one allocation.
+ *
+ * The pieces are cut out of the subject's own UTF-8 and the result is decoded
+ * once at the end, which is the same `str` as decoding each piece and joining
+ * them - every cut sits on a character boundary, which is exactly what the
+ * thinning guarantees. So this verb never needs a byte-to-character
+ * translation, and neither does its caller: there is no index in the answer. */
+static PyObject *verb_spliced(PyObject *self, IRGX_ARGS) {
+  (void)self;
+  if (arity(IRGX_NARGS, 5) < 0) return NULL;
+  size_t rx, limit;
+  if (as_size(IRGX_ARG(0), &rx) < 0 || as_size(IRGX_ARG(3), &limit) < 0) return NULL;
+  int decode = PyObject_IsTrue(IRGX_ARG(4));
+  if (decode < 0) return NULL;
+  subject s, blade;
+  if (subject_of(IRGX_ARG(1), &s) < 0) return NULL;
+  if (subject_of(IRGX_ARG(2), &blade) < 0) {
+    subject_done(&s);
+    return NULL;
+  }
+
+  irgx_span inln[INLINE_ROWS];
+  irgx_span *out = NULL;
+  void *heap = NULL;
+  size_t rows = 0;
+  int32_t status = walk_spans(rx, &s, 0, 0, inln, &heap, &out, &rows);
+  if (status == WALK_PYERR || status < 0) {
+    subject_done(&s);
+    subject_done(&blade);
+    PyMem_Free(heap);
+    return status == WALK_PYERR ? NULL : refused(status);
+  }
+
+  size_t width = (size_t)blade.len;
+  size_t total = 0, cut = 0, made = 0;
+  for (size_t i = 0; i < rows && TAKEN(i, limit, made); i++) {
+    if (mid_character(&s, out[i].start, decode)) continue;
+    size_t grew = gap_at(out[i].start, cut) + width;
+    if (total + grew < total) {
+      subject_done(&s);
+      subject_done(&blade);
+      PyMem_Free(heap);
+      return PyErr_NoMemory();
+    }
+    total += grew;
+    cut = (size_t)out[i].end;
+    made++;
+  }
+  total += (size_t)s.len - cut;
+
+  /* A bytes answer is written straight into its final object; a str one needs a
+   * contiguous UTF-8 run to decode from, and the limited API offers no way to
+   * fill a str in place, so that arm pays one scratch buffer. */
+  PyObject *owner = NULL;
+  char *buf = NULL;
+  if (decode) {
+    buf = PyMem_Malloc(total + 1);
+    if (buf == NULL) PyErr_NoMemory();
+  } else if ((owner = PyBytes_FromStringAndSize(NULL, (Py_ssize_t)total)) != NULL) {
+    buf = PyBytes_AsString(owner);
+  }
+  if (buf == NULL) {
+    subject_done(&s);
+    subject_done(&blade);
+    PyMem_Free(heap);
+    Py_XDECREF(owner);
+    return NULL;
+  }
+
+  size_t at = 0, done = 0;
+  cut = 0;
+  for (size_t i = 0; i < rows && TAKEN(i, limit, done); i++) {
+    if (mid_character(&s, out[i].start, decode)) continue;
+    size_t gap = gap_at(out[i].start, cut);
+    memcpy(buf + at, s.bytes + cut, gap);
+    at += gap;
+    memcpy(buf + at, blade.bytes, width);
+    at += width;
+    cut = (size_t)out[i].end;
+    done++;
+  }
+  memcpy(buf + at, s.bytes + cut, (size_t)s.len - cut);
+
+  if (decode) {
+    owner = PyUnicode_FromStringAndSize(buf, (Py_ssize_t)total);
+    PyMem_Free(buf);
+  }
+  subject_done(&s);
+  subject_done(&blade);
+  PyMem_Free(heap);
+  if (owner == NULL) return NULL;
+
+  /* (text, made) - `subn` owes the tally, and `sub` drops it. */
+  PyObject *answer = PyTuple_New(2);
+  PyObject *tally = PyLong_FromSize_t(made);
+  if (answer == NULL || tally == NULL) {
+    Py_XDECREF(answer);
+    Py_XDECREF(tally);
+    Py_DECREF(owner);
+    return NULL;
+  }
+  PyTuple_SetItem(answer, 0, owner); /* steals */
+  PyTuple_SetItem(answer, 1, tally);
+  return answer;
+}
+
+/* `split` with no groups, as one crossing: every piece between the matches,
+ * finished, in the caller's own type. Same thinning and the same cuts as
+ * `spliced`, which is why the two read alike - one joins the pieces and one
+ * hands them back. */
+static PyObject *verb_pieces(PyObject *self, IRGX_ARGS) {
+  (void)self;
+  if (arity(IRGX_NARGS, 4) < 0) return NULL;
+  size_t rx, limit;
+  if (as_size(IRGX_ARG(0), &rx) < 0 || as_size(IRGX_ARG(2), &limit) < 0) return NULL;
+  int decode = PyObject_IsTrue(IRGX_ARG(3));
+  if (decode < 0) return NULL;
+  subject s;
+  if (subject_of(IRGX_ARG(1), &s) < 0) return NULL;
+
+  irgx_span inln[INLINE_ROWS];
+  irgx_span *out = NULL;
+  void *heap = NULL;
+  size_t rows = 0;
+  PyObject *list = NULL;
+  int32_t status = walk_spans(rx, &s, 0, 0, inln, &heap, &out, &rows);
+  if (status == WALK_PYERR || status < 0) {
+    subject_done(&s);
+    PyMem_Free(heap);
+    return status == WALK_PYERR ? NULL : refused(status);
+  }
+
+  size_t taken = 0;
+  for (size_t i = 0; i < rows && TAKEN(i, limit, taken); i++)
+    if (!mid_character(&s, out[i].start, decode)) taken++;
+  /* One more piece than there are cuts: the tail after the last match, which
+   * is the whole subject when there was none. */
+  list = PyList_New((Py_ssize_t)taken + 1);
+  if (list == NULL) goto fail;
+
+  size_t cut = 0, done = 0;
+  for (size_t i = 0; i < rows && TAKEN(i, limit, done); i++) {
+    if (mid_character(&s, out[i].start, decode)) continue;
+    PyObject *piece =
+        text_of(&s, (int64_t)cut, (int64_t)(cut + gap_at(out[i].start, cut)), decode);
+    if (piece == NULL) goto fail;
+    PyList_SetItem(list, (Py_ssize_t)done++, piece); /* steals */
+    cut = (size_t)out[i].end;
+  }
+  PyObject *tail = text_of(&s, (int64_t)cut, s.len, decode);
+  if (tail == NULL) goto fail;
+  PyList_SetItem(list, (Py_ssize_t)taken, tail); /* steals */
+  subject_done(&s);
+  PyMem_Free(heap);
+  return list;
+
+fail:
+  subject_done(&s);
+  PyMem_Free(heap);
+  Py_XDECREF(list);
+  return NULL;
+}
+
+/* ── Match, as a C type ────────────────────────────────────────────────── */
+
+/* A match is the one object this binding mints per *result* rather than per
+ * call, so a walk over a page of prose builds hundreds of them and everything
+ * about them is hot. In Python the object cost more than the search did: a
+ * `TextView` and a `Match` by attribute assignment is 146 ns before anybody asks
+ * a question, and `.span()` on the built object another 50 - so `search().span()`
+ * spent 323 ns wrapping an 80 ns engine call, against `re`'s 96 ns for both.
+ *
+ * The split here is deliberate and narrow. This type owns the storage, the
+ * construction, and the accessors for the case that is nearly every case: an
+ * integer group on a subject whose two domains coincide (`bytes`, or a `str`
+ * whose UTF-8 is all ASCII). Everything else - a group NAME, an out-of-range or
+ * non-integer group, a non-ASCII `str`, a pattern whose capture arm refused -
+ * declines to the Python implementation, which is unchanged and remains the only
+ * statement of those rules. That is why the five private attributes below are
+ * exposed under exactly the names the Python methods already read: those method
+ * bodies work verbatim against this storage, so the harder half of `Match` has
+ * one implementation rather than two.
+ *
+ * Two fields are lazy for the same reason and it is the same reason the split
+ * above pays: `caps` is the capture pass, and `view` is the `TextView` that
+ * translates offsets. A `finditer` over a pattern with groups, iterated purely
+ * to count hits, asks for neither - so neither is built at construction, and the
+ * narrow arm never builds a view at all. */
+typedef struct {
+  PyObject_HEAD
+  PyObject *re;   /* the Pattern that produced this match */
+  PyObject *text; /* the subject, exactly the object the caller passed */
+  PyObject *view; /* a TextView, once a caller reaches the translating arm */
+  PyObject *caps; /* the capture pass as Python spans, once anybody asks */
+  Py_ssize_t start;
+  Py_ssize_t end;
+  int wide; /* the caller's domain and the engine's differ */
+} MatchObj;
+
+/* This type is not subclassed. `irgx._match` attaches the Python half's methods
+ * straight onto it, which a type built by `PyType_FromSpec` permits because it is
+ * a heap type and therefore mutable - and that is a decision rather than a
+ * convenience. A Python subclass of a heap type routes teardown through
+ * `subtype_dealloc`, which releases the subclass's own reference on its type, so
+ * a base `tp_dealloc` that also released one would be a double decref of the
+ * class. One class means one owner. It also means a caller's `type(m)` is
+ * `irgx.Match` with nothing private underneath it, and that `Match` is the same
+ * name on both transports rather than a base and a subclass on one of them.
+ *
+ * `TextView` is the one Python object this file cannot make for itself, and it
+ * arrives at import rather than by import: a C module reaching back into its own
+ * package would fix an import order the package is entitled to choose. */
+static PyObject *view_type = NULL;
+
+/* `Py_XSETREF` in the limited API, which does not export it: replace a slot,
+ * releasing what was there only after the new value is in place, so a
+ * deallocator that reaches this object cannot see a dangling one. */
+static void set_ref(PyObject **slot, PyObject *value) {
+  PyObject *was = *slot;
+  *slot = value;
+  Py_XDECREF(was);
+}
+
+static int match_init(PyObject *self, PyObject *args, PyObject *kwargs);
+static int span_reading(PyObject *span, Py_ssize_t *start, Py_ssize_t *end);
+static PyObject *match_item(PyObject *self, PyObject *group);
+
+/* Every name this file reaches into the Python arm by, interned once at first
+ * ask. `PyObject_GetAttrString` mints a fresh `str` on every call, which on a
+ * method that declines is a measurable share of the whole answer. */
+enum {
+  NAME_SLOW_SPAN,
+  NAME_SLOW_START,
+  NAME_SLOW_END,
+  NAME_SLOW_TEXT,
+  NAME_SLOW_GROUP,
+  NAME_SLOW_GROUPS,
+  NAME_CAPTURES_AT,
+  NAME_SEARCHED,
+  NAME_DECLARED,
+  NAME_COUNT
+};
+
+static const char *const name_says[NAME_COUNT] = {
+    "_slow_span", "_slow_start",  "_slow_end", "_slow_text", "_slow_group",
+    "_slow_groups", "_captures_at", "searched",  "_groups",
+};
+
+static PyObject *names[NAME_COUNT];
+
+static PyObject *named(int which) {
+  PyObject *said = names[which];
+  if (said == NULL) said = names[which] = PyUnicode_InternFromString(name_says[which]);
+  return said;
+}
+
+static void match_dealloc(PyObject *self) {
+  MatchObj *m = (MatchObj *)self;
+  PyTypeObject *kind = Py_TYPE(self);
+  Py_CLEAR(m->re);
+  Py_CLEAR(m->text);
+  Py_CLEAR(m->view);
+  Py_CLEAR(m->caps);
+  freefunc release = (freefunc)PyType_GetSlot(kind, Py_tp_free);
+  if (release != NULL) release(self);
+  /* A heap type holds a reference on each of its instances, so the type dies
+   * with the last one rather than at module teardown. */
+  Py_DECREF((PyObject *)kind);
+}
+
+/* The capture pass's answer for this match, resolved on the first ask and held
+ * after. Borrowed reference.
+ *
+ * The pass itself stays the Python arm's, called by its own name: what a
+ * refusing capture engine means, and the cross-check that catches the two arms
+ * reporting different whole-matches, are rules and this file states none. What
+ * is here is the holding, and the one argument the rule needs - the text the
+ * whole-match pass actually ran against. A view carries that as `searched`,
+ * which is a cut of the caller's object when an `endpos` bounded the search; a
+ * match from the unbounded fast paths has no view at all, and there the
+ * caller's own object is what was searched. Reading it this way is what lets
+ * this arm resolve captures without first building a view it has no other use
+ * for. */
+static PyObject *match_caps(MatchObj *m) {
+  if (m->caps != NULL) return m->caps;
+  PyObject *searched = m->view == NULL ? Py_NewRef(m->text)
+                                      : PyObject_GetAttr(m->view, named(NAME_SEARCHED));
+  if (searched == NULL) return NULL;
+  PyObject *fn = PyObject_GetAttr(m->re, named(NAME_CAPTURES_AT));
+  PyObject *from = fn == NULL ? NULL : PyLong_FromSsize_t(m->start);
+  PyObject *to = from == NULL ? NULL : PyLong_FromSsize_t(m->end);
+  PyObject *out =
+      to == NULL ? NULL : PyObject_CallFunctionObjArgs(fn, searched, from, to, NULL);
+  Py_XDECREF(to);
+  Py_XDECREF(from);
+  Py_XDECREF(fn);
+  Py_DECREF(searched);
+  if (out == NULL) return NULL;
+  set_ref(&m->caps, out); /* steals the reference the call returned */
+  return m->caps;
+}
+
+/* One group's byte span, when this arm can read it: the whole match, or a
+ * declared group the match entered, on a subject whose two domains coincide.
+ * 1 is answered, 0 is "not mine", -1 is an error already set - and this is the
+ * ONLY place that boundary is drawn.
+ *
+ * Everything it declines, it declines because the answer is a rule this file
+ * does not state: a name or a non-integer (whose TypeError has wording), an
+ * out-of-range group or a pattern whose capture arm refused (likewise), a group
+ * the match never entered (where `group` says `None`, `span` says `(-1, -1)`
+ * and `start` says `-1`, so the answer is per-method), and a wide subject
+ * (where a byte offset is not a character index and translating is the one
+ * thing `TextView` exists for).
+ *
+ * Group 0 is answered before the capture pass is ever asked for, which is what
+ * keeps `m.group()` and `m.span()` working on a pattern whose capture arm
+ * refused: `find_all` already reported those offsets.
+ *
+ * Exact-int and not a subclass, for two separate reasons that both matter:
+ * `True` means group 1 to `re` and would read as truthy-nonzero here, and `0.0`
+ * must still reach the Python arm to be the TypeError it already is. */
+static int group_span(MatchObj *m, PyObject *group, Py_ssize_t *from, Py_ssize_t *to) {
+  if (m->wide) return 0;
+  /* NULL is "no argument", which means group 0. An explicit `None` is not the
+   * same thing and is a TypeError the Python arm phrases. */
+  if (group == NULL) {
+    *from = m->start;
+    *to = m->end;
+    return 1;
+  }
+  if (!PyLong_CheckExact(group)) return 0;
+  Py_ssize_t want = PyLong_AsSsize_t(group);
+  if (want == -1 && PyErr_Occurred()) {
+    PyErr_Clear(); /* an int too large to be a group is still the Python arm's */
+    return 0;
+  }
+  if (want == 0) {
+    *from = m->start;
+    *to = m->end;
+    return 1;
+  }
+  if (want < 0) return 0;
+
+  /* The range check reads the pattern's own count, in the order the Python arm
+   * reads it: a refusing arm (`None`) is its error to raise before any
+   * out-of-range one, so both leave here as the same refusal. */
+  PyObject *declared = PyObject_GetAttr(m->re, named(NAME_DECLARED));
+  if (declared == NULL) return -1;
+  int counted = PyLong_CheckExact(declared);
+  Py_ssize_t total = counted ? PyLong_AsSsize_t(declared) : -1;
+  Py_DECREF(declared);
+  if (!counted || want > total) return 0;
+
+  PyObject *caps = match_caps(m);
+  if (caps == NULL) return -1;
+  PyObject *span = PySequence_GetItem(caps, want);
+  if (span == NULL) return -1;
+  int mine = span == Py_None ? 0 : span_reading(span, from, to) < 0 ? -1 : 1;
+  Py_DECREF(span);
+  return mine;
+}
+
+/* One method's worth of "not mine": call the Python implementation by its own
+ * name. Those names exist only on the Python half, so there is no route back
+ * into here and no recursion.
+ *
+ * A NULL group is spelled out as 0 rather than left to the callee's default,
+ * because the five methods behind this do not all have one - `_text_of` takes
+ * its group positionally. Saying it once here is also the honest statement:
+ * "no argument" and "group 0" are the same request. */
+static PyObject *match_decline(PyObject *self, int name, PyObject *arg) {
+  PyObject *fn = PyObject_GetAttr(self, named(name));
+  if (fn == NULL) return NULL;
+  PyObject *which = arg != NULL ? Py_NewRef(arg) : PyLong_FromLong(0);
+  PyObject *out = which == NULL ? NULL : PyObject_CallFunctionObjArgs(fn, which, NULL);
+  Py_XDECREF(which);
+  Py_DECREF(fn);
+  return out;
+}
+
+/* `span`/`start`/`end`/`group` all take an optional single group, so they share
+ * one reading of argv - including the arity refusal, which `re` phrases as a
+ * TypeError on too many arguments. */
+static int one_group(IRGX_ARGS, PyObject **group) {
+  if (IRGX_NARGS > 1) {
+    PyErr_Format(PyExc_TypeError, "expected at most 1 argument, got %zd", (Py_ssize_t)IRGX_NARGS);
+    return -1;
+  }
+  *group = IRGX_NARGS == 1 ? IRGX_ARG(0) : NULL;
+  return 0;
+}
+
+static PyObject *match_slice(const MatchObj *m, Py_ssize_t from, Py_ssize_t to) {
+  return PySequence_GetSlice(m->text, from, to);
+}
+
+static PyObject *match_span(PyObject *self, IRGX_ARGS) {
+  PyObject *group;
+  if (one_group(IRGX_PASS, &group) < 0) return NULL;
+  Py_ssize_t from, to;
+  int mine = group_span((MatchObj *)self, group, &from, &to);
+  if (mine < 0) return NULL;
+  return mine == 0 ? match_decline(self, NAME_SLOW_SPAN, group) : pair(from, to);
+}
+
+static PyObject *match_start(PyObject *self, IRGX_ARGS) {
+  PyObject *group;
+  if (one_group(IRGX_PASS, &group) < 0) return NULL;
+  Py_ssize_t from, to;
+  int mine = group_span((MatchObj *)self, group, &from, &to);
+  if (mine < 0) return NULL;
+  return mine == 0 ? match_decline(self, NAME_SLOW_START, group) : PyLong_FromSsize_t(from);
+}
+
+static PyObject *match_end(PyObject *self, IRGX_ARGS) {
+  PyObject *group;
+  if (one_group(IRGX_PASS, &group) < 0) return NULL;
+  Py_ssize_t from, to;
+  int mine = group_span((MatchObj *)self, group, &from, &to);
+  if (mine < 0) return NULL;
+  return mine == 0 ? match_decline(self, NAME_SLOW_END, group) : PyLong_FromSsize_t(to);
+}
+
+static PyObject *match_group(PyObject *self, IRGX_ARGS) {
+  /* `m.group()` and `m.group(n)` are what almost every caller writes and both
+   * want one value; several groups is a tuple, which the Python arm builds from
+   * the same `_text_of` this one declines to. */
+  if (IRGX_NARGS > 1) {
+    PyObject *fn = PyObject_GetAttr(self, named(NAME_SLOW_GROUP));
+    if (fn == NULL) return NULL;
+    PyObject *many = PyTuple_New(IRGX_NARGS);
+    if (many == NULL) {
+      Py_DECREF(fn);
+      return NULL;
+    }
+    for (Py_ssize_t i = 0; i < IRGX_NARGS; i++)
+      PyTuple_SetItem(many, i, Py_NewRef(IRGX_ARG(i))); /* steals */
+    PyObject *out = PyObject_Call(fn, many, NULL);
+    Py_DECREF(many);
+    Py_DECREF(fn);
+    return out;
+  }
+  PyObject *group = IRGX_NARGS == 1 ? IRGX_ARG(0) : NULL;
+  return match_item(self, group);
+}
+
+static PyObject *match_item(PyObject *self, PyObject *group) {
+  MatchObj *m = (MatchObj *)self;
+  Py_ssize_t from, to;
+  int mine = group_span(m, group, &from, &to);
+  if (mine < 0) return NULL;
+  return mine == 0 ? match_decline(self, NAME_SLOW_TEXT, group) : match_slice(m, from, to);
+}
+
+/* `groups(default=None)` - every declared group's text.
+ *
+ * The one cold-looking method that is actually hot, because it is how a caller
+ * reads a pattern that has groups at all: `search(...).groups()`. The Python arm
+ * spells it as a generator over `_cut`, which is a frame per group plus a span
+ * unpack, and the answer on this arm is a tuple of slices of an object this type
+ * already holds - measured at four times what the slices themselves cost.
+ *
+ * The capture pass stays the Python arm's, asked for by its own name: what a
+ * refusing capture engine means, and the whole-match cross-check that catches
+ * the two arms disagreeing, are rules and this file states none. So this is the
+ * loop and nothing above it.
+ *
+ * `wide` declines outright. A span there is a byte offset and the answer is
+ * characters, which is `TextView`'s incremental translation - restating that
+ * here would be a second implementation of the one thing the view exists for. */
+static PyObject *match_groups(PyObject *self, IRGX_ARGS) {
+  if (IRGX_NARGS > 1) {
+    PyErr_Format(PyExc_TypeError, "expected at most 1 argument, got %zd", (Py_ssize_t)IRGX_NARGS);
+    return NULL;
+  }
+  MatchObj *m = (MatchObj *)self;
+  PyObject *blank = IRGX_NARGS == 1 ? IRGX_ARG(0) : Py_None;
+  if (m->wide) return match_decline(self, NAME_SLOW_GROUPS, blank);
+  PyObject *spans = match_caps(m);
+  if (spans == NULL) return NULL;
+  Py_INCREF(spans); /* borrowed from the match, held for the loop below */
+  Py_ssize_t rows = PySequence_Size(spans);
+  if (rows < 0) {
+    Py_DECREF(spans);
+    return NULL;
+  }
+  PyObject *out = PyTuple_New(rows > 0 ? rows - 1 : 0);
+  if (out == NULL) {
+    Py_DECREF(spans);
+    return NULL;
+  }
+  for (Py_ssize_t g = 1; g < rows; g++) {
+    PyObject *span = PySequence_GetItem(spans, g);
+    PyObject *item = NULL;
+    if (span == NULL) goto fail;
+    if (span == Py_None) {
+      item = Py_NewRef(blank);
+    } else {
+      Py_ssize_t from = -1, to = -1;
+      PyObject *a = PySequence_GetItem(span, 0);
+      PyObject *b = a == NULL ? NULL : PySequence_GetItem(span, 1);
+      if (b != NULL) {
+        from = PyLong_AsSsize_t(a);
+        to = PyLong_AsSsize_t(b);
+      }
+      Py_XDECREF(a);
+      Py_XDECREF(b);
+      if (b == NULL || PyErr_Occurred()) goto fail;
+      item = match_slice(m, from, to);
+    }
+    if (item == NULL) goto fail;
+    PyTuple_SetItem(out, g - 1, item); /* steals */
+    Py_DECREF(span);
+    continue;
+  fail:
+    Py_XDECREF(span);
+    Py_DECREF(out);
+    Py_DECREF(spans);
+    return NULL;
+  }
+  Py_DECREF(spans);
+  return out;
+}
+
+/* ── the five private attributes the Python arm reads ──────────────────── */
+
+static PyObject *match_get_re(PyObject *self, void *closure) {
+  (void)closure;
+  return Py_NewRef(((MatchObj *)self)->re);
+}
+
+static PyObject *match_get_string(PyObject *self, void *closure) {
+  (void)closure;
+  return Py_NewRef(((MatchObj *)self)->text);
+}
+
+static PyObject *match_get_start(PyObject *self, void *closure) {
+  (void)closure;
+  return PyLong_FromSsize_t(((MatchObj *)self)->start);
+}
+
+static PyObject *match_get_end(PyObject *self, void *closure) {
+  (void)closure;
+  return PyLong_FromSsize_t(((MatchObj *)self)->end);
+}
+
+/* The `TextView` the Python arm slices and translates through, built on the
+ * first ask rather than at construction - on the narrow arm nothing ever asks,
+ * which is the whole saving. Built by calling `TextView(text)`, so the view's
+ * own rules stay stated once, in Python. */
+static PyObject *match_get_view(PyObject *self, void *closure) {
+  (void)closure;
+  MatchObj *m = (MatchObj *)self;
+  if (m->view == NULL) {
+    if (view_type == NULL) {
+      PyErr_SetString(PyExc_RuntimeError, "the accelerator was never given TextView");
+      return NULL;
+    }
+    m->view = PyObject_CallFunctionObjArgs(view_type, m->text, NULL);
+    if (m->view == NULL) return NULL;
+  }
+  return Py_NewRef(m->view);
+}
+
+static PyObject *match_get_spans(PyObject *self, void *closure) {
+  (void)closure;
+  MatchObj *m = (MatchObj *)self;
+  return Py_NewRef(m->caps == NULL ? Py_None : m->caps);
+}
+
+static int match_set_spans(PyObject *self, PyObject *value, void *closure) {
+  (void)closure;
+  MatchObj *m = (MatchObj *)self;
+  set_ref(&m->caps, value == NULL || value == Py_None ? NULL : Py_NewRef(value));
+  return 0;
+}
+
+/* Through the accessors rather than the fields: a wide match's span reads in the
+ * caller's domain, and that translation is the Python arm's. */
+static PyObject *match_repr(PyObject *self) {
+  PyObject *shown = PyObject_CallMethod(self, "group", NULL);
+  if (shown == NULL) return NULL;
+  PyObject *span = PyObject_CallMethod(self, "span", NULL);
+  if (span == NULL) {
+    Py_DECREF(shown);
+    return NULL;
+  }
+  PyObject *out = PyUnicode_FromFormat("<irgx.Match object; span=%S, match=%R>", span, shown);
+  Py_DECREF(shown);
+  Py_DECREF(span);
+  return out;
+}
+
+static PyMethodDef match_methods[] = {
+    {"span", IRGX_VERB(match_span), IRGX_CALL, "span(group=0) -> (start, end)"},
+    {"start", IRGX_VERB(match_start), IRGX_CALL, "start(group=0) -> index"},
+    {"end", IRGX_VERB(match_end), IRGX_CALL, "end(group=0) -> index"},
+    {"group", IRGX_VERB(match_group), IRGX_CALL, "group(*groups) -> text | tuple"},
+    {"groups", IRGX_VERB(match_groups), IRGX_CALL, "groups(default=None) -> tuple"},
+    {NULL, NULL, 0, NULL},
+};
+
+static PyGetSetDef match_getset[] = {
+    {"re", match_get_re, NULL, "The pattern that produced this match.", NULL},
+    {"string", match_get_string, NULL, "The text that was searched.", NULL},
+    {"_re", match_get_re, NULL, NULL, NULL},
+    {"_view", match_get_view, NULL, NULL, NULL},
+    {"_start", match_get_start, NULL, NULL, NULL},
+    {"_end", match_get_end, NULL, NULL, NULL},
+    {"_spans", match_get_spans, match_set_spans, NULL, NULL},
+    {NULL, NULL, NULL, NULL, NULL},
+};
+
+static PyType_Slot match_slots[] = {
+    {Py_tp_new, PyType_GenericNew},
+    {Py_tp_init, match_init},
+    {Py_tp_dealloc, match_dealloc},
+    {Py_tp_repr, match_repr},
+    {Py_tp_methods, match_methods},
+    {Py_tp_getset, match_getset},
+    {Py_mp_subscript, match_item},
+    {Py_tp_doc, (void *)"One match, reported in the domain of the text that produced it."},
+    {0, NULL},
+};
+
+/* Named for where it ends up rather than where it is built: `irgx._match`
+ * finishes this type and re-exports it as `irgx.Match`, and a caller reading a
+ * traceback should see the name they can import. Deliberately not a base type -
+ * see the note above `view_type`. */
+static PyType_Spec match_spec = {
+    .name = "irgx.Match",
+    .basicsize = sizeof(MatchObj),
+    .flags = Py_TPFLAGS_DEFAULT,
+    .slots = match_slots,
+};
+
+static PyObject *match_type = NULL;
+
+/* One match, from parts already settled. Every constructor below funnels here,
+ * so ownership and the lazy fields are stated once. */
+static PyObject *match_make(PyObject *re, PyObject *text, PyObject *view, Py_ssize_t start,
+                           Py_ssize_t end, int wide) {
+  PyTypeObject *kind = (PyTypeObject *)match_type;
+  allocfunc make = (allocfunc)PyType_GetSlot(kind, Py_tp_alloc);
+  if (make == NULL) return NULL;
+  MatchObj *m = (MatchObj *)make(kind, 0);
+  if (m == NULL) return NULL;
+  m->re = Py_NewRef(re);
+  m->text = Py_NewRef(text);
+  m->view = view == NULL ? NULL : Py_NewRef(view);
+  m->caps = NULL;
+  m->start = start;
+  m->end = end;
+  m->wide = wide;
+  return (PyObject *)m;
+}
+
+/* Whether the caller's domain and the engine's differ, from the object rather
+ * than from a scan: a `str` is wide exactly when its UTF-8 is longer than its
+ * character count. `PyUnicode_GetLength` is O(1) and the UTF-8 was just read by
+ * whatever searched it, so this is a comparison where Python's `str.isascii()`
+ * is a call over the whole string. */
+static int is_wide(PyObject *text) {
+  if (!PyUnicode_Check(text)) return 0;
+  Py_ssize_t bytes = 0;
+  if (PyUnicode_AsUTF8AndSize(text, &bytes) == NULL) return -1;
+  return PyUnicode_GetLength(text) != bytes;
+}
+
+/* The two facts a `TextView` carries that a match keeps: the caller's own object,
+ * and whether the two domains differ. `*text` comes back owned. */
+static int view_reading(PyObject *view, PyObject **text) {
+  PyObject *original = PyObject_GetAttrString(view, "original");
+  if (original == NULL) return -1;
+  PyObject *flag = PyObject_GetAttrString(view, "wide");
+  if (flag == NULL) {
+    Py_DECREF(original);
+    return -1;
+  }
+  int wide = PyObject_IsTrue(flag);
+  Py_DECREF(flag);
+  if (wide < 0) {
+    Py_DECREF(original);
+    return -1;
+  }
+  *text = original;
+  return wide;
+}
+
+/* `Match(pattern, view, start, end)` - the constructor the Python class states,
+ * spelled the same way here so `_anchored` and the scanner call one signature
+ * whichever transport is live. A view handed in is kept: a walk shares one
+ * across every match it yields, and its checkpoint cache is what keeps a wide
+ * `finditer` linear instead of quadratic. */
+static int match_init(PyObject *self, PyObject *args, PyObject *kwargs) {
+  MatchObj *m = (MatchObj *)self;
+  PyObject *re = NULL, *view = NULL;
+  Py_ssize_t start = 0, end = 0;
+  static char *names[] = {"pattern", "view", "start", "end", NULL};
+  if (!PyArg_ParseTupleAndKeywords(args, kwargs, "OOnn:Match", names, &re, &view, &start, &end))
+    return -1;
+  PyObject *text = NULL;
+  int wide = view_reading(view, &text);
+  if (wide < 0) return -1;
+  set_ref(&m->re, Py_NewRef(re));
+  set_ref(&m->text, text); /* the reference `view_reading` handed over */
+  set_ref(&m->view, Py_NewRef(view));
+  set_ref(&m->caps, NULL);
+  m->start = start;
+  m->end = end;
+  m->wide = wide;
+  return 0;
+}
+
+/* One span as two indices, refusing anything that is not the shape the seam
+ * hands back. */
+static int span_reading(PyObject *span, Py_ssize_t *start, Py_ssize_t *end) {
+  if (!PyTuple_Check(span) || PyTuple_Size(span) != 2) {
+    PyErr_SetString(PyExc_TypeError, "expected a (start, end) span");
+    return -1;
+  }
+  *start = PyLong_AsSsize_t(PyTuple_GetItem(span, 0));
+  *end = PyLong_AsSsize_t(PyTuple_GetItem(span, 1));
+  return (*start == -1 || *end == -1) && PyErr_Occurred() ? -1 : 0;
+}
+
+/* `over(pattern, text, span)` - a match over a subject with no view yet, which
+ * is what `search` has after a hit: the view is the object the narrow arm never
+ * needs, so not building one is most of what this saves. The span arrives as the
+ * tuple the seam returned rather than as two arguments, so the caller unpacks
+ * nothing on the way here. */
+static PyObject *verb_over(PyObject *self, IRGX_ARGS) {
+  (void)self;
+  if (arity(IRGX_NARGS, 3) < 0) return NULL;
+  PyObject *text = IRGX_ARG(1);
+  Py_ssize_t start = 0, end = 0;
+  if (span_reading(IRGX_ARG(2), &start, &end) < 0) return NULL;
+  int wide = is_wide(text);
+  if (wide < 0) return NULL;
+  return match_make(IRGX_ARG(0), text, NULL, start, end, wide);
+}
+
+/* `sought(handle, pattern, text)` - the whole of an unbounded `search`, in one
+ * crossing.
+ *
+ * `find_first` followed by `over` answers the same question and costs two
+ * crossings, plus the `(start, end)` tuple the first mints only for the second to
+ * take apart. Both are pure overhead on the row where this engine looks worst:
+ * a literal in a short line, where the scan itself is single-digit nanoseconds
+ * and everything else is dispatch. Fusing them is the only lever that removes a
+ * crossing rather than making one cheaper, and it is available precisely because
+ * the fast path has no view, no bounds and no domain question left to answer -
+ * `Pattern.search` settled all three before calling.
+ *
+ * `wide` is read off the subject already in hand rather than from `is_wide`,
+ * which would ask CPython for the same UTF-8 a second time. Both spellings are
+ * the same comparison; this one is the one that has the length.
+ *
+ * A refusal - including no match - comes back as the engine's own status, the
+ * convention every other verb here follows, so the sentence it turns into is
+ * still written once in `irgx._abi`.
+ *
+ * Deliberately NOT a row in `table`, and therefore not in `bound()`: what that
+ * list means is "seam verbs with a ctypes twin", and this one hands back a
+ * `Match` rather than the spans and texts the seam trades in. It is published
+ * like `over` and `matches` - a module method the caller selects - and gated on
+ * `find_first`, the seam verb it is made of, with the pointer checked here too
+ * so the C is honest whatever selects it. */
+static PyObject *verb_sought(PyObject *self, IRGX_ARGS) {
+  (void)self;
+  if (arity(IRGX_NARGS, 3) < 0) return NULL;
+  if (engine.find_first_in == NULL) {
+    PyErr_SetString(PyExc_RuntimeError, "this engine does not export irgx_find_first_in");
+    return NULL;
+  }
+  size_t rx;
+  if (as_size(IRGX_ARG(0), &rx) < 0) return NULL;
+  PyObject *text = IRGX_ARG(2);
+  subject s;
+  if (subject_of(text, &s) < 0) return NULL;
+  size_t n = (size_t)s.len;
+  irgx_span span = {0, 0};
+  int32_t status;
+  IRGX_RUN(s, status, engine.find_first_in((void *)rx, s.bytes, n, 0, n, &span));
+  subject_done(&s);
+  if (status != 1) return refused(status);
+  int wide = PyUnicode_Check(text) && PyUnicode_GetLength(text) != s.len;
+  return match_make(IRGX_ARG(1), text, NULL, span.start, span.end, wide);
+}
+
+/* `matches(pattern, view, spans)` - every match of one walk, built in one
+ * crossing. The Python spelling was `starmap(partial(Match, self, view), found)`,
+ * which is a partial, a frame and an `__init__` per match on a list the walk had
+ * already finished; here it is one loop. The view is shared, exactly as it was,
+ * so a wide walk still translates through one checkpoint cache. */
+static PyObject *verb_matches(PyObject *self, IRGX_ARGS) {
+  (void)self;
+  if (arity(IRGX_NARGS, 3) < 0) return NULL;
+  PyObject *re = IRGX_ARG(0), *view = IRGX_ARG(1), *spans = IRGX_ARG(2);
+  if (!PyList_Check(spans)) {
+    PyErr_SetString(PyExc_TypeError, "matches() takes the walk's own list of spans");
+    return NULL;
+  }
+  PyObject *text = NULL;
+  int wide = view_reading(view, &text);
+  if (wide < 0) return NULL;
+
+  Py_ssize_t count = PyList_Size(spans);
+  PyObject *out = PyList_New(count);
+  for (Py_ssize_t i = 0; out != NULL && i < count; i++) {
+    PyObject *span = PyList_GetItem(spans, i); /* borrowed */
+    Py_ssize_t start = 0, end = 0;
+    PyObject *one = span == NULL || span_reading(span, &start, &end) < 0
+                        ? NULL
+                        : match_make(re, text, view, start, end, wide);
+    if (one == NULL) {
+      Py_CLEAR(out);
+      break;
+    }
+    PyList_SetItem(out, i, one); /* steals */
+  }
+  Py_DECREF(text);
+  return out;
+}
+
+/* Handed over at import rather than imported, and handed the type this module
+ * cannot construct: see `view_type`. */
+static PyObject *verb_set_view(PyObject *self, PyObject *kind) {
+  (void)self;
+  set_ref(&view_type, Py_NewRef(kind));
+  Py_RETURN_NONE;
+}
+
 /* ── indices out of a uint32 window ────────────────────────────────────── */
 
 /* Every attribution verb in this ABI has the same shape - ascending uint32
@@ -966,6 +1819,10 @@ static PyMethodDef methods[] = {
     {"texts", IRGX_VERB(verb_texts), IRGX_CALL, "texts(regex, text, from, decode) -> [text] | status"},
     {"group_texts", IRGX_VERB(verb_group_texts), IRGX_CALL,
      "group_texts(regex, text, from, count, decode) -> [text | tuple] | status"},
+    {"spliced", IRGX_VERB(verb_spliced), IRGX_CALL,
+     "spliced(regex, text, sep, count, decode) -> (text, made) | status"},
+    {"pieces", IRGX_VERB(verb_pieces), IRGX_CALL,
+     "pieces(regex, text, maxsplit, decode) -> [text] | status"},
     {"slate_is_match", IRGX_VERB(verb_slate_is_match), IRGX_CALL, "slate_is_match(slate, text) -> status"},
     {"slate_which", IRGX_VERB(verb_slate_which), IRGX_CALL, "slate_which(slate, text, cap) -> [i] | status"},
     {"munch_scan", IRGX_VERB(verb_munch_scan), IRGX_CALL,
@@ -976,6 +1833,11 @@ static PyMethodDef methods[] = {
      "needles_which(needles, text, cap) -> [i] | status"},
     {"needles_find_all", IRGX_VERB(verb_needles_find_all), IRGX_CALL,
      "needles_find_all(needles, text) -> [(needle, start, end)] | status"},
+    {"sought", IRGX_VERB(verb_sought), IRGX_CALL,
+     "sought(handle, pattern, text) -> Match | status"},
+    {"over", IRGX_VERB(verb_over), IRGX_CALL, "over(pattern, text, span) -> Match"},
+    {"matches", IRGX_VERB(verb_matches), IRGX_CALL, "matches(pattern, view, spans) -> [Match]"},
+    {"set_view", verb_set_view, METH_O, "set_view(TextView) - the view type this module builds."},
     {NULL, NULL, 0, NULL},
 };
 
@@ -991,4 +1853,19 @@ static struct PyModuleDef accel = {
     NULL,
 };
 
-PyMODINIT_FUNC PyInit__accel(void) { return PyModule_Create(&accel); }
+PyMODINIT_FUNC PyInit__accel(void) {
+  PyObject *mod = PyModule_Create(&accel);
+  if (mod == NULL) return NULL;
+  /* The type is built here and finished in Python: `irgx._match` grafts the cold
+   * methods on and hands back `TextView`. Until it does, `Match` exists and
+   * answers the four fast questions - which is what makes the graft a completion
+   * rather than a dependency. */
+  match_type = PyType_FromSpec(&match_spec);
+  if (match_type == NULL || PyModule_AddObjectRef(mod, "Match", match_type) < 0) {
+    Py_XDECREF(match_type);
+    match_type = NULL;
+    Py_DECREF(mod);
+    return NULL;
+  }
+  return mod;
+}

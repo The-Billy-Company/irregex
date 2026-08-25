@@ -51,5 +51,5 @@ def test_a_verb_with_no_native_implementation_still_has_one():
     # ctypes for that verb alone rather than losing the accelerator entirely.
     # This is the assertion that the fallback table is total.
     assert set(_engine.native()) <= set(_engine._FALLBACK)
-    assert len(_engine._FALLBACK) == 12
+    assert len(_engine._FALLBACK) == 14
     assert all(callable(fn) for fn in _engine._FALLBACK.values())

@@ -1,15 +1,16 @@
-""":mod:`re`'s anchored verbs, built on the one ABI verb that is actually anchored.
+"""``fullmatch`` and :class:`Scanner`, built on the one ABI verb that is actually anchored.
 
 :func:`re.match` and :func:`re.fullmatch` look like the same question asked with
-two different bounds, and they are not. Both are reachable here, but from
-different primitives, and the reason is worth stating because getting it wrong
-produces answers that are right for most patterns and quietly wrong for the rest.
+two different bounds, and they are not. They are reached from different
+primitives, and the reason is worth stating because getting it wrong produces
+answers that are right for most patterns and quietly wrong for the rest.
 
-**match is a leftmost search with a start test.** This engine is leftmost-first,
-exactly as :mod:`re` is (``a|ab`` over ``"ab"`` matches ``"a"`` on both). So if
-any match begins at ``pos``, the leftmost match at-or-after ``pos`` begins at
-``pos``; and if the leftmost one begins later, none begins at ``pos`` at all.
-Comparing the start is therefore not an approximation, it is the whole test.
+**match is a leftmost search with a start test**, so it needs nothing from this
+module and lives on :meth:`irgx.Pattern.match` as the two lines it is. This
+engine is leftmost-first, exactly as :mod:`re` is (``a|ab`` over ``"ab"`` matches
+``"a"`` on both), so if any match begins at ``pos``, the leftmost match
+at-or-after ``pos`` begins at ``pos``; and if the leftmost one begins later, none
+begins at ``pos`` at all. Comparing the start is the whole test.
 
 **fullmatch is not**, and this is the trap. ``a|ab`` has no match beginning at 0
 that is also two bytes long *under leftmost-first*, yet
@@ -37,20 +38,13 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from ._abi import MULTILINE, PCRE, error
-from ._match import Match, TextView
+from ._match import Match, TextView, viewing
 from ._munch import Munch
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Sequence
 
     from ._pattern import Pattern
-
-#: Slates built for :func:`full`, keyed by the pattern object they were built
-#: for. A weak-keyed map, so a slate never keeps a Pattern alive and a
-#: module-level ``PAT = irgx.compile(...)`` builds its slate once for the life of
-#: the process. Built lazily: a program that never calls ``fullmatch`` never pays
-#: for the determinization, which is the expensive half of this file.
-_SLATES: Any = None
 
 
 def _slate(pattern: Pattern) -> Munch:
@@ -60,13 +54,14 @@ def _slate(pattern: Pattern) -> Munch:
     scan reports byte lengths that :class:`Match` can take directly — a ``str``
     pattern's character indices are then produced by the view exactly as they are
     for every other verb, instead of by a second conversion here.
-    """
-    global _SLATES
-    if _SLATES is None:
-        import weakref
 
-        _SLATES = weakref.WeakKeyDictionary()
-    if (found := _SLATES.get(pattern)) is not None:
+    Kept in the pattern's own ``_slate`` slot, so a module-level ``PAT =
+    irgx.compile(...)`` determinizes once for the life of the process and every
+    later call pays a slot read. The refusals below are outside the memo on
+    purpose: a refusal never becomes a slate, so a pattern this plane cannot
+    carry raises on its second call exactly as loudly as on its first.
+    """
+    if (found := pattern._slate) is not None:  # noqa: SLF001 - the pattern owns it
         return found
     if pattern.flags & PCRE:
         raise error(
@@ -90,23 +85,8 @@ def _slate(pattern: Pattern) -> Munch:
             f"\\A or \\z is already anchored — use search() and check the span.",
             source,
         )
-    _SLATES[pattern] = slate
+    pattern._slate = slate  # noqa: SLF001 - the pattern owns it
     return slate
-
-
-def match(
-    pattern: Pattern, text: str | bytes, pos: int = 0, endpos: int | None = None
-) -> Match | None:
-    """The match beginning at exactly ``pos``, or ``None``.
-
-    :mod:`re`'s ``match``. One leftmost search and one comparison — see this
-    module's docstring for why that is exact rather than an approximation on a
-    leftmost-first engine.
-    """
-    found = pattern.search(text, pos, endpos)
-    if found is None:
-        return None
-    return found if found.start() == min(max(pos, 0), len(text)) else None
 
 
 def full(
@@ -117,11 +97,20 @@ def full(
     :mod:`re`'s ``fullmatch``, answered by the longest anchored match rather than
     by a leftmost one. :func:`_slate` carries the refusals this borrows.
     """
-    view = TextView(text)
-    if isinstance(text, str) == pattern.is_bytes:
-        from ._match import wrong_subject
+    # The same domain check every other verb opens with, and for the same reason:
+    # an exact type in the pattern's own domain is what `viewing` is allowed to
+    # assume, and it fills the view's slots for a whole-subject read rather than
+    # deciding branches `__init__` must take for the general case. A subclass or
+    # a buffer is still a legitimate subject, so it keeps the constructor.
+    kind = type(text)
+    if kind is bytes if pattern._is_bytes else kind is str:  # noqa: SLF001
+        view = viewing(text)
+    else:
+        if isinstance(text, str) == pattern.is_bytes:
+            from ._match import wrong_subject
 
-        raise wrong_subject(pattern, text)
+            raise wrong_subject(pattern, text)
+        view = TextView(text)
     size = len(view.original)
     first = min(max(pos, 0), size)
     last = size if endpos is None else min(max(endpos, 0), size)
@@ -129,20 +118,42 @@ def full(
         return None
 
     start, end = view.offset(first), view.offset(last)
-    region = view.data[:end]
-    token = _slate(pattern).token(region, start)
-    if token is None or start + token.length != end:
+    # A truncation is needed only to stop the longest match from running past
+    # `endpos` — and `endpos` is absent on nearly every call, so nearly every call
+    # hands the engine the subject it already holds. `_reach` speaks bytes on both
+    # sides, which is the domain `start` and `end` are in and the domain the slate
+    # was compiled for; see :meth:`Munch._reach`.
+    reach = _slate(pattern)._reach(view.upto(last), start)
+    if reach is None or start + reach != end:
         return None
 
-    # The private count, not the `groups` property: that one raises when the
-    # capture arm refused the pattern, and a pattern with no capture support has
-    # no group divergence to worry about in the first place.
-    # The full match and the leftmost match at `pos` are the same span for almost
-    # every pattern, and when they are not, `irgx_captures` would report the
-    # leftmost one's groups under the full one's span. There is no anchored capture
-    # verb to ask instead, so say so rather than answer with the wrong groups.
-    leftmost = pattern.search(text, pos, endpos) if pattern._groups else None  # noqa: SLF001
-    if leftmost is not None and (
+    # One leftmost search from the same bounds, wanted for two unrelated reasons.
+    #
+    # The first is correctness, and only ever from a non-zero `pos`. The munch
+    # plane scans from a cursor and reads that cursor as the beginning of the
+    # text, where `re` — and every other verb here — reads `pos` as a window into
+    # a text that still begins at byte 0. So `^`, `\b` and their kin assert
+    # differently under it: `re.fullmatch(r"^\w+", " lead", 1)` is None, because
+    # `^` cannot hold at offset 1, while the scan is happy to begin a line there.
+    # Rather than read the pattern looking for an anchor — a parse this module
+    # does not have and a substring test would get wrong on `\\^` — ask the arm
+    # whose assertions are already right. Leftmost-first means that if any match
+    # begins at `start` then the leftmost one at-or-after `pos` begins there, so a
+    # leftmost match beginning later (or none at all) proves nothing begins at
+    # `start`, and a full match is above all a match that begins at `start`.
+    #
+    # The second is the groups one, and applies from anywhere. The private count,
+    # not the `groups` property: that one raises when the capture arm refused the
+    # pattern, and a pattern with no capture support has no group divergence to
+    # worry about in the first place. The full match and the leftmost match at
+    # `pos` are the same span for almost every pattern, and when they are not,
+    # `irgx_captures` would report the leftmost one's groups under the full one's
+    # span. There is no anchored capture verb to ask instead, so say so rather
+    # than answer with the wrong groups.
+    leftmost = pattern.search(text, pos, endpos) if start or pattern._groups else None  # noqa: SLF001
+    if start and (leftmost is None or view.offset(leftmost.start()) != start):
+        return None
+    if leftmost is not None and pattern._groups and (  # noqa: SLF001
         view.offset(leftmost.start()),
         view.offset(leftmost.end()),
     ) != (start, end):

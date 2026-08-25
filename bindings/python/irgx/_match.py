@@ -6,14 +6,24 @@ footgun: ``text[m.start():m.end()]`` would return the wrong characters, or raise
 the first time the text contained anything outside ASCII. So :class:`TextView`
 owns exactly one job - keeping the caller's domain and the engine's domain
 straight - and :class:`Match` reports positions only in the caller's.
+
+A match is the one object this binding mints per *result* rather than per call,
+so a walk over a page of prose builds hundreds of them and everything about them
+is hot. When the accelerator is present, :data:`Match` is therefore its C type
+rather than the class written below - see :func:`_graft`, which finishes that
+type with these method bodies so the harder half of a match has one
+implementation and not two.
 """
 
 from __future__ import annotations
 
 import bisect
 import sys
+from functools import partial
+from itertools import starmap
 from typing import TYPE_CHECKING, Any
 
+from ._abi import ACCEL
 from ._engine import READS_STR
 
 if TYPE_CHECKING:
@@ -35,10 +45,16 @@ class TextView:
     this build reads most cheaply.
     """
 
-    __slots__ = ("_bytes", "_marks", "original", "subject", "wide")
+    __slots__ = ("_bytes", "_marks", "original", "searched", "subject", "wide")
 
     original: Any
     subject: Any
+    #: The subject the engine was actually handed, which is :attr:`subject`
+    #: unless an ``endpos`` cut it short. Distinct from ``subject`` because a
+    #: capture pass filled in lazily has to run against the same bytes the walk
+    #: did: ``endpos`` is a truncation, so groups re-derived from the whole text
+    #: can run past the bound the caller set.
+    searched: Any
     #: Whether the caller's domain and the engine's actually differ, and
     #: therefore whether any position needs translating or thinning at all.
     #: False for every ASCII text and every ``bytes``, which is most of them,
@@ -51,7 +67,7 @@ class TextView:
         if not isinstance(text, str):
             # Normalize bytearray / memoryview to bytes so that every slice this
             # view hands back is the same type, and joining them in `sub` works.
-            self.original = self.subject = self._bytes = (
+            self.original = self.subject = self.searched = self._bytes = (
                 text if isinstance(text, bytes) else bytes(text)
             )
             self._marks = None
@@ -68,7 +84,29 @@ class TextView:
         # a walk with groups quadratic, so on that transport the copy is made
         # once, here.
         self._bytes = None if READS_STR else text.encode("utf-8")
-        self.subject = text if self._bytes is None else self._bytes
+        self.subject = self.searched = text if self._bytes is None else self._bytes
+
+    def upto(self, last: int) -> Any:
+        """The subject to search when the caller's ``endpos`` ends the text at ``last``.
+
+        Recorded on the view as well as returned, because the walk is not the
+        only pass that reads it: group spans are filled in on first request,
+        from a second engine call that must see exactly the text the first one
+        did. Handing that call the whole subject let a greedy group run past
+        ``endpos`` and report a wider whole-match than the walk had found — a
+        disagreement between the two arms rather than a wrong answer, but the
+        caller met it as a refusal.
+
+        A truncation is a suffix cut, so every offset before it is unchanged and
+        the left bound needs no adjusting. The cut is made in whichever domain
+        the transport already reads, since the index is a character boundary in
+        both.
+        """
+        if last == len(self.original):
+            return self.subject
+        cut = self.original[:last] if self.subject is self.original else self.data[: self.offset(last)]
+        self.searched = cut
+        return cut
 
     @property
     def data(self) -> bytes:
@@ -153,7 +191,7 @@ class Match:
 
     def _byte_spans(self) -> list[tuple[int, int] | None]:
         if self._spans is None:
-            self._spans = self._re._captures_at(self._view, self._start, self._end)
+            self._spans = self._re._captures_at(self._view.searched, self._start, self._end)
         return self._spans
 
     def _resolve(self, group: int | str) -> int:
@@ -276,6 +314,128 @@ class Match:
     def __repr__(self) -> str:
         shown = self.group(0)
         return f"<irgx.Match object; span={self.span()}, match={shown!r}>"
+
+
+# ── the two ways a match gets built ───────────────────────────────────────
+
+
+def viewing(text: Any) -> TextView:
+    """A view over the whole of ``text``, which is exactly ``str`` or ``bytes``.
+
+    What every unbounded verb has once its domain check has passed: the caller's
+    own object, in the pattern's own domain, searched end to end. Every branch
+    :meth:`TextView.__init__` exists to take is therefore already decided, so
+    this fills the slots directly rather than through a constructor whose frame
+    costs more than the work in it. Those assignments are that ``__init__``'s
+    rules and not new ones - which is why this is one function two callers share
+    rather than a shortcut copied into each.
+    """
+    view = TextView.__new__(TextView)
+    view.original = text
+    if type(text) is str:
+        view.wide = wide = not text.isascii()
+        view._marks = [(0, 0)] if wide else None
+        view._bytes = None if READS_STR else text.encode("utf-8")
+        view.subject = text if view._bytes is None else view._bytes
+    else:
+        view._bytes = text
+        view._marks = None
+        view.wide = False
+        view.subject = text
+    # Nothing bounded this search, so the text searched IS the whole subject.
+    view.searched = view.subject
+    return view
+
+
+def _over(pattern: Pattern, text: Any, span: tuple[int, int]) -> Match:
+    """One match over ``text``, whose view is built here because there was none.
+
+    What :meth:`irgx.Pattern.search` has after a hit, on the transport with no
+    fused verb to do both at once. The match itself is built by attribute for
+    the reason :func:`viewing` is: an ``__init__`` frame costs more than the four
+    assignments in it, and every input is settled by the caller.
+    """
+    m = Match.__new__(Match)
+    m._re = pattern
+    m._view = viewing(text)
+    m._start, m._end = span
+    m._spans = None
+    return m
+
+
+def _matches(pattern: Pattern, view: TextView, spans: list[tuple[int, int]]) -> list[Match]:
+    """Every match of one walk, over one shared view.
+
+    Shared deliberately: :meth:`TextView.index` remembers each answer, so a walk
+    that translates offsets pays one linear pass in total rather than one per
+    match. A view per match would make a non-ASCII ``finditer`` quadratic.
+
+    Built eagerly, because the walk it reports on already was - one ``find_all``
+    settles every span before there is anything to yield, which is what ``re``
+    does too. The cost of that is one object per span held at once instead of
+    one at a time; the saving is a frame and a constructor per match that a
+    lazy spelling cannot avoid.
+    """
+    return list(starmap(partial(Match, pattern, view), spans))
+
+
+#: A match over a fresh subject, and every match of one walk. Both come from the
+#: accelerator when it has them, which is what makes :data:`Match` a C type
+#: worth having: a constructor reached through ``type.__call__`` would spend more
+#: on argument parsing than the object costs to make.
+over = _over
+matches = _matches
+
+#: The methods the C type does not implement, and does not want two of. Each one
+#: reads this module's storage under the private names the C type exposes
+#: (``_re`` / ``_view`` / ``_start`` / ``_end`` / ``_spans``), so these bodies
+#: work verbatim against it.
+_COLD = ("_byte_spans", "_resolve", "_span_of", "_cut", "_text_of", "groupdict", "expand")
+
+#: What the C type calls when a question is not its own - a group by name, an
+#: out-of-range or non-integer group, a subject whose two domains differ. The
+#: value is the Python method that already states that rule; the key is the name
+#: the C fast path declines to, chosen so it cannot route back into C.
+_SLOW = {
+    "_slow_span": "span",
+    "_slow_start": "start",
+    "_slow_end": "end",
+    "_slow_text": "_text_of",
+    "_slow_group": "group",
+    "_slow_groups": "groups",
+}
+
+
+def _graft(kind: type, written: type) -> type:
+    """Finish the accelerator's Match type with the bodies ``written`` states.
+
+    The C type owns the storage, the construction, and the four accessors for
+    the case that is nearly every case. It owns none of the rules, which is why
+    this is a graft rather than a port: there is one statement of what group 3
+    means, what a name resolves to, and how a wide span translates, and it is
+    the class above.
+    """
+    for name in _COLD:
+        setattr(kind, name, getattr(written, name))
+    for alias, name in _SLOW.items():
+        setattr(kind, alias, getattr(written, name))
+    return kind
+
+
+#: The pure-Python match, kept reachable after the swap below so the suite can
+#: hold the two implementations to each other rather than to one description of
+#: both.
+PythonMatch = Match
+
+_native = getattr(ACCEL, "Match", None)
+if _native is not None:
+    # `TextView` handed over rather than imported: the C module builds one on the
+    # translating arm, and reaching back into this package from C would fix an
+    # import order this package is entitled to choose.
+    ACCEL.set_view(TextView)
+    Match = _graft(_native, PythonMatch)  # type: ignore[misc, assignment]
+    over = ACCEL.over
+    matches = ACCEL.matches
 
 
 def wrong_subject(pattern: Pattern, text: object) -> TypeError:

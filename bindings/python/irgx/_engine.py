@@ -1,6 +1,6 @@
 """One interface over two transports: the native accelerator, or ctypes.
 
-Twelve verbs in this ABI are asked once per *text* - a search, a scan, a
+Fourteen verbs in this ABI are asked once per *text* - a search, a scan, a
 classification - and the rest are asked once per *program*: open a handle,
 describe it, compile a slate, free it. The cost of crossing the FFI boundary is
 the same either way, and it only matters for the first group:
@@ -9,7 +9,7 @@ the same either way, and it only matters for the first group:
     irgx_find_all_in   engine  66.1 ns   through ctypes  585 ns
 
 That is a linear-time engine spending eight times longer being *called* than
-running, and no amount of work on the Zig side can touch it. So the twelve hot
+running, and no amount of work on the Zig side can touch it. So the fourteen hot
 verbs get a second transport - :mod:`irgx._accel`, a stable-ABI C extension that
 takes the caller's own ``str`` and hands back finished Python objects - and this
 module is where the package picks one and stops caring which.
@@ -190,6 +190,66 @@ def _group_texts(regex: int, subject: Any, start: int, count: int, decode: bool)
     return out
 
 
+def _thinned(found: list[tuple[int, int]], data: bytes, decode: bool) -> list[tuple[int, int]]:
+    """``found`` with the spans no caller has a position for dropped.
+
+    An empty match landing on a UTF-8 continuation byte splits a character, and
+    a ``str`` caller counts characters - so the span walk drops it before any
+    answer is assembled from it. On a subject whose UTF-8 is all ASCII no byte
+    can be a continuation byte, which is why this needs no ``wide`` test to be
+    exactly free there.
+    """
+    if not decode:
+        return found
+    size = len(data)
+    return [(at, end) for at, end in found if at >= size or data[at] & 0xC0 != 0x80]
+
+
+def _spliced(regex: int, subject: Any, sep: Any, count: int, decode: bool) -> tuple[Any, int] | int:
+    """``sub`` with a constant replacement: ``(text, made)``, or the status.
+
+    The whole substitution in one verb, for the template that renders the same
+    text for every match - which is most of them. There is no ``Match`` in this
+    answer and no character index either: the pieces are cut out of the
+    subject's own UTF-8 and decoded once at the end, which is the same string as
+    decoding each piece because every cut sits on a character boundary.
+    """
+    data = _raw(subject)
+    found = _find_all(regex, data, 0, 0)
+    if type(found) is int:
+        return found
+    blade = sep.encode("utf-8") if decode else sep
+    out: list[bytes] = []
+    cut = made = 0
+    for at, end in _thinned(found, data, decode):
+        if count and made >= count:
+            break
+        out.append(data[cut:at])
+        out.append(blade)
+        cut = end
+        made += 1
+    out.append(data[cut:])
+    whole = b"".join(out)
+    return (whole.decode("utf-8") if decode else whole), made
+
+
+def _pieces(regex: int, subject: Any, maxsplit: int, decode: bool) -> list[Any] | int:
+    """``split`` with no groups: every piece between the matches, in one verb."""
+    data = _raw(subject)
+    found = _find_all(regex, data, 0, 0)
+    if type(found) is int:
+        return found
+    out: list[bytes] = []
+    cut = 0
+    for taken, (at, end) in enumerate(_thinned(found, data, decode)):
+        if maxsplit and taken >= maxsplit:
+            break
+        out.append(data[cut:at])
+        cut = end
+    out.append(data[cut:])
+    return [piece.decode("utf-8") for piece in out] if decode else out
+
+
 def _captures(regex: int, subject: Any, at: int, groups: int) -> list[tuple[int, int] | None] | int:
     """Group spans for the match at ``at``, with ``None`` for a group not entered.
 
@@ -314,6 +374,8 @@ _FALLBACK: dict[str, Callable[..., Any]] = {
     "captures": _captures,
     "texts": _texts,
     "group_texts": _group_texts,
+    "spliced": _spliced,
+    "pieces": _pieces,
     "slate_is_match": _slate_is_match,
     "slate_which": _slate_which,
     "munch_scan": _munch_scan,

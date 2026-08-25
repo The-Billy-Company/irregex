@@ -365,6 +365,32 @@ class Munch:
         """
         return Scan(self, text).token(at, allow=allow, shortest=shortest)
 
+    def _reach(self, subject: str | bytes, at: int) -> int | None:
+        """The **byte** length of the longest token at **byte** offset ``at``, or ``None``.
+
+        The view-free arm of :meth:`token`, for the one caller that already holds
+        the engine's own domain and wants an answer in it: :func:`irgx._anchored.full`,
+        which compares the reach against a byte bound it computed itself. Going
+        through :class:`Scan` would build a second :class:`TextView` over the same
+        text and then translate the reach into caller units so that the caller
+        could translate it back — two objects and four calls spent arriving at the
+        number the engine already returned.
+
+        ``subject`` is passed to the transport as-is, so a ``str`` is read through
+        its own cached UTF-8 and never re-encoded. That is why the offsets here are
+        bytes on both sides regardless of the subject's type, and why this is
+        private: the unit contract is the caller's to keep, where :meth:`token`
+        keeps it for them.
+        """
+        seated = self._seated
+        if not seated:
+            return None
+        found = _scan(self._pool.handle(), subject, at, None, _abi.MUNCH_LONGEST, seated)
+        if type(found) is int:
+            check(found, "could not scan a munch")
+            return None
+        return found[0]
+
     def _view(self, text: str | bytes) -> TextView:
         if not isinstance(text, TEXTUAL):
             raise TypeError(f"expected str or bytes to lex, not {type(text).__name__}")

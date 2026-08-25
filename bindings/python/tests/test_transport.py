@@ -1,6 +1,6 @@
 """The two transports are one answer, asked two ways.
 
-:mod:`irgx._engine` routes twelve per-text verbs to a C extension when one is
+:mod:`irgx._engine` routes fourteen per-text verbs to a C extension when one is
 present and to ctypes when it is not, which is the only optimization in this
 package that could change what a caller sees. A binding that got this wrong
 would not crash; it would answer *slightly* differently on one platform, in one
@@ -165,6 +165,54 @@ def test_group_texts_agrees_at_one_group_where_the_answer_is_bare():
     compiled = Compiled(rb"(\w+)@", 0)
     rx = compiled.ptr.value
     assert agree("group_texts", rx, "a@ bc@", 0, 1, True) == ["a", "bc"]
+
+
+def test_spliced_agrees_on_the_join_the_tally_and_the_cap(regex):
+    # The native verb sizes the whole answer and fills one buffer where ctypes
+    # joins a list of slices, so the agreement is over an assembly rather than a
+    # walk. The tally rides along because `subn` owes it and the cap decides it.
+    assert agree("spliced", regex, "a@b c@d", "-", 0, True) == ("- -", 2)
+    assert agree("spliced", regex, "a@b c@d", "-", 1, True) == ("- c@d", 1)
+    # No match: the subject back, unchanged, and a tally of zero — not an empty
+    # string, which is what a C verb that forgot the tail would answer.
+    assert agree("spliced", regex, "nothing here", "-", 0, True) == ("nothing here", 0)
+    assert agree("spliced", regex, "", "-", 0, True) == ("", 0)
+    # An empty replacement is a real constant, not an absent one.
+    assert agree("spliced", regex, "a@b c@d", "", 0, True) == (" ", 2)
+    # Past the first window, so the span retry runs under the assembly.
+    text, made = agree("spliced", regex, "a@b " * 5_000, "-", 0, True)
+    assert made == 5_000 and text == "- " * 5_000
+
+
+def test_spliced_agrees_on_bytes_where_the_answer_is_filled_in_place(regex):
+    # The bytes arm writes straight into its final object and the str arm decodes
+    # from scratch: two implementations of one assembly, so both need a witness.
+    assert agree("spliced", regex, b"a@b c@d", b"-", 0, False) == (b"- -", 2)
+    assert agree("spliced", regex, b"a@b", b"", 0, False) == (b"", 1)
+
+
+def test_spliced_and_pieces_agree_about_a_match_inside_a_character():
+    # `x*` matches empty at every byte and byte 1 of "é" splits the character.
+    # Both verbs must drop that span, or the answer carries a cut no caller has
+    # an index for — and for `spliced` a dropped span the SIZING pass kept would
+    # be a buffer overrun rather than a wrong answer.
+    compiled = Compiled(rb"x*", 0)
+    rx = compiled.ptr.value
+    assert agree("spliced", rx, "é", "-", 0, True) == ("-é-", 2)
+    assert agree("spliced", rx, "é".encode(), b"-", 0, False) == (b"-\xc3-\xa9-", 3)
+    assert agree("pieces", rx, "é", 0, True) == ["", "é", ""]
+    assert agree("pieces", rx, "é".encode(), 0, False) == [b"", b"\xc3", b"\xa9", b""]
+
+
+def test_pieces_agrees_on_the_tail_the_cap_and_a_miss(regex):
+    # One more piece than there are cuts, always: the tail after the last match.
+    assert agree("pieces", regex, "a@b c@d", 0, True) == ["", " ", ""]
+    assert agree("pieces", regex, "x a@b y", 0, True) == ["x ", " y"]
+    assert agree("pieces", regex, "a@b c@d", 1, True) == ["", " c@d"]
+    # A miss is the whole subject as one piece, not an empty list.
+    assert agree("pieces", regex, "nothing here", 0, True) == ["nothing here"]
+    assert agree("pieces", regex, b"x a@b y", 0, False) == [b"x ", b" y"]
+    assert len(agree("pieces", regex, "a@b " * 5_000, 0, True)) == 5_001
 
 
 # ── the slate and needle planes ───────────────────────────────────────────
