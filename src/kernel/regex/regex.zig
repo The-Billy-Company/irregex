@@ -88,6 +88,25 @@ pub const Pcre = ladder.Pcre;
 // ── The byte-class DFA — the O(1)/byte primary executor ──────────────────────
 pub const dfa = @import("linear/dfa/dfa.zig");
 
+// ── The OTHER lowering — AST → Thompson NFA, what a COMPILE-COST harness times ─
+// Named for the same reason `determinize` below is, one stage earlier. A
+// codepoint class reaches the byte program as a UTF-8 trie, and that trie is
+// woven once per class OCCURRENCE — which is most of what compiling a Unicode
+// pattern costs, and which no timing of `lower.compileOpts` can attribute
+// because parse, analysis and determinization are in the same call. The harness
+// re-runs THIS lowering over the AST `lower.parse` returned, so it is timing the
+// shipped construction rather than a transcription of it.
+pub const compile = @import("compile/compile.zig");
+
+// ── The codepoint determinization, and what it cost to cross with a decoder ──
+// The symbolic road fills a `Stats` for exactly one reader that never existed:
+// `lower.compileOpts` allocates one, hands it down, and drops it. Every claim
+// about the pair space — how many `(decoder node, pattern state)` pairs the
+// product's gate admitted, how many the horizon proved distinct, how big the
+// table came out — was therefore unfalsifiable from outside the module. Named
+// here so the price rung can read the numbers the gate is set from.
+pub const symbolic = @import("linear/symbolic/symbolic.zig");
+
 // ── The determinizer that discovers it — what a COST harness reasons over ────
 // Named for the same reason as the rungs below: the automata lane's claims
 // (`research/automata/CLAIM.md`) are each about one function inside this file,

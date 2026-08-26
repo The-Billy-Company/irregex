@@ -31,6 +31,29 @@ const transcribe = @import("transcribe.zig");
 
 pub const Stats = transcribe.Stats;
 
+/// The three phases, named so a price rung can time them apart. `build` below is
+/// how production enters and will stay that way; these exist because "the
+/// symbolic road costs 40 µs" is not a fact anyone can act on — the minterm
+/// lowering, the codepoint subset construction and the decoder crossing have
+/// different scaling laws, and a harness that timed only the sum could not tell
+/// which one a change moved.
+///
+/// Three, not four: the alphabet partition is not a phase, it is what
+/// `program.lower` does on its way through — predicates intern as instructions
+/// emit, and `Builder.finish` solves the partition at the end. There is no seam
+/// to time, and a harness that manufactured one would be pricing its own copy.
+/// The crossing's own two sub-steps get names too, because "the crossing costs
+/// 2.3 ms" turned out to be the whole compile's answer and it needed splitting
+/// once more: the decoder is built per alphabet, the horizon per decoder, and the
+/// product walk after both.
+pub const phase = struct {
+    pub const program_mod = program;
+    pub const determinize_mod = determinize;
+    pub const transcribe_mod = transcribe;
+    pub const decoder_mod = @import("decoder.zig");
+    pub const horizon_mod = @import("horizon.zig");
+};
+
 /// Why the symbolic path produced no automaton. Purely advisory — every value
 /// means "the byte path decides this pattern", which is also the status quo.
 pub const Decline = enum {
