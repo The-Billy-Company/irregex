@@ -230,6 +230,7 @@ pub const Captures = struct {
         const ast = if (sel.word) try syn.wordBoundedAst(arena, parsed) else parsed;
 
         var c = Comp{ .gpa = gpa };
+        defer c.loom.deinit(gpa);
         errdefer c.prog.deinit(gpa);
         const m = try c.push(.match);
         const close0 = try c.push(.{ .save = .{ .slot = 1, .out = m } });
@@ -417,6 +418,8 @@ pub const Captures = struct {
 /// AST → capture-program lowering (the `save`-emitting sibling of `compile.zig`).
 const Comp = struct {
     prog: std.ArrayList(Inst) = .empty,
+    /// Woven `uclass` tries, reused across occurrences — see `compile.Loom`.
+    loom: compile_mod.Loom = .empty,
     gpa: std.mem.Allocator,
 
     fn push(self: *Comp, s: Inst) ParseError!u32 {
@@ -447,7 +450,7 @@ const Comp = struct {
             .anchor_buf_start, .anchor_buf_end => unreachable,
             .word => |mask| return self.push(.{ .aword = .{ .mask = mask, .out = next } }),
             .class => |set| return self.push(.{ .char = .{ .set = set, .out = next } }),
-            .uclass => |ranges| return compile_mod.lowerUtf8(self.gpa, ranges, next, self),
+            .uclass => |ranges| return compile_mod.lowerUtf8(self.gpa, &self.loom, ranges, next, self),
             .capture => |g| {
                 const close = try self.push(.{ .save = .{ .slot = 2 * g.idx + 1, .out = next } });
                 const body = try self.compileNode(g.child, close);

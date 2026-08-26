@@ -343,6 +343,7 @@ fn compileProgram(pattern: []const u8) ParseError!Program {
     const ast = try p.parseAlt();
     if (p.pos != pattern.len) return ParseError.BadPattern;
     var c = cmp.Compiler{ .gpa = std.testing.allocator };
+    defer c.loom.deinit(std.testing.allocator);
     errdefer c.states.deinit(std.testing.allocator);
     const match_idx = try c.push(.match);
     const start = try c.compileNode(ast, match_idx);

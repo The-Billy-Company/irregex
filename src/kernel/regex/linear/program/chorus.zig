@@ -76,6 +76,7 @@ pub const Chorus = struct {
         const arena = arena_state.allocator();
 
         var c = compile_mod.Compiler{ .gpa = gpa };
+        defer c.loom.deinit(gpa);
         defer c.states.deinit(gpa);
 
         // The terminals first, so state index i IS pattern ordinal i — the

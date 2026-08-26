@@ -140,6 +140,7 @@ pub fn compileOpts(allocator: std.mem.Allocator, pattern: []const u8, opts: Opti
     const ast = try parse(arena, pattern, opts);
 
     var c = compile_mod.Compiler{ .gpa = allocator };
+    defer c.loom.deinit(allocator);
     errdefer c.states.deinit(allocator);
     const match_idx = try c.push(.match);
     const start = try c.compileNode(ast, match_idx);

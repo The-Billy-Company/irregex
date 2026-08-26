@@ -16,6 +16,9 @@ const ParseError = syn.ParseError;
 /// linear-time matching ancestry of the Pike/RE2 lane).
 pub const Compiler = struct {
     states: std.ArrayList(State) = .empty,
+    /// Woven `uclass` tries, reused across occurrences. Scratch: `states` is
+    /// handed on to the program, this is torn down.
+    loom: Loom = .empty,
     gpa: std.mem.Allocator,
 
     pub fn push(self: *Compiler, s: State) ParseError!u32 {
@@ -47,7 +50,7 @@ pub const Compiler = struct {
             .class => |set| return self.push(.{ .consume = .{ .set = set, .out = next } }),
             // A Unicode codepoint class lowers to a compact UTF-8 byte
             // sub-automaton (shared with the capture compiler).
-            .uclass => |ranges| return lowerUtf8(self.gpa, ranges, next, self),
+            .uclass => |ranges| return lowerUtf8(self.gpa, &self.loom, ranges, next, self),
             // A capture group is transparent to the boolean engine — lower its child
             // (the index is only meaningful to the separate capture VM).
             .capture => |g| return self.compileNode(g.child, next),
@@ -128,8 +131,124 @@ fn oneByteUnion(node: *const Node) ?ByteSet {
 // thousands — the determinizer then sees a tiny byte alphabet and stays at its
 // O(1)/byte floor. Emits through the caller's `emitConsume`/`emitSplit` hooks so
 // the same routine serves the boolean compiler here and the capture VM.
+//
+// **The trie is woven once per class, not once per occurrence.** Expanding the
+// ranges, sorting the sequences, and weaving the prefix trie is the entire cost,
+// and none of it depends on where the class flows to — only the leaf targets do.
+// So `Loom` keeps the finished shape and an occurrence replays it: a few dozen
+// emits against the real `next`. `(\w)(\w)(\w)(\w)` weaves one trie and replays
+// it four times, where it used to weave four.
 
 const Cache = std.AutoHashMap(u64, u32);
+
+/// A `uclass` lowered to the SHAPE of its byte trie, with the exit left open.
+///
+/// The weave records its emissions against a virtual id space — `exit` for
+/// wherever the occurrence continues, an index into `ops` for anything the weave
+/// emitted itself — in the order it emitted them.
+///
+/// **A replay reproduces the byte-identical program a direct weave would have.**
+/// The recording IS a weave (same grouping, same hash-consing, driven through the
+/// same `ctx` hooks), and virtual → real is injective: `exit` becomes the
+/// caller's `next`, which was pushed before the replay starts, and `ops[i]`
+/// becomes the i-th state the replay pushes. So two subtries land on one real
+/// state exactly when they landed on one virtual state.
+pub const Weave = struct {
+    ops: []const Op,
+    /// Where an occurrence enters — a `Ref` rather than "the last op", because a
+    /// hash-cons can serve the entry from a node emitted earlier, and an empty
+    /// class emits a single unsatisfiable consume.
+    entry: Ref,
+
+    /// A virtual state: `exit` is whatever the occurrence flows to, anything else
+    /// indexes `ops`.
+    pub const Ref = u32;
+    pub const exit: Ref = std.math.maxInt(u32);
+
+    pub const Op = union(enum) {
+        consume: struct { lo: u8, hi: u8, out: Ref },
+        split: struct { a: Ref, b: Ref },
+    };
+
+    fn real(r: Ref, next: u32, ids: []const u32) u32 {
+        return if (r == exit) next else ids[r];
+    }
+};
+
+/// The weaves one compile has already paid for, keyed by the scalar ranges they
+/// lower. Pure scratch — it never becomes part of a program, so a caller tears it
+/// down unconditionally rather than handing it on like `states`.
+///
+/// Keys borrow the AST's own range slices, which outlive the compile.
+pub const Loom = struct {
+    made: WeaveMap = .empty,
+    /// Replay scratch: one real state id per trie node, kept here so a class with
+    /// twenty occurrences allocates it once.
+    ids: std.ArrayList(u32) = .empty,
+
+    pub const empty: Loom = .{};
+
+    pub fn deinit(l: *Loom, gpa: std.mem.Allocator) void {
+        var it = l.made.valueIterator();
+        while (it.next()) |wv| gpa.free(wv.ops);
+        l.made.deinit(gpa);
+        l.ids.deinit(gpa);
+    }
+
+    /// The weave for `ranges`, recording it on first sight.
+    fn weaveFor(l: *Loom, gpa: std.mem.Allocator, ranges: []const [2]u21) ParseError!Weave {
+        const gop = try l.made.getOrPut(gpa, ranges);
+        if (!gop.found_existing) {
+            gop.value_ptr.* = record(gpa, ranges) catch |e| {
+                // A half-inserted key would be found on the retry and read as a
+                // weave nothing wrote.
+                _ = l.made.remove(ranges);
+                return e;
+            };
+        }
+        return gop.value_ptr.*;
+    }
+};
+
+const WeaveCtx = struct {
+    pub fn hash(_: WeaveCtx, k: []const [2]u21) u64 {
+        // Through `u32` rather than `asBytes` on the `u21`s: a `u21` is stored in
+        // four bytes whose top eleven bits no value owns.
+        var h = std.hash.Wyhash.init(k.len);
+        for (k) |r| h.update(std.mem.asBytes(&[2]u32{ r[0], r[1] }));
+        return h.final();
+    }
+    pub fn eql(_: WeaveCtx, a: []const [2]u21, b: []const [2]u21) bool {
+        if (a.len != b.len) return false;
+        for (a, b) |x, y| if (x[0] != y[0] or x[1] != y[1]) return false;
+        return true;
+    }
+};
+
+const WeaveMap = std.HashMapUnmanaged(
+    []const [2]u21,
+    Weave,
+    WeaveCtx,
+    std.hash_map.default_max_load_percentage,
+);
+
+/// The `ctx` that turns a weave into a `Weave` instead of into a program: the
+/// same two hooks, writing ops and handing back their indices as virtual ids.
+const Recorder = struct {
+    gpa: std.mem.Allocator,
+    ops: std.ArrayList(Weave.Op) = .empty,
+
+    fn emit(r: *Recorder, op: Weave.Op) ParseError!u32 {
+        try r.ops.append(r.gpa, op);
+        return @intCast(r.ops.items.len - 1);
+    }
+    pub fn emitConsume(r: *Recorder, lo: u8, hi: u8, out: u32) ParseError!u32 {
+        return r.emit(.{ .consume = .{ .lo = lo, .hi = hi, .out = out } });
+    }
+    pub fn emitSplit(r: *Recorder, a: u32, b: u32) ParseError!u32 {
+        return r.emit(.{ .split = .{ .a = a, .b = b } });
+    }
+};
 
 const Woven = struct {
     consume: Cache,
@@ -184,7 +303,35 @@ fn weave(seqs: []const u8seq.Sequence, depth: usize, next: u32, w: *Woven, ctx: 
 /// Lower a set of Unicode scalar ranges into a UTF-8 byte sub-automaton flowing
 /// to `next`, via `ctx.emitConsume(lo,hi,out)` / `ctx.emitSplit(a,b)`. Returns the
 /// entry state.
-pub fn lowerUtf8(gpa: std.mem.Allocator, ranges: []const [2]u21, next: u32, ctx: anytype) ParseError!u32 {
+///
+/// The weave itself happens once per distinct range set per compile (`Loom`); this
+/// is the replay, and it emits in the recorded order so the program is the one a
+/// direct weave would have written.
+pub fn lowerUtf8(
+    gpa: std.mem.Allocator,
+    loom: *Loom,
+    ranges: []const [2]u21,
+    next: u32,
+    ctx: anytype,
+) ParseError!u32 {
+    const wv = try loom.weaveFor(gpa, ranges);
+    const ids = try loom.ids.addManyAsSlice(gpa, wv.ops.len);
+    defer loom.ids.clearRetainingCapacity();
+    for (wv.ops, ids) |op, *slot| slot.* = switch (op) {
+        .consume => |c| try ctx.emitConsume(c.lo, c.hi, Weave.real(c.out, next, ids)),
+        .split => |s| try ctx.emitSplit(
+            Weave.real(s.a, next, ids),
+            Weave.real(s.b, next, ids),
+        ),
+    };
+    return Weave.real(wv.entry, next, ids);
+}
+
+/// Weave `ranges` once, against the virtual exit, and keep what it emitted.
+fn record(gpa: std.mem.Allocator, ranges: []const [2]u21) ParseError!Weave {
+    var rec = Recorder{ .gpa = gpa };
+    errdefer rec.ops.deinit(gpa);
+
     var seqs: std.ArrayList(u8seq.Sequence) = .empty;
     defer seqs.deinit(gpa);
     for (ranges) |rng| {
@@ -193,11 +340,14 @@ pub fn lowerUtf8(gpa: std.mem.Allocator, ranges: []const [2]u21, next: u32, ctx:
     }
     // An empty class (e.g. a negation that covers everything) matches nothing:
     // a consume with an empty byte set (lo > hi) that can never fire.
-    if (seqs.items.len == 0) return ctx.emitConsume(1, 0, next);
-
-    std.mem.sort(u8seq.Sequence, seqs.items, {}, lessSeq);
-    var w = Woven{ .consume = Cache.init(gpa), .split = Cache.init(gpa) };
-    defer w.consume.deinit();
-    defer w.split.deinit();
-    return weave(seqs.items, 0, next, &w, ctx);
+    const entry = if (seqs.items.len == 0)
+        try rec.emitConsume(1, 0, Weave.exit)
+    else blk: {
+        std.mem.sort(u8seq.Sequence, seqs.items, {}, lessSeq);
+        var w = Woven{ .consume = Cache.init(gpa), .split = Cache.init(gpa) };
+        defer w.consume.deinit();
+        defer w.split.deinit();
+        break :blk try weave(seqs.items, 0, Weave.exit, &w, &rec);
+    };
+    return .{ .ops = try rec.ops.toOwnedSlice(gpa), .entry = entry };
 }

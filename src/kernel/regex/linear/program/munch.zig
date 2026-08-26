@@ -557,6 +557,7 @@ fn voice(
     const arena = arena_state.allocator();
 
     var c = compile_mod.Compiler{ .gpa = gpa };
+    defer c.loom.deinit(gpa);
     defer c.states.deinit(gpa);
 
     for (ordinals) |_| _ = try c.push(.match);
