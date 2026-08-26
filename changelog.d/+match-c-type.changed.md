@@ -46,7 +46,8 @@
     looking this round instead of guessing: the cost is the symbolic path's
     product walk in `transcribe` plus `reduce`, roughly 14 ns a cell, and not
     the decoder weave I would have bet on. Pre-sizing the walk's buffers
-    changed nothing measurable, so I reverted it. Still unfixed, but located.
+    changed nothing measurable, so I reverted it. Located here, and cut to
+    1.8 ms by the product horizon further down this release.
 
   Both transports agree throughout, which is the point of having two: 3114
   `Match` answers over 12 patterns, 2 domains and 4 doors, with zero
