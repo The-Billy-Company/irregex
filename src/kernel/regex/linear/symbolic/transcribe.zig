@@ -29,6 +29,7 @@ const Dfa = @import("../dfa/dfa.zig").Dfa;
 const alphabet = @import("alphabet.zig");
 const decoder_mod = @import("decoder.zig");
 const determinize = @import("determinize.zig");
+const horizon_mod = @import("horizon.zig");
 const reduce = @import("../automata/reduce.zig");
 
 /// Ceiling on reachable product states. Deliberately equal to
@@ -48,16 +49,22 @@ const unknown = subset.unknown;
 
 /// An upper bound on the product's reachable states, read off the two factors
 /// before a single pair is interned. Sound by construction — every interned key
-/// is a `canon`ed `(node, pattern state)` and nothing else — and in practice
-/// EXACT, because the two factors are independent: a mid-sequence byte carries
-/// the pattern state through untouched (`stepByte`), so every node the decoder
-/// can reach pairs with every state the pattern can reach. Measured against the
-/// finished walk over 33 codepoint-class patterns, the bound was hit exactly in
-/// all of them.
+/// is a `canon`ed `(node, pattern state)` and nothing else.
+///
+/// It used to be exact, and the reason it no longer is, is the point of
+/// `horizon.zig`: the two factors looked independent because a mid-sequence byte
+/// carries the pattern state through untouched, so every decoder node appeared to
+/// pair with every pattern state. It does — but most of those pairs are the same
+/// state, because a node deep in a class's trie can only ever hand `q` to the
+/// transition table for the minterms still reachable below it. `\w+X` bounded at
+/// 316 × 3 = 948 and now walks 318. The horizon's own `pairs` is the exact
+/// figure; this stays as the gate because it is the one available *before* a
+/// decoder has been crossed with anything, and it is what keeps a hopeless
+/// pattern from paying for the crossing to find out.
 ///
 /// The anchored refinement is the one place `canon` takes a column out of the
 /// space: there `reseed == dead`, so every `(node, dead)` collapses onto the
-/// single absorbing pair. `^func\s` reaches 49 = 8 × (7−1) + 1, not 8 × 7.
+/// single absorbing pair. `^func\s` bounds at 49 = 8 × (7−1) + 1, not 8 × 7.
 fn pairBound(nodes: u32, aut: *const determinize.Automaton) u64 {
     const n: u64 = nodes;
     const pats: u64 = aut.nstates;
@@ -75,6 +82,10 @@ const Product = struct {
     gpa: std.mem.Allocator,
     dec: *const Decoder,
     aut: *const determinize.Automaton,
+    /// Which pattern states a given node can still tell apart. Substituting a
+    /// state's representative before interning is what keeps the walk from
+    /// building the mid-codepoint twins `reduce` would only merge again.
+    hor: *const horizon_mod.Horizon,
     ncls: u16,
     /// `(node, pattern state) -> product id`, dense: `seen[node * nstates + pat]`.
     /// The pair space is what `pairBound` measured before the walk was allowed to
@@ -131,14 +142,20 @@ const Product = struct {
         // stride: it is used here, in the `dead` lookup after the walk, and in the
         // `gpa.alloc` that sizes `seen`, and those three must agree exactly.
         std.debug.assert(node < p.dec.count() and l.pat < p.aut.nstates);
-        const slot = @as(usize, node) * p.aut.nstates + l.pat;
+        // Mid-codepoint the pattern is not running, so `node` may not be able to
+        // tell `l.pat` from a lower-numbered state; intern that one instead. The
+        // horizon is read at the CANONED node, and it is the identity at the root
+        // — which is both where `is_match` is read and where the anchored
+        // collapse above lands, so neither is disturbed.
+        const pat = p.hor.canon(node, l.pat);
+        const slot = @as(usize, node) * p.aut.nstates + pat;
         if (p.seen[slot] != none) return .{ .id = p.seen[slot], .is_new = false };
         // Unreachable while `pairBound` gates the walk — kept because it, not the
         // bound, is what the returned table's size actually rests on.
         if (p.keys.items.len >= max_states) return Decline.TooLarge;
         const id: u32 = @intCast(p.keys.items.len);
         p.seen[slot] = id;
-        const key = (@as(u64, node) << 32) | l.pat;
+        const key = (@as(u64, node) << 32) | pat;
         try p.keys.append(p.gpa, key);
         // A match ends on a codepoint boundary, never between the bytes of one.
         // Mid-sequence the pattern half still carries the verdict from BEFORE
@@ -236,9 +253,12 @@ pub fn transcribe(
 
     var cls = decoder_mod.classes(&dec);
 
+    var hor = try horizon_mod.build(gpa, &dec, aut);
+    defer hor.deinit();
+
     const seen = try gpa.alloc(u32, @as(usize, dec.count()) * aut.nstates);
     @memset(seen, none);
-    var p = Product{ .gpa = gpa, .dec = &dec, .aut = aut, .ncls = cls.ncls, .seen = seen };
+    var p = Product{ .gpa = gpa, .dec = &dec, .aut = aut, .hor = &hor, .ncls = cls.ncls, .seen = seen };
     defer p.deinit();
 
     // The frontier is keyed on "has an interior byte ever landed here", NOT on

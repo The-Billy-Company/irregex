@@ -117,7 +117,10 @@ pub const Decoder = struct {
         return @intCast(d.nodes.items.len);
     }
 
-    fn edgesOf(d: *const Decoder, node: u32) []const Edge {
+    /// One node's outgoing ranges, in ascending disjoint order. Public for
+    /// `horizon.zig`, which reads the DAG's shape (not `row`'s answers) to fold
+    /// each node's reachable minterms bottom-up.
+    pub fn edgesOf(d: *const Decoder, node: u32) []const Edge {
         const s = d.nodes.items[node];
         return d.edges.items[s.first..][0..s.len];
     }
