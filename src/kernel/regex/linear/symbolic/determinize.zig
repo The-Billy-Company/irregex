@@ -19,6 +19,7 @@ const mix = @import("../../../math/mix.zig");
 const bits = @import("../../../math/bits.zig");
 const program = @import("program.zig");
 const alphabet = @import("alphabet.zig");
+const reduce = @import("../automata/reduce.zig");
 
 const CpState = program.CpState;
 const B64 = bits.Field(u64);
@@ -63,6 +64,39 @@ pub const Automaton = struct {
         a.gpa.free(a.trans_in);
         a.gpa.free(a.trans_fin);
         a.gpa.free(a.is_match);
+    }
+
+    /// Merge states no suffix separates, in place. Interning on the NFA-state SET
+    /// stops at *reachable*, and two different sets routinely accept the same
+    /// suffixes — `func\s+\w+\(` determinizes to 12 states and means 7.
+    ///
+    /// **This is the cheapest place in the engine to spend a minimization, and
+    /// the most expensive place to skip one.** Every surviving twin is multiplied
+    /// by every decoder node downstream: `horizon.zig` quotients the pattern's
+    /// states per node by comparing their transition columns, which is exact only
+    /// when equal columns mean equal states — i.e. only on a minimal automaton.
+    /// Left unminimized, the horizon keeps ~2 classes per node where 1 suffices,
+    /// the product carries them, and `reduce` re-discovers the merge afterwards
+    /// over a table `nodes` times larger, with a signature `ncls` wide instead of
+    /// `nmt`. Measured on the crossing, that is the difference between a ~340-pair
+    /// product and a ~660-pair one.
+    ///
+    /// Every id the caller can hold is remapped. The tables keep their original
+    /// allocation — `nstates` is the only thing that shrinks, and the tail is
+    /// simply no longer addressed — so this cannot fail beyond its one scratch
+    /// allocation.
+    pub fn minimize(a: *Automaton) std.mem.Allocator.Error!void {
+        const map = try a.gpa.alloc(u32, a.nstates);
+        defer a.gpa.free(map);
+        const ns = try reduce.rows(a.gpa, a.nstates, a.nmt, &.{ a.trans_in, a.trans_fin }, a.is_match, map);
+        if (ns == a.nstates) return;
+        a.nstates = ns;
+        a.start = map[a.start];
+        a.reseed = map[a.reseed];
+        a.fin_reseed = map[a.fin_reseed];
+        // `dead` is `maxInt` when no empty non-matching set was ever interned,
+        // and that sentinel is compared against, never indexed.
+        if (a.dead != std.math.maxInt(u32)) a.dead = map[a.dead];
     }
 };
 
@@ -276,7 +310,7 @@ pub fn build(gpa: std.mem.Allocator, prog: *const program.Program, anchored: boo
         }
     }
 
-    return .{
+    var aut: Automaton = .{
         .gpa = gpa,
         .nmt = nmt,
         .nstates = d.nstates,
@@ -290,4 +324,10 @@ pub fn build(gpa: std.mem.Allocator, prog: *const program.Program, anchored: boo
         .empty_match = empty_match,
         .visits = d.visits,
     };
+    // Part of determinizing, not a pass over it: nothing downstream has a use for
+    // the over-refined form, and the crossing pays for every extra state 316
+    // times over.
+    errdefer aut.deinit();
+    try aut.minimize();
+    return aut;
 }

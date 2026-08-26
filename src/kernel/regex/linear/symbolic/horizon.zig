@@ -48,6 +48,30 @@
 //! four states apart under a one-minterm horizon, giving 4 + 315×3 = **949**,
 //! also exact. This does not make the automaton smaller; it stops building the
 //! part that was never going to survive.
+//!
+//! ## The quotient is per HORIZON, not per node
+//!
+//! Two nodes with the same horizon compute the same signatures over the same
+//! columns and therefore the same classes — the node id never enters the
+//! signature. So the interesting object is the horizon, and there are far fewer
+//! of them than there are nodes: Unicode `\w`'s 316-node trie has **6** distinct
+//! horizons, because the deep interior is hundreds of nodes all seeing the same
+//! single minterm. Keying the work on the horizon turns the signature pass from
+//! `nodes × |horizon| × states` into `horizons × |horizon| × states`, and shrinks
+//! the resident tables from `nodes × states` to `horizons × states` — 948 u32 to
+//! 18 on `\w+X`. Nothing about the answer changes; the sweep just stops
+//! re-deriving a row it already has.
+//!
+//! ## And it addresses the product's table exactly
+//!
+//! Once the classes are known per horizon, so is each node's class COUNT, so the
+//! product's `(node, state) -> id` table can be addressed as
+//! `base[node] + dense[horizon][state]` — a block per node, sized to that node's
+//! classes rather than to every state the automaton has. That array is then
+//! exactly `pairs` long instead of `nodes × states`, which on `func\s+\w+\(` is
+//! 658 slots where the rectangle wanted 3792. The saving is not the memory; it is
+//! the `@memset` that has to precede every walk, and it is why `transcribe` can
+//! now afford to consult this before deciding whether to walk at all.
 
 const std = @import("std");
 const mix = @import("../../../math/mix.zig");
@@ -55,25 +79,48 @@ const decoder_mod = @import("decoder.zig");
 const determinize = @import("determinize.zig");
 
 const leaf = decoder_mod.leaf;
-const SigCtx = mix.SliceCtx(u32);
-const SigMap = std.HashMap([]const u32, u32, SigCtx, std.hash_map.default_max_load_percentage);
+const SigMap = std.HashMap([]const u32, u32, mix.SliceCtx(u32), std.hash_map.default_max_load_percentage);
+const SetMap = std.HashMap([]const u64, u32, mix.SliceCtx(u64), std.hash_map.default_max_load_percentage);
 
-/// The per-node quotient of the pattern automaton, and the exact pair count that
-/// falls out of it.
+/// The identity quotient, reserved so the root can never share a kind with a
+/// node that merely sees the same minterms. `rep` and `dense` are both `q` there,
+/// which is what lets `transcribe`'s anchored collapse address `(root, dead)`
+/// without a lookup.
+const identity: u32 = 0;
+
+/// The per-horizon quotient of the pattern automaton, the exact pair count that
+/// falls out of it, and the block addressing that count implies.
 pub const Horizon = struct {
     gpa: std.mem.Allocator,
     nstates: u32,
-    /// `rep[node * nstates + q]` — the state `(node, q)` is indistinguishable
-    /// from. Idempotent: `rep[node][rep[node][q]] == rep[node][q]`, because a
-    /// class's representative is a member of it.
+    /// Which quotient each decoder node uses — its horizon's id, not its own.
+    kind: []u32,
+    /// `rep[kind * nstates + q]` — the state `(node, q)` is indistinguishable
+    /// from. Idempotent: `rep[k][rep[k][q]] == rep[k][q]`, because a class's
+    /// representative is a member of it.
     rep: []u32,
+    /// `dense[kind * nstates + q]` — which of that kind's classes `q` falls in,
+    /// numbered `0..classes(kind)`. The representative's rank, so it is stable
+    /// under `rep` and dense by construction.
+    dense: []u32,
+    /// `base[node]` — where this node's block starts in a `pairs`-long table.
+    /// A `u32` holds it by construction and not by luck: `pairs` cannot exceed
+    /// `decoder.max_nodes × determinize.max_states`, both 4096, so the largest
+    /// prefix sum expressible here is under 2²⁴.
+    base: []u32,
     /// Distinct pairs the product can reach, summed over nodes. Exact for the
     /// unanchored canon and an upper bound under the anchored one, which folds
     /// `(node, dead)` onto a single absorbing pair.
     pairs: u64,
+    /// Distinct horizons behind all of it — what the dedup actually bought,
+    /// reported so a rung can see the ratio rather than infer it.
+    kinds: u32,
 
     pub fn deinit(h: *Horizon) void {
+        h.gpa.free(h.kind);
         h.gpa.free(h.rep);
+        h.gpa.free(h.dense);
+        h.gpa.free(h.base);
     }
 
     /// The representative of `q` at `node` — what to intern instead of `q`.
@@ -81,13 +128,20 @@ pub const Horizon = struct {
     /// any member, which is what makes substituting it a congruence rather than
     /// an approximation.
     pub fn canon(h: *const Horizon, node: u32, q: u32) u32 {
-        return h.rep[@as(usize, node) * h.nstates + q];
+        return h.rep[@as(usize, h.kind[node]) * h.nstates + q];
+    }
+
+    /// Where `(node, q)` lives in a `pairs`-long interning table. Every distinct
+    /// pair gets its own slot and no slot is shared, so a table this size is not
+    /// a gamble — it is the count this module just proved.
+    pub fn slot(h: *const Horizon, node: u32, q: u32) usize {
+        return h.base[node] + h.dense[@as(usize, h.kind[node]) * h.nstates + q];
     }
 };
 
-/// Read each decoder node's minterm horizon, then quotient the pattern's states
-/// against it. One ascending sweep for the horizons, one signature pass per node
-/// for the classes.
+/// Read each decoder node's minterm horizon, quotient the pattern's states
+/// against each DISTINCT one, then lay the nodes' blocks end to end. One
+/// ascending sweep for the horizons, one signature pass per distinct horizon.
 pub fn build(
     gpa: std.mem.Allocator,
     dec: *const decoder_mod.Decoder,
@@ -111,10 +165,28 @@ pub fn build(
         }
     }
 
-    const rep = try gpa.alloc(u32, @as(usize, nodes) * ns);
-    errdefer gpa.free(rep);
+    const kind = try gpa.alloc(u32, nodes);
+    errdefer gpa.free(kind);
+    const base = try gpa.alloc(u32, nodes);
+    errdefer gpa.free(base);
 
-    // One buffer per node's signatures, so the map can key on slices of it: two
+    // Kind 0 is the reserved identity, so both tables open with one row each and
+    // grow only when a genuinely new horizon appears.
+    var rep: std.ArrayList(u32) = .empty;
+    errdefer rep.deinit(gpa);
+    var dense: std.ArrayList(u32) = .empty;
+    errdefer dense.deinit(gpa);
+    try rep.ensureTotalCapacity(gpa, ns);
+    try dense.ensureTotalCapacity(gpa, ns);
+    for (0..ns) |q| {
+        rep.appendAssumeCapacity(@intCast(q));
+        dense.appendAssumeCapacity(@intCast(q));
+    }
+    var count: std.ArrayList(u32) = .empty;
+    defer count.deinit(gpa);
+    try count.append(gpa, ns);
+
+    // One buffer per kind's signatures, so the map can key on slices of it: two
     // columns per horizon minterm, and never more than the alphabet is wide.
     const sigs = try gpa.alloc(u32, @as(usize, ns) * 2 * @max(nmt, 1));
     defer gpa.free(sigs);
@@ -122,19 +194,37 @@ pub fn build(
     defer table.deinit();
     try table.ensureTotalCapacity(ns);
 
+    // Horizon bitset -> kind. Keyed on the slice living in `seen`, which outlives
+    // the loop, so no copy is needed.
+    var kinds = SetMap.init(gpa);
+    defer kinds.deinit();
+
     const stride = 2 * @max(nmt, 1);
     var pairs: u64 = 0;
     for (0..nodes) |n| {
-        const slot = rep[n * ns ..][0..ns];
+        base[n] = @intCast(pairs);
         if (@as(u32, @intCast(n)) == dec.root) {
-            for (slot, 0..) |*r, q| r.* = @intCast(q);
+            kind[n] = identity;
             pairs += ns;
             continue;
         }
+        const mine = seen[n * words ..][0..words];
+        const known = try kinds.getOrPut(mine);
+        if (known.found_existing) {
+            kind[n] = known.value_ptr.*;
+            pairs += count.items[known.value_ptr.*];
+            continue;
+        }
+        const k: u32 = @intCast(count.items.len);
+        known.value_ptr.* = k;
+        kind[n] = k;
+
+        // Keys live in `sigs`, which the next line starts overwriting — so the
+        // previous kind's entries have to go before, not after.
+        table.clearRetainingCapacity();
         // The signature's width is the horizon's population — a node that can
         // still reach one minterm compares one column, not `nmt` of them — and
         // every state reads the same columns, so it is measured once.
-        const mine = seen[n * words ..][0..words];
         var w: usize = 0;
         for (0..nmt) |m| {
             if (mine[m >> 6] & (@as(u64, 1) << @truncate(m)) == 0) continue;
@@ -144,19 +234,36 @@ pub fn build(
             }
             w += 2;
         }
-        table.clearRetainingCapacity();
-        for (slot, 0..) |*r, q| {
+        try rep.resize(gpa, (@as(usize, k) + 1) * ns);
+        try dense.resize(gpa, (@as(usize, k) + 1) * ns);
+        const rep_row = rep.items[@as(usize, k) * ns ..][0..ns];
+        const dense_row = dense.items[@as(usize, k) * ns ..][0..ns];
+        var classes: u32 = 0;
+        for (0..ns) |q| {
             const sig = sigs[q * stride ..][0..w];
             const gop = table.getOrPutAssumeCapacity(sig);
             if (gop.found_existing) {
-                r.* = gop.value_ptr.*;
+                rep_row[q] = gop.value_ptr.*;
+                dense_row[q] = dense_row[gop.value_ptr.*];
             } else {
                 gop.key_ptr.* = sig;
                 gop.value_ptr.* = @intCast(q);
-                r.* = @intCast(q);
-                pairs += 1;
+                rep_row[q] = @intCast(q);
+                dense_row[q] = classes;
+                classes += 1;
             }
         }
+        try count.append(gpa, classes);
+        pairs += classes;
     }
-    return .{ .gpa = gpa, .nstates = ns, .rep = rep, .pairs = pairs };
+    return .{
+        .gpa = gpa,
+        .nstates = ns,
+        .kind = kind,
+        .rep = try rep.toOwnedSlice(gpa),
+        .dense = try dense.toOwnedSlice(gpa),
+        .base = base,
+        .pairs = pairs,
+        .kinds = @intCast(count.items.len),
+    };
 }

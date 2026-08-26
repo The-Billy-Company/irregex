@@ -287,8 +287,10 @@ test "symbolic: declines the constructs it cannot express exactly" {
 const ByteCost = struct {
     visits: u64,
     nstates: u32,
-    /// State and class counts after `reduce`. Zero when the reduction declined
-    /// (word context) or the determinization capped.
+    /// State and class counts after `reduce`, which is now asked of every shape
+    /// the byte road builds — word-context tables included, so the two `\b`
+    /// patterns in the slate finally carry a floor instead of a hole. Zero only
+    /// when the determinization capped and there is no finished table to reduce.
     minimal: u32 = 0,
     minimal_ncls: u16 = 0,
     ncls: u16,
@@ -341,8 +343,8 @@ fn byteCost(a: std.mem.Allocator, re: *const Regex) !ByteCost {
     return .{
         .visits = sub.visits,
         .nstates = sub.nstates,
-        .minimal = if (ext) |e| e.nstates else 0,
-        .minimal_ncls = if (ext) |e| e.ncls else 0,
+        .minimal = ext.nstates,
+        .minimal_ncls = ext.ncls,
         .ncls = raw_ncls,
         .capped = false,
     };
@@ -394,7 +396,7 @@ test "symbolic: the NFA-state visit collapse, on the real engine" {
         // raw class count would let this pass on the byte path's over-refinement
         // rather than on the language's own requirement.
         try expect(stats.visits * case.factor <= byte.visits);
-        if (!byte.capped and byte.minimal != 0) {
+        if (!byte.capped) {
             try expect(dfa.nstates <= byte.minimal);
             try expect(dfa.ncls <= byte.minimal_ncls);
         }

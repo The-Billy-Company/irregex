@@ -9,6 +9,14 @@ const std = @import("std");
 pub const fnv_offset: u64 = 0xcbf29ce484222325;
 pub const fnv_prime: u64 = 0x100000001b3;
 
+/// The golden ratio's odd 64-bit reciprocal — the multiplier for folding
+/// WORD-at-a-time rather than byte-at-a-time (`h = (h ^ word) *% odd`). FNV's
+/// prime is deliberately sparse, which spreads a byte's eight bits fine and a
+/// word's sixty-four badly; this one is dense and odd, so it is invertible and
+/// carries every input bit upward. Order-dependent, and a filter rather than a
+/// verdict: use it where an exact confirmation follows.
+pub const odd: u64 = 0x9E3779B97F4A7C15;
+
 /// splitmix64 finalizer — spreads the FNV accumulator so bottom-k selection
 /// sees uniform keys (FNV alone clusters short phrases in the low bits).
 pub inline fn finalize(x: u64) u64 {

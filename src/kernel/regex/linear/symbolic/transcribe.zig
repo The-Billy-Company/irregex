@@ -56,15 +56,16 @@ const unknown = subset.unknown;
 /// carries the pattern state through untouched, so every decoder node appeared to
 /// pair with every pattern state. It does — but most of those pairs are the same
 /// state, because a node deep in a class's trie can only ever hand `q` to the
-/// transition table for the minterms still reachable below it. `\w+X` bounded at
-/// 316 × 3 = 948 and now walks 318. The horizon's own `pairs` is the exact
-/// figure; this stays as the gate because it is the one available *before* a
-/// decoder has been crossed with anything, and it is what keeps a hopeless
-/// pattern from paying for the crossing to find out.
+/// transition table for the minterms still reachable below it. `\w+X` bounds at
+/// 316 × 3 = 948 and walks 318.
 ///
-/// The anchored refinement is the one place `canon` takes a column out of the
-/// space: there `reseed == dead`, so every `(node, dead)` collapses onto the
-/// single absorbing pair. `^func\s` bounds at 49 = 8 × (7−1) + 1, not 8 × 7.
+/// So the gate reads **both** this and the horizon's own `pairs`, and takes the
+/// tighter. Neither dominates: `pairs` is a per-node class count and is far
+/// smaller on anything with a Unicode class, while this one carries the anchored
+/// refinement `pairs` cannot — the one place `canon` takes a whole column out of
+/// the space, because `reseed == dead` there collapses every `(node, dead)` onto
+/// the single absorbing pair. `^func\s` bounds at 49 = 8 × (7−1) + 1, not 8 × 7.
+/// Both are upper bounds on what the walk can intern, so the minimum is one too.
 fn pairBound(nodes: u32, aut: *const determinize.Automaton) u64 {
     const n: u64 = nodes;
     const pats: u64 = aut.nstates;
@@ -87,12 +88,14 @@ const Product = struct {
     /// building the mid-codepoint twins `reduce` would only merge again.
     hor: *const horizon_mod.Horizon,
     ncls: u16,
-    /// `(node, pattern state) -> product id`, dense: `seen[node * nstates + pat]`.
-    /// The pair space is what `pairBound` measured before the walk was allowed to
-    /// start, so this array is bounded by that same figure — under 8 K slots, 32
-    /// KiB — and a hash map buys nothing over an index that small. It is the
+    /// `(node, pattern state) -> product id`, addressed by `horizon.slot`: one
+    /// block per decoder node, each sized to the classes that node can still tell
+    /// apart rather than to every state the automaton has. Exactly `hor.pairs`
+    /// long — 658 slots on `func\s+\w+\(` where the rectangle wanted 3792 — which
+    /// matters less for the memory than for the `@memset` that has to precede
+    /// every walk. A hash map buys nothing over an index this small, and it is the
     /// interning that dominated the walk once `Decoder.follow` stopped: 872 K
-    /// probes on `func\s+\w+\(`, all but 3792 of them hits.
+    /// probes on that pattern, all but 3792 of them hits.
     seen: []u32,
     keys: std.ArrayList(u64) = .empty,
     trans_in: std.ArrayList(u32) = .empty,
@@ -138,9 +141,9 @@ const Product = struct {
         // future change lets a dead pattern state flow into `intern` as a landing
         // (rather than only as a comparand), or gives `dead` a real interned id
         // without re-checking this, that is the specific way to turn a compile-time
-        // cost optimization into heap corruption. Keep `nstates` as the single
-        // stride: it is used here, in the `dead` lookup after the walk, and in the
-        // `gpa.alloc` that sizes `seen`, and those three must agree exactly.
+        // cost optimization into heap corruption. `horizon.slot` is the single
+        // addressing rule: it is used here, in the `dead` lookup after the walk,
+        // and it is what `hor.pairs` sizes `seen` to, and those three must agree.
         std.debug.assert(node < p.dec.count() and l.pat < p.aut.nstates);
         // Mid-codepoint the pattern is not running, so `node` may not be able to
         // tell `l.pat` from a lower-numbered state; intern that one instead. The
@@ -148,10 +151,10 @@ const Product = struct {
         // — which is both where `is_match` is read and where the anchored
         // collapse above lands, so neither is disturbed.
         const pat = p.hor.canon(node, l.pat);
-        const slot = @as(usize, node) * p.aut.nstates + pat;
+        const slot = p.hor.slot(node, pat);
         if (p.seen[slot] != none) return .{ .id = p.seen[slot], .is_new = false };
-        // Unreachable while `pairBound` gates the walk — kept because it, not the
-        // bound, is what the returned table's size actually rests on.
+        // Unreachable while the pair gate precedes the walk — kept because it, not
+        // either bound, is what the returned table's size actually rests on.
         if (p.keys.items.len >= max_states) return Decline.TooLarge;
         const id: u32 = @intCast(p.keys.items.len);
         p.seen[slot] = id;
@@ -198,7 +201,101 @@ const Product = struct {
         }
         return if (at_end) half else .{ .node = p.dec.root, .pat = a.reseed };
     }
+
+    /// `stepByte`'s lost-sync tail, on its own. Reachable only from a non-root
+    /// node — the root consumes a byte that starts nothing rather than re-reading
+    /// it — and, crucially, **it never reads `from.pat`**. So every non-root node
+    /// resyncs to the same landing on the same byte, and that landing can be
+    /// interned once for the whole walk instead of once per state.
+    fn resyncByte(p: *const Product, b: u8, at_end: bool) Landing {
+        const a = p.aut;
+        const tbl = if (at_end) a.trans_fin else a.trans_in;
+        const half: Landing = .{ .node = p.dec.root, .pat = a.fin_reseed };
+        if (p.dec.follow(p.dec.root, b)) |t| {
+            if (t & leaf == 0) return if (at_end) half else .{ .node = t, .pat = a.reseed };
+            return .{ .node = p.dec.root, .pat = tbl[@as(usize, a.reseed) * a.nmt + (t & ~leaf)] };
+        }
+        return if (at_end) half else .{ .node = p.dec.root, .pat = a.reseed };
+    }
 };
+
+/// Which byte classes a decoder node actually has an edge for.
+///
+/// A product row is `ncls` wide — 102 columns on `func\s+\w+\(` — but a decoder
+/// node has a handful of live edges and resyncs on everything else, and
+/// `resyncByte` shows the resync landing to be independent of the pattern state.
+/// So the resync half of every row is **one row, computed once and copied**, and
+/// the walk's per-state work drops to the live edges: 6 columns instead of 102,
+/// with the other 96 becoming a `memcpy` the table had to pay for anyway.
+///
+/// `read` is what keeps that from inventing states. A resync column is interned
+/// only if some non-root node actually resyncs on that class, and every decoder
+/// node is reachable in the product (it sits on a byte path from the root, and a
+/// mid-sequence landing carries the pattern state through, so nothing can strand
+/// it — the one exception, an unsatisfiable program whose start IS its dead
+/// state, is held off by the caller). The interned set is therefore exactly the
+/// set the old column-at-a-time walk reached, which is why the product's state
+/// count is unchanged and not merely similar.
+const Edges = struct {
+    gpa: std.mem.Allocator,
+    /// Class ids with an edge, laid out per node. `ncls ≤ 256`, so a class id is
+    /// a byte.
+    live: []u8,
+    /// `live[at[n]..at[n + 1]]` — node `n`'s live classes.
+    at: []u32,
+    /// Classes some non-root node resyncs on: the resync columns a walk can read.
+    read: []bool,
+    /// Whether the root has a class with no edge at all. Its resync row is a
+    /// single target, so one bit answers for all `ncls` columns.
+    root_reads: bool,
+
+    fn deinit(e: *Edges) void {
+        e.gpa.free(e.live);
+        e.gpa.free(e.at);
+        e.gpa.free(e.read);
+    }
+};
+
+/// One pass over `nodes × ncls` of the decoder's byte row, replacing the same
+/// question asked once per *product state* — a factor of `states / nodes`, and
+/// then only for the columns that survive it.
+fn scanEdges(
+    gpa: std.mem.Allocator,
+    dec: *const Decoder,
+    cls: *const subset.Classes,
+) std.mem.Allocator.Error!Edges {
+    const nodes = dec.count();
+    var live: std.ArrayList(u8) = .empty;
+    errdefer live.deinit(gpa);
+    const at = try gpa.alloc(u32, @as(usize, nodes) + 1);
+    errdefer gpa.free(at);
+    const read = try gpa.alloc(bool, cls.ncls);
+    errdefer gpa.free(read);
+    @memset(read, false);
+
+    var root_reads = false;
+    for (0..nodes) |n| {
+        at[n] = @intCast(live.items.len);
+        var k: u16 = 0;
+        while (k < cls.ncls) : (k += 1) {
+            if (dec.follow(@intCast(n), cls.rep[k]) != null) {
+                try live.append(gpa, @intCast(k));
+            } else if (@as(u32, @intCast(n)) == dec.root) {
+                root_reads = true;
+            } else {
+                read[k] = true;
+            }
+        }
+    }
+    at[nodes] = @intCast(live.items.len);
+    return .{
+        .gpa = gpa,
+        .live = try live.toOwnedSlice(gpa),
+        .at = at,
+        .read = read,
+        .root_reads = root_reads,
+    };
+}
 
 /// The expansion frontier, `dfa/powerset.zig`'s `Worklist` over product ids:
 /// dense ids handed out in order, so one bool per interned state replaces a map.
@@ -221,8 +318,22 @@ const Frontier = struct {
 };
 
 /// Statistics the measurement harnesses read: how much the two determinizations
-/// actually cost on the same pattern.
-pub const Stats = struct { visits: u64 = 0, minterms: u16 = 0, pruned: u16 = 0, nodes: u32 = 0, pat_states: u32 = 0, product_states: u32 = 0 };
+/// actually cost on the same pattern, and — since the gate below is the reason
+/// some patterns get an eager table and some do not — what the two readings of
+/// the pair space said. `bound` is the free upper bound, `pairs` the horizon's
+/// exact count; both are filled even on the path that declines, so a decline is
+/// attributable to a number rather than to a shrug.
+pub const Stats = struct {
+    visits: u64 = 0,
+    minterms: u16 = 0,
+    pruned: u16 = 0,
+    nodes: u32 = 0,
+    pat_states: u32 = 0,
+    product_states: u32 = 0,
+    bound: u64 = 0,
+    pairs: u64 = 0,
+    kinds: u32 = 0,
+};
 
 /// Cross the decoder with the determinized codepoint automaton and freeze the
 /// reachable pairs into the byte `Dfa` the ladder already runs.
@@ -239,24 +350,40 @@ pub fn transcribe(
     stats.pat_states = aut.nstates;
     stats.minterms = alpha.count;
 
+    var cls = decoder_mod.classes(&dec);
+
+    // The quotient the walk interns against, and — because it counts each node's
+    // classes rather than assuming every state survives at every node — the exact
+    // size of the table that walk needs.
+    var hor = try horizon_mod.build(gpa, &dec, aut);
+    defer hor.deinit();
+    stats.bound = pairBound(dec.count(), aut);
+    stats.pairs = hor.pairs;
+    stats.kinds = hor.kinds;
+
     // Start the walk only when it can finish. `intern` enforces `max_states` a
     // pair at a time, which is the right guard but the wrong moment: a product
     // whose pair space is already past the cap spends the whole walk to learn
     // that, and every one of those pairs is thrown away. `pgxpool\.\w+` paid
-    // 5.3 ms interning 5372 pairs against a 4096 ceiling. The bound above is
-    // free and, on the patterns that hit this, exact.
+    // 5.3 ms interning 5372 pairs against a 4096 ceiling.
     //
-    // No semantic content: declining hands the pattern to `dfa/powerset.zig` and
-    // then to `dfa/lazy.zig`, which is where every pair-space this size already
-    // ended up — the only change is the bill for finding out.
-    if (pairBound(dec.count(), aut) >= max_states) return Decline.TooLarge;
+    // Reading `pairs` here rather than the rectangle is the whole reason the
+    // horizon is built BEFORE the gate instead of after it: `pgxpool\.\w+`'s
+    // rectangle is 316 × 17 = 5372 and its real pair space is 332, so a pattern
+    // that used to buy the byte powerset and then the lazy DFA now holds an eager
+    // table. That is a change of tier, not of answer — and it is why this path
+    // owes the differentials it now has.
+    //
+    // Declining still has no semantic content: it hands the pattern to
+    // `dfa/powerset.zig` and then to `dfa/lazy.zig`, which is where every
+    // pair-space genuinely this size already ended up.
+    if (@min(stats.bound, stats.pairs) >= max_states) return Decline.TooLarge;
 
-    var cls = decoder_mod.classes(&dec);
-
-    var hor = try horizon_mod.build(gpa, &dec, aut);
-    defer hor.deinit();
-
-    const seen = try gpa.alloc(u32, @as(usize, dec.count()) * aut.nstates);
+    // Sized by the gate above and not by hope: a node contributes at most `pats`
+    // classes, so `pairs ≤ nodes × pats`, which is `bound` plus at most
+    // `nodes − 1` under the anchored refinement. Past a gate on the minimum both
+    // are therefore under `max_states + max_nodes` — 32 KiB, worst case.
+    const seen = try gpa.alloc(u32, @intCast(hor.pairs));
     @memset(seen, none);
     var p = Product{ .gpa = gpa, .dec = &dec, .aut = aut, .hor = &hor, .ncls = cls.ncls, .seen = seen };
     defer p.deinit();
@@ -271,20 +398,79 @@ pub fn transcribe(
     const start_id = (try p.intern(.{ .node = dec.root, .pat = aut.start })).id;
     try work.push(&p, start_id);
 
+    // The resync rows, interned before the walk so the walk can copy them. Two
+    // of them: a non-root node re-reads the byte from the root, the root consumes
+    // it in place — and neither reads the pattern state it came from.
+    //
+    // An unsatisfiable anchored program is the one shape where a node can go
+    // unreached (`canonNode` folds every landing onto the root), so it keeps the
+    // column-at-a-time path; there is nothing to save on a one-state product.
+    const reachable = aut.start != aut.dead;
+    var resync_in: []u32 = &.{};
+    var resync_fin: []u32 = &.{};
+    var root_in: u32 = unknown;
+    var root_fin: u32 = unknown;
+    var span: ?Edges = if (reachable) try scanEdges(gpa, &dec, &cls) else null;
+    defer if (span) |*e| e.deinit();
+    if (span) |e| {
+        resync_in = try gpa.alloc(u32, cls.ncls);
+        resync_fin = try gpa.alloc(u32, cls.ncls);
+        @memset(resync_in, unknown);
+        @memset(resync_fin, unknown);
+        for (e.read, 0..) |wanted, k| {
+            if (!wanted) continue;
+            const b = cls.rep[k];
+            const in = try p.intern(p.resyncByte(b, false));
+            resync_in[k] = in.id;
+            try work.push(&p, in.id);
+            resync_fin[k] = (try p.intern(p.resyncByte(b, true))).id;
+        }
+        if (e.root_reads) {
+            const in = try p.intern(.{ .node = dec.root, .pat = aut.reseed });
+            root_in = in.id;
+            try work.push(&p, in.id);
+            root_fin = (try p.intern(.{ .node = dec.root, .pat = aut.fin_reseed })).id;
+        }
+    }
+    defer gpa.free(resync_in);
+    defer gpa.free(resync_fin);
+
     var cur: usize = 0;
     while (cur < work.items.items.len) : (cur += 1) {
         const id = work.items.items[cur];
         const from = Landing{ .node = @intCast(p.keys.items[id] >> 32), .pat = @truncate(p.keys.items[id]) };
+        const row = @as(usize, id) * cls.ncls;
+        if (span) |e| {
+            // Lay the resync row down first, then overwrite the live columns.
+            // A column left `unknown` here is one no node resyncs on, so the
+            // loop below is about to write it.
+            if (from.node == dec.root) {
+                @memset(p.trans_in.items[row..][0..cls.ncls], root_in);
+                @memset(p.trans_fin.items[row..][0..cls.ncls], root_fin);
+            } else {
+                @memcpy(p.trans_in.items[row..][0..cls.ncls], resync_in);
+                @memcpy(p.trans_fin.items[row..][0..cls.ncls], resync_fin);
+            }
+            for (e.live[e.at[from.node]..e.at[from.node + 1]]) |k| {
+                const rep = cls.rep[k];
+                const in = try p.intern(p.stepByte(from, rep, false));
+                p.trans_in.items[row + k] = in.id;
+                try work.push(&p, in.id);
+                // The final table's targets are terminal — the line ends right
+                // after — so they are interned for `is_match` but never expanded.
+                const fin = try p.intern(p.stepByte(from, rep, true));
+                p.trans_fin.items[row + k] = fin.id;
+            }
+            continue;
+        }
         var k: u16 = 0;
         while (k < cls.ncls) : (k += 1) {
             const rep = cls.rep[k];
             const in = try p.intern(p.stepByte(from, rep, false));
-            p.trans_in.items[@as(usize, id) * cls.ncls + k] = in.id;
+            p.trans_in.items[row + k] = in.id;
             try work.push(&p, in.id);
-            // The final table's targets are terminal — the line ends right
-            // after — so they are interned for `is_match` but never expanded.
             const fin = try p.intern(p.stepByte(from, rep, true));
-            p.trans_fin.items[@as(usize, id) * cls.ncls + k] = fin.id;
+            p.trans_fin.items[row + k] = fin.id;
         }
     }
 
@@ -292,7 +478,9 @@ pub fn transcribe(
     // state whose pattern half is dead (all decoder phases collapsed into it).
     var dead: u32 = unknown;
     if (aut.reseed == aut.dead and aut.dead != std.math.maxInt(u32)) {
-        const slot = @as(usize, dec.root) * aut.nstates + aut.dead;
+        // The root's quotient is the identity, so this reaches the same slot
+        // `canonNode` sent every `(node, dead)` pair to.
+        const slot = hor.slot(dec.root, aut.dead);
         if (p.seen[slot] != none) dead = p.seen[slot];
     }
 
@@ -303,13 +491,11 @@ pub fn transcribe(
     stats.product_states = raw;
     const map = try gpa.alloc(u32, raw);
     defer gpa.free(map);
-    // The product is never word-context — that road declines before it gets
-    // here — so the reduction cannot decline either.
-    const ext = (try reduce.run(gpa, &cls, .{
+    const ext = try reduce.run(gpa, &cls, .{
         .interior = &p.trans_in,
         .final = &p.trans_fin,
         .is_match = p.is_match.items,
-    }, raw, map, .both)).?;
+    }, raw, map, .both);
     const start = map[start_id];
     if (dead != unknown) dead = map[dead];
     p.is_match.shrinkRetainingCapacity(ext.nstates);

@@ -2995,7 +2995,6 @@ fn priceReduce(gpa: std.mem.Allocator, io: anytype, d: anytype, plan: reduce.Pla
         const sp = Span.open(io);
         const e = try reduce.run(gpa, &u.cls, u.tables(), u.nstates, u.map, plan);
         const ns = sp.read(io).ns();
-        if (e == null) return null;
         if (ns < best) {
             best = ns;
             ext = e;
