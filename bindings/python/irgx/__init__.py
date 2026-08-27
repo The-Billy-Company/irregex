@@ -184,6 +184,30 @@ def _cached(pattern: str | bytes, flags: int) -> Pattern:
     return Pattern(pattern, flags)
 
 
+def _compiled(pattern: str | bytes, flags: int) -> Pattern:
+    """The :class:`Pattern` for this source and these flags, compiled once.
+
+    A compile costs ~200us here against ~0.1us for a hit off this cache, which
+    is not a micro-optimization but the difference between a loop that recompiles
+    per iteration being free and being unusable. :mod:`re` caches for the same
+    reason, so a port that lifts ``re.compile(p).search(s)`` verbatim into a loop
+    - the single most common shape there is - must not fall off a cliff here.
+    Sharing one :class:`Pattern` between callers is what the object was built
+    for: it holds a :class:`irgx._pool.Pool` of per-thread handles precisely so
+    that the handle's single-threaded contract survives being shared.
+
+    ``TEXTUAL`` admits ``bytearray``, which has no hash and so cannot key a
+    cache. That is a pattern to compile uncached, not a pattern to refuse - the
+    class accepts one, and the module-level verbs used to raise ``TypeError``
+    from this cache for a pattern :func:`compile` took happily.
+    """
+    try:
+        hash(pattern)
+    except TypeError:
+        return Pattern(pattern, flags)
+    return _cached(pattern, flags)
+
+
 def compile(  # noqa: A001 - shadows the builtin exactly as `re.compile` does
     pattern: str | bytes,
     *,
@@ -226,7 +250,7 @@ def compile(  # noqa: A001 - shadows the builtin exactly as `re.compile` does
     :raises error: if the pattern is malformed. The exception's ``pos`` says
         where.
     """
-    return Pattern(
+    return _compiled(
         pattern,
         flag_bits(
             fixed=fixed,
@@ -257,11 +281,11 @@ def _prepared(pattern: str | bytes | Pattern, flags: _Flags) -> Pattern:
         return pattern
     # An unknown keyword raises TypeError out of `flag_bits`, so a typo like
     # `ignorecase=True` fails loudly instead of silently matching case.
-    return _cached(pattern, flag_bits(**flags))
+    return _compiled(pattern, flag_bits(**flags))
 
 
 def purge() -> None:
-    """Drop the module-level pattern cache."""
+    """Drop the pattern cache that :func:`compile` and the module-level verbs share."""
     _cached.cache_clear()
 
 

@@ -453,3 +453,40 @@ def test_the_pattern_can_still_carry_its_own_anchors():
     assert irgx.search(r"\A\w+\z", "abc def") is None
     with pytest.raises(irgx.error):
         irgx.compile(r"\Z")
+
+
+def test_compile_is_cached_the_way_re_compile_is():
+    # `re.compile` returns the same object for the same source, which is why
+    # `re.compile(p).search(s)` inside a loop is free there. A compile costs
+    # ~200us in this engine against ~0.1us for a hit, so a port that lifts that
+    # shape verbatim - the single most common shape in `re` code - falls off a
+    # cliff without this. The assertion is on identity rather than on timing,
+    # because identity is the property that makes the timing true.
+    irgx.purge()
+    assert irgx.compile(r"\w+") is irgx.compile(r"\w+")
+    assert re.compile(r"\w+") is re.compile(r"\w+")
+    # The module-level verbs share the one cache, so reaching either way for the
+    # same pattern reaches the same compiled object.
+    assert irgx.compile(r"\d+") is irgx._compiled(r"\d+", 0)
+    # Flags are part of the identity: two patterns spelled the same but compiled
+    # differently must not collapse onto one entry.
+    assert irgx.compile("cat") is not irgx.compile("cat", ignore_case=True)
+    # And a bytes pattern is not its str twin, which share a spelling and nothing else.
+    assert irgx.compile(rb"\w+") is not irgx.compile(r"\w+")
+    # `purge` drops it, so the next ask compiles afresh rather than being served
+    # something the caller asked to forget.
+    held = irgx.compile(r"\s+")
+    irgx.purge()
+    assert irgx.compile(r"\s+") is not held
+
+
+def test_an_unhashable_pattern_compiles_uncached():
+    # `bytearray` is a buffer the pattern plane accepts and a cache key it
+    # cannot be. The answer is to compile it without caching, not to refuse it:
+    # the module-level verbs used to raise `TypeError: unhashable type` out of
+    # the cache for a pattern `compile` took happily.
+    assert irgx.findall(bytearray(rb"a+"), b"caaat") == [b"aaa"]
+    assert irgx.compile(bytearray(rb"a+")).findall(b"caaat") == [b"aaa"]
+    # A memoryview over read-only bytes hashes, so it goes through the cache and
+    # is not a special case at all.
+    assert irgx.findall(memoryview(rb"a+"), b"caaat") == [b"aaa"]

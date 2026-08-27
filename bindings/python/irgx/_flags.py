@@ -19,7 +19,20 @@ so nothing here reuses them.
 
 from __future__ import annotations
 
-from . import _abi
+# Bound as names here rather than reached for as `_abi.FIXED` per bit. Both
+# builders are on the compile path — `irgx.compile` calls one on every call,
+# cache hit or not — and eight module-attribute walks per call was the largest
+# single cost in a cached compile, above the cache lookup it feeds.
+from ._abi import (
+    DOTALL,
+    FIXED,
+    IGNORE_CASE,
+    MULTILINE,
+    NO_UNICODE,
+    PCRE,
+    SMART_CASE,
+    WORD,
+)
 
 #: ``IRGX_MAX_COUNT`` — the tree request's per-file ceiling is PRESENT.
 #:
@@ -51,14 +64,14 @@ def flag_bits(
     and defaulting off exactly as they do there.
     """
     return (
-        (_abi.FIXED if fixed else 0)
-        | (_abi.IGNORE_CASE if ignore_case else 0)
-        | (_abi.WORD if word else 0)
-        | (_abi.SMART_CASE if smart_case else 0)
-        | (0 if unicode else _abi.NO_UNICODE)
-        | (_abi.MULTILINE if multiline else 0)
-        | (_abi.DOTALL if dotall else 0)
-        | (_abi.PCRE if pcre else 0)
+        (FIXED if fixed else 0)
+        | (IGNORE_CASE if ignore_case else 0)
+        | (WORD if word else 0)
+        | (SMART_CASE if smart_case else 0)
+        | (0 if unicode else NO_UNICODE)
+        | (MULTILINE if multiline else 0)
+        | (DOTALL if dotall else 0)
+        | (PCRE if pcre else 0)
     )
 
 
@@ -80,11 +93,11 @@ def search_bits(
     is derived there rather than being a keyword a host has to remember to pair.
     """
     return (
-        (_abi.FIXED if fixed else 0)
-        | (_abi.IGNORE_CASE if ignore_case else 0)
-        | (_abi.SMART_CASE if smart_case else 0)
-        | (_abi.WORD if word else 0)
-        | (0 if unicode else _abi.NO_UNICODE)
+        (FIXED if fixed else 0)
+        | (IGNORE_CASE if ignore_case else 0)
+        | (SMART_CASE if smart_case else 0)
+        | (WORD if word else 0)
+        | (0 if unicode else NO_UNICODE)
         | (INVERT if invert else 0)
         | (MAX_COUNT if capped else 0)
     )
