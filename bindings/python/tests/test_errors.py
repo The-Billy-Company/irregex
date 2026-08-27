@@ -12,6 +12,7 @@ import ctypes
 import gc
 import importlib.machinery
 import pathlib
+import re
 import subprocess
 import sys
 import sysconfig
@@ -87,6 +88,40 @@ def test_error_is_catchable_the_way_re_error_is():
         pass
     else:
         pytest.fail("a broken pattern compiled")
+
+
+def test_an_existing_re_error_handler_keeps_catching():
+    # The name alone only ports the `except` clause a caller *edits*. A caller
+    # who changes the import and leaves `except re.error` standing - the whole
+    # point of the naming - would have had that handler silently stop catching
+    # if this were a sibling class rather than a subclass.
+    assert issubclass(irgx.error, re.error)
+    with pytest.raises(re.error):
+        irgx.compile("[abc")
+
+
+def test_a_located_refusal_reports_line_and_column_like_re():
+    # `re.error` promises lineno/colno beside pos, so anything that formats a
+    # refusal from those - the shape a config-file loader reports in - works
+    # against either module.
+    with pytest.raises(irgx.error) as caught:
+        irgx.compile("aa\n[abc")
+    err = caught.value
+    # The class runs to the end of the pattern without closing, so the position
+    # is one past the last byte - on the second line, five columns in.
+    assert (err.pos, err.lineno, err.colno) == (7, 2, 5)
+    # And the message is still exactly `msg`: `re.error` splices "at position N"
+    # into what it hands `Exception` when it is given a position, which would
+    # make `str(err)` stop being the sentence this engine wrote.
+    assert str(err) == err.msg
+
+
+def test_a_grammar_refusal_has_no_position_and_says_so():
+    # Nothing is wrong anywhere in a pattern the linear tier merely declines, so
+    # there is no line or column to point at either.
+    with pytest.raises(irgx.UnsupportedPattern) as caught:
+        irgx.compile(r"(?=foo)")
+    assert (caught.value.pos, caught.value.lineno, caught.value.colno) == (None, None, None)
 
 
 def test_lookaround_is_refused_by_name_until_pcre_is_asked_for():

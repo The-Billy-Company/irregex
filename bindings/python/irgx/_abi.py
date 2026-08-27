@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import ctypes
 import os
+import re as _re
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -82,12 +83,42 @@ MULTILINE = 1 << 9
 DOTALL = 1 << 10
 
 
-class error(Exception):  # noqa: N801 - named to match `re.error` so `except` clauses port
+def _locate(pattern: str | bytes | None, pos: int | None) -> tuple[int, int] | tuple[None, None]:
+    """``pos`` as a 1-based (line, column) in ``pattern``, the way ``re`` reads it.
+
+    Both ``None`` when there is nothing to point at, which is the common case:
+    a pattern refused for its grammar rather than its spelling is not wrong
+    anywhere. A ``bytearray`` or ``memoryview`` pattern is counted through the
+    ``bytes`` its own newline lives in.
+    """
+    if pattern is None or pos is None:
+        return None, None
+    text: str | bytes = pattern if isinstance(pattern, (str, bytes)) else bytes(pattern)
+    newline = "\n" if isinstance(text, str) else b"\n"
+    return text.count(newline, 0, pos) + 1, pos - text.rfind(newline, 0, pos)
+
+
+class error(_re.error):  # noqa: N801 - named to match `re.error` so `except` clauses port
     """A pattern the engine will not compile, or a call it could not complete.
 
     Named ``error`` rather than ``IrregexError`` so that code written against
-    ``re.error`` ports by changing the import alone, and carrying the same three
-    attributes for the same reason:
+    ``re.error`` ports by changing the import alone - and *derived* from
+    ``re.error`` for the half of that promise the name alone cannot keep. A
+    library that already writes ``except re.error`` around a compile is the
+    exact caller most likely to change one import, and a sibling class would
+    have made that handler silently stop catching: no error at the import, no
+    error at the call, just an exception that now escapes a handler written for
+    it. Subclassing costs nothing here, because ``re.error`` carries the same
+    three attributes this class already carried.
+
+    The parent is initialised without the position, deliberately. Given one,
+    ``re.error`` appends "at position N" to the message it passes up to
+    ``Exception``, so ``str(err)`` would stop being :attr:`msg`. The position is
+    reported through :attr:`pos` - and through :attr:`lineno` / :attr:`colno`,
+    which ``re.error`` promises and which are derived here the way it derives
+    them.
+
+    Carrying the same attributes for the same reason:
 
     :ivar msg: the reason on its own, without the surrounding sentence.
     :ivar pattern: the pattern as the caller spelled it, or ``None`` when the
@@ -100,6 +131,10 @@ class error(Exception):  # noqa: N801 - named to match `re.error` so `except` cl
         ``None`` for a lone pattern. With two hundred patterns, "one of them is
         unsupported" is not something a caller can act on, so the position in
         the list travels with the reason.
+    :ivar lineno: the 1-based line of ``pattern`` that :attr:`pos` falls on, or
+        ``None`` when there is no position. Only interesting for a verbose
+        pattern spanning lines, but ``re.error`` defines it, so it is defined.
+    :ivar colno: the 1-based column of :attr:`pos` within that line, or ``None``.
     """
 
     def __init__(
@@ -109,11 +144,14 @@ class error(Exception):  # noqa: N801 - named to match `re.error` so `except` cl
         pos: int | None = None,
         index: int | None = None,
     ) -> None:
+        # Positionless on purpose - see the class docstring. This sets msg to the
+        # sentence and everything else to None; the real values follow.
         super().__init__(msg)
         self.msg = msg
         self.pattern = pattern
         self.pos = pos
         self.index = index
+        self.lineno, self.colno = _locate(pattern, pos)
 
 
 class UnsupportedPattern(error):
