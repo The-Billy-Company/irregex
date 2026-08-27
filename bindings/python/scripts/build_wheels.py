@@ -262,13 +262,56 @@ def main() -> int:
             failures.append((target.name, str(exc)))
 
     print("\n=== wheels ===")
-    for wheel in sorted(outdir.glob("*.whl")):
+    minted = sorted(outdir.glob("*.whl"))
+    for wheel in minted:
         print(f"  {wheel.name}")
     if failures:
         print("\n=== failed targets ===")
         for name, why in failures:
             print(f"  {name}: {why}")
+    if bad := accel_shortfall(minted, here, args.only):
+        print(f"\n=== refusing this matrix ===\n  {bad}", file=sys.stderr)
+        return 1
     return 1 if failures else 0
+
+
+def accel_shortfall(minted: list[Path], here: Target | None, only: list[str] | None) -> str | None:
+    """Why this matrix must not be published, or ``None`` if it may be.
+
+    A matrix of nothing but ``py3-none`` wheels is the one bad release this
+    script can produce while exiting 0, and it has: 2.0.0 and 2.1.x went out
+    portable-only, so every ``pip install`` got ctypes. That path is *correct* -
+    same answers, same exit codes - so nothing downstream breaks and nobody
+    notices, while it pays ~1.7us of argument marshaling per call and forfeits
+    the literal prefilter. Measured on one consumer's real workload it turned a
+    1.2x win over stdlib ``re`` into an 11x loss. A silent 13x is not a
+    packaging detail, so this refuses rather than reports.
+
+    Two ways to get there, both quiet. The host may not be in the matrix at all,
+    in which case ``target is here`` never fires and no accelerated wheel is even
+    attempted. Or its build may fail while the portable wheel beside it succeeds,
+    which lands in ``failures`` as one target among many rather than as the thing
+    that gutted the release.
+
+    A deliberately narrow ``--only`` is not a release and is left alone; the
+    check is about what a full matrix promises.
+    """
+    if only or not minted:
+        return None
+    if any("-abi3-" in wheel.name for wheel in minted):
+        return None
+    if here is None:
+        return (
+            f"no accelerated wheel: this host ({sys.platform}/{platform.machine()}) is not in "
+            f"the matrix, so none was attempted. Build the accelerated half on a host that is "
+            f"({', '.join(t.name for t in MATRIX)}), or publish from one."
+        )
+    return (
+        f"no accelerated wheel: the {here.name} build produced only a portable py3-none wheel. "
+        f"Run `python3 scripts/build_accel.py` and read its error - the accelerator needs this "
+        f"interpreter's own headers, so a missing compiler or Python-dev package is the usual "
+        f"cause. Publishing without it silently downgrades every consumer to ctypes."
+    )
 
 
 if __name__ == "__main__":
