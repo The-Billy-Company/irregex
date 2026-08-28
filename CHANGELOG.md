@@ -5,6 +5,463 @@ All notable changes to the `irregex` kernel (formerly `gist`; the gist CLI is it
 
 <!-- towncrier release notes start -->
 
+## [2.2.1] - 2026-08-28
+
+### Added
+
+- - `Match.lastindex` and `Match.lastgroup` exist now, on both the pure-Python
+    match and the accelerated C one.
+
+    They exist above all for the dispatch idiom — an alternation of named groups
+    where exactly one participates and the name says which branch fired
+    (`(?P<import>…)|(?P<call>…)` and read `m.lastgroup`). The engine keeps spans,
+    not an execution-order mark, so `lastindex` derives from them: the matched
+    group whose span ends last, ties to the outermost. That reproduces every case
+    `re` documents — `(a)b`, `((a)(b))`, `((ab))` give 1 on `'ab'`, `(a)(b)`
+    gives 2 — with one honest corner: a capture inside a lookaround that outruns
+    every later group is where `re`'s mark ordering could answer differently.
+
+### Changed
+
+- - A buffer-anchored miss is decided at byte 0 now, not after sweeping the whole
+    document.
+
+    `^…` and `\A…` outside `(?m)` can only ever match at the first byte, and the
+    span walk was refusing to know that: it ran the literal gate over the entire
+    buffer looking for a needle the engine could not use past position 0, then
+    re-seeded a fresh thread at every byte — each seed dying at its own `^`
+    without matching anything — so an anchored pattern that failed fast under
+    `re` cost the full document here. Four cuts, all keyed off one
+    `anchored and !line_anchors` bit the analysis already computes: a window
+    starting past byte 0 answers null before it starts, the whole-buffer gate and
+    caliper sweeps are skipped (the single attempt is cheaper than either), the
+    per-byte re-seed never runs, and the walk returns the moment its thread list
+    dies rather than idling to the end of the buffer.
+
+    `\A` also reads as anchored in the analysis now — it is strictly stronger
+    than `^` (a buffer start is always a line start), so everything the flag
+    licenses holds a fortiori, and it was sitting in the not-an-anchor bucket in
+    both the AST facts and `startsAnchored`. Frontmatter probes
+    (`\A---\r?\n…`) went from tens of milliseconds per file to microseconds.
+- - A counted repetition desugars nested now — `a{2,5}` becomes
+    `aa(?:a(?:a(?:a)?)?)?`, RE2's shape — instead of the flat `aaa?a?a?` chain it
+    used to lower to.
+
+    The flat chain is the textbook desugar and it is wrong for every engine this
+    package runs. Each optional copy is its own fork, so "matched one `a`" is
+    reachable along many ε-orderings — take-the-first, take-the-second, and so on
+    — and every arm pays for that ambiguity in its own currency: the capture VM
+    carries each ordering as a distinct thread (quadratic in the bound), the
+    one-pass table sees two live paths on the same byte and refuses the pattern
+    outright, and the powerset construction mints subset states for distinctions
+    no answer can observe. Nested, each count has exactly one path. Same language,
+    same leftmost-first spans, and `[^:]{0,255}` — the shape every file:line
+    parser writes — stops disqualifying the fast arms it should have been running
+    on.
+
+    The Parabix gate's peephole knew the flat chain by sight, so it learned the
+    nested one: `optionalRun` unrolls the tail back into the `opt(k)` run the term
+    fuser folds, and refuses the moment two levels repeat different classes,
+    because `(?:A(?:B)?)?` does not admit the lone `B` that flat `A?B?` does.
+- - The lazy DFA's cache floor is 1 MiB now, up from 256 KiB.
+
+    A counted repetition like `[^:]{0,255}` mints ~256 live NFA states whose
+    powerset states cost ~1 KiB each, so the old floor could not hold the working
+    set: the cache filled, reset, refilled, and the walk got demoted to the Pike
+    arm — 3× slower on exactly the shape that needed the DFA most. The budget is
+    consumed lazily (states are built on demand), so a pattern that never
+    explodes never pays a byte of it; the 4 MiB program-proportional cap is
+    unchanged, and rust-regex's hybrid default sits higher still.
+- - The symbolic path's product walk builds the minimal automaton directly now,
+    instead of building three times too much and asking `reduce` to throw the rest
+    away.
+
+    What was wrong: `transcribe` crosses the UTF-8 decoder with the codepoint
+    automaton and interns every reachable `(node, pattern state)`. `pairBound` said
+    those two factors were independent and measured itself exact on 33 patterns,
+    which was true and beside the point. Mid-codepoint the pattern is not running -
+    a continuation byte carries its state through untouched - so the only thing a
+    node can ever do with that state is hand it to the transition table once a
+    codepoint completes, and only for the minterms whose leaves are still reachable
+    below it. Deep in the trie for Unicode `\w` that set is a single minterm, so
+    every pattern state agreeing on that one column is, from there, the same state.
+    `reduce` was already finding exactly this, afterwards, by hashing a
+    `1 + 2*ncls` signature per state per pass over a table three times bigger than
+    the answer.
+
+    So `linear/symbolic/horizon.zig` reads the set off the two factors before a
+    pair is interned. One ascending sweep of the decoder DAG folds each node's
+    reachable minterms bottom-up (nodes are interned children-first, so one pass is
+    a fixpoint), then one signature pass per node groups the pattern's states
+    against that horizon. `intern` substitutes a state's representative. The root
+    is held apart on purpose: a codepoint boundary has just passed there, its
+    horizon is every decoded minterm, and it is the one node where `is_match` is
+    read at all.
+
+    It is a congruence, not an approximation, and the census says so rather than me
+    saying so - raw pairs now equal the finished state count on every row:
+
+    | pattern | raw pairs | now | table |
+    |---|---|---|---|
+    | `\w+X` | 948 | 318 | 318x97, unchanged |
+    | `\w{3,8}` | 1264 | 949 | 949x96, unchanged |
+    | `\p{L}+;` | 894 | 300 | 300x96, unchanged |
+    | `é+X` | 6 | 4 | 4x4, unchanged |
+
+    The counts fall out of the two factors, which is the part I like: `\w+X` is 316
+    decoder nodes x 3 states, and 3 at the root plus 315 elsewhere is 318.
+    `\w{3,8}`'s counter keeps three of its four states apart under a one-minterm
+    horizon, so 4 + 315x3 = 949. Both exact.
+
+    Compile, ReleaseFast, min-of-21, one process, against `re` on 3.12:
+
+    - `(\w+)=(\d+)` 2551 -> 1782 us, so 218x `re` -> 128x
+    - `(\w+) (\w+) (\w+)` 4541 -> 3263 us, 296x -> 205x
+    - `\w+X` 1955 -> 1151 us; `\w+\d+` 2033 -> 1357; `\w+X\w+` 2947 -> 2025
+    - `X\w+` 1895 -> 1515 us; `\d+X` 547 -> 499
+
+    Scan does not move, and not because I checked a stopwatch - the frozen table is
+    byte-identical, which is what the census rows above are asserting.
+
+    Two things did not move, with the reason instead of a shrug, and one of those
+    reasons was wrong when I first wrote it down. `\b\w+@\w+\.\w+\b` (2829 -> 2787)
+    never reaches this path at all: `\b` is a second determinization axis the
+    codepoint alphabet cannot express, so the program goes to the byte powerset,
+    and there is no product for a horizon to quotient. `\s*(\S+)\s*:\s*(\S+)`
+    (1448 -> 1431) is not a word-context program - it has no `\b` in it - and it
+    does take this path and does reduce, 47 pairs to 40. It did not move because
+    its product is not where its time goes: every stage this change touches is 3%
+    of that compile and the other 97% is the analyses, which is the next thing the
+    lowering rung has to attribute rather than anything I can claim here.
+
+    The rest of the bill, since I measured it properly this time instead of
+    guessing: compile is about 0.27 us per codepoint range per class OCCURRENCE,
+    and `lowerUtf8` rebuilds that trie for each one. `\s` is 10 ranges, `\d` 71,
+    `\w` 796; `(\w)(\w)(\w)(\w)` is 963 us and dead linear in the count. On top of
+    that, needing a real DFA at all costs roughly another 9x - `\w+` is a pure
+    class run at 232 us because the SIMD kernel answers it and nothing
+    determinizes, and one adjacent literal makes it `\w+X`. `[a-z]+X` pays none of
+    it at 8.9 us. Repetition itself is free: `(\w+)` and `(\w)` are the same 236 us.
+
+    `pairBound` is no longer exact and its comment now says which of its two claims
+    broke. The horizon's own `pairs` is the exact figure, and using it as the gate
+    is a separate rung - it would let patterns that currently decline to the
+    on-demand tier hold an eager table instead, which is a scan change and wants
+    its own differentials.
+
+    One thing I tried and reverted: merging identical table columns before the row
+    refinement rather than after. `reduce`'s own header predicts it cannot help,
+    because column merging never creates a row merge, and the stopwatch agreed -
+    2551 -> 2696 us and 4541 -> 4774. The header was right.
+
+  - I built the instrument the fragment above was guessing without, and then spent
+    it. `bench/rungs/lowering/` prices a COMPILE the way every other rung prices a
+    scan: one row per pattern, split into parse, Thompson lowering, the symbolic
+    road's phases, the crossing broken into decoder / horizon / product walk, and a
+    residue labeled honestly as "everything I have not named yet" rather than
+    folded into whichever stage was convenient. Two more sections fit the scaling
+    laws on controlled axes - the same class repeated k times, and classes built to
+    hold an exact chosen number of codepoint ranges - and a fourth prints the pair
+    space the symbolic gate admits on. Before any of it runs, every eligible
+    pattern is compiled down BOTH determinizations and held against each other and
+    against the Pike VM over haystacks laced with malformed UTF-8, because compile
+    time is a number you can always shrink by building something else.
+
+    Three things fell out of it, in the order the rung found them.
+
+    **`lowerUtf8` weaves each class's trie once now, not once per occurrence.** The
+    fragment above costed this at 0.27 us per codepoint range per occurrence and it
+    was right about the shape - the byte compiler rebuilt the whole UTF-8
+    sub-automaton at every `\w`. A `Loom` caches the trie's SHAPE keyed on the
+    class's ranges (its operations in a virtual id space, with one exit), and each
+    further occurrence replays that into fresh state ids. Same NFA, state for
+    state. The cache is cold on the first occurrence and warm after, so one process
+    shows both halves without needing a baseline to compare against: `\w`'s first
+    occurrence weaves in ~61 us and every one after replays in 7-10, `\p{L}` ~49
+    then 7.6-7.9, `\p{Greek}` 3.3 then 0.7. Per NFA state that is ~34 ns to weave
+    against ~4.7 ns to replay - call it 7x, and the range rather than a single
+    figure because a slope fit on a 60 us stage across three runs of this rung
+    moves ~15% on a laptop with other work on it. On the controlled range axis,
+    which is a wider stage and holds still, the replay bills 0.05 us per codepoint
+    range where the weave billed 0.27.
+
+    **The gate reads the horizon's exact `pairs`, not just the free rectangle.**
+    This is the rung the fragment above left for later, and it lands as predicted:
+    `pgxpool\.\w+`'s rectangle is 316 nodes x 17 states = 5372 against a 4096
+    ceiling, its real pair space is 647, and it holds an eager 332-state table now
+    instead of buying a byte powerset and then an on-demand DFA. `const\s+\w+\s*=`
+    is the other one, 4740 -> 677 -> 360 states. The gate takes the MINIMUM of the
+    two readings rather than replacing one with the other, because neither
+    dominates - `pairs` is a per-node class count and is far tighter on anything
+    Unicode, while the rectangle carries the anchored refinement `pairs` cannot,
+    where `reseed == dead` collapses a whole column of the space onto one absorbing
+    pair. Both are upper bounds, so the smaller is one too. That is a change of
+    TIER, not of answer, and it is why the differentials above cover it.
+
+    A tier change is a scan change, so it owes a scan number rather than the
+    assertion that eager beats on-demand. `symbolic = .off` reproduces exactly
+    where those two patterns used to land - it pins the byte powerset, which
+    declines them `too_costly` and drops them on the on-demand tier, same
+    destination the old gate sent them to - so the two roads can be timed against
+    each other in one process. Over a 4 MiB document laced to ARM each pattern's
+    required literal and never complete a match, which is the only shape that
+    actually runs the automaton rather than the prefilter:
+
+    - `pgxpool\.\w+` 340 -> 620 MiB/s, **1.8x**
+    - `const\s+\w+\s*=` 366 -> 619 MiB/s, **1.7x**
+    - `func\s+\w+\(` 357 -> 549 MiB/s as the control, since the old gate already
+      admitted it (3792 clears 4096) and it was eager before this change
+
+    Both haystacks answer 0 hits over every window, which is the point: a document
+    the prefilter can reject reads 30-38 GiB/s and a document that matches early
+    cuts each window short, and neither number is about the table. `\w+X` is
+    95 GiB/s on both roads because the class-run kernel answers it and no DFA is
+    consulted at all.
+
+    Sizing `seen` to `pairs` came along free, since the count was already in hand:
+    the interning table is 658 slots on `func\s+\w+\(` where the rectangle wanted
+    3792, and the `@memset` in front of every walk shrank with it. Horizons are
+    deduplicated by their minterm SET on the way, because a node id never enters a
+    signature - `\w`'s 316-node trie has two or three distinct horizons depending
+    on the pattern, so the signature pass went from `nodes x states` to
+    `horizons x states`.
+
+    **`reduce` handles the word-context axis, so nothing declines for lacking it.**
+    A word-context program carries a third transition table - the interior byte
+    again, under a following word byte - and `reduce` knew about two. `run`, `rows`
+    and `classes` take a slice of axes now, and a `comptime` assert ties that count
+    to `Tables`' own field count, so a fourth table added there is a compile error
+    rather than a dimension quietly merged across without being read. The word axis
+    gets no slack: two states agreeing on every interior byte still differ if the
+    byte after them being a word byte routes them apart, which is the distinction
+    `\b` exists to draw. The line-final axis keeps its existing over-strictness,
+    which is sound and stated where it is taken.
+
+    Then the rung said the walk was not the bill, so I went where it pointed.
+    `reduce` was costing 1.5x to 3x the product walk, mostly to prove that nothing
+    merges. Two fixes, both root-cause:
+
+    - The codepoint automaton was not minimal. A determinizer interns on the NFA
+      state SET, and two different sets routinely accept the same suffixes; every
+      surviving twin then multiplies through all 316 decoder nodes in the product.
+      So `determinize` minimizes itself - a dozen states over a dozen minterms,
+      hundreds of times cheaper than asking the same question of the finished byte
+      table, and it is also what makes the horizon's one-step quotient exact rather
+      than approximate.
+    - `reduce`'s column pass read the table column-major, which is a fresh cache
+      line per element on a row-major table: ~243 K strided touches on
+      `(\w)(\w)(\w)(\w)`, measured at ~700 us of a 900 us reduction, more than the
+      entire walk that built the table. It carries one rolling accumulator per
+      column and streams the table in the order it is laid out now. The fold is a
+      filter and not the verdict - a confirmation sweep runs row-major over the
+      real bytes, and on a 64-bit collision the whole question goes to an
+      exhaustive pairwise pass - so the partition does not depend on the hash.
+
+    The row half is delegated to `math/refine.zig` outright and the duplicate Moore
+    that used to live in `reduce` is gone. I re-measured Moore against `.auto`
+    across the whole slate while I was in there, because the previous choice rested
+    on one 133-state pattern: Moore still wins small (89 states 45 us vs 77, 104
+    states 62 vs 104, 133 states 88 vs 119) and it is a wash large (1265 states 914
+    vs 930, 1897 states 1802 vs 1735). No crossover, so no flip - both engines are
+    bound by streaming the same `states x axes*classes` table, which is also the
+    honest statement of where the next win is. It is the WIDTH of that signature
+    and not the engine: all but a handful of a product row's columns are the shared
+    resync row every state at that node carries, so refining on a node's live edges
+    alone would be a twentyfold narrower table. I did not do it here because it is
+    not the same partition - two nodes with different live sets whose live targets
+    happen to coincide with the resync ones merge today and would stop - and finer
+    is sound but is still a different automaton, so it owes its own differentials.
+
+    The walk itself got the one fix that was free. `stepByte`'s lost-sync tail
+    never reads the pattern state it came from, so every non-root node resyncs to
+    the same landing on the same byte: that row is interned once before the walk
+    and copied per state, and the walk's per-state work drops to the node's live
+    edges - 6 columns instead of 102, with the other 96 becoming a memcpy the table
+    had to pay for anyway. A resync column is only interned if some node actually
+    resyncs on it, which is what keeps this from inventing states, so the product's
+    state count is unchanged rather than merely similar.
+
+    And the byte road's own number is on the record now, because the rung kept
+    reporting a 207 ms compile for `\b\w+@\w+\.\w+\b` with 207 ms of it
+    unattributed. It is the byte powerset, and it is unbudgeted on purpose: the
+    rung asks for `force_dfa` (it exists to price a determinization, so it must not
+    measure a pattern skipping one) and `force_dfa` waives the visit budget. 154.5
+    million NFA-state visits in 208 ms is 1.35 ns a visit - so the 750 K budget is
+    calibrated correctly after all, and a caller who did not demand a DFA gets a
+    `too_costly` decline in 1.3 ms and the Pike VM. The rung prints the unbudgeted
+    clock and the budgeted verdict side by side, because reading one as the other is
+    exactly the mistake I made for an afternoon.
+- - `Match` is a C type in the accelerator now, which was the rung 2.2.0 wrote
+    down and left for later.
+
+    The shape: a base type in `_accel` holding the pattern, the subject, the span
+    and the capture pass's answer, with the cold half of the API (`groupdict`,
+    `expand`, the named-group and wide-subject arms) still the Python methods,
+    grafted onto it rather than forked away from it. There is one `Match` class,
+    not two. Every rule the Python arm stated is still stated there and only
+    there: what a refusing capture engine means, how an out-of-range group is
+    phrased, `None` vs `(-1, -1)` vs `-1` for a group nobody entered, and
+    byte-to-character translation on a non-ASCII `str`. The C side answers only
+    what it can prove is a slice of something it already holds, and declines the
+    rest by name.
+
+    Three fusions came with it. `sought` answers an unbounded `search` in one
+    crossing instead of two, since `find_first` was minting a span tuple only for
+    the constructor to take it apart again. `spliced` and `pieces` answer a whole
+    `sub` with a constant replacement, and a whole groupless `split`, on the C
+    side of the boundary. And the capture pass is resolved and held in C now,
+    calling the Python rule directly with the text it already has instead of
+    reaching it through a `TextView` it was building for no other reason;
+    `Pattern._captures_at` takes that text rather than the view, which is all it
+    ever read out of one.
+
+    Measured on 3.12, min-of-11, interleaved against `re` in one process:
+
+    - `m.group(1)` on a match that already resolved its groups: 302 ns -> 63 ns,
+      against `re`'s 33 ns. `span`, `start` and `end` on a real group moved the
+      same way; they were all going out to Python for a span the match was
+      already holding.
+    - `search(...).groups()`: 892 ns -> 658 ns, against `re`'s 154 ns.
+    - `split` on a 59-byte line is 1.9x `re`, `sub` over 1 KiB is 2.8x, a 17 KiB
+      miss is 6.3x, and `findall` holds 1.5-1.7x across line, 1 KiB and 17 KiB.
+
+    What did not move, with the arithmetic instead of a verdict:
+
+    - `search` / `match` / `is_match` answering a literal in a short line sit at
+      0.41-0.42x. The seam call alone is 67-69 ns there and `re`'s entire answer
+      is 59-68 ns, so that row is lost below the bindings and no Python layer
+      above it wins it back. The 73-134 ns above the seam is the `Pattern`
+      method, which is the next rung; it narrows the gap and does not flip it.
+    - `group` is 0.23x because the engine's capture pass costs 217 ns on its own,
+      where `re` does the search and the captures together in 154. That is an
+      engine question and this change does not touch it.
+    - `compile` on a Unicode pattern is still 2.6 ms against `re`'s 12 us. I went
+      looking this round instead of guessing: the cost is the symbolic path's
+      product walk in `transcribe` plus `reduce`, roughly 14 ns a cell, and not
+      the decoder weave I would have bet on. Pre-sizing the walk's buffers
+      changed nothing measurable, so I reverted it. Located here, and cut to
+      1.8 ms by the product horizon further down this release.
+
+    Both transports agree throughout, which is the point of having two: 3114
+    `Match` answers over 12 patterns, 2 domains and 4 doors, with zero
+    divergences native-vs-ctypes and zero against `re`; 16128 `sub`/`split`
+    answers likewise.
+
+### Fixed
+
+- - Asking a bounded match for its groups no longer refuses. `search(text, pos,
+    endpos)` ran against a cut of the subject, but group spans are filled in
+    lazily on the first request, and that second pass was handed the whole
+    subject. So a greedy group ran past `endpos` and reported a wider whole-match
+    than the search had found, the two arms disagreed, and the caller met an
+    `irgx.error` about internal disagreement for a match that was perfectly fine.
+
+    The view now records the text it was actually searched over, and the capture
+    pass reads that. A truncation is a suffix cut, so nothing to the left of it
+    moves and no offset needed adjusting; the bug was only ever that the second
+    pass could not see the cut the first one made.
+- - `(?m)` and `(?s)` reach the capture arm now. The linear capture VM predates
+    the buffer-oriented FFI: its `^`/`$` instructions hard-coded the buffer ends
+    (the CLI only ever ran it per line, where the two coincide), and its parser
+    never saw `dotall` at all. So `find_all` — which resolves line anchors against
+    `\n` adjacency — reported a match the capture pass could not reproduce, and any
+    group query on a multiline match past byte 0, or a dotall match whose `.`
+    crossed a newline, raised the "internal disagreement" error instead of
+    answering. `irgx.finditer(r"^(\w+):", text, multiline=True)` failed on its
+    second line, which is the first shape any log parser writes.
+
+    The fix mirrors what `Selection.lowerOptions` already documents for the
+    boolean arm: the capture parser runs in buffer mode with `dotall` threaded
+    through, the VM resolves `^`/`$` through the same `lineStart`/`lineEnd`
+    predicates the Pike closure reads — one definition, so the arms cannot drift —
+    and `\A`/`\z` lower to new true-buffer-anchor instructions. The one-pass
+    determinizer carries the same four assertions, so the fast arm answers
+    identically to the fallback it fronts.
+- - `build_wheels.py` refuses a matrix with no accelerated wheel in it. 2.0.0 and
+    2.1.x went out portable-only, so every `pip install` silently got the ctypes
+    transport - correct answers, correct exit codes, nothing downstream broken, and
+    ~1.7us of argument marshaling per call with no literal prefilter. On the first
+    consumer measured against stdlib `re` on its own per-row loop that turned a
+    1.18x win into an 11x loss, which is not a packaging detail.
+
+    The script already built both halves; it just exited 0 when it built only one.
+    Two ways in, both quiet: a host outside `MATRIX` never reaches the
+    `target is here` branch, so no accelerated build is attempted at all, and a
+    host inside it can fail that one build while its portable twin succeeds - which
+    lands in `failures` as one target among many rather than as the thing that
+    gutted the release. `accel_shortfall` now names which of the two happened,
+    because the fix differs: publish from a listed host, or repair the compiler on
+    this one. A narrow `--only` is not a release and is left alone.
+- - `compile` actually reaches the compile cache now. The cache existed and was
+    never called: `compile` built a `Pattern` directly, so `_cached` was live code
+    only for the module-level verbs. A compile costs ~57us where a cache hit costs
+    ~2.5us, which is not a micro-optimization — it is the difference between
+    `compile(p).search(s)` inside a loop being free and being unusable. That is
+    the single most common shape a port lifts out of `re`, which caches for the
+    same reason, so the one call anybody writes first fell off a cliff. Measured
+    over 2000 repeated compiles of one pattern: 114.8ms before, 5.0ms after.
+
+    Routed both `compile` and `_prepared` through one `_compiled` helper so the
+    module-level verbs and the public entry point cannot disagree about caching
+    again. Sharing a `Pattern` between callers is what the object was built for —
+    it holds a pool of per-thread handles precisely so the handle's
+    single-threaded contract survives being shared.
+
+    Fixing that surfaced a second bug behind it. `TEXTUAL` admits `bytearray`,
+    which has no hash and so cannot key an LRU, so the module-level verbs raised
+    `TypeError: unhashable type` for a pattern `compile` took happily. An
+    unhashable pattern is one to compile uncached, not one to refuse; `_compiled`
+    now tests hashability and falls back to a direct construction.
+- - `findall` refuses a capture disagreement as `error`, not as a bare
+    `RuntimeError`. The guard itself is right and stays: when `find_all` reports a
+    match the capture pass will not reproduce, there are no groups to hand back and
+    inventing them would be worse than refusing. What was wrong was the class. Every
+    other refusal in the package is `error` — which, since it derives from
+    `re.error`, is what a caller who swapped `re` for this still has a handler for —
+    and this was the one that walked past both `except re.error` and
+    `except irgx.error`. In the most-called verb.
+
+    It escaped because the prose lived in the seam rather than at the call site.
+    `irgx._engine` documents that the two transports speak statuses and carry no
+    error text, precisely so the C module does not have to be handed a class to
+    raise; `group_texts` was the verb that broke its own rule, twice, in both
+    transports. So the disagreement now answers the offending span — a status is an
+    `int`, an answer is a `list`, a span is neither — and `Pattern.findall`
+    translates it beside the `check` that translates every other status, where the
+    pattern is in scope. The message names it now, which matters to anyone running a
+    table of patterns and needing to know which one the engine contradicted itself
+    on.
+- - `fullmatch` reads `pos` as a window now, not as the start of the text.
+    `re.fullmatch(r"^\w+", " lead", 1)` is `None`, because `^` cannot hold at
+    offset 1; this was returning a match, because the munch plane scans from a
+    cursor and reads that cursor as the beginning of the subject. `^`, `\b` and
+    their kin therefore asserted differently under `fullmatch` than under every
+    other verb here, which is the sort of divergence you only find by asking.
+
+    Fixed by asking the arm whose assertions are already right: one leftmost
+    search from the same bounds, and if nothing begins at `pos` then nothing
+    full-matches from `pos` either. Reading the pattern for an anchor instead
+    would need a parse this module does not have, and a substring test would get
+    `\^` wrong. The extra search only happens from a non-zero `pos`, so the
+    common call pays nothing for it.
+- - `irgx.error` derives from `re.error`, so an existing `except re.error` keeps
+    catching. The class was already named `error` rather than `IrregexError` to
+    promise that code written against `re` ports by changing the import alone, and
+    the name alone could not keep half of that promise: a library that already
+    wraps its compile in `except re.error` is the exact caller most likely to
+    change one import, and a sibling class would have had that handler silently
+    stop catching — no error at the import, no error at the call, just an
+    exception escaping a handler written for it. Subclassing costs nothing, since
+    `re.error` carries the same three attributes this class already carried.
+
+    The parent is initialized without the position deliberately. Given one,
+    `re.error` appends "at position N" to the message it hands `Exception`, so
+    `str(err)` would stop being `msg`. The position is reported through `pos`, and
+    now also through the `lineno` / `colno` that `re.error` promises, derived the
+    way it derives them: 1-based, counted through the newline the offset lives in,
+    and both `None` when there is nothing to point at — a pattern refused for its
+    grammar rather than its spelling is not wrong anywhere in particular.
+
 ## [2.2.0] - 2026-08-24
 
 ### Added
