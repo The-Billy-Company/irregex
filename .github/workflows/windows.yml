@@ -5,6 +5,23 @@
 # here and proves the sources still compile and pass for this platform.
 # `bindings` proves the other half: that the archive each binding ships links
 # and runs under the toolchain a Windows consumer actually has.
+#
+# The unit suite runs on ONE of the two arches, and which one is a coverage
+# argument rather than a budget one. Running it twice on Windows buys the
+# intersection of two things already held elsewhere: `check-windows` is folded
+# into every `zig build test`, so the library's Sema and codegen for
+# `aarch64-windows` are gated on Ubuntu, macOS and Windows x64 alike, and
+# `macos-latest` is itself AArch64 running the whole suite. What only a Windows
+# ARM kernel can answer is whether an `aarch64-windows` artifact links, loads
+# and crosses an ABI there — which is what the ReleaseFast build and the ctypes
+# smoke below settle, and what `bindings (arm64)` settles again from source
+# through MSVC with the Go and Rust suites on top. So x64 runs the suite, arm64
+# compiles every test source for its triple without running it, and neither
+# claim goes unmade. Executing the suite on both spent 30-60 minutes a push to
+# re-derive one of them, and paid for it in fixture races no other lane sees:
+# a write's directory entry is flushed lazily on Windows, so a fixture that
+# writes a file and immediately asks the walk about it is asserting a
+# scheduling property of that volume, not a promise of ours.
 name: windows
 
 on:
@@ -37,9 +54,11 @@ jobs:
           - arch: x64
             zig_arch: x86_64
             runner: windows-2025
+            suite: true
           - arch: arm64
             zig_arch: aarch64
             runner: windows-11-arm
+            suite: false
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -53,10 +72,21 @@ jobs:
         shell: pwsh
         run: Add-Content -LiteralPath $env:GITHUB_PATH -Value "$env:RUNNER_TEMP\zig"
 
-      - name: Test and build shipped library
-        run: |
-          zig build test "-Dtarget=$($env:ZIG_TARGET)" -j1
-          zig build "-Dtarget=$($env:ZIG_TARGET)" -Doptimize=ReleaseFast -j1
+      - name: Unit suite
+        if: ${{ matrix.suite }}
+        run: zig build test "-Dtarget=$($env:ZIG_TARGET)" -j1
+
+      # Compile every test source for this triple and run none of them. Sema and
+      # codegen over test-only code are the one thing `check-windows` does not
+      # reach — it is rooted at the C-ABI export surface — so this keeps a test
+      # that only an ARM Windows build would reject from rotting, at a Debug
+      # compile's price rather than a ReleaseSafe suite's.
+      - name: Compile the suite for this triple
+        if: ${{ !matrix.suite }}
+        run: zig build check "-Dtarget=$($env:ZIG_TARGET)" -j1
+
+      - name: Build shipped library
+        run: zig build "-Dtarget=$($env:ZIG_TARGET)" -Doptimize=ReleaseFast -j1
 
       - name: Python ABI smoke
         shell: pwsh
