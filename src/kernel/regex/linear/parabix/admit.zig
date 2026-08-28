@@ -339,8 +339,37 @@ const Builder = struct {
             .class => |set| b.term(&set, min, max),
             .uclass => .unicode,
             .capture => |g| b.repeat(g.child, min, max),
+            // The parser desugars `C{m,n}`'s optional tail NESTED — `(?:C(?:C…)?)?`,
+            // RE2's shape, one ε-path per count — so the flat `C?C?…` chain this
+            // peephole was written against now arrives as one quest over a concat.
+            .concat => if (min == 0 and max == 1) b.optionalRun(body, null) else .group_repeat,
             else => .group_repeat,
         };
+    }
+
+    /// Unroll the nested optional tail back into the flat `C?C?…` run the term
+    /// fuser folds into `opt(k)`. Sound only while every level repeats the SAME
+    /// class: `(?:A(?:B)?)?` refuses the lone `B` that flat `A?B?` admits, so
+    /// anything mixed stays a `group_repeat` decline. Each level is
+    /// `concat(class, quest(…))` with a bare `class` innermost — exactly and
+    /// only the parser's counted-repetition shape.
+    fn optionalRun(b: *Builder, n: *const syn.Node, expect: ?*const syn.ByteSet) ?Decline {
+        const node = if (n.* == .capture) n.capture.child else n;
+        switch (node.*) {
+            .class => |set| {
+                if (expect) |e| if (!std.meta.eql(e.*, set)) return .group_repeat;
+                return b.term(&set, 0, 1);
+            },
+            .concat => |kids| {
+                const head = if (kids[0].* == .capture) kids[0].capture.child else kids[0];
+                if (head.* != .class or kids[1].* != .quest) return .group_repeat;
+                const set = head.class;
+                if (expect) |e| if (!std.meta.eql(e.*, set)) return .group_repeat;
+                if (b.term(&set, 0, 1)) |d| return d;
+                return b.optionalRun(kids[1].quest.node, &set);
+            },
+            else => return .group_repeat,
+        }
     }
 
     /// Emit one term, fusing into the previous instruction when it is the same

@@ -278,7 +278,11 @@ test "dfa: word-boundary Unicode quit path is sound (commit ⇒ Pike; quit ⇒ P
     var checked: usize = 0;
     var quits: usize = 0;
     var seed: u64 = 0;
-    while (seed < 1100) : (seed += 1) { // compile-bound; many line probes per pattern
+    // 1200 seeds, not 1100: the nested `{m,n}` desugar (parser.zig) changed which
+    // random patterns arm a word-ctx Unicode DFA, and the qualifying population
+    // dipped just under the 20k coverage floor. More seeds restores the floor's
+    // statistical strength; the floor itself stays where it was.
+    while (seed < 1200) : (seed += 1) { // compile-bound; many line probes per pattern
         var prng = std.Random.DefaultPrng.init(seed *% 0x9E3779B97F4A7C15);
         const r = prng.random();
         var pat: std.ArrayList(u8) = .empty;

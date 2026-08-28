@@ -212,8 +212,20 @@ pub const Parser = struct {
 
         // The optional tail carries the laziness: `a{2,5}?` prefers FEWER copies
         // (each optional copy is a lazy `quest`), `a{2,}?` a lazy trailing `star`.
+        //
+        // The tail NESTS — `(?:a(?:a…)?)?`, RE2's shape — rather than chaining
+        // `a?a?…`: chained quests admit each count along many ε-paths ("one a"
+        // = take-first or take-second), which the capture VM must carry as
+        // distinct threads (quadratic in the bound) and the one-pass table must
+        // refuse outright. Nested, each count has exactly one path — same
+        // language, same leftmost-first spans, and `a{0,255}` stays linear.
         if (b.max) |mx| {
-            for (b.min..mx) |_| result = try p.chain(result, try p.node(.{ .quest = .{ .node = atom, .lazy = lazy } }));
+            var tail: ?*Node = null;
+            for (b.min..mx) |_| {
+                const body = if (tail) |t| try p.node(.{ .concat = .{ atom, t } }) else atom;
+                tail = try p.node(.{ .quest = .{ .node = body, .lazy = lazy } });
+            }
+            if (tail) |t| result = try p.chain(result, t);
         } else {
             result = try p.chain(result, try p.node(.{ .star = .{ .node = atom, .lazy = lazy } }));
         }
