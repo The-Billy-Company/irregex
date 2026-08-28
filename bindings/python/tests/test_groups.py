@@ -176,6 +176,28 @@ def test_captures_reports_the_true_group_count_even_from_a_short_window():
     assert (out[1].start, out[1].end) == (0, 1)
 
 
+def test_groups_agree_with_find_all_under_multiline_and_dotall():
+    # `(?m)^`/`$` and `(?s).` change where a match IS, and the capture arm is a
+    # separate engine from the one find_all runs — these flags used to be
+    # dropped on its floor, so any group query on a multiline match past byte 0
+    # raised the "internal disagreement" error instead of answering.
+    import re
+
+    for pattern, text, flags, re_flags in [
+        (r"^(\w+): (\d+)", "skip\nkey: 42\nother: 7", {"multiline": True}, re.M),
+        (r"(\w+)$", "foo\nbar", {"multiline": True}, re.M),
+        (r"a(.+)b", "xa1\n2b", {"dotall": True}, re.S),
+        (r"(?im)^val=(\w+)", "x\nVAL=ok", {}, 0),
+    ]:
+        ours = [(m.span(), m.groups()) for m in irgx.finditer(pattern, text, **flags)]
+        theirs = [(m.span(), m.groups()) for m in re.finditer(pattern, text, re_flags)]
+        assert ours == theirs, pattern
+
+    # `\A`/`\z` stay buffer anchors under multiline; a line boundary is not enough.
+    match = irgx.search(r"(\w+)\z", "foo\nbar", multiline=True)
+    assert match is not None and match.span() == (4, 7)
+
+
 def test_group_detail_is_filled_per_match_and_matches_find_all():
     # Every match's group 0 must equal the span find_all reported for it. The
     # binding checks this itself and raises on disagreement, so a silent

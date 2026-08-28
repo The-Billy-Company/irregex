@@ -1555,6 +1555,40 @@ test "the word rule reaches captures, not just find_all" {
     try t.expectEqual(Span{ .start = 12, .end = 15 }, got[0]);
 }
 
+test "line anchors and dotall reach captures, not just find_all" {
+    var got: [2]Span = undefined;
+    var n: usize = 0;
+
+    // `(?m)^` at a nonzero offset: `find_all` resolved it against `\n`
+    // adjacency; the capture arm answered `pos == 0` and the two disagreed on
+    // the same match — the FFI's "internal disagreement" fault.
+    const m = try open("^foo: (\\d+)", contract.flag_multiline);
+    defer free(m);
+    try t.expectEqual(Status.match, captures(m, "bar\nfoo: 42", 11, 0, &got, 2, &n));
+    try t.expectEqual(Span{ .start = 4, .end = 11 }, got[0]);
+    try t.expectEqual(Span{ .start = 9, .end = 11 }, got[1]);
+
+    // `(?m)$` at a line break, not only the buffer end.
+    const e = try open("(\\w+)$", contract.flag_multiline);
+    defer free(e);
+    try t.expectEqual(Status.match, captures(e, "foo\nbar", 7, 0, &got, 2, &n));
+    try t.expectEqual(Span{ .start = 0, .end = 3 }, got[0]);
+
+    // `\A`/`\z` stay buffer anchors under multiline — a line boundary must not
+    // satisfy them.
+    const z = try open("(\\w+)\\z", contract.flag_multiline);
+    defer free(z);
+    try t.expectEqual(Status.match, captures(z, "foo\nbar", 7, 0, &got, 2, &n));
+    try t.expectEqual(Span{ .start = 4, .end = 7 }, got[0]);
+
+    // `(?s).` spans the `\n` in the capture arm exactly as the span arm said.
+    const s = try open("a(.+)b", contract.flag_dotall);
+    defer free(s);
+    try t.expectEqual(Status.match, captures(s, "xa1\n2b", 6, 0, &got, 2, &n));
+    try t.expectEqual(Span{ .start = 1, .end = 6 }, got[0]);
+    try t.expectEqual(Span{ .start = 2, .end = 5 }, got[1]);
+}
+
 test "the PCRE2 arm captures too, through the same door" {
     const sc = fault.scope();
     defer sc.end();

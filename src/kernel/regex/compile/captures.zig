@@ -17,6 +17,7 @@ const syn = @import("../syntax/syntax.zig");
 const compile_mod = @import("compile.zig");
 const lower = @import("../linear/program/lower.zig");
 const word = @import("../syntax/word.zig");
+const closure_mod = @import("../linear/pike/closure.zig");
 const ByteSet = syn.ByteSet;
 const Node = syn.Node;
 
@@ -84,12 +85,15 @@ pub const Caps = union(enum) {
         }
     }
 
-    /// Which grammar a pattern is written in, and under what semantics. The
-    /// `pcre` arm reads `multiline`/`dotall`; the linear arm ignores them
-    /// (`^`/`$`/`.` are line-scoped there by construction). `word`/`crlf` are the
-    /// two rewrites that change what the pattern MEANS, so both arms owe them —
-    /// a capture program that skipped either would report a different span than
-    /// the search that asked for it (`-w -r`, `--crlf -r`).
+    /// Which grammar a pattern is written in, and under what semantics. Both
+    /// arms read `multiline`/`dotall` — the linear VM resolves `^`/`$` against
+    /// `\n` adjacency when `multiline` asks it to (the same `lineStart`/`lineEnd`
+    /// predicates the boolean Pike VM consults, so the two engines cannot
+    /// disagree about where a line begins), and `dotall` reaches its parser so
+    /// `.` spans `\n` exactly where the span arm said the match was. `word`/
+    /// `crlf` are the two rewrites that change what the pattern MEANS, so both
+    /// arms owe them — a capture program that skipped any of these would report
+    /// a different span than the search that asked for it (`-w -r`, `--crlf -r`).
     pub const Selection = struct {
         caseless: bool = false,
         unicode: bool = true,
@@ -178,6 +182,9 @@ pub const Inst = union(enum) {
     save: struct { slot: u32, out: u32 },
     astart: u32,
     aend: u32,
+    abufstart: u32, // `\A` under multiline — the true buffer start, never a line's
+    abufend: u32, // `\z` under multiline — the true buffer end
+
     aword: struct { mask: syn.Word, out: u32 }, // `\b \B \< \>`, `\b{…}` — see `syntax.Word`
     match,
 };
@@ -199,6 +206,9 @@ pub const Captures = struct {
     // decode the straddling codepoint, matching the main engine. Class/literal
     // Unicode is baked into `prog` at parse time.
     unicode: bool,
+    // `(?m)`: `^`/`$` resolve at `\n` adjacency rather than only the buffer
+    // ends — the same `closure.lineStart`/`lineEnd` the boolean engine reads.
+    line_anchors: bool,
     allocator: std.mem.Allocator,
 
     // Reused across finds: the two thread lists, the per-generation dedup, and the
@@ -222,7 +232,11 @@ pub const Captures = struct {
 
         const unicode = sel.unicode;
         var names: std.ArrayList(syn.NamedCap) = .empty;
-        var parser = syn.Parser{ .src = pattern, .arena = arena, .names = &names, .unicode = unicode, .caseless = sel.caseless };
+        // `.multiline = true` for the same reason `Selection.lowerOptions` forces
+        // it: every haystack this arm sees is a whole buffer (the FFI hands
+        // buffers by definition; a CLI line is a buffer of one line). `(?m)` is
+        // the separate question and rides `line_anchors` below.
+        var parser = syn.Parser{ .src = pattern, .arena = arena, .names = &names, .unicode = unicode, .caseless = sel.caseless, .multiline = true, .dotall = sel.dotall };
         const parsed = try parser.parseAlt();
         if (parser.pos != pattern.len) return ParseError.BadPattern;
         if (sel.caseless) try syn.foldCaseAst(arena, parsed, unicode);
@@ -273,6 +287,7 @@ pub const Captures = struct {
             .nslots = nslots,
             .names = owned_names,
             .unicode = unicode,
+            .line_anchors = sel.multiline,
             .allocator = gpa,
             .cur = try gpa.alloc(u32, n),
             .nxt = try gpa.alloc(u32, n),
@@ -402,8 +417,12 @@ pub const Captures = struct {
                 buf[sv.slot] = @intCast(pos);
                 self.addThread(list, len, slots, sv.out, buf, pos, line);
             },
-            .astart => |o| if (pos == 0) self.addThread(list, len, slots, o, in_slots, pos, line),
-            .aend => |o| if (pos == line.len) self.addThread(list, len, slots, o, in_slots, pos, line),
+            .astart => |o| if (if (self.line_anchors) closure_mod.lineStart(line, pos) else pos == 0)
+                self.addThread(list, len, slots, o, in_slots, pos, line),
+            .aend => |o| if (if (self.line_anchors) closure_mod.lineEnd(line, pos) else pos == line.len)
+                self.addThread(list, len, slots, o, in_slots, pos, line),
+            .abufstart => |o| if (pos == 0) self.addThread(list, len, slots, o, in_slots, pos, line),
+            .abufend => |o| if (pos == line.len) self.addThread(list, len, slots, o, in_slots, pos, line),
             .aword => |w| if (w.mask.holds(word.sides(self.unicode, line, pos)))
                 self.addThread(list, len, slots, w.out, in_slots, pos, line),
             .char, .match => {
@@ -444,10 +463,8 @@ const Comp = struct {
             .empty => return next,
             .anchor_start => return self.push(.{ .astart = next }),
             .anchor_end => return self.push(.{ .aend = next }),
-            // The captures parser never sets `multiline` (the CLI serves `-r`/
-            // `--json` per line only), so `\A`/`\z` already lowered to the line
-            // anchors above; the whole-buffer variants cannot occur here.
-            .anchor_buf_start, .anchor_buf_end => unreachable,
+            .anchor_buf_start => return self.push(.{ .abufstart = next }),
+            .anchor_buf_end => return self.push(.{ .abufend = next }),
             .word => |mask| return self.push(.{ .aword = .{ .mask = mask, .out = next } }),
             .class => |set| return self.push(.{ .char = .{ .set = set, .out = next } }),
             .uclass => |ranges| return compile_mod.lowerUtf8(self.gpa, &self.loom, ranges, next, self),

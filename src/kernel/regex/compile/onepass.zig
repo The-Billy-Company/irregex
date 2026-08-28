@@ -30,6 +30,7 @@ const syn = @import("../syntax/syntax.zig");
 const captures = @import("captures.zig");
 const fault = @import("../../../fault.zig");
 const word = @import("../syntax/word.zig");
+const closure_mod = @import("../linear/pike/closure.zig");
 const Prefilter = @import("../analysis/prefilter.zig").Prefilter;
 
 const ByteSet = syn.ByteSet;
@@ -56,8 +57,10 @@ const max_trips = 16;
 /// (`^\bfoo`), and contradictory pairs (`\b\B`) simply never fire — the same
 /// outcome the Pike VM reaches by taking neither branch.
 const Assert = struct {
-    const start: u8 = 1 << 0; // `^` / `\A`
-    const end: u8 = 1 << 1; // `$` / `\z`
+    const start: u8 = 1 << 0; // `^` — line-aware under `(?m)`, else buffer start
+    const end: u8 = 1 << 1; // `$` — line-aware under `(?m)`, else buffer end
+    const buf_start: u8 = 1 << 2; // `\A` — the true buffer start, `(?m)` or not
+    const buf_end: u8 = 1 << 3; // `\z` — the true buffer end
 };
 
 /// Everything an ε-path between two consuming instructions does, flattened:
@@ -110,6 +113,9 @@ pub const OnePass = struct {
     saved: []isize,
     nslots: usize,
     unicode: bool,
+    /// `(?m)` — mirrored from the `Captures` this table was determinized from,
+    /// so `holds` reads the same line predicates its ε-instructions meant.
+    line_anchors: bool,
     /// How many `find` calls hit the step budget. One pathological line (a
     /// minified bundle) must not cost a good pattern its fast arm for the rest of
     /// the run, but a pattern that is pathological EVERYWHERE should stop
@@ -183,6 +189,7 @@ pub const OnePass = struct {
             .saved = saved,
             .nslots = caps.nslots,
             .unicode = caps.unicode,
+            .line_anchors = caps.line_anchors,
             .gpa = gpa,
         };
     }
@@ -292,11 +299,16 @@ pub const OnePass = struct {
     }
 
     /// Do the assertions on an ε-path hold at gap position `pos`? Byte-identical
-    /// to the Pike VM's per-instruction tests (`word.zig` is the shared oracle),
-    /// which is what keeps the two arms from disagreeing on `\b` in Unicode mode.
+    /// to the Pike VM's per-instruction tests (`word.zig` is the shared oracle
+    /// for `\b`, `closure.zig`'s line predicates for `(?m)` `^`/`$`), which is
+    /// what keeps the two arms from disagreeing in Unicode or multiline mode.
     fn holds(self: *const OnePass, eps: Eps, line: []const u8, pos: usize) bool {
-        if (eps.asserts & Assert.start != 0 and pos != 0) return false;
-        if (eps.asserts & Assert.end != 0 and pos != line.len) return false;
+        if (eps.asserts & Assert.start != 0 and
+            !(if (self.line_anchors) closure_mod.lineStart(line, pos) else pos == 0)) return false;
+        if (eps.asserts & Assert.end != 0 and
+            !(if (self.line_anchors) closure_mod.lineEnd(line, pos) else pos == line.len)) return false;
+        if (eps.asserts & Assert.buf_start != 0 and pos != 0) return false;
+        if (eps.asserts & Assert.buf_end != 0 and pos != line.len) return false;
         if (eps.word == syn.mask.free) return true;
         return syn.mask.holds(eps.word, word.sides(self.unicode, line, pos));
     }
@@ -373,6 +385,8 @@ const Build = struct {
             }),
             .astart => |o| try self.closure(o, eps.plus(Assert.start)),
             .aend => |o| try self.closure(o, eps.plus(Assert.end)),
+            .abufstart => |o| try self.closure(o, eps.plus(Assert.buf_start)),
+            .abufend => |o| try self.closure(o, eps.plus(Assert.buf_end)),
             .aword => |w| try self.closure(w.out, eps.narrow(w.mask)),
             .match => {
                 if (self.acc != null) return error.Bail;
