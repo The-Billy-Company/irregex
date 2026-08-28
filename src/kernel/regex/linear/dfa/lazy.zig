@@ -23,7 +23,13 @@ const State = syn.State;
 const unknown = subset.unknown;
 
 /// Program-proportional memory, bounded against tiny and Unicode NFAs.
-const min_cache_bytes: usize = 256 * 1024;
+/// The floor is 1 MiB, not the former 256 KiB: a counted repetition like
+/// `[^:]{0,255}` mints ~256 live NFA states whose powerset states cost ~1 KiB
+/// each, so the old floor thrashed (fill → reset → refill) and stuck the walk
+/// on the Pike arm — 3× slower on that shape. The budget is consumed lazily
+/// (states are built on demand), so a pattern that never explodes never pays
+/// it; the 4 MiB cap is unchanged and rust-regex's hybrid default sits higher.
+const min_cache_bytes: usize = 1024 * 1024;
 const max_cache_bytes: usize = 4 * 1024 * 1024;
 pub const Policy = struct {
     byte_budget: usize,
