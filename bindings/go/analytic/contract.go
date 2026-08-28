@@ -23,7 +23,7 @@ const (
 	// module root, so this is the one mirror that has to be written down. The
 	// release bot moves it with the marker; `tools/version_parity.py` fails if
 	// it lags `build.zig.zon`.
-	EngineVersion = "2.2.0" // x-release-please-version
+	EngineVersion = "2.2.1" // x-release-please-version
 )
 
 // Process exit codes ([exit_codes]) — ripgrep's three, preserved end to end. A
