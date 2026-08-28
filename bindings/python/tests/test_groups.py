@@ -198,6 +198,30 @@ def test_groups_agree_with_find_all_under_multiline_and_dotall():
     assert match is not None and match.span() == (4, 7)
 
 
+def test_lastindex_and_lastgroup_agree_with_re():
+    # `lastindex`/`lastgroup` exist above all for the dispatch idiom — an
+    # alternation of named groups where exactly one participates and the name
+    # says which — so every documented `re` case must agree, on both the pure
+    # match and the accelerated one (the property is grafted onto the C type).
+    import re
+
+    for pattern, text in [
+        (r"(a)b", "ab"),
+        (r"(a)(b)", "ab"),
+        (r"((a)(b))", "ab"),
+        (r"((ab))", "ab"),
+        (r"(?P<x>foo/bar)|(?P<y>baz/qux)", "go baz/qux now"),
+        (r"(a)?(b)?", "b"),
+        (r"abc", "abc"),
+        (r"(?P<only>\w+)=", "key=value"),
+    ]:
+        theirs = re.search(pattern, text)
+        ours = irgx.search(pattern, text)
+        assert theirs is not None and ours is not None, pattern
+        assert ours.lastindex == theirs.lastindex, pattern
+        assert ours.lastgroup == theirs.lastgroup, pattern
+
+
 def test_group_detail_is_filled_per_match_and_matches_find_all():
     # Every match's group 0 must equal the span find_all reported for it. The
     # binding checks this itself and raises on disagreement, so a silent

@@ -275,6 +275,38 @@ class Match:
             for name, index in self._re._groupindex.items()
         }
 
+    @property
+    def lastindex(self) -> int | None:
+        """The index of the last matched capturing group, or ``None``.
+
+        Derived from the spans rather than from an execution-order mark the
+        engine does not keep: the matched group whose span ends last, ties
+        going to the outermost (lowest-numbered) group. That reproduces every
+        case ``re`` documents - ``(a)b`` and ``((a)(b))`` and ``((ab))`` give 1
+        on ``'ab'``, ``(a)(b)`` gives 2 - and in particular the shape this
+        property exists for, an alternation of groups where exactly one
+        participates. A capture inside a lookaround that outruns every later
+        group is the one corner where ``re``'s mark ordering could answer
+        differently.
+        """
+        spans = self._byte_spans()
+        best = None
+        for index, span in enumerate(spans[1:], 1):
+            if span is not None and (best is None or span[1] > spans[best][1]):
+                best = index
+        return best
+
+    @property
+    def lastgroup(self) -> str | None:
+        """The name of :attr:`lastindex`'s group, or ``None`` when it has no name."""
+        index = self.lastindex
+        if index is None:
+            return None
+        for name, at in self._re._groupindex.items():
+            if at == index:
+                return name
+        return None
+
     def start(self, group: int | str = 0) -> int:
         span = self._span_of(group)
         if span is None:
@@ -390,7 +422,17 @@ matches = _matches
 #: reads this module's storage under the private names the C type exposes
 #: (``_re`` / ``_view`` / ``_start`` / ``_end`` / ``_spans``), so these bodies
 #: work verbatim against it.
-_COLD = ("_byte_spans", "_resolve", "_span_of", "_cut", "_text_of", "groupdict", "expand")
+_COLD = (
+    "_byte_spans",
+    "_resolve",
+    "_span_of",
+    "_cut",
+    "_text_of",
+    "groupdict",
+    "expand",
+    "lastindex",
+    "lastgroup",
+)
 
 #: What the C type calls when a question is not its own - a group by name, an
 #: out-of-range or non-integer group, a subject whose two domains differ. The
