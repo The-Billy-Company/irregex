@@ -153,10 +153,15 @@ def full(
     leftmost = pattern.search(text, pos, endpos) if start or pattern._groups else None  # noqa: SLF001
     if start and (leftmost is None or view.offset(leftmost.start()) != start):
         return None
-    if leftmost is not None and pattern._groups and (  # noqa: SLF001
-        view.offset(leftmost.start()),
-        view.offset(leftmost.end()),
-    ) != (start, end):
+    if (
+        leftmost is not None
+        and pattern._groups
+        and (  # noqa: SLF001
+            view.offset(leftmost.start()),
+            view.offset(leftmost.end()),
+        )
+        != (start, end)
+    ):
         raise error(
             f"{pattern.pattern!r} full-matches {view.original[first:last]!r} only by a "
             f"path its leftmost match does not take, and this ABI has no anchored "

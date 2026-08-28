@@ -104,7 +104,11 @@ class TextView:
         """
         if last == len(self.original):
             return self.subject
-        cut = self.original[:last] if self.subject is self.original else self.data[: self.offset(last)]
+        cut = (
+            self.original[:last]
+            if self.subject is self.original
+            else self.data[: self.offset(last)]
+        )
         self.searched = cut
         return cut
 

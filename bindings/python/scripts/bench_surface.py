@@ -41,7 +41,6 @@ sys.path.insert(0, str(PROJECT))
 sys.path.insert(0, str(PROJECT / "tests"))  # conftest points IRGX_LIB at zig-out
 
 import conftest  # noqa: F401,E402
-
 import irgx  # noqa: E402
 from irgx import _abi, _engine  # noqa: E402
 

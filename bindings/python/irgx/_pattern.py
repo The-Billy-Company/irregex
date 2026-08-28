@@ -71,11 +71,7 @@ def _sought(handle: int, pattern: Pattern, text: Any) -> Match | int:
 #: ``find_first`` rather than on its own name, because that is the seam verb the
 #: fused one is made of: an engine too old to export ``irgx_find_first_in`` must
 #: decline this exactly as it declines the verb it composes.
-sought = (
-    ACCEL.sought
-    if "find_first" in native() and hasattr(ACCEL, "sought")
-    else _sought
-)
+sought = ACCEL.sought if "find_first" in native() and hasattr(ACCEL, "sought") else _sought
 
 
 def _on_characters(spans: list[tuple[int, int]], data: bytes) -> list[tuple[int, int]]:
