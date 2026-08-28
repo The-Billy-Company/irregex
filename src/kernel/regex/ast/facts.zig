@@ -60,8 +60,10 @@ pub const Facts = struct {
 /// every child's answer and nothing else.
 pub fn sweep(arena: std.mem.Allocator, _: Id, op: Op, kids: [2]Id, done: []const Facts) ParseError!Facts {
     return switch (op) {
-        .empty, .anchor_end, .anchor_buf_start, .anchor_buf_end, .word => zeroWidth(false),
-        .anchor_start => zeroWidth(true),
+        .empty, .anchor_end, .anchor_buf_end, .word => zeroWidth(false),
+        // `\A` anchors a fortiori: a buffer start is always a line start, so
+        // everything `anchored` licenses (seed once, bail on an empty list) holds.
+        .anchor_start, .anchor_buf_start => zeroWidth(true),
 
         .class => |set| consuming(litOfClass(arena, set) catch |e| return e, set, 1),
         .uclass => |ranges| consumingCp(try analysis.uclassLiteral(arena, ranges), leadBytes(ranges), utf8Min(ranges), utf8Max(ranges)),

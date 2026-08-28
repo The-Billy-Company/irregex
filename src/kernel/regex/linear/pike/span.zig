@@ -146,6 +146,18 @@ pub fn matchWindow(re: *const Regex, sim: *SpanSim, w: Window) ?Span {
     const to = @min(w.to, w.hay.len);
     if (w.from > to) return null;
     const line = w.hay;
+    // Buffer-anchored (`^…`/`\A…` outside `(?m)`): byte 0 is the only position
+    // any match can begin, so a window starting later is decided before it
+    // starts, and the walk from 0 owes exactly one seed — it ends the moment
+    // its thread list dies rather than sweeping the buffer. That sweep is what
+    // `re` never pays (its compiled `at_beginning` bails in the first probe),
+    // and it made every anchored miss cost the whole document: the gate scanned
+    // all of it for a literal the engine could not use, then the VM walked all
+    // of it re-seeding closures that died at their `^`. The reductions above
+    // this check never carry anchors (`pureLiterals` and the span-exact class
+    // shapes are assertion-free), so nothing is skipped that could have answered.
+    const buffer_anchored = re.anchored and !re.line_anchors;
+    if (buffer_anchored and w.from > 0) return null;
     // Pure-literal fast path: one fused SIMD jump, no Pike VM (see `litSpan`).
     if (re.lits.len > 0) return litSpan(re, sim, line[0..to], w.from);
     // Span-exact class run (`\w+`, `[a-z]{3,8}` — `analysis.classSpanShape`):
@@ -169,17 +181,21 @@ pub fn matchWindow(re: *const Regex, sim: *SpanSim, w: Window) ?Span {
     // `find_all` pass adds one amortized SIMD sweep — while the final call, the
     // one that proves no match remains, replaces a full automaton walk of the
     // tail with that sweep.
-    if (re.gate) |g| if (g.find(w.region(), w.from) == null) return null;
-    // The caliper: a forward leftmost-first table walk for the end, a backward
-    // one for the start (`../caliper/`). It carries the patterns no reduction
-    // above covers — the multi-segment shapes that are the whole reason `-o` is
-    // slower than the boolean pass. A decline is a budget verdict, never a
-    // semantic one, and falls straight through to the VM below.
-    if (re.caliper) |_| if (sim.jaws) |*j| switch (caliper.measure(j, w, skipPolicy(re))) {
-        .found => |sp| return sp,
-        .none => return null,
-        .decline => {},
-    };
+    // Both are whole-buffer sweeps, and a buffer-anchored walk is bounded by
+    // its one attempt — cheaper than either would be to consult.
+    if (!buffer_anchored) {
+        if (re.gate) |g| if (g.find(w.region(), w.from) == null) return null;
+        // The caliper: a forward leftmost-first table walk for the end, a backward
+        // one for the start (`../caliper/`). It carries the patterns no reduction
+        // above covers — the multi-segment shapes that are the whole reason `-o` is
+        // slower than the boolean pass. A decline is a budget verdict, never a
+        // semantic one, and falls straight through to the VM below.
+        if (re.caliper) |_| if (sim.jaws) |*j| switch (caliper.measure(j, w, skipPolicy(re))) {
+            .found => |sp| return sp,
+            .none => return null,
+            .decline => {},
+        };
+    }
     sim.gen += 1;
     sim.cur.len = 0;
     var cl = eps.closure(re, sim, &sim.cur, eps.atStart(re, line, w.from), eps.atEnd(re, line, w.from), word.sides(re.unicode, line, w.from));
@@ -217,13 +233,16 @@ pub fn matchWindow(re: *const Regex, sim: *SpanSim, w: Window) ?Span {
             },
             else => {},
         };
-        // Re-seed a fresh start at i+1 (lowest priority) only while unmatched.
-        if (best == null) {
+        // Re-seed a fresh start at i+1 (lowest priority) only while unmatched —
+        // and never for a buffer-anchored pattern, whose every seed after byte 0
+        // dies at its `^` without existing.
+        if (best == null and !buffer_anchored) {
             var sc = eps.Closure{ .re = re, .list = &sim.nxt, .seen = sim.seen, .gen = sim.gen, .at_start = at_start, .at_end = at_end, .at_buf_start = false, .at_buf_end = at_buf_end, .sides = sides, .starts = sim.snxt, .cur_start = i + 1 };
             _ = sc.add(re.start);
         }
         std.mem.swap(ThreadList, &sim.cur, &sim.nxt);
         std.mem.swap([]usize, &sim.scur, &sim.snxt);
+        if (buffer_anchored and sim.cur.len == 0) return best; // nothing alive, nothing seedable
         cut = sim.cur.len;
         if (firstMatch(re, sim.cur.slice(), sim.scur, i + 1)) |m| {
             best = m.span; // a survivor (strictly higher priority) extends/overrides

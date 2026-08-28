@@ -115,7 +115,10 @@ pub fn literalInfo(arena: std.mem.Allocator, node: *Node) ParseError!LitInfo {
 /// so an un-anchored branch makes the whole alternation un-anchored.
 pub fn startsAnchored(node: *Node) bool {
     return switch (node.*) {
-        .anchor_start => true,
+        // `\A` is strictly stronger than `^` (a buffer start is always a line
+        // start), so everything the flag licenses — seed once, bail when the
+        // list empties — holds a fortiori.
+        .anchor_start, .anchor_buf_start => true,
         .concat => |ab| startsAnchored(ab[0]),
         .alt => |ab| startsAnchored(ab[0]) and startsAnchored(ab[1]),
         .plus => |r| startsAnchored(r.node), // `(^x)+` still starts anchored
