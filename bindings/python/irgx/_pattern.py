@@ -598,6 +598,18 @@ class Pattern:
         if type(found) is int:
             check(found, f"could not search with {self._source!r}", self._source)
             return []
+        if type(found) is tuple:
+            # The walk found a match the capture pass will not reproduce, so
+            # there are no groups to report for it. Refusing beats inventing
+            # them — and it refuses as `error`, which is `re.error`, because a
+            # caller who swapped `re` for this keeps its handlers. `findall` is
+            # the verb that used to raise a bare `RuntimeError` past them.
+            raise error(
+                f"internal disagreement in the engine: find_all reported {found} "
+                f"for {self._source!r}, but captures answered differently from the "
+                f"same offset",
+                self._source,
+            )
         return found
 
     def split(self, text: str | bytes, maxsplit: int = 0) -> list[Any]:

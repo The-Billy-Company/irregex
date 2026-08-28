@@ -12,7 +12,7 @@ import ctypes
 
 import irgx
 import pytest
-from irgx import _abi
+from irgx import _abi, _engine, _pattern
 from irgx._pool import Compiled
 
 
@@ -240,3 +240,54 @@ def test_group_detail_is_filled_per_match_and_matches_find_all():
                 span = match.span(index)
                 if span != (-1, -1):
                     assert text[span[0] : span[1]] == match.group(index)
+
+
+def test_the_group_texts_seam_answers_a_disagreement_as_a_span():
+    # The seam speaks statuses, not exceptions: a status is an int, an answer is
+    # a list, and a capture pass that contradicts the walk is neither — so it
+    # answers the disagreeing span and lets the caller name the pattern. Forced
+    # here by making the capture call report "no match" at an offset the walk
+    # just reported one at, which is the only way to reach a guard that exists
+    # so a real engine fault cannot become a plausible-looking answer.
+    compiled = Compiled(rb"(\w+)@", 0)
+    handle = compiled.ptr.value
+    assert _engine._group_texts(handle, "a@ bc@", 0, 1, True) == ["a", "bc"]
+
+    def no_captures(*_args):
+        return 0  # IRGX_OK — ran, matched nothing
+
+    saved = _engine._captures
+    _engine._captures = no_captures
+    try:
+        assert _engine._group_texts(handle, "a@ bc@", 0, 1, True) == (0, 2)
+    finally:
+        _engine._captures = saved
+
+
+def test_findall_refuses_a_disagreement_as_error_not_runtimeerror():
+    # `findall` used to raise a bare `RuntimeError` from inside the seam, which
+    # walked straight past the `except re.error` a caller kept when it swapped
+    # `re` for this — and past `except irgx.error` too. Every other refusal in
+    # the package is `error`; this one was the exception, in the most-called verb.
+    import re
+
+    compiled = irgx.compile(r"(\w+)@")
+
+    def disagree(*_args):
+        return (0, 2)
+
+    saved = _pattern._group_texts
+    _pattern._group_texts = disagree
+    try:
+        with pytest.raises(irgx.error) as caught:
+            compiled.findall("a@ bc@")
+        with pytest.raises(re.error):
+            compiled.findall("a@ bc@")
+    finally:
+        _pattern._group_texts = saved
+    message = str(caught.value)
+    # The pattern has to be named: a caller running a table of patterns has no
+    # other way to tell which one the engine contradicted itself on.
+    assert repr(r"(\w+)@") in message
+    assert "internal disagreement in the engine" in message
+    assert "(0, 2)" in message

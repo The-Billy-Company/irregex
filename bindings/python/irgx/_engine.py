@@ -149,13 +149,16 @@ def _texts(regex: int, subject: Any, start: int, decode: bool) -> list[Any] | in
     ]
 
 
-def _group_texts(regex: int, subject: Any, start: int, count: int, decode: bool) -> list[Any] | int:
+def _group_texts(
+    regex: int, subject: Any, start: int, count: int, decode: bool
+) -> list[Any] | tuple[int, int] | int:
     """findall with groups: the walk, the capture pass and the texts, in one verb.
 
     One group answers bare, several answer as a tuple, and a group the match
     did not enter answers ``None``. A capture refusal the walk did not hit
-    propagates as its status; a capture answer that contradicts the walk raises,
-    because inventing groups would be worse than refusing.
+    propagates as its status; a capture answer that contradicts the walk answers
+    the disagreeing span, because inventing groups would be worse than refusing
+    and only the caller knows which pattern to name.
     """
     data = _raw(subject)
     found = _find_all(regex, data, start, 0)
@@ -170,15 +173,9 @@ def _group_texts(regex: int, subject: Any, start: int, count: int, decode: bool)
         if type(spans) is int:
             if spans < 0:
                 return spans
-            raise RuntimeError(
-                f"internal disagreement in the engine: find_all reported a match at "
-                f"bytes ({at}, {end}), but captures found none there"
-            )
+            return (at, end)
         if spans[0] != (at, end):
-            raise RuntimeError(
-                f"internal disagreement in the engine: find_all reported a match at "
-                f"bytes ({at}, {end}), but captures answered differently from the same offset"
-            )
+            return (at, end)
         row = spans[1:]
         texts = [
             None

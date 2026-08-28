@@ -567,7 +567,9 @@ fail:
  * the finished group texts per match, all here - N matches used to cost N+1
  * crossings and a Match object each, and now cost one crossing and none.
  * `count` is what the pattern declares; one group answers bare, several answer
- * as a tuple, a group the match did not enter answers None. */
+ * as a tuple, a group the match did not enter answers None. A capture pass that
+ * contradicts the walk answers the disagreeing span instead of the list, for
+ * the caller to refuse with the pattern in hand. */
 static PyObject *verb_group_texts(PyObject *self, IRGX_ARGS) {
   (void)self;
   if (arity(IRGX_NARGS, 5) < 0) return NULL;
@@ -626,11 +628,17 @@ static PyObject *verb_group_texts(PyObject *self, IRGX_ARGS) {
       return refused(st);
     }
     if (st != 1 || caps[0].start != out[i].start || caps[0].end != out[i].end) {
-      PyErr_Format(PyExc_RuntimeError,
-                   "internal disagreement in the engine: find_all reported a match at "
-                   "bytes (%lld, %lld), but captures answered differently from the same offset",
-                   (long long)out[i].start, (long long)out[i].end);
-      goto fail;
+      /* The two arms disagree about this match. Hand the offset back as a span
+       * and let the caller name the pattern: prose here could only raise a
+       * class this module would have to be given, and the seam speaks
+       * statuses. A span is unambiguous - a status is an int, an answer is a
+       * list. */
+      PyObject *at = pair(out[i].start, out[i].end);
+      subject_done(&s);
+      PyMem_Free(heap);
+      PyMem_Free(caps_heap);
+      Py_DECREF(list);
+      return at;
     }
     PyObject *item;
     if (count == 1) {
