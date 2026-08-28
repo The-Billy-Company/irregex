@@ -84,7 +84,7 @@
   it. `bench/rungs/lowering/` prices a COMPILE the way every other rung prices a
   scan: one row per pattern, split into parse, Thompson lowering, the symbolic
   road's phases, the crossing broken into decoder / horizon / product walk, and a
-  residue labelled honestly as "everything I have not named yet" rather than
+  residue labeled honestly as "everything I have not named yet" rather than
   folded into whichever stage was convenient. Two more sections fit the scaling
   laws on controlled axes - the same class repeated k times, and classes built to
   hold an exact chosen number of codepoint ranges - and a fourth prints the pair

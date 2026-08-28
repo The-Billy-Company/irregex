@@ -8,7 +8,7 @@
   exception escaping a handler written for it. Subclassing costs nothing, since
   `re.error` carries the same three attributes this class already carried.
 
-  The parent is initialised without the position deliberately. Given one,
+  The parent is initialized without the position deliberately. Given one,
   `re.error` appends "at position N" to the message it hands `Exception`, so
   `str(err)` would stop being `msg`. The position is reported through `pos`, and
   now also through the `lineno` / `colno` that `re.error` promises, derived the

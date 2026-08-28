@@ -1385,7 +1385,7 @@ static int match_init(PyObject *self, PyObject *args, PyObject *kwargs) {
   PyObject *re = NULL, *view = NULL;
   Py_ssize_t start = 0, end = 0;
   static char *names[] = {"pattern", "view", "start", "end", NULL};
-  if (!PyArg_ParseTupleAndKeywords(args, kwargs, "OOnn:Match", names, &re, &view, &start, &end))
+  if (!PyArg_ParseTupleAndKeywords(args, kwargs, "OOnn:Match", names, &re, &view, &start, &end)) // spellchecker:disable-line
     return -1;
   PyObject *text = NULL;
   int wide = view_reading(view, &text);

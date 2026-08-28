@@ -111,7 +111,7 @@ class error(_re.error):  # noqa: N801 - named to match `re.error` so `except` cl
     it. Subclassing costs nothing here, because ``re.error`` carries the same
     three attributes this class already carried.
 
-    The parent is initialised without the position, deliberately. Given one,
+    The parent is initialized without the position, deliberately. Given one,
     ``re.error`` appends "at position N" to the message it passes up to
     ``Exception``, so ``str(err)`` would stop being :attr:`msg`. The position is
     reported through :attr:`pos` - and through :attr:`lineno` / :attr:`colno`,
