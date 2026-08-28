@@ -84,6 +84,12 @@ use toolchain by packaging scripts
 // second copy of that discovery, free to disagree with the one the tests use.
 use conftest by scripts
 
+// The packaging test holds the wheel matrix to the script that builds it —
+// `accel_shortfall` and `native_target` are the script's own verdicts, so the
+// test asks them rather than keeping a second copy free to drift. Same
+// `sys.path` shape as `toolchain` above, same reason to write it down.
+use build_wheels by tests
+
 // Structural laws.
 limit  reach to 1 hop
 forbid cycles across directories
