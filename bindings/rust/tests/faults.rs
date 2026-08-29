@@ -38,9 +38,8 @@ fn a_bad_pattern_is_an_error_not_a_panic() {
 fn constructs_outside_the_linear_grammar_are_refused() {
     // A *leading* `(?i)` is not on this list: it is folded into the compile, the
     // way `regex` folds it. `x(?i)y` is, because a non-leading global flag is not
-    // a whole-pattern option, and `(?x)` is, because the letter is not in this
-    // grammar at all.
-    for pattern in ["foo(?=bar)", "(?<=x)y", "(?!x)", "x(?i)y", "(?x) a b"] {
+    // a whole-pattern option.
+    for pattern in ["foo(?=bar)", "(?<=x)y", "(?!x)", "x(?i)y"] {
         let why = Regex::new(pattern).expect_err(pattern);
         assert!(
             matches!(why, Error::NeedsPcre { .. }),
@@ -53,6 +52,15 @@ fn constructs_outside_the_linear_grammar_are_refused() {
             .build()
             .unwrap_or_else(|why| panic!("{pattern} should compile under pcre: {why}"));
     }
+
+    // `(?x)` was on that list until verbose entered the grammar. It compiles on
+    // the linear arm now, and `(?ix)` asking for two things has to get both —
+    // blind to the space AND case-insensitive, never one of the two.
+    assert!(Regex::new("(?x) a b").unwrap().is_match("ab"));
+    assert!(Regex::new("(?ix)a b").unwrap().is_match("AB"));
+    // Without the `i` the space is still gone but the case is not, which is the
+    // half a single-flag reading would have silently given back above.
+    assert!(!Regex::new("(?x)a b").unwrap().is_match("AB"));
 }
 
 /// A pattern PCRE2 itself rejects has to come back as an error too, not as a
