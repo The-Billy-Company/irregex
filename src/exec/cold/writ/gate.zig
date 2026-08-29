@@ -82,6 +82,24 @@ pub fn requiredLiteralGate(a: std.mem.Allocator, o: Opts, eff: []const u8, re: *
     return simd.Gate.of(req);
 }
 
+/// This run's compile options with ONLY the fold turned off — the twin both
+/// caseless prefilters below mine their literal from.
+///
+/// Each used to hand-list `.{ .unicode, .multiline }`, which quietly asked a
+/// DIFFERENT grammar than the engine's the moment a third option changed what a
+/// literal is. Verbose is the case that proves it: ` literal \s a` is three
+/// tokens under `(?x)` and a literal beginning with a SPACE without it, so the
+/// hand-listed twin mined a needle no line contains and the gate rejected every
+/// line the engine would have matched — a prefilter that is not an
+/// over-approximation loses matches rather than slowing a search down, and
+/// nothing downstream can notice. Deriving from `arm.linearOptions`, the
+/// declared single owner of the flags→options mapping, makes that unrepresentable.
+fn unfoldedOptions(o: Opts) Regex.Options {
+    var opts = arm.linearOptions(o);
+    opts.caseless = false;
+    return opts;
+}
+
 /// The caseless twin of the required-literal gate: recompile the effective
 /// pattern CASE-SENSITIVELY (the fold is what erases `required`, so the
 /// unfolded twin still carries it), take the longest fold-closed WINDOW of
@@ -97,7 +115,7 @@ pub fn caselessGate(a: std.mem.Allocator, o: Opts, eff: []const u8, re: *const M
         .linear => {},
         .pcre => return null, // no raw-literal twin to mine (literal.zig declines caseless)
     }
-    var raw = Regex.compileOpts(a, eff, .{ .unicode = o.unicode, .multiline = o.multiline }) catch return null;
+    var raw = Regex.compileOpts(a, eff, unfoldedOptions(o)) catch return null;
     defer raw.deinit();
     const win = query_mod.foldClosedWindow(raw.required, o.unicode) orelse return null;
     const low = a.dupe(u8, win) catch oom();
@@ -140,7 +158,7 @@ pub fn caselessFilter(a: std.mem.Allocator, o: Opts, eff: []const u8, re: *const
         .linear => {},
         .pcre => return &.{}, // no raw-literal twin to mine (literal.zig declines caseless)
     }
-    var raw = Regex.compileOpts(a, eff, .{ .unicode = o.unicode, .multiline = o.multiline }) catch return &.{};
+    var raw = Regex.compileOpts(a, eff, unfoldedOptions(o)) catch return &.{};
     defer raw.deinit();
     if (raw.required.len < 3) return &.{};
     const vars = query_mod.caselessVariants(a, raw.required, o.unicode) catch return &.{};
