@@ -6,10 +6,10 @@
 //!
 //! A leading `(?flags)` directive is a per-pattern request against a run-wide
 //! engine, so it has to be RECONCILED across every pattern rather than applied
-//! locally: `i` and `u` resolve to run-wide options and two patterns demanding
-//! opposite cases is a loud failure, never a quietly-wins-last. `m` and `s` are
-//! inert in the per-line model. `x`/`U`/`R` are semantics this engine cannot
-//! reproduce, so they die with the reason and the rg fallback.
+//! locally: `i`, `u`, and `x` resolve to run-wide options and two patterns
+//! demanding opposite cases is a loud failure, never a quietly-wins-last. `m`
+//! and `s` are inert in the per-line model. `U`/`R` are semantics this engine
+//! cannot reproduce, so they die with the reason and the rg fallback.
 //!
 //! The contract, stated once: honored where we can, LOUD where we can't — the
 //! one thing never permitted is a silent wrong answer.
@@ -38,10 +38,14 @@ const oom = @import("../../../surface/cli/outcome.zig").oom;
 ///   • `u` / `-u` → Unicode mode on/off for the WHOLE pattern (`u` = our
 ///     default; `-u` selects byte/ASCII), the run-wide analogue of `-i`
 ///     reconciled the same way (mixed per-pattern demands fail loud);
+///   • `x` / `-x` → verbose mode for the WHOLE pattern, reconciled like `i` and
+///     `u`: whitespace between tokens stops being significant and `#` runs to
+///     end of line. Both arms have the mode (`Regex.Options.verbose`, PCRE2's
+///     `EXTENDED`), so the letter is honored rather than stripped — and a
+///     pattern that only wants it for one branch says `(?x: … )`, which is a
+///     scoped group and never reaches here;
 ///   • `U` `R` → semantics the engine can't reproduce → die with the
-///     reason and the rg fallback; `x` is a mode the *engine* now has (the C ABI
-///     honors it) but this face has no per-run knob to carry it, so it refuses
-///     here rather than stripping the letter and searching non-verbosely.
+///     reason and the rg fallback.
 /// Anything else after `(?` (lookaround, a scoped `(?i:…)` group, `(?P<…>`) is
 /// not a flag directive — returns null and the regex parser decides.
 ///
@@ -52,14 +56,7 @@ const LeadingFlags = syntax.Directive;
 pub fn stripLeadingFlags(pat: []const u8) ?LeadingFlags {
     return switch (syntax.preamble(pat)) {
         .none => null,
-        // `x` reads as a directive now, so it has to be refused explicitly:
-        // returning it would silently drop the letter and search the pattern
-        // with its whitespace significant, which is the wrong answer rather
-        // than a missing one.
-        .asks => |d| if (d.verbose orelse false)
-            die("(?x) unsupported by gist's engine — use ripgrep for this\n", .{})
-        else
-            d,
+        .asks => |d| d,
         // The only part of the reading that is this face's own: a CLI has no
         // second engine to escalate to, so a flag the grammar lacks is a loud
         // exit naming the tool that has it. (The C ABI answers the same
@@ -147,9 +144,10 @@ pub fn combinePatterns(a: std.mem.Allocator, io: std.Io, parsed: args.Parsed, o:
         var uni = Directive{ .name = "u" };
         var mln = Directive{ .name = "m" };
         var dot = Directive{ .name = "s" };
+        var vrb = Directive{ .name = "x" };
         for (pats.items) |*p| {
             const sf = stripLeadingFlags(p.*) orelse {
-                for ([_]*Directive{ &ci, &uni, &mln, &dot }) |d| d.inherit = true;
+                for ([_]*Directive{ &ci, &uni, &mln, &dot, &vrb }) |d| d.inherit = true;
                 continue;
             };
             p.* = sf.rest;
@@ -157,25 +155,36 @@ pub fn combinePatterns(a: std.mem.Allocator, io: std.Io, parsed: args.Parsed, o:
             uni.see(sf.unicode);
             mln.see(sf.line_anchors);
             dot.see(sf.dotall);
+            vrb.see(sf.verbose);
         }
         ci.resolve(&o.caseless);
         uni.resolve(&o.unicode);
         mln.resolve(&o.re_line_anchors);
         dot.resolve(&o.multiline_dotall);
+        vrb.resolve(&o.re_verbose);
     }
+    // Under verbose a pattern may END INSIDE a `#` comment, and a comment runs to
+    // the next newline — so a `)` appended after one is swallowed rather than
+    // closing the group this face wrapped it in. rg wraps the same way and dies
+    // exactly there: `rg '(?x) alpha \s+ \d+ # count'` is "error: unclosed
+    // group", for a pattern its own engine accepts. A newline both terminates a
+    // comment and is insignificant whitespace under verbose, so closing every
+    // wrap with one costs nothing, changes no pattern's meaning, and makes a
+    // commented pattern composable with `-e`/`-x` the way an uncommented one is.
+    const seam: []const u8 = if (o.re_verbose) "\n" else "";
     var combined: []const u8 = pats.items[0];
     if (pats.items.len > 1) {
         var buf: std.ArrayList(u8) = .empty;
         for (pats.items, 0..) |p, i| {
             if (i != 0) buf.append(a, '|') catch oom();
-            buf.print(a, "(?:{s})", .{p}) catch oom();
+            buf.print(a, "(?:{s}{s})", .{ p, seam }) catch oom();
         }
         combined = buf.toOwnedSlice(a) catch oom();
     }
-    if (parsed.opts.line_regexp) combined = std.fmt.allocPrint(a, "^(?:{s})$", .{combined}) catch oom();
+    if (parsed.opts.line_regexp) combined = std.fmt.allocPrint(a, "^(?:{s}{s})$", .{ combined, seam }) catch oom();
     return combined;
 }
-// The dying arms (`(?u)`, `(?x)`, mixed demands) exit the process by design,
+// The dying arms (`(?U)`, `(?R)`, mixed demands) exit the process by design,
 // so tests cover the honor/strip/decline paths; build.zig's black-box guard
 // covers the end-to-end exit codes.
 test "stripLeadingFlags honors i/-i and strips the directive" {
@@ -221,6 +230,26 @@ test "stripLeadingFlags resolves m/s flags; u/-u select Unicode mode" {
     const iu = stripLeadingFlags("(?i-u)Foo").?;
     try t.expectEqual(@as(?bool, true), iu.caseless);
     try t.expectEqual(@as(?bool, false), iu.unicode);
+}
+
+test "stripLeadingFlags honors x, and a comment survives being stripped of it" {
+    const t = std.testing;
+    const vx = stripLeadingFlags("(?x) alpha \\s+ \\d+  # the count").?;
+    try t.expectEqual(@as(?bool, true), vx.verbose);
+    // The letter is honored, so the REST keeps its whitespace and its comment —
+    // the engine is what reads them as trivia. Stripping the directive must not
+    // also strip what the directive was about.
+    try t.expectEqualStrings(" alpha \\s+ \\d+  # the count", vx.rest);
+    const nx = stripLeadingFlags("(?-x)a b").?;
+    try t.expectEqual(@as(?bool, false), nx.verbose);
+    try t.expectEqualStrings("a b", nx.rest);
+    // `x` reconciles beside the others rather than instead of them.
+    const ix = stripLeadingFlags("(?ix)Foo bar").?;
+    try t.expectEqual(@as(?bool, true), ix.caseless);
+    try t.expectEqual(@as(?bool, true), ix.verbose);
+    const nu = stripLeadingFlags("(?x-u)a b").?;
+    try t.expectEqual(@as(?bool, true), nu.verbose);
+    try t.expectEqual(@as(?bool, false), nu.unicode);
 }
 
 test "stripLeadingFlags declines non-directive groups (parser decides)" {

@@ -215,7 +215,7 @@ fn fieldReach(f: OptField) Reach {
         // What the engine is given to read.
         .hidden, .text, .binary, .search_zip, .pre, .pre_globs, .pre_excludes, .encoding, .follow, .one_file_system, .max_depth, .max_filesize, .no_ignore, .no_ignore_vcs, .no_ignore_dot, .no_ignore_parent, .no_ignore_exclude, .no_ignore_global, .no_ignore_files, .no_require_git, .ignore_case_insensitive, .ignore_files, .filter => .corpus,
         // What counts as a match in it.
-        .caseless, .smart_case, .unicode, .word, .fixed, .invert, .line_regexp, .crlf, .null_data, .multiline, .multiline_dotall, .re_line_anchors, .engine, .pcre_unicode, .max_per_file, .max_per_file_set, .stop_on_nonmatch, .in_comments, .in_code => .semantics,
+        .caseless, .smart_case, .unicode, .word, .fixed, .invert, .line_regexp, .crlf, .null_data, .multiline, .multiline_dotall, .re_line_anchors, .re_verbose, .engine, .pcre_unicode, .max_per_file, .max_per_file_set, .stop_on_nonmatch, .in_comments, .in_code => .semantics,
         // How the matches are written out.
         // `.hyperlink_bare` is derived parse state, not a settable option: no
         // catalog row targets it, so `reachOf` can never ask about it. It is

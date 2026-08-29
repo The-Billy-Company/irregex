@@ -52,7 +52,7 @@ pub fn linearOptions(o: Opts) Regex.Options {
     // it is handed may CONTAIN a `\n`, which under a NUL terminator is true while
     // `multiline` stays false — the caller still splits its input and still asks
     // per piece, the piece is just a record instead of a line.
-    return .{ .caseless = o.caseless, .multiline = o.multiline, .records = o.null_data, .dotall = o.multiline_dotall, .unicode = o.unicode, .word = o.word, .crlf = o.crlf, .line_anchors = o.re_line_anchors };
+    return .{ .caseless = o.caseless, .multiline = o.multiline, .records = o.null_data, .dotall = o.multiline_dotall, .unicode = o.unicode, .word = o.word, .crlf = o.crlf, .line_anchors = o.re_line_anchors, .verbose = o.re_verbose };
 }
 
 /// Whether PCRE2 was chosen outright (`-P`) or reached by escalation — the two
@@ -67,7 +67,7 @@ const PcreRoute = enum { outright, escalated };
 /// escalation (`dieUnexpressible` below) must ask under identical options, or
 /// the prediction answers about a pattern the run would never have compiled.
 pub fn pcreOptions(o: Opts) pcre2.Options {
-    return .{ .caseless = o.caseless, .multiline = o.re_line_anchors, .dotall = o.multiline_dotall, .unicode = o.pcre_unicode, .word = o.word };
+    return .{ .caseless = o.caseless, .multiline = o.re_line_anchors, .dotall = o.multiline_dotall, .unicode = o.pcre_unicode, .word = o.word, .verbose = o.re_verbose };
 }
 
 pub fn pcreArm(gpa: std.mem.Allocator, eff: []const u8, o: Opts, route: PcreRoute) Pcre {
@@ -195,6 +195,7 @@ pub fn compileCaps(gpa: std.mem.Allocator, o: Opts, eff: []const u8, is_pcre: bo
         .dotall = o.multiline_dotall,
         .word = o.word,
         .crlf = o.crlf,
+        .verbose = o.re_verbose,
     }) catch |e| switch (e) {
         error.OutOfMemory => oom(),
         // Same three-way truth as `dieUnexpressible`, so the `-r` path asks the

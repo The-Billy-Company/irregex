@@ -277,6 +277,11 @@ pub const Opts = struct {
     // anchor only at the buffer ends while the whole-buffer search stays live.
     // Threaded into the matcher compile (`line_anchors`); inert in per-line mode.
     re_line_anchors: bool = false,
+    // The regex `x` flag, resolved from leading `(?x)`/`(?-x)` directives. No
+    // CLI flag sets it, exactly as in rg: verbose is how a LONG pattern is
+    // written, and a long pattern is spelled in the pattern. Threaded into both
+    // arms (`writ/arm.zig`), since PCRE2 has the same mode.
+    re_verbose: bool = false,
     // Match-backend selection (-P/--pcre2, --engine, --auto-hybrid-regex).
     // `default` = the linear RE2/Pike engine; `pcre2` routes to the vendored
     // PCRE2 JIT backend; `auto` compiles linear and escalates to PCRE2 only for a
