@@ -378,15 +378,25 @@ def test_a_leading_inline_flag_says_what_the_keyword_says():
 
 def test_a_nonleading_or_foreign_inline_flag_is_declined_rather_than_ignored():
     # Only the leading form is a whole-pattern option — which is also the only
-    # form `re` itself allows since 3.11 — and `(?x)`/`(?U)`/`(?R)` are flags this
+    # form `re` itself allows since 3.11 — and `(?U)`/`(?R)` are flags this
     # grammar does not have. Refusing beats honoring the letters it recognizes
     # and dropping the rest, which is how a pattern quietly matches the wrong
-    # thing: `(?ix)a b` asking for both must not come back case-insensitive and
-    # still sensitive to the space.
-    for pattern in ("a(?i)b", "(?x) a b", "(?U)a+", "(?R)a$", "(?ix)a b"):
+    # thing.
+    for pattern in ("a(?i)b", "(?U)a+", "(?R)a$"):
         with pytest.raises(irgx.UnsupportedPattern):
             irgx.compile(pattern)
-    # The PCRE arm does honor them.
+
+    # `(?x)` was on that list until verbose reached both arms, so the case the
+    # paragraph above worried about is now the one worth asserting rather than
+    # the refusal: `(?ix)` asks for two things, and it must come back BOTH
+    # case-insensitive and blind to the space, never one of the two.
+    assert irgx.findall("(?ix)a b", "AB ab Ab") == re.findall("(?ix)a b", "AB ab Ab")
+    assert irgx.findall("(?x) a b", "ab") == ["ab"]
+    # Unescaped whitespace is insignificant and `#` opens a comment that runs to
+    # the end of the line — the pattern here is one byte long.
+    comment = "(?x)a  # the space and this text are not the pattern"
+    assert irgx.findall(comment, "a") == re.findall(comment, "a") == ["a"]
+    # The PCRE arm honors it too, so the two arms cannot disagree about it.
     assert irgx.compile("(?x) a b", pcre=True).findall("ab") == ["ab"]
 
     # The *scoped* form is the parser's own and needs no folding, so it is not on
@@ -445,14 +455,18 @@ def test_fullmatch_refuses_rather_than_reporting_the_wrong_groups():
 
 def test_the_pattern_can_still_carry_its_own_anchors():
     # `\A...\z` remains the engine's own answer and needs no anchored verb at all.
-    # Note the spelling: the end-of-text anchor is `\z`, as in Rust and RE2. `\Z`
-    # is not in this grammar, and asking for it raises rather than quietly meaning
-    # something else.
+    # Note the spelling: the end-of-text anchor is `\z`, as in Rust and RE2.
     whole = irgx.search(r"\A\w+\z", "abc")
     assert whole is not None and whole.span() == (0, 3)
     assert irgx.search(r"\A\w+\z", "abc def") is None
-    with pytest.raises(irgx.error):
-        irgx.compile(r"\Z")
+    # `\Z` is Python's spelling of that same absolute end, so a `re` caller's
+    # pattern ports across without an edit. PCRE reads `\Z` as "the end, or just
+    # before a trailing newline"; that reading is deliberately not adopted here,
+    # and the trailing-`\n` text is what pins the difference — under PCRE's
+    # reading it would match, and it must not.
+    for text in ("abc", "abc\n"):
+        assert irgx.findall(r"abc\Z", text) == re.findall(r"abc\Z", text)
+        assert irgx.findall(r"abc\Z", text) == irgx.findall(r"abc\z", text)
 
 
 def test_compile_is_cached_the_way_re_compile_is():
