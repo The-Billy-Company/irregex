@@ -160,6 +160,28 @@ pub const Regex = struct {
     // Backing storage for a CASELESS `gate` (the ASCII-lowered fold-closed
     // window). Null when there is no gate, or when it borrows `required`.
     gate_bytes: ?[]u8,
+    // The ANCHOR SEAM: `"\n" ++ prefix`, where `prefix` is the literal run every
+    // match must BEGIN with, for a `^…` pattern in the per-line model. Non-null
+    // only when all three facts hold, because all three are what make it sound.
+    //
+    // It exists because an anchored pattern's literal is the wrong needle at
+    // document grain. `^é` has `required = "é"`, so the whole-buffer sweep marks
+    // every line holding an é anywhere — 262k candidate lines on the escape
+    // corpus, where only 28k lines START with one. The seam adds the one byte
+    // that carries the anchor: a match begins at a line start, a line start is
+    // either offset 0 or the byte after a `\n`, and the match's first bytes are
+    // `prefix` — so `"\n" ++ prefix` is present at (candidate − 1) for every
+    // match except one in the buffer's first line, which the sweep tests
+    // separately. This is the needle rg builds for the same pattern, and the
+    // reason it was the one shape rg still led on: the same kernel was being run
+    // over a needle one byte shorter and two orders of magnitude commoner.
+    //
+    // Necessary condition only, exactly like `gate` — a hit nominates a line and
+    // the engine confirms it — so a `prefix` shorter than the full match costs
+    // selectivity and never correctness. `seam_bytes` owns the storage; the gate
+    // borrows it, so it is freed after the gate is done with it.
+    seam: ?simd.Gate,
+    seam_bytes: ?[]u8,
     // The accelerator tier (`ladder/rungs.zig`): every optional machine that
     // beats the byte-class DFA on the patterns it accepts — transformation
     // composition, class bitstreams, the SP-quotient sieve — behind ONE
@@ -198,6 +220,34 @@ pub const Regex = struct {
     // at position 0. In the per-line model it tracks `multiline` (false), where a
     // line's own edges already are its anchors, so the distinction is inert.
     line_anchors: bool,
+    // Is a `\n` at the very END of a haystack that haystack's line TERMINATOR, or
+    // ordinary content? True for the document model — `-U`, and every per-line
+    // caller — where a file ending `abc\n` has one line and no phantom empty
+    // second one, so no match may begin at `buf.len`. False under `--null-data`,
+    // where the haystack is a NUL-delimited record: its terminator was the NUL and
+    // was stripped before the engine saw it, so a trailing `\n` is a byte like any
+    // other and opens the empty line after it. Read wherever `^` is resolved
+    // (`closure.lineStart`, and the span/one-pass arms that share it), which is
+    // why it lives here rather than as a parameter — the two arms answering it
+    // differently is exactly how `-o` came to report a different language than
+    // `-c` counted. Inert unless `line_anchors`.
+    nl_terminates: bool,
+    // Hand this program its haystack ONE LINE AT A TIME, splitting at each `\n`.
+    // Set only for a `--null-data` record whose pattern cannot see across a
+    // newline (`lower.lineLocal`), and it is what makes record mode cost what
+    // line mode costs: with the pieces newline-free, `line_anchors` is already
+    // false above and every machine in the ladder — DFA, tier, literal engine,
+    // class-run kernel — is exact again, where the undecomposed record had only
+    // the Pike scan. The boolean and span entries own the loop (`verdict.zig`,
+    // `pike/span.zig`); nothing else in the engine can tell the difference,
+    // which is the point of doing it here rather than in the caller.
+    split_lines: bool,
+    // May a decomposed record's SPAN walk jump between `gate` occurrences to
+    // skip whole lines, rather than walking each one (`lower.linesSieveable`)?
+    // Only a non-caseless required literal the rarity table prices sparse enough
+    // to clear a line earns it; the decision is per-query because pricing a
+    // needle is, and `pike/span.zig` runs once per span.
+    line_sieve: bool,
     // Unicode mode (rg default; `(?-u)`/`--no-unicode` clears it). Drives the
     // word test behind `\b`/`\B`/`\<`/`\>` and `-w`: set, the codepoint straddling
     // a gap is decoded and tested against the full `\w` set; cleared, it's the
@@ -263,6 +313,7 @@ pub const Regex = struct {
         // Before the storage it borrows (`required`/`alts`/`lits`).
         if (self.literal_scan) |*set| set.deinit();
         if (self.gate_bytes) |g| self.allocator.free(g);
+        if (self.seam_bytes) |s| self.allocator.free(s);
         self.allocator.free(self.states);
         self.allocator.free(self.required);
         lower.freeAlts(self.allocator, self.alts);

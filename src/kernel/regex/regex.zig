@@ -80,6 +80,15 @@ pub const ast = @import("ast/ast.zig");
 // reconstructed the walkers itself would be racing a copy and proving nothing.
 pub const analysis = @import("analysis/analysis.zig");
 
+// ── The set of bytes a match can begin with, and what it is worth ────────────
+// Named because the fact travels one grain UP as well as down. The engine's own
+// scanners use a first-byte set to skip dead spans inside a haystack; the emit
+// layer uses the identical set, and the identical corpus economics, to skip dead
+// LINES (`Emitter.litCandidates`). Both consumers pricing the same set against
+// the same bar is the point — an emit layer that re-derived either would drift
+// from the engine's own opinion of when a skip pays.
+pub const prefilter = @import("analysis/prefilter.zig");
+
 // ── The engine-neutral match seam: linear arm or PCRE2 arm, one vocabulary ───
 pub const ladder = @import("matcher.zig");
 pub const Matcher = ladder.Matcher;

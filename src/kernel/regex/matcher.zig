@@ -29,6 +29,8 @@ const std = @import("std");
 const core = @import("linear/program/core.zig");
 const pcre2 = @import("pcre2/backend.zig");
 const onset_mod = @import("linear/dfa/onset.zig");
+const prefilter = @import("analysis/prefilter.zig");
+const simd = @import("../scan/simd.zig");
 
 pub const Regex = core.Regex;
 pub const Pcre = pcre2.Pcre;
@@ -86,6 +88,36 @@ pub const Matcher = union(Backend) {
     /// engine path).
     pub fn lits(self: *const Matcher) []const []const u8 {
         return if (self.* == .linear) self.linear.lits else &.{};
+    }
+
+    /// The document-grain needle for a line-anchored pattern: `"\n" ++ prefix`,
+    /// present immediately before every match that is not in the buffer's first
+    /// line (`Regex.seam`). Null when the pattern is not `^`-anchored, is `-U`,
+    /// is caseless, or has no literal match-prefix — and always for PCRE2, whose
+    /// program this package does not analyze.
+    ///
+    /// A necessary condition only, like `required`: a hit nominates a line and
+    /// the caller confirms it with a real match.
+    pub fn seamGate(self: *const Matcher) ?simd.Gate {
+        return if (self.* == .linear) self.linear.seam else null;
+    }
+
+    /// The set of bytes that can BEGIN a match, with the vector accelerators
+    /// already chosen for its shape — or null when this engine cannot prove one.
+    ///
+    /// The engine's own scanners use it to skip dead spans *within* a haystack;
+    /// this exposes it because the emit layer wants the same fact one grain up.
+    /// A non-nullable match consumes its first byte from this set, so a line
+    /// holding none of these bytes provably cannot match, and a whole-buffer
+    /// sweep can mark candidate lines for a pattern that has no literal to sweep
+    /// for. It is a NECESSARY condition only, which is all a candidate mask
+    /// needs; the caller confirms each candidate with a real match.
+    ///
+    /// PCRE2 declines: its program is not inspectable, so there is no set to
+    /// read. Callers must also check `nullable()` — a pattern that can match
+    /// zero-width matches lines it has no byte in at all.
+    pub fn firstBytes(self: *const Matcher) ?*const prefilter.Prefilter {
+        return if (self.* == .linear) &self.linear.first else null;
     }
 
     /// Can the pattern match zero-width (`a*`, a bare lookaround)? Governs the

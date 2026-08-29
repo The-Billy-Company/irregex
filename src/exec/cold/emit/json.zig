@@ -787,29 +787,33 @@ pub fn summary(a: std.mem.Allocator, out: *std.ArrayList(u8), st: Stats, elapsed
 /// Returns `&.{}` without allocating on a non-match, so the classification scan
 /// over context/non-matching lines stays as cheap as a first-span probe — the
 /// engine walks each line exactly once and its spans are cached on the `Line`.
-/// Per-line candidate mask for a literal-bearing pattern — the `--json` twin of
+/// Per-line candidate mask — the `--json` twin of
 /// `output.Emitter.litCandidates` (see it for the superset proof, and
-/// `output.Emitter.maskLiterals` for which literal set is sound to sweep with).
-/// ONE fused whole-buffer `indexOfAnyPos` sweep over `body` marks only the lines
-/// around literal hits (mapped via each `Line.off`, a forward-only two-pointer),
-/// so classification skips ~every non-candidate without an NFA run. Null unless
-/// sound & profitable: a usable literal set, no single needle already gating, and
-/// not inverted (a `-v` match LACKS the literals).
+/// `output.Emitter.sweepFor` for which sweep is sound to mark with). ONE fused
+/// whole-buffer sweep over `body` marks only the lines around hits (mapped via
+/// each `Line.off`, a forward-only two-pointer), so classification skips ~every
+/// non-candidate without an NFA run. Null unless sound & profitable: a usable
+/// sweep, and not inverted (a `-v` match LACKS the literals).
+///
+/// The sweep CHOICE comes from `output.Emitter.sweepFor` rather than being
+/// re-decided here: the two printers must mark the same lines, and only the
+/// offset arithmetic below differs between them.
 fn litCandidates(a: std.mem.Allocator, re: *const Matcher, needle: ?simd.Gate, o: Opts, body: []const u8, lines: []const Line) ?[]const bool {
-    if (needle != null or o.invert or lines.len == 0) return null;
-    const lits = output.Emitter.maskLiterals(o, re);
-    if (lits.len == 0) return null;
-    const cand = a.alloc(bool, lines.len) catch return null;
-    @memset(cand, false);
-    var lc: usize = 0;
-    var from: usize = 0;
+    if (o.invert or lines.len == 0) return null;
     // One mint for this document, before the loop. The loop below re-enters the
     // scanner once per HIT, so asking inside it would re-derive the anchor decision
     // millions of times on a match-dense body — and `anchor.select` is ~21 ns on a
     // typical needle since the joint correction landed, which is a cost that only
     // makes sense paid once. `docLitPlan` declines below its own size gate.
-    const plan = output.Emitter.docLitPlan(o, re, body);
-    while (simd.indexOfAnyPosWith(body, from, lits, plan)) |p| {
+    // `Gate.on` is idempotent (it re-decides from the static pair), so planning
+    // the gate on THIS body here is safe whether or not the caller already did.
+    const doc_needle = if (needle) |g| g.on(body) else null;
+    const sweep = output.Emitter.sweepFor(o, re, doc_needle, output.Emitter.docLitPlan(o, re, body)) orelse return null;
+    const cand = a.alloc(bool, lines.len) catch return null;
+    @memset(cand, false);
+    var lc: usize = 0;
+    var from: usize = 0;
+    while (sweep.next(body, from)) |p| {
         while (lc + 1 < lines.len and lines[lc + 1].off <= p) lc += 1;
         cand[lc] = true;
         if (lc + 1 >= lines.len) break;

@@ -67,37 +67,67 @@ fn emitMatchesLit(self: *Emitter, lits: []const []const u8, path: []const u8, li
     return n;
 }
 
-/// Eligible for the line-free literal fast path (`fileLit`)? Needs the
-/// pure-literal match EQUIVALENCE (`re.lits`, empty under `-i`/`-w`/`-U`) so
-/// every candidate line provably matches, and a mode whose output does not
+/// Eligible for the line-free candidate-jump fast path (`fileLit`)? Needs a
+/// whole-buffer sweep to jump on (`Emitter.sweepFor` — a literal set, the
+/// required literal, or the first-byte set), and a mode whose output does not
 /// depend on the physical line grid: no context window (`-A/-B/-C`), invert,
 /// passthru, vimgrep, `--stats`, `--stop-on-nonmatch`, or `-r` replacement.
 /// The eligible modes — plain, `-n`, `--column`, `-o`, `-c`,
 /// `--count-matches`, `-l` — reuse the SAME `row`/`emitMatches`/`bufTally`
 /// helpers as `file`, so output is byte-identical.
+///
+/// It used to require the pure-literal match EQUIVALENCE, which meant a
+/// candidate line provably matched and no engine ran. That is now the
+/// `decides` case rather than the admission condition: a merely NECESSARY
+/// sweep is admitted too and confirms each candidate line with one
+/// `lineMatch`. The distinction is worth drawing precisely because everything
+/// *else* this path buys is independent of it — a pattern with no literal
+/// equivalence (`^é`, `[\u00ab-\u00bb]`, a caseless needle) still skips the
+/// 3.8-million-slice line array a 268 MB file would otherwise materialize, and
+/// still gets the single-file shard driver, which is the parallelism ripgrep
+/// structurally cannot use.
 pub fn litFastEligible(self: *const Emitter) bool {
     const o = self.o;
-    if (self.re.lits().len == 0) return false;
     if (o.invert or o.word or o.passthru or o.vimgrep or o.stats or o.stop_on_nonmatch) return false;
     if (o.before != 0 or o.after != 0) return false;
     if (o.replace != null) return false;
-    return true;
+    return Emitter.sweepFor(o, self.re, self.needle, self.lit_plan) != null;
 }
 
-/// The line-free literal fast path — ripgrep's searcher-loop architecture
-/// (candidate jump → line bounds → confirm → skip the line), the piece we
-/// were missing. For a pure-literal pattern it NEVER builds the line array:
-/// one `indexOfAnyPos` sweep jumps hit→hit over `body`; each hit's line
-/// bounds come from a reverse/forward memchr (`lastIndexOfScalar`/`memchr`);
-/// the line is emitted through the same helpers as `file`; and the scan
-/// resumes past the line terminator, so each matching line is visited exactly
-/// once — a literal carries no `\n`, so a hit `p` lands strictly inside
-/// `[ls,le)`, hence the line matches (the `re.lits` equivalence). `-c` need
-/// not even run the engine (candidate line ⟺ matching line). Line numbers are
-/// counted incrementally over the inter-match gap (SIMD `countByte`), paid
-/// only under `-n`. `base`/`body_end` are set by the caller, so `offOf` and
-/// unterminated-tail handling — and therefore every output byte — match
-/// `file`. Returns the mode's tally (matching lines, or spans under `-o`/
+/// Does a literal OCCURRENCE prove a match — the pure-literal equivalence?
+///
+/// Strictly stronger than `litFastEligible`, and the distinction is the whole
+/// reason both exist. Eligibility says a whole-buffer sweep can name candidate
+/// lines, which `fileLit` then confirms one at a time. This says the sweep needs
+/// no confirmation at all, so a caller may answer from a hit's mere existence —
+/// which is what `-q`'s presence short-circuit does, and what would be a false
+/// positive on a merely-necessary sweep.
+pub fn litDecides(self: *const Emitter) bool {
+    return self.re.lits().len > 0 and litFastEligible(self);
+}
+
+/// The line-free candidate-jump fast path — ripgrep's searcher-loop
+/// architecture (candidate jump → line bounds → confirm → skip the line), the
+/// piece we were missing. It NEVER builds the line array: one whole-buffer
+/// sweep jumps hit→hit over `body`; each hit's line bounds come from a
+/// reverse/forward memchr (`lastIndexOfScalar`/`memchr`); the line is emitted
+/// through the same helpers as `file`; and the scan resumes past the line
+/// terminator, so each candidate line is visited exactly once.
+///
+/// **Whether a candidate is a match depends on the sweep, and that is the only
+/// thing that varies here.** A pure-literal sweep is an EQUIVALENCE — a literal
+/// carries no `\n`, so a hit `p` lands strictly inside `[ls,le)`, hence the line
+/// matches — and `-c` need not run the engine at all. Every other sweep is a
+/// NECESSARY condition, so the line is confirmed with one `lineMatch` (the same
+/// predicate `grid.lineHit` applies, over the same `mview`) and a rejected
+/// candidate is skipped exactly like a line the sweep never marked. Resuming
+/// past the line terminator either way is what keeps that cheap: a line holding
+/// fifty candidates is confirmed once, not fifty times.
+///
+/// Line numbers are counted incrementally over the inter-candidate gap (SIMD
+/// `countByte`), paid only under `-n`. `base`/`body_end` are set by the caller,
+/// so `offOf` and unterminated-tail handling — and therefore every output byte —
+/// match `file`. Returns the mode's tally (matching lines, or spans under `-o`/
 /// `--count-matches`).
 ///
 /// The scan is restricted to hits in `[lo, hi)` and line numbers start at
@@ -111,20 +141,42 @@ pub fn fileLit(self: *Emitter, path: []const u8, body: []const u8, lo: usize, hi
     const o = self.o;
     const lits = self.re.lits();
     const term = o.term();
+    // `self.lit_plan` and `self.needle` are THIS document's decisions, minted
+    // once by `Emitter.openOn` (or by the shard driver and copied in). Neither
+    // may be minted here: this loop re-enters the scanner per HIT, and a single
+    // file can be cut across cores, so a local would re-sample the same document
+    // once per shard — the cost the sampling budget is explicitly priced not to
+    // pay.
+    const sweep = Emitter.sweepFor(o, self.re, self.needle, self.lit_plan) orelse return 0;
+    // Does a candidate line PROVE a match, or only permit one? Only the
+    // pure-literal equivalence proves it; `re.lits` is exactly that set (empty
+    // under `-i`/`-w`/`-U`), so a `.lits` sweep over a non-empty `lits` is the
+    // deciding case and everything else confirms.
+    const decides = sweep == .lits and lits.len > 0;
     // `-c -o` resolved to `.count_matches` back in argv (`answer.Mode.settle`),
     // so counting spans is exactly the one mode — no second reading of `-o`.
     const count_spans = o.mode == .count_matches;
     const counting = o.mode.counting();
     const emit_spans = o.only_matching and !counting;
     // Prefix-free literals resolve spans without the Pike VM (`litNextSpan`),
-    // so a span-emitting mode over such a set never allocates a `SpanSim`.
-    const lit_span = prefixFree(lits);
+    // so a span-emitting mode over such a set never allocates a `SpanSim`. Only
+    // available where the literals ARE the match; a merely-necessary sweep has
+    // no such shortcut.
+    const lit_span = decides and prefixFree(lits);
     const wants_span = emit_spans or count_spans or (o.column and !counting);
     var ssim: ?Matcher.SpanSim = if (wants_span and !lit_span)
         (Matcher.SpanSim.init(self.a, self.re) catch return 0)
     else
         null;
     defer if (ssim) |*s| s.deinit();
+    // Confirmation scratch — the boolean walk a non-deciding sweep needs per
+    // candidate line. Borrowed from the caller when it threaded one in.
+    var local_sim: ?Matcher.Sim = if (!decides and self.sim == null)
+        (Matcher.Sim.init(self.a, self.re) catch return 0)
+    else
+        null;
+    defer if (local_sim) |*s| s.deinit();
+    const csim: ?*Matcher.Sim = if (decides) null else (self.sim orelse &local_sim.?);
 
     var lineno: usize = base_lineno; // newlines in body[0..counted] (only advanced under -n)
     var counted: usize = lo;
@@ -134,52 +186,67 @@ pub fn fileLit(self: *Emitter, path: []const u8, body: []const u8, lo: usize, hi
     const max = o.max_per_file;
     // Pure `-c` counts matching LINES and never emits, so it needs only the
     // line END (to skip past a counted line) — its reverse-memchr line START
-    // is dead work. Every other mode builds the line slice, so needs both.
-    const need_start = !(counting and !count_spans);
-    // `self.lit_plan` is THIS document's anchor decision, minted once by
-    // `Emitter.openOn` (or by the shard driver and copied in). It must not be
-    // minted here: this loop re-enters the scanner per HIT, and a single file can
-    // be cut across cores, so a local would re-sample the same document once per
-    // shard — the cost the sampling budget is explicitly priced not to pay.
-    while (simd.indexOfAnyPosWith(body, pos, lits, self.lit_plan)) |p| {
+    // is dead work. Every other mode builds the line slice, so needs both; and
+    // so does confirmation, which judges the LINE and not the hit, which is why
+    // a merely-necessary sweep wants the start even while counting.
+    //
+    // This is only about the line's BOUNDS. Whether the line is printed is a
+    // separate question, asked at the branch below — conflating the two made a
+    // non-deciding sweep print every counted line under a bare `-c`, because
+    // needing the start for confirmation was read as wanting to emit.
+    const need_start = !decides or !counting or count_spans;
+    while (sweep.next(body, pos)) |p| {
         if (p >= hi) break; // this shard owns only lines whose hit falls in [lo,hi)
-        if (o.mode == .files_with_matches) return self.emitPathOnly(path);
         const le = simd.memchr(body, p, term) orelse body.len;
+        // The line, recovered before anything is claimed about it: a
+        // non-deciding sweep has to judge the line to know whether this
+        // candidate is a match at all.
+        const ls = if (!need_start) p else if (simd.lastIndexOfScalar(body, p, term)) |nl| nl + 1 else 0;
+        // `grid.lineHit` without its two excluded arms: `-v` and `-w` are both
+        // ineligible here, and its `lineCanMatch` gate is redundant — a needle,
+        // when one exists, IS this sweep, so the candidate already carries it.
+        if (csim) |sim| if (!self.re.lineMatch(sim, self.mview(body[ls..le]))) {
+            // A rejected candidate is a line the sweep should not have marked.
+            // Skip the WHOLE line, exactly as a marked-and-counted one is
+            // skipped: the verdict is the line's, so no later candidate on it
+            // can change the answer.
+            if (le >= body.len) break;
+            pos = le + 1;
+            continue;
+        };
+        if (o.mode == .files_with_matches) return self.emitPathOnly(path);
         lines_hit += 1;
-        if (need_start) {
-            const ls = if (simd.lastIndexOfScalar(body, p, term)) |nl| nl + 1 else 0;
-            const line = body[ls..le];
-            if (count_spans) {
-                const mv = self.mview(line);
-                // No `-m` break inside either loop: `-m` limits matched
-                // LINES, so the last admitted line contributes every span it
-                // holds (`rg --count-matches -m1` over a two-match line is 2).
-                // The outer loop stops on the line count instead.
-                if (lit_span) {
-                    var from: usize = 0;
-                    while (litNextSpan(lits, mv, from, self.lit_plan)) |sp| {
-                        from = sp.end;
-                        spans += 1;
-                    }
-                } else {
-                    var from: usize = 0;
-                    while (output.nextSpan(self.re, &ssim.?, o, mv, &from)) |_| spans += 1;
+        if (count_spans) {
+            const mv = self.mview(body[ls..le]);
+            // No `-m` break inside either loop: `-m` limits matched LINES, so
+            // the last admitted line contributes every span it holds (`rg
+            // --count-matches -m1` over a two-match line is 2). The outer loop
+            // stops on the line count instead.
+            if (lit_span) {
+                var from: usize = 0;
+                while (litNextSpan(lits, mv, from, self.lit_plan)) |sp| {
+                    from = sp.end;
+                    spans += 1;
                 }
             } else {
-                if (o.line_num) {
-                    lineno += simd.countByte(body[counted..ls], term);
-                    counted = ls;
-                }
-                const mv = self.mview(line);
-                if (emit_spans) {
-                    spans += if (lit_span) emitMatchesLit(self, lits, path, lineno + 1, line, mv) else display.emitMatches(self, &ssim.?, path, lineno + 1, line, mv, true);
-                } else {
-                    const col: usize = if (!o.column) 0 else if (lit_span) blk: {
-                        const sp = litNextSpan(lits, mv, 0, self.lit_plan) orelse break :blk 0;
-                        break :blk sp.start + 1;
-                    } else self.firstCol(&ssim.?, mv);
-                    self.row(path, lineno + 1, col, ls, line, true);
-                }
+                var from: usize = 0;
+                while (output.nextSpan(self.re, &ssim.?, o, mv, &from)) |_| spans += 1;
+            }
+        } else if (!counting) {
+            const line = body[ls..le];
+            if (o.line_num) {
+                lineno += simd.countByte(body[counted..ls], term);
+                counted = ls;
+            }
+            const mv = self.mview(line);
+            if (emit_spans) {
+                spans += if (lit_span) emitMatchesLit(self, lits, path, lineno + 1, line, mv) else display.emitMatches(self, &ssim.?, path, lineno + 1, line, mv, true);
+            } else {
+                const col: usize = if (!o.column) 0 else if (lit_span) blk: {
+                    const sp = litNextSpan(lits, mv, 0, self.lit_plan) orelse break :blk 0;
+                    break :blk sp.start + 1;
+                } else self.firstCol(&ssim.?, mv);
+                self.row(path, lineno + 1, col, ls, line, true);
             }
         }
         if (le >= body.len) break;

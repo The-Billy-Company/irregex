@@ -31,11 +31,14 @@ const oom = @import("../../../surface/cli/outcome.zig").oom;
 const beacon = @import("../../../surface/cli/beacon.zig");
 const palette = @import("color.zig");
 const simd = @import("../../../kernel/scan/simd.zig");
+const anchors = @import("../../../kernel/scan/anchor.zig");
 const ml = @import("multiline.zig");
 const Regex = @import("../../../kernel/regex/regex.zig").Regex;
 const Matcher = @import("../../../kernel/regex/regex.zig").Matcher;
 const Caps = @import("../../../kernel/regex/regex.zig").Caps;
 const word = @import("../../../kernel/regex/regex.zig").word;
+const prefilter = @import("../../../kernel/regex/regex.zig").prefilter;
+const dwell = @import("../../../kernel/regex/regex.zig").dwell;
 const corpus_mod = @import("../../../corpus/tree/corpus.zig");
 
 const display = @import("output/display.zig");
@@ -277,7 +280,7 @@ pub const Emitter = struct {
     }
 
     /// Answer one file (or one line-aligned shard of it) without ever building
-    /// a line array — the pure-literal searcher loop.
+    /// a line array — the candidate-jump searcher loop.
     pub fn fileLit(self: *Emitter, path: []const u8, body: []const u8, lo: usize, hi: usize, base_lineno: usize, tally: bool) usize {
         return skim.fileLit(self, path, body, lo, hi, base_lineno, tally);
     }
@@ -285,6 +288,12 @@ pub const Emitter = struct {
     /// Is `fileLit` sound and profitable for this run?
     pub fn litFastEligible(self: *const Emitter) bool {
         return skim.litFastEligible(self);
+    }
+
+    /// Does a literal occurrence PROVE a match, so a caller may answer from a
+    /// hit's existence without confirming the line? (`-q`'s short-circuit.)
+    pub fn litDecides(self: *const Emitter) bool {
+        return skim.litDecides(self);
     }
 
     /// Will `file` answer from the whole buffer, so the caller can skip
@@ -417,37 +426,135 @@ pub const Emitter = struct {
         self.lit_plan = docLitPlan(self.o, self.re, body);
     }
 
-    /// Per-line candidate mask for a literal-bearing pattern — rg's Teddy
-    /// prefilter at line grain. ONE fused whole-buffer `indexOfAnyPos` sweep marks
-    /// only the lines around literal hits, jumping non-matching regions at SIMD
-    /// speed, so the per-line classify below skips ~every non-candidate without an
-    /// engine run — the win a needle-less alternation (`function|const|…`)
-    /// otherwise can't get (no single required literal to gate on). The mask is a
-    /// SUPERSET of the true match set for either literal set `maskLiterals` ranks
-    /// (a hit landing in a line's trailing `\r`/terminator maps to that line —
-    /// harmless: the caller still confirms each candidate with the engine) and
-    /// never a subset, keeping output byte-identical. Returns null (caller keeps
-    /// its per-line path) unless the shortcut is sound & profitable: a usable
-    /// literal set, no single needle already gating, not inverted (a `-v` match
-    /// LACKS the literals), not `--stop-on-nonmatch` (which acts on non-matches
+    /// Where a candidate mask's marks come from — three producers of "the next
+    /// offset worth a look", so the mask loop below is written once.
+    ///
+    /// The dispatch is per HIT, never per byte — and a hit already costs a line
+    /// cursor walk — so the tag check is free at this grain.
+    pub const Sweep = union(enum) {
+        lits: struct { set: []const []const u8, plan: ?simd.Plan },
+        gate: simd.Gate,
+        seam: simd.Gate,
+        first: *const prefilter.Prefilter,
+
+        pub fn next(self: Sweep, body: []const u8, from: usize) ?usize {
+            return switch (self) {
+                .lits => |l| simd.indexOfAnyPosWith(body, from, l.set, l.plan),
+                .gate => |g| g.find(body, from),
+                .seam => |g| nextSeam(g, body, from),
+                .first => |p| p.nextStart(body, from),
+            };
+        }
+
+        /// The anchor seam's marks, reported as the LINE START the anchored match
+        /// would begin at rather than as the `\n` the needle starts on — which is
+        /// what lets it substitute for any other sweep in the mask loop and in
+        /// `skim`, both of which map a mark to the line containing it.
+        ///
+        /// Two obligations. The needle cannot reach a match in the buffer's FIRST
+        /// line (there is no `\n` before it), so offset 0 is tested against the
+        /// prefix directly — the one position the seam does not cover. And a
+        /// resumed sweep must not lose a candidate sitting exactly at `from`: its
+        /// `\n` is at `from - 1`, one byte behind where the caller asked, so the
+        /// needle search starts there.
+        fn nextSeam(g: simd.Gate, body: []const u8, from: usize) ?usize {
+            if (from == 0 and std.mem.startsWith(u8, body, g.bytes[1..])) return 0;
+            const at = g.find(body, from - @intFromBool(from > 0)) orelse return null;
+            return at + 1;
+        }
+    };
+
+    /// Which whole-buffer sweep, if any, can mark this pattern's candidate lines.
+    /// Ranked by how much of a match each mark proves, strongest first, because a
+    /// stronger filter leaves fewer candidates for the engine to confirm.
+    ///
+    /// **The literal sets** (`maskLiterals` ranks the two) are the strongest: a
+    /// substring hit is nearly a match.
+    ///
+    /// **The anchor seam** is next, and it is the required literal with the `^`
+    /// folded in: `"\n" ++ prefix` (see `Regex.seam`). It competes with the
+    /// required-literal gate rather than replacing it, because neither dominates
+    /// — a pattern's match-prefix and its longest mandatory literal can be
+    /// different runs (`^a\d+bcdefgh` prefixes on `a` and requires `bcdefgh`) —
+    /// so the two needles are priced against each other under the same fitted
+    /// digraph model the winner will then be scanned with (`anchor.selectivity`).
+    ///
+    /// **The required literal** is next — the one literal present in every match.
+    /// It is the *identical* filter `lineCanMatch` applies, so its soundness is
+    /// inherited rather than re-argued; the only change is that one buffer sweep
+    /// replaces a per-line `Gate.in`, which is the same SIMD kernel run millions
+    /// of times at line grain instead of once at document grain. Nothing else
+    /// about it moves: this is the gate's own document-planned form, so `-i`
+    /// stays on the caseless kernel.
+    ///
+    /// **The first-byte set** is the fallback, and it is what gives a sweep to the
+    /// patterns that have no literal to seek at all — a codepoint class
+    /// (`[\u00ab-\u00bb]`, whose members share a leading UTF-8 byte), a class-led
+    /// alternation, a quantified class. Three admission conditions, each about
+    /// soundness or profit:
+    ///
+    ///   * **Non-nullable.** A zero-width match consumes no byte, so it can occur
+    ///     on a line holding none of `first` — the mask would be a subset.
+    ///   * **Not `-U`.** Under whole-buffer semantics one span can cover several
+    ///     emitted lines, and only the line holding its first byte gets marked.
+    ///   * **Profitable.** Priced by the same corpus economics and the same bar
+    ///     (`min_profitable_stride`) the START-state dwell uses, which is the
+    ///     nearest calibrated question: a skip that may run across newlines. It
+    ///     is conservative here — this sweep stands down a whole per-line engine
+    ///     run per skipped line, not one boolean DFA step — and over-strictness
+    ///     is the cheap direction. A dense set (`\w` at stride 1) is refused,
+    ///     which is right: it would mark every line and charge a sweep for it.
+    pub fn sweepFor(o: Opts, re: *const Matcher, needle: ?simd.Gate, plan: ?simd.Plan) ?Sweep {
+        const lits = maskLiterals(o, re);
+        if (lits.len > 0) return .{ .lits = .{ .set = lits, .plan = plan } };
+        // `--null-data` makes NUL the line terminator, so a `\n` proves nothing
+        // about a line start there and the compiled seam is the wrong needle.
+        const seam = if (o.multiline or o.term() != '\n') null else re.seamGate();
+        if (seam) |s| {
+            const rival = if (needle) |g| g.bytes else "";
+            if (rival.len == 0 or anchors.selectivity(s.bytes) <= anchors.selectivity(rival)) return .{ .seam = s };
+        }
+        if (needle) |g| if (g.bytes.len > 0) return .{ .gate = g };
+        const first = re.firstBytes() orelse return null;
+        if (re.nullable() or o.multiline or first.count() == 0) return null;
+        if (!first.economics.beatsDense(dwell.min_profitable_stride)) return null;
+        return .{ .first = first };
+    }
+
+    /// Per-line candidate mask — rg's Teddy prefilter at line grain, generalized
+    /// past literals. ONE fused whole-buffer sweep marks only the lines around
+    /// hits, jumping non-matching regions at SIMD speed, so the per-line classify
+    /// below skips ~every non-candidate without an engine run — the win a
+    /// needle-less alternation (`function|const|…`) otherwise can't get (no single
+    /// required literal to gate on), and, via the first-byte arm, the win a
+    /// pattern with no literal at all otherwise can't get either.
+    ///
+    /// The mask is a SUPERSET of the true match set for whichever sweep
+    /// `sweepFor` picked (a hit landing in a line's trailing `\r`/terminator maps
+    /// to that line — harmless: the caller still confirms each candidate with the
+    /// engine) and never a subset, keeping output byte-identical. Returns null
+    /// (caller keeps its per-line path) unless the shortcut is sound &
+    /// profitable: a usable sweep, not inverted (a `-v` match LACKS the
+    /// literals), not `--stop-on-nonmatch` (which acts on non-matches
     /// mid-stream), and a materialized body.
     pub fn litCandidates(self: *Emitter, lines: []const []const u8) ?[]const bool {
-        if (self.needle != null or self.o.invert or self.o.stop_on_nonmatch) return null;
+        if (self.o.invert or self.o.stop_on_nonmatch) return null;
         if (lines.len == 0 or self.body_end <= self.base) return null;
-        const lits = maskLiterals(self.o, self.re);
-        if (lits.len == 0) return null;
+        // Both `needle` and `lit_plan` are this document's decisions, minted once
+        // by `openOn` — the loop below re-enters the scanner per hit, so neither
+        // may be a local.
+        const sweep = sweepFor(self.o, self.re, self.needle, self.lit_plan) orelse return null;
         const body = @as([*]const u8, @ptrFromInt(self.base))[0 .. self.body_end - self.base];
         const cand = self.a.alloc(bool, lines.len) catch return null;
         @memset(cand, false);
         var lc: usize = 0;
         var from: usize = 0;
         // Hits and lines are both sorted by offset, so the line cursor only
-        // advances — O(lines + hits) total. A literal carries no newline, so a
-        // hit `p` lands within one line's span; map it, mark it, then resume at
-        // the next line's start (skipping the rest of the hit's line).
-        // `lit_plan` is this document's decision, minted once by `openOn` — the
-        // loop below re-enters the scanner per hit, so it must not be a local.
-        while (simd.indexOfAnyPosWith(body, from, lits, self.lit_plan)) |p| {
+        // advances — O(lines + hits) total. Neither a literal nor a first byte
+        // carries a newline, so a hit `p` lands within one line's span; map it,
+        // mark it, then resume at the next line's start (skipping the rest of the
+        // hit's line).
+        while (sweep.next(body, from)) |p| {
             while (lc + 1 < lines.len and @intFromPtr(lines[lc + 1].ptr) - self.base <= p) lc += 1;
             cand[lc] = true;
             if (lc + 1 >= lines.len) break;

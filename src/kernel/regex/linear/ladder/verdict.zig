@@ -22,6 +22,9 @@ const std = @import("std");
 const core = @import("../program/core.zig");
 const scratch = @import("../pike/scratch.zig");
 const search = @import("../pike/search.zig");
+const classrun = @import("../../../scan/classrun.zig");
+const prefilter = @import("../../analysis/prefilter.zig");
+const dwell = @import("../automata/dwell.zig");
 
 const Regex = core.Regex;
 const Sim = scratch.Sim;
@@ -32,6 +35,19 @@ const Sim = scratch.Sim;
 /// (`.skip`); otherwise the plain re-seed-every-position search (`.plain`,
 /// e.g. a bare `$` whose first set is empty).
 pub fn lineMatch(re: *const Regex, sim: *Sim, line: []const u8) bool {
+    // A `--null-data` record whose pattern cannot cross a newline IS a sequence
+    // of lines (`lower.lineLocal`) — so this haystack is not a line at all, it
+    // is a small DOCUMENT, and the whole-document walk below already answers
+    // "does some line of this match" the cheap way. Splitting here instead
+    // would answer the same question while forfeiting every whole-buffer
+    // machine the walk has: one SIMD literal pass over the record settles it
+    // for the 99% of records that hold no candidate at all, where a split pays
+    // per-line dispatch on all eight of them first.
+    if (re.split_lines) return walk(re, sim, line, .record);
+    return lineMatchOne(re, sim, line);
+}
+
+fn lineMatchOne(re: *const Regex, sim: *Sim, line: []const u8) bool {
     // The byte-class DFA is the floor: one table lookup per byte, anchors and
     // all, regardless of match density — what the Pike skip path lost to rg on.
     // Present for every non-pathological pattern; only a powerset blow-up past
@@ -83,8 +99,35 @@ pub fn lineMatch(re: *const Regex, sim: *Sim, line: []const u8) bool {
     return search.lineMatchPike(re, sim, line);
 }
 
+/// What a trailing `\n` IS, which is the only thing separating the two
+/// newline-delimited haystacks this walk serves.
+const Model = enum {
+    /// A file, or any `-U` buffer: the final `\n` TERMINATES the last line and
+    /// opens no empty line after it (rg's line model).
+    document,
+    /// A `--null-data` record: its terminator was the NUL and was stripped
+    /// before the engine saw it, so a trailing `\n` is ordinary content and
+    /// opens the empty line after it — and an empty record is one empty line,
+    /// where an empty document is no lines at all.
+    record,
+};
+
 /// Does any line of `doc` match? rg `-l` line model: `\n` *terminates* a line, so a trailing newline yields no phantom empty final line (only a real blank line matches `^$`) — content after the last `\n` (no terminator) is still a line. (`splitScalar` would emit the phantom and over-match `^$`/`$` on every newline-terminated file vs ripgrep.)
 pub fn docMatch(re: *const Regex, sim: *Sim, doc: []const u8) bool {
+    return walk(re, sim, doc, .document);
+}
+
+fn walk(re: *const Regex, sim: *Sim, doc: []const u8, model: Model) bool {
+    // The record model's one extra line, and the only place the two models
+    // differ: the empty line a record's trailing `\n` opens, plus the single
+    // empty line an empty record IS. Asked once per record rather than folded
+    // into the machines below, because it is a constant-cost question about a
+    // fixed haystack ("") and every whole-buffer machine below is then free to
+    // keep answering the document model it was proven against.
+    if (model == .record and (doc.len == 0 or doc[doc.len - 1] == '\n')) {
+        if (lineMatchOne(re, sim, "")) return true;
+        if (doc.len == 0) return false;
+    }
     // `eol_empty` ⇒ every line matches at its zero-width end — but `docMatch`
     // asks whether SOME line matches, which for an empty doc (zero lines, not
     // one empty line) is false. rg agrees: an empty input never matches, even
@@ -148,10 +191,12 @@ pub fn docMatch(re: *const Regex, sim: *Sim, doc: []const u8) bool {
     if (sim.lazy) |*c| if (!c.lazy.word_ctx and !c.quit) {
         if (c.docMatch(body)) |hit| return hit;
     };
+    // `lineMatchOne` and not `lineMatch`: this loop IS the line split, so
+    // re-entering the dispatcher would send a record straight back here.
     var i: usize = 0;
     while (i < body.len) {
         const end = std.mem.indexOfScalarPos(u8, body, i, '\n') orelse body.len;
-        if (lineMatch(re, sim, body[i..end])) return true;
+        if (lineMatchOne(re, sim, body[i..end])) return true;
         i = end + 1;
     }
     return false;
@@ -202,12 +247,75 @@ pub fn countRunFused(re: *const Regex) bool {
     return false;
 }
 
-/// Count matching lines of `doc` (rg `-c` line model) in ONE hit-jumping
-/// whole-buffer class-run pass, or null when the reduction cannot settle
-/// counts (`!countRunFused`). Exactly the per-line `lineMatch` tally —
-/// held by the differential fuzz — minus the line split and per-line
-/// dispatch.
+/// Count matching lines of `doc` (rg `-c` line model) in ONE whole-buffer pass,
+/// or null when the reduction cannot settle counts (`!countRunFused`). Exactly
+/// the per-line `lineMatch` tally — held by the differential fuzz — minus the
+/// line split and per-line dispatch.
+///
+/// Two passes answer it, and which one is a claim about the class, not the
+/// document. `countLines` STREAMS: every block is classified, which runs at load
+/// bandwidth and is unbeatable when members are common. `countLeadLines` JUMPS
+/// between the bytes a member can begin with, which is unbeatable when they are
+/// rare. `leadJump` decides.
 pub fn countRunLines(re: *const Regex, doc: []const u8) ?u64 {
     if (!countRunFused(re)) return null;
-    return re.classrun.?.countLines(doc);
+    const cr = &re.classrun.?;
+    return if (leadJump(re, cr)) countLeadLines(cr, &re.first, doc) else cr.countLines(doc);
+}
+
+/// Should the `-c` tally jump between lead bytes instead of streaming blocks?
+///
+/// Only for a **codepoint** class, and that restriction is the whole argument.
+/// For a byte-exact set, streaming classifies each block with a couple of vector
+/// compares and never leaves the fast path, so a jump would trade bandwidth for
+/// two `memchr`s and a re-scan per candidate line. For a codepoint class,
+/// `countLines` must drop the WHOLE 64-byte block to a scalar decode walk the
+/// moment any byte in it is ≥ 0x80 — and a member of the class is itself such a
+/// byte, so the pass degrades exactly where the answers are. Jumping pays the
+/// scalar walk on the candidate's line alone.
+///
+/// Priced by the same corpus economics and the same bar (`min_profitable_stride`)
+/// the START-state dwell uses — the nearest calibrated question, a skip that may
+/// run across newlines. Conservative here, since this skip stands down a scalar
+/// UTF-8 decode per byte rather than one boolean DFA step, and over-strictness is
+/// the cheap direction: dense-Unicode text prices its own lead bytes common and
+/// keeps the streaming pass.
+fn leadJump(re: *const Regex, cr: *const classrun.ClassRun) bool {
+    if (cr.cp == null or re.nullable) return false;
+    return re.first.count() != 0 and re.first.economics.beatsDense(dwell.min_profitable_stride);
+}
+
+/// `countRunLines`'s jumping pass: hop to the next byte a match can BEGIN with,
+/// settle that byte's whole line with the kernel's own per-line verdict, resume
+/// after it. Byte-identical to `countLines` by construction rather than by
+/// re-derivation — the count is a sum of `ClassRun.scan` verdicts, the same
+/// verdict the per-line model asks for.
+///
+/// Two facts make it sound, and `countRunFused` has already established both.
+/// The lead set is a NECESSARY condition (a non-nullable match consumes its
+/// first byte from it), so a line holding none of those bytes cannot match and
+/// skipping it is free. And `nl_free` means a run cannot cross `\n`, so a line's
+/// verdict depends on that line's bytes alone — which is what lets one scan
+/// settle the line and the loop resume past it, whether the scan said hit or
+/// miss. A line with fifty candidates is therefore scanned once, not fifty times.
+///
+/// A third fact makes the confirm scan start at the candidate rather than at the
+/// line's start, which is what keeps this loop to ONE forward pass over the
+/// document. `pos` is always a line start and `p` is the FIRST lead byte at or
+/// after it, so `[pos, p)` — and therefore the whole of `p`'s line before `p` —
+/// holds no lead byte. Every run begins at a lead byte, so no run in this line
+/// can begin left of `p`, and `doc[p..le]` holds exactly the same verdict as the
+/// full line. Without it each candidate line was crossed three times: a scalar
+/// walk backwards to find its start (`lastIndexOfScalar` has no vector form),
+/// then the kernel forwards over bytes the jump had already proven barren.
+fn countLeadLines(cr: *const classrun.ClassRun, lead: *const prefilter.Prefilter, doc: []const u8) u64 {
+    var count: u64 = 0;
+    var pos: usize = 0;
+    while (lead.nextStart(doc, pos)) |p| {
+        const le = std.mem.indexOfScalarPos(u8, doc, p, '\n') orelse doc.len;
+        count += @intFromBool(cr.scan(doc[p..le]) == .hit);
+        if (le >= doc.len) break;
+        pos = le + 1;
+    }
+    return count;
 }

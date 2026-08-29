@@ -102,6 +102,15 @@ pub const Caps = union(enum) {
         dotall: bool = false,
         word: bool = false,
         crlf: bool = false,
+        /// `(?x)`. It belongs in the selection for the same reason `dotall` does:
+        /// a capture program parsed WITHOUT it sees `a # note` as five tokens and
+        /// reports a span for a different language than the search that asked for
+        /// the span — the missing-result failure mode, not a wrong one.
+        verbose: bool = false,
+        /// `--null-data`: the haystack is a NUL record, so a `\n` at its end is
+        /// content rather than a line terminator (`closure.lineStart`). Default
+        /// true is the document model every other caller means.
+        nl_terminates: bool = true,
 
         /// This selection as the linear lowerer's options — the ONE owner of the
         /// mapping, because every derived analysis has to parse under exactly the
@@ -128,9 +137,11 @@ pub const Caps = union(enum) {
                 .unicode = self.unicode,
                 .multiline = true,
                 .line_anchors = self.multiline,
+                .records = !self.nl_terminates,
                 .dotall = self.dotall,
                 .word = self.word,
                 .crlf = self.crlf,
+                .verbose = self.verbose,
             };
         }
     };
@@ -154,6 +165,7 @@ pub const Caps = union(enum) {
                 .dotall = sel.dotall,
                 .unicode = sel.unicode,
                 .word = sel.word,
+                .verbose = sel.verbose,
             }) catch |e| switch (e) {
                 error.OutOfMemory => |oom| return oom,
                 // `Unsupported` joins `BadPattern`: to a caller holding one
@@ -209,6 +221,10 @@ pub const Captures = struct {
     // `(?m)`: `^`/`$` resolve at `\n` adjacency rather than only the buffer
     // ends — the same `closure.lineStart`/`lineEnd` the boolean engine reads.
     line_anchors: bool,
+    /// Is a `\n` at the haystack's END its line terminator, or content? See
+    /// `closure.lineStart` — the span arm must answer it the same way the boolean
+    /// one does, or `-o` reports a different language than `-c` counted.
+    nl_terminates: bool = true,
     allocator: std.mem.Allocator,
 
     // Reused across finds: the two thread lists, the per-generation dedup, and the
@@ -236,7 +252,7 @@ pub const Captures = struct {
         // it: every haystack this arm sees is a whole buffer (the FFI hands
         // buffers by definition; a CLI line is a buffer of one line). `(?m)` is
         // the separate question and rides `line_anchors` below.
-        var parser = syn.Parser{ .src = pattern, .arena = arena, .names = &names, .unicode = unicode, .caseless = sel.caseless, .multiline = true, .dotall = sel.dotall };
+        var parser = syn.Parser{ .src = pattern, .arena = arena, .names = &names, .unicode = unicode, .caseless = sel.caseless, .multiline = true, .dotall = sel.dotall, .verbose = sel.verbose };
         const parsed = try parser.parseAlt();
         if (parser.pos != pattern.len) return ParseError.BadPattern;
         if (sel.caseless) try syn.foldCaseAst(arena, parsed, unicode);
@@ -288,6 +304,7 @@ pub const Captures = struct {
             .names = owned_names,
             .unicode = unicode,
             .line_anchors = sel.multiline,
+            .nl_terminates = sel.nl_terminates,
             .allocator = gpa,
             .cur = try gpa.alloc(u32, n),
             .nxt = try gpa.alloc(u32, n),
@@ -417,7 +434,7 @@ pub const Captures = struct {
                 buf[sv.slot] = @intCast(pos);
                 self.addThread(list, len, slots, sv.out, buf, pos, line);
             },
-            .astart => |o| if (if (self.line_anchors) closure_mod.lineStart(line, pos) else pos == 0)
+            .astart => |o| if (if (self.line_anchors) closure_mod.lineStart(line, pos, self.nl_terminates) else pos == 0)
                 self.addThread(list, len, slots, o, in_slots, pos, line),
             .aend => |o| if (if (self.line_anchors) closure_mod.lineEnd(line, pos) else pos == line.len)
                 self.addThread(list, len, slots, o, in_slots, pos, line),

@@ -18,6 +18,8 @@ const analysis = @import("../../analysis/analysis.zig");
 const ast_mod = @import("../../ast/ast.zig");
 const compile_mod = @import("../../compile/compile.zig");
 const prefilter = @import("../../analysis/prefilter.zig");
+const dwell = @import("../automata/dwell.zig");
+const rarity = @import("../../../scan/rarity.zig");
 const dfa_mod = @import("../dfa/dfa.zig");
 const caliper_mod = @import("../caliper/caliper.zig");
 const powerset = @import("../dfa/powerset.zig");
@@ -54,12 +56,24 @@ const Regex = core.Regex;
 /// `crlf` (`--crlf`) strips `\r` from every consuming class, so no thread may
 /// consume the CR of a `\r\n` terminator — rg's `strip_from_match`. See
 /// `syn.stripCpAst`.
-/// `line_anchors` decouples the regex `m` flag from `-U`: `^`/`$` anchor at
-/// every `\n` (true) or only the buffer ends (false). `null` inherits
-/// `multiline` — rg's `-U` default is `m` ON, and `(?-m)` clears it while the
-/// whole-buffer search stays live (`multiline` unchanged). Per-line mode
-/// (`multiline == false`) is unaffected: a single-line haystack's edges ARE
-/// its line boundaries either way.
+/// `records` (`--null-data`) is the OTHER way a haystack gets wider than a line,
+/// and it is why `multiline` could not keep carrying both facts alone. Under a
+/// NUL terminator the caller still splits its input and still calls `lineMatch`
+/// per piece — so `multiline` is false, the emitter is unchanged — but a piece is
+/// a NUL-delimited RECORD, and a record holds newlines. Every semantic this file
+/// used to read off `multiline` is really a consequence of that one fact: whether
+/// `^`/`$` are `\n`-boundary assertions or haystack edges, whether `(?s).` may
+/// consume a `\n`, whether a class run may cross one, whether an eager anchored
+/// determinization is even expressible. `wide` below is the union, and it is what
+/// those decisions now ask. Both incumbents agree the anchors must move with it:
+/// `rg --null-data '^zz'` and BSD `grep -z '^zz'` each match a `zz` sitting after
+/// an interior newline, because `^` in a line-oriented tool asserts about
+/// NEWLINES and choosing a different record separator does not retract that.
+/// `line_anchors` decouples the regex `m` flag from the haystack's width: `^`/`$`
+/// anchor at every `\n` (true) or only at the haystack's ends (false). `null`
+/// inherits `wide` — rg's `-U` default is `m` ON, and `(?-m)` clears it while the
+/// wide search stays live (`multiline`/`records` unchanged). A per-line haystack
+/// is unaffected either way: a single line's edges ARE its line boundaries.
 /// `force_dfa` builds the byte-class DFA even when a byte-exact class-run
 /// kernel makes it dead weight for every production path — the hook the
 /// determinizer's own proof harness (powerset/dfa tests) uses to keep
@@ -73,15 +87,34 @@ const Regex = core.Regex;
 pub const Options = struct {
     caseless: bool = false,
     multiline: bool = false,
+    records: bool = false,
     dotall: bool = false,
     unicode: bool = false,
     word: bool = false,
     crlf: bool = false,
+    /// `(?x)` / Python `re.VERBOSE` — see `syntax.Parser.verbose`. It reaches the
+    /// parser and stops there: no analysis downstream of `parse` can tell that
+    /// the source had comments in it, because the AST it produced is the same one
+    /// the un-commented spelling produces.
+    verbose: bool = false,
     line_anchors: ?bool = null,
     force_dfa: bool = false,
     symbolic: Symbolic = .auto,
 
     pub const Symbolic = enum { auto, off };
+
+    /// Can a haystack handed to this engine CONTAIN a `\n`? The single question
+    /// behind anchor semantics, `(?s).`, class-run newline-freedom, and whether an
+    /// eager anchored determinization is expressible at all — see `records`.
+    pub fn wide(self: Options) bool {
+        return self.multiline or self.records;
+    }
+
+    /// Do `^`/`$` assert about NEWLINES (true) or about the haystack's own edges
+    /// (false)? `wide` by default; `(?m)`/`(?-m)` overrides either way.
+    pub fn lineAnchors(self: Options) bool {
+        return self.line_anchors orelse self.wide();
+    }
 };
 
 pub fn compile(allocator: std.mem.Allocator, pattern: []const u8) ParseError!Regex {
@@ -93,7 +126,7 @@ pub fn compile(allocator: std.mem.Allocator, pattern: []const u8) ParseError!Reg
 /// and `forcedSwell` sieves by it, so no analysis can disagree with the matcher
 /// about what a construct means (see `../../analysis/swell.zig`).
 pub fn parse(arena: std.mem.Allocator, pattern: []const u8, opts: Options) ParseError!*Node {
-    var parser = syn.Parser{ .src = pattern, .arena = arena, .dotall = opts.dotall, .multiline = opts.multiline, .unicode = opts.unicode, .caseless = opts.caseless };
+    var parser = syn.Parser{ .src = pattern, .arena = arena, .dotall = opts.dotall, .multiline = opts.wide(), .unicode = opts.unicode, .caseless = opts.caseless, .verbose = opts.verbose };
     const ast = try parser.parseAlt();
     if (parser.pos != pattern.len) return ParseError.BadPattern;
     // Fold BEFORE every downstream analysis (required-literal, cover, first-set,
@@ -189,17 +222,83 @@ pub fn compileOpts(allocator: std.mem.Allocator, pattern: []const u8, opts: Opti
     const states = try c.states.toOwnedSlice(allocator);
     errdefer allocator.free(states);
     const anchored = facts.root().anchored;
+
+    // The anchor seam (`core.zig`'s `seam`): the document-grain needle for a
+    // `^…` pattern, which is its match-prefix with the `\n` that proves the
+    // anchor glued on. Three refusals, each about soundness rather than profit:
+    // an unanchored match need not sit at a line start; a WIDE haystack breaks
+    // the mark→line map the sweep's caller relies on (`-U` lets one match cover
+    // several emitted lines, and under `--null-data` a match at a record start
+    // sits after a NUL, where no seam byte exists); and caseless folding erased
+    // every literal before `facts` was built, so `prefix` is empty there anyway.
+    const seam_bytes: ?[]u8 = if (anchored and !opts.wide() and !opts.caseless and req.prefix.len != 0)
+        try std.mem.concat(allocator, u8, &.{ "\n", req.prefix })
+    else
+        null;
+    errdefer if (seam_bytes) |s| allocator.free(s);
+    const seam: ?simd.Gate = if (seam_bytes) |s| simd.Gate.of(s) else null;
     const eol_empty = try analysis.reachesMatchEol(allocator, states, start);
     const nullable = try analysis.reachesMatchZeroWidth(allocator, states, start);
     var first_set: ByteSet = .{};
     if (!anchored) try analysis.analyzeFirst(allocator, states, start, &first_set);
 
+    // A RECORD IS A SEQUENCE OF LINES whenever the pattern cannot see across one
+    // — and then everything below may treat this as the per-line model it always
+    // was, because it is.
+    //
+    // This is the whole answer to what `--null-data` costs. A wide haystack
+    // withholds the DFA and the accelerator tier from any assertion-bearing
+    // program (see `wants_dfa` and `bare_wide` below, and the paragraphs above
+    // them): `^`/`$` as `\n`-boundary predicates are content-dependent in a way
+    // an eager BOL/EOL determinization cannot encode, so `^(?:alpha|beta|gamma)`
+    // fell all the way to the Pike whole-record scan — O(states)/byte, and it
+    // measured 290 ms of CPU against ripgrep's 38 ms on 50 MB even while winning
+    // wall-clock on threads. Winning by spending seven times the machine is the
+    // kind of win that loses on a busy laptop.
+    //
+    // But the content-dependence only exists while the haystack is wider than a
+    // line. Split the record at its newlines and hand the pieces down one at a
+    // time, and `^`/`$` are each piece's own edges — the exact case the eager
+    // table encodes, so the DFA, the tier, the literal engine, and the class-run
+    // kernel all become expressible again. `lineLocal` is the licence: no
+    // consuming class admits a `\n`, so no match could have crossed one and the
+    // decomposition loses no answer; and no `\A`/`\z` is present, since those
+    // mean the RECORD's ends and a per-line walk would quietly demote them to
+    // `^`/`$` (the same demotion rg's line searcher makes, which is why it
+    // refuses `\A` by claiming the newline instead).
+    //
+    // `std.mem.splitScalar` is exactly the record line model, phantom included:
+    // "ab\n" splits into "ab" and "", and that trailing empty piece IS the line
+    // after the newline that `nl_terminates` opens for a record. So the two
+    // models agree by construction rather than by a second rule.
+    //
+    // `!opts.multiline` is a statement about WHO SPLITS. Decomposition is the
+    // engine handing itself smaller haystacks, which only works while the caller
+    // is handing it one record at a time; a `-U` caller hands over the whole
+    // buffer and expects whole-buffer spans, and every `Selection` on the
+    // capture/`Pattern` plane forces `multiline = true` for exactly that reason
+    // (`captures.Selection.lowerOptions`). Those planes run their own VMs and
+    // would never see the flag, so a program compiled per-line and walked whole
+    // would answer `^` at the buffer start only — a missing result, the failure
+    // mode nothing downstream can notice. So they are excluded here rather than
+    // taught to split.
+    const split_lines = opts.records and !opts.multiline and
+        opts.lineAnchors() and lineLocal(states);
+    // What the gates below must ask, now that a record may be narrower than it
+    // looks: `wide` is "a haystack reaching an engine can hold a `\n`", which a
+    // decomposed record cannot, and `line_anchors` follows it down — a line's
+    // edges ARE its line boundaries, so resolving `^` against the haystack end
+    // is the same predicate for less work.
+    const wide = opts.wide() and !split_lines;
+    const line_anchors = opts.lineAnchors() and !split_lines;
+    const line_sieve = split_lines and linesSieveable(gate);
+
     // Byte-class DFA, the primary engine: determinizes the Thompson program
     // (anchors and all); null only on powerset blow-up, when the Pike VM serves.
-    // Multiline resolves `^`/`$` per-position against `\n` adjacency (a match
-    // spans lines), which the eager BOL/EOL determinization can't encode — so an
-    // assertion-BEARING multiline regex runs the Pike whole-buffer scan and
-    // needs no DFA. An assertion-FREE multiline pattern (`import \([\s\S]*?\)`,
+    // A wide haystack resolves `^`/`$` per-position against `\n` adjacency (a
+    // match spans lines), which the eager BOL/EOL determinization can't encode —
+    // so an assertion-BEARING wide regex runs the Pike whole-haystack scan and
+    // needs no DFA. An assertion-FREE wide pattern (`import \([\s\S]*?\)`,
     // the whole `-U` bench class) has no positional predicate at all: its
     // determinization is exact over any haystack, so `bufMatch` gets the same
     // O(1)/byte floor the per-line model enjoys instead of the O(states)/byte
@@ -207,19 +306,19 @@ pub fn compileOpts(allocator: std.mem.Allocator, pattern: []const u8, opts: Opti
     const assert_free = assertFree(states);
     // The buffer model's own admission, which is wider than `assert_free` — see
     // `bufExact`. Inert in the per-line model, where the DFA serves regardless.
-    const buf_exact = bufExact(states, opts.line_anchors orelse opts.multiline, nullable, eol_empty);
+    const buf_exact = bufExact(states, line_anchors, nullable, eol_empty);
 
     // SIMD class-run reduction (post-fold, so `-i` classes are final). In
     // the per-line model a haystack line never contains `\n`, so dropping
     // it from the set is an identity there — and it makes every run
     // provably line-local, licensing the one-pass whole-buffer `docMatch`.
-    // Multiline keeps the set verbatim: the buffer IS the haystack.
+    // A wide haystack keeps the set verbatim: it holds the `\n` itself.
     // A codepoint class whose full ranges survived the AST algebra hands
     // them (gpa-duped; the arena dies with this frame) to the kernel,
     // whose scalar UTF-8 resolver then settles high bytes itself.
     const cr: ?classrun_mod.ClassRun = if (analysis.classRunShape(ast)) |shape| blk: {
         var set = shape.set;
-        if (!opts.multiline) set.remove('\n');
+        if (!wide) set.remove('\n');
         const cp: ?[]const [2]u21 = if (shape.cp) |r|
             if (classrun_mod.ClassRun.cpResolvable(r)) try allocator.dupe([2]u21, r) else null
         else
@@ -255,7 +354,7 @@ pub fn compileOpts(allocator: std.mem.Allocator, pattern: []const u8, opts: Opti
     // WITHOUT carried ranges keeps the DFA: its `.unproven` verdicts on
     // high-byte haystacks land there.
     const kernel_final = if (cr) |run| run.exact or run.cp != null else false;
-    const wants_dfa = !(opts.multiline and !buf_exact) and !(kernel_final and !opts.force_dfa);
+    const wants_dfa = !(wide and !buf_exact) and !(kernel_final and !opts.force_dfa);
     // Codepoint-class patterns are offered to the symbolic determinizer first:
     // it discovers the SAME automaton without re-walking a UTF-8 trie per
     // closure, which is the entire reason the byte driver's cost budget was
@@ -315,14 +414,14 @@ pub fn compileOpts(allocator: std.mem.Allocator, pattern: []const u8, opts: Opti
     // a per-line rung answers the SLICE question, which needs "no match crosses
     // a `\n`" — substring closure, which only assertion-freeness gives. A `\b`
     // pattern is exactly determinizable over the buffer and still not sliceable.
-    const bare_multiline = opts.multiline and !assert_free;
+    const bare_wide = wide and !assert_free;
     const start_economics = if (dfa) |d|
         if (d.start_dwell) |exits| exits.economics else null
     else if (lazy) |l|
         if (l.start_dwell) |exits| exits.economics else null
     else
         null;
-    var tier = if (bare_multiline) rungs_mod.Rungs.none else try rungs_mod.Rungs.build(allocator, .{
+    var tier = if (bare_wide) rungs_mod.Rungs.none else try rungs_mod.Rungs.build(allocator, .{
         .dfa = dfa,
         .ast = ast,
         .prefilter = start_economics,
@@ -344,7 +443,7 @@ pub fn compileOpts(allocator: std.mem.Allocator, pattern: []const u8, opts: Opti
         // where both settle, it is the one that answers.
         .settled = settledBy(literal_scan, cr),
         .parabix_model = .{
-            .grain = if (opts.multiline) .buffer else .lines,
+            .grain = if (wide) .buffer else .lines,
             .unicode_words = opts.unicode,
         },
     });
@@ -359,7 +458,7 @@ pub fn compileOpts(allocator: std.mem.Allocator, pattern: []const u8, opts: Opti
     // O(program): the reversal is a graph walk and neither jaw determinizes
     // anything until a haystack asks.
     const span_reduced = lits.len > 0 or if (cr) |run| run.span and (run.exact or run.cp != null) else false;
-    const cal: ?*caliper_mod.Caliper = if (!span_reduced and caliper_mod.eligible(states, opts.multiline, opts.line_anchors orelse opts.multiline))
+    const cal: ?*caliper_mod.Caliper = if (!span_reduced and caliper_mod.eligible(states, wide, line_anchors))
         try caliper_mod.build(allocator, states, start, opts.unicode)
     else
         null;
@@ -382,11 +481,16 @@ pub fn compileOpts(allocator: std.mem.Allocator, pattern: []const u8, opts: Opti
         .literal_scan = literal_scan,
         .gate = gate,
         .gate_bytes = gate_bytes,
+        .seam = seam,
+        .seam_bytes = seam_bytes,
         .rungs = tier,
         .assert_free = assert_free,
         .buf_exact = buf_exact,
         .multiline = opts.multiline,
-        .line_anchors = opts.line_anchors orelse opts.multiline,
+        .line_anchors = line_anchors,
+        .split_lines = split_lines,
+        .line_sieve = line_sieve,
+        .nl_terminates = !opts.records,
         .unicode = opts.unicode,
         .allocator = allocator,
     };
@@ -418,6 +522,71 @@ fn settledBy(
 /// No zero-width assertion instruction anywhere in the program — the
 /// compiled-program (not AST) answer, so every lowering (case fold, uclass
 /// expansion) is already reflected. Powers the multiline DFA admission.
+/// Can every match this program admits fit inside ONE line of its haystack —
+/// so that splitting a record at its newlines throws no answer away?
+///
+/// Two obligations, and they are the only two. No consuming instruction may
+/// admit a `\n`, or a match could straddle the split (`a\nz`, `[\s]+`, `(?s).`).
+/// And no `\A`/`\z` may be present, because under the record model those are the
+/// RECORD's ends; handing them a line each silently demotes them to `^`/`$`.
+/// `^`/`$` themselves are welcome — they are precisely what a per-line walk
+/// resolves for free — and so is `\b`, which reads the two bytes adjacent to a
+/// position and gets the same verdict either way, since a `\n` is a non-word
+/// byte and so is running off the end of a haystack.
+///
+/// Deliberately NOT `Regex.claimsNewline`, which is the same walk with a
+/// different question: that one asks whether a pattern's answer can depend on a
+/// newline AT ALL (so `-U` may keep the whole-buffer searcher), and it counts
+/// `^`/`$` as a claim. Here they are the point.
+/// May a decomposed record's span walk use the required-literal gate to skip
+/// whole LINES — jumping between the needle's occurrences instead of walking
+/// every line of the record?
+///
+/// Soundness is the gate's own, unchanged: every match contains the literal, so
+/// a line holding no occurrence holds no match. What is new is the GRAIN, and
+/// the grain is the point, because `span.matchWindow` cannot consult the gate on
+/// the window a decomposed line arrives as. Splitting the record clears
+/// `line_anchors`, so a `^…` line is buffer-anchored, and an anchored window
+/// skips the gate deliberately: the walk is one bounded attempt, so sweeping the
+/// line for a literal costs more than the attempt does. Across a record's eight
+/// lines that reasoning inverts, and nobody upstream can repair it — the emit
+/// layer's candidate mask is handed RECORDS, so it admits a 421-byte record
+/// because one line holds the literal and then all eight pay a span walk.
+/// Measured on 50 MB of records: `--count-matches '^\w+ mid'` 1099 → 466 ms CPU.
+///
+/// Two refusals, both about profit rather than truth:
+///
+///   1. A **caseless** gate rides a different kernel and prices differently;
+///      excluded rather than reasoned about.
+///   2. A needle the corpus prior expects every few bytes cannot skip a line, so
+///      its sweep is pure overhead — the space required by `^[a-z]+ [a-z]+
+///      [a-z]+` is the case that matters, and it measured +4% for zero skips.
+///      Priced by the shipped rarity table through the same `beatsDense`
+///      predicate every other skip in the engine is armed by, against the
+///      RAREST byte of the needle: `P(needle here) ≤ min_i P(byte_i)`, so that
+///      byte's stride is a bound on the needle's that no multi-byte needle can
+///      be denser than.
+fn linesSieveable(gate: ?simd.Gate) bool {
+    const g = gate orelse return false;
+    if (g.ci or g.equiv or g.bytes.len == 0) return false;
+    var rarest: ByteSet = .{};
+    var pick = g.bytes[0];
+    for (g.bytes[1..]) |b| if (rarity.density[b] < rarity.density[pick]) {
+        pick = b;
+    };
+    rarest.set(pick);
+    return prefilter.estimate(rarest).beatsDense(dwell.min_profitable_stride);
+}
+
+fn lineLocal(states: []const State) bool {
+    for (states) |st| switch (st) {
+        .consume => |cn| if (cn.set.has('\n')) return false,
+        .split, .match, .assert_word, .assert_start, .assert_end => {},
+        else => return false, // `\A`/`\z` — the record's own ends, not a line's
+    };
+    return true;
+}
+
 fn assertFree(states: []const State) bool {
     for (states) |st| switch (st) {
         .consume, .split, .match => {},

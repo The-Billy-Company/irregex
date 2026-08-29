@@ -280,7 +280,7 @@ pub const flag_catalog = [_]FlagSpec{
     .{ .longs = &.{"no-heading"}, .action = .{ .locate = .heading_off }, .doc = "prefix every line with its path instead of grouping", .compatibility = .supported },
     .{ .longs = &.{"trim"}, .action = .{ .set = .trim }, .doc = "strip leading whitespace from every printed line", .compatibility = .supported },
     .{ .short = '0', .longs = &.{"null"}, .action = .{ .set = .null_sep }, .doc = "terminate each printed path with NUL", .compatibility = .supported },
-    .{ .longs = &.{"null-data"}, .action = .{ .set = .null_data }, .doc = "treat NUL, not newline, as the line terminator", .compatibility = .supported },
+    .{ .longs = &.{"null-data"}, .action = .{ .set = .null_data }, .doc = "treat NUL, not newline, as the line terminator", .compatibility = .improvement, .note = "improvement: a NUL-delimited RECORD may hold newlines, so `^`/`$` are newline assertions inside it and `\\z` is the record's real end — Python `re` refereed 322 record-mode cells and agrees with gist on all of them, while rg misses a record's own start for `^`, prints whole records as `-o` rows for matches it rejected, and matches nothing for `\\z` (whose NUL it keeps in the searched slice)" },
     .{ .short = 'x', .longs = &.{"line-regexp"}, .action = .{ .boundary = .line }, .doc = "require the pattern to match a whole line", .compatibility = .supported },
     .{ .short = 'q', .longs = &.{"quiet"}, .action = .{ .set = .quiet }, .doc = "print nothing and stop at the first match", .compatibility = .supported },
     .{ .longs = &.{"stats"}, .action = .{ .set = .stats }, .doc = "print search statistics after the results", .compatibility = .supported },

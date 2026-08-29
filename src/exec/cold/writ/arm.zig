@@ -48,7 +48,11 @@ pub fn linearArm(gpa: std.mem.Allocator, eff: []const u8, o: Opts) fault.Answer(
 /// the cover plan off this AST, and a flag that disagreed there would prune real
 /// matches rather than merely slow the query down.
 pub fn linearOptions(o: Opts) Regex.Options {
-    return .{ .caseless = o.caseless, .multiline = o.multiline, .dotall = o.multiline_dotall, .unicode = o.unicode, .word = o.word, .crlf = o.crlf, .line_anchors = o.re_line_anchors };
+    // `records` is `--null-data` and nothing else: it tells the engine a haystack
+    // it is handed may CONTAIN a `\n`, which under a NUL terminator is true while
+    // `multiline` stays false — the caller still splits its input and still asks
+    // per piece, the piece is just a record instead of a line.
+    return .{ .caseless = o.caseless, .multiline = o.multiline, .records = o.null_data, .dotall = o.multiline_dotall, .unicode = o.unicode, .word = o.word, .crlf = o.crlf, .line_anchors = o.re_line_anchors };
 }
 
 /// Whether PCRE2 was chosen outright (`-P`) or reached by escalation — the two
@@ -187,6 +191,7 @@ pub fn compileCaps(gpa: std.mem.Allocator, o: Opts, eff: []const u8, is_pcre: bo
         .unicode = if (is_pcre) o.pcre_unicode else o.unicode,
         .pcre = is_pcre,
         .multiline = o.re_line_anchors,
+        .nl_terminates = !o.null_data,
         .dotall = o.multiline_dotall,
         .word = o.word,
         .crlf = o.crlf,

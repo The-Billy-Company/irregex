@@ -116,6 +116,9 @@ pub const OnePass = struct {
     /// `(?m)` — mirrored from the `Captures` this table was determinized from,
     /// so `holds` reads the same line predicates its ε-instructions meant.
     line_anchors: bool,
+    /// Mirrored from the same `Captures`, for the same reason — see its own field
+    /// and `closure.lineStart`.
+    nl_terminates: bool = true,
     /// How many `find` calls hit the step budget. One pathological line (a
     /// minified bundle) must not cost a good pattern its fast arm for the rest of
     /// the run, but a pattern that is pathological EVERYWHERE should stop
@@ -190,6 +193,7 @@ pub const OnePass = struct {
             .nslots = caps.nslots,
             .unicode = caps.unicode,
             .line_anchors = caps.line_anchors,
+            .nl_terminates = caps.nl_terminates,
             .gpa = gpa,
         };
     }
@@ -304,7 +308,7 @@ pub const OnePass = struct {
     /// what keeps the two arms from disagreeing in Unicode or multiline mode.
     fn holds(self: *const OnePass, eps: Eps, line: []const u8, pos: usize) bool {
         if (eps.asserts & Assert.start != 0 and
-            !(if (self.line_anchors) closure_mod.lineStart(line, pos) else pos == 0)) return false;
+            !(if (self.line_anchors) closure_mod.lineStart(line, pos, self.nl_terminates) else pos == 0)) return false;
         if (eps.asserts & Assert.end != 0 and
             !(if (self.line_anchors) closure_mod.lineEnd(line, pos) else pos == line.len)) return false;
         if (eps.asserts & Assert.buf_start != 0 and pos != 0) return false;

@@ -275,6 +275,23 @@ pub fn emitFileSharded(gpa: std.mem.Allocator, a: std.mem.Allocator, out: *std.A
     } else @memset(base_ln, 0);
 
     const counting = o.mode.counting();
+    // Pure `-c` over a class-run pattern: the fused whole-buffer kernel settles a
+    // whole slice in ONE classification pass, where `fileLit` would jump to each
+    // candidate line and dispatch the engine on it. Shards are cut at line starts,
+    // so each one's own tally over `body[lo..hi]` sums to the file's — the two
+    // parallelisms compose rather than compete, which is the point: rg is
+    // single-threaded on one file AND pays its per-line loop.
+    //
+    // `-v` is excluded because the kernel counts the lines that MATCH and an
+    // inverted tally is the lines that do not — its complement, not its answer —
+    // and `--count-matches` because it tallies spans rather than lines. `-m` is
+    // excluded upstream: a per-file cap cannot be applied per shard and summed,
+    // so a capped run never reaches this driver at all. `--null-data` is excluded
+    // because the kernel's whole claim is stated in newlines: it counts `\n`-
+    // delimited lines and its soundness rests on a run being unable to cross a
+    // `\n`, and under a NUL terminator neither the unit nor the barrier is the
+    // one the caller asked about.
+    const fused_count = o.mode == .count and !o.invert and o.max_per_file == 0 and o.term() == '\n' and re.countRunFused();
     // ONE anchor decision for this document, minted before any shard exists and
     // copied into every shard's Emitter. Minting it inside `fileLit` instead would
     // re-sample the same body once per core, and the sampling budget is priced
@@ -295,11 +312,18 @@ pub fn emitFileSharded(gpa: std.mem.Allocator, a: std.mem.Allocator, out: *std.A
         lo: usize,
         hi: usize,
         base_lineno: usize,
+        fused_count: bool,
         arena: std.heap.ArenaAllocator,
         buf: std.ArrayList(u8) = .empty,
         n: usize = 0,
 
         fn run(sh: *@This()) void {
+            // Falls through to `fileLit` if the kernel declines after all, so a
+            // shard can never silently report a zero it did not measure.
+            if (sh.fused_count) if (sh.re.countRunLines(sh.body[sh.lo..sh.hi])) |n| {
+                sh.n = @intCast(n);
+                return;
+            };
             const sa = sh.arena.allocator();
             var sim: ?Matcher.Sim = Matcher.Sim.init(sa, sh.re) catch null;
             var e = Emitter{ .a = sa, .re = sh.re, .o = sh.o, .show_name = sh.show_name, .out = &sh.buf, .use_color = sh.use_color, .needle = sh.needle, .lit_plan = sh.lit_plan, .sim = if (sim) |*s| s else null, .base = sh.base_addr, .body_end = sh.end_addr };
@@ -323,6 +347,7 @@ pub fn emitFileSharded(gpa: std.mem.Allocator, a: std.mem.Allocator, out: *std.A
         .lo = cuts[i],
         .hi = cuts[i + 1],
         .base_lineno = base_ln[i],
+        .fused_count = fused_count,
         .arena = std.heap.ArenaAllocator.init(gpa),
     };
     defer for (shards) |*sh| sh.arena.deinit();
@@ -557,12 +582,17 @@ pub fn anyMatch(a: std.mem.Allocator, re: *const Matcher, o: Opts, needle: ?simd
     var em = Emitter{ .a = a, .re = re, .o = o, .show_name = false, .out = undefined };
     // Pure-literal presence short-circuit (`-q`'s early-exit twin of `-l`): a
     // literal carries no terminator, so it always lands inside some line, and
-    // `litFastEligible` guarantees that line matches — hence a match EXISTS iff
-    // any literal occurs. One `indexOfAnyPos` sweep stops at the first hit
-    // instead of materializing every line of a huge body (the `collectLines`
-    // tail that made `-q` scan the whole file). `-v` is excluded by eligibility.
+    // `litDecides` guarantees that line matches — hence a match EXISTS iff any
+    // literal occurs. One `indexOfAnyPos` sweep stops at the first hit instead
+    // of materializing every line of a huge body (the `collectLines` tail that
+    // made `-q` scan the whole file). `-v` is excluded by eligibility.
+    //
+    // `litDecides`, NOT `litFastEligible`: eligibility now also admits a merely
+    // NECESSARY sweep, whose hit `fileLit` confirms per line. Answering "matched"
+    // from such a hit's existence would be a false positive, and `-q`'s whole
+    // job is that one boolean.
     const slice_model = ml.sliceModel(re, o);
-    const lit_fast = !slice_model and em.litFastEligible();
+    const lit_fast = !slice_model and em.litDecides();
     const lits = re.lits();
     for (files) |f| {
         const body = visibleBody(o.encoding, f.bytes);

@@ -124,7 +124,72 @@ fn skipPolicy(re: *const Regex) ?*const prefilter.Prefilter {
 /// null — the unbounded window, which is what every caller that isn't measuring
 /// a sub-region wants. See `matchWindow` for the semantics.
 pub fn matchSpan(re: *const Regex, sim: *SpanSim, line: []const u8, from: usize) ?Span {
+    if (re.split_lines) return lineSpan(re, sim, line, from);
     return matchWindow(re, sim, Window.whole(line, from));
+}
+
+/// The same leftmost-first search over a record the engine may take ONE LINE AT
+/// A TIME (`lower.lineLocal` proved no match crosses a `\n`), with each line's
+/// span translated back into the record's own offsets.
+///
+/// Lines are searched in order and the first hit wins, which IS leftmost: a
+/// later line begins after an earlier line ends. Each line is passed as its own
+/// haystack rather than as a `Window` over the record, and that is the point —
+/// a window bounds the walk while its assertions still read the record's edges,
+/// where decomposition needs `^`/`$` to read the LINE's edges. Same reason the
+/// boolean ladder splits instead of bounding.
+///
+/// Lines ending before `from` are skipped whole; the line holding `from` starts
+/// there. A zero-width match at a line's end is reachable (`from == one.len` is
+/// a legal window start), so `$` still matches before each newline, and the
+/// trailing empty piece `splitScalar` yields for a record ending in `\n` is
+/// searched like any other line — that is the phantom line `nl_terminates`
+/// opens, arrived at by construction rather than by a second rule.
+///
+/// A line the pattern's own necessary literal does not reach is skipped without
+/// entering an engine at all (`Sieve`), and that is what keeps a record from
+/// costing more than the same bytes cost as lines. The emit layer's candidate
+/// mask can only mark whole RECORDS (it is handed records, not lines), so inside
+/// an admitted record every one of its ~8 lines used to pay a span walk for the
+/// one line that held the literal. Same argument as the boolean walk's
+/// `.candidate` skip, at the grain only this function can see.
+fn lineSpan(re: *const Regex, sim: *SpanSim, hay: []const u8, from: usize) ?Span {
+    const sieve = lineSieve(re);
+    // Monotone: one forward sweep of the record, amortized across its lines and
+    // re-queried only when a line has outrun the cursor.
+    var cand: ?usize = if (sieve) |g| g.find(hay, from) else null;
+    var off: usize = 0;
+    while (true) {
+        const nl = std.mem.indexOfScalarPos(u8, hay, off, '\n') orelse hay.len;
+        if (nl >= from) skip: {
+            if (sieve) |g| {
+                // Behind this line: advance the cursor to this line or later.
+                if (cand) |p| if (p < off) {
+                    cand = g.find(hay, off);
+                };
+                // Past this line's end, or absent from the rest of the record:
+                // no occurrence lies inside it, and the literal is necessary, so
+                // no match lies inside it either.
+                const p = cand orelse return null;
+                if (p >= nl) break :skip;
+            }
+            const one = hay[off..nl];
+            const start = if (from > off) from - off else 0;
+            if (matchWindow(re, sim, Window.whole(one, start))) |sp|
+                return .{ .start = sp.start + off, .end = sp.end + off };
+        }
+        if (nl == hay.len) return null;
+        off = nl + 1;
+    }
+}
+
+/// The required-literal gate to skip whole LINES of a record with, or null to
+/// walk every line. One field read: the decision is the compiled program's
+/// (`lower.linesSieveable` — it prices a rarity table over the needle, which is
+/// per-QUERY work, and this function runs once per span).
+fn lineSieve(re: *const Regex) ?*const simd.Gate {
+    if (!re.line_sieve) return null;
+    return &re.gate.?;
 }
 
 /// Leftmost-first match of the pattern **inside the window** `w`, as a byte

@@ -1118,3 +1118,256 @@ test "gate: prunes the buffer and span paths without moving an answer" {
     try std.testing.expectEqual(@as(usize, 3), sp.start);
     try std.testing.expectEqual(@as(usize, 14), sp.end);
 }
+
+// ─────────────────── `records` (`--null-data`): a haystack wider than a line ───────────────────
+//
+// The `records` option says one thing — a haystack handed to this engine may
+// CONTAIN a `\n` — and everything below is a consequence of it. It exists because
+// `multiline` was carrying two facts at once (the haystack is the whole buffer,
+// AND `^`/`$` are `\n`-boundary assertions) while `--null-data` needs only the
+// second: the caller still splits its input and still asks per piece, the piece is
+// just a NUL-delimited record. Compiled without it, every `^…` pattern reported no
+// match under `--null-data`, silently, because the per-line walk's one positional
+// fact is "offset 0" and the assertion is about the byte adjacent to a position.
+//
+// Both incumbents are the oracle here: `rg --null-data '^zz'` and BSD
+// `grep -z '^zz'` each match a `zz` after an interior newline.
+
+fn matchesRecord(pattern: []const u8, record: []const u8) !bool {
+    var re = try Regex.compileOpts(std.testing.allocator, pattern, .{ .records = true });
+    defer re.deinit();
+    var sim = try Regex.Sim.init(std.testing.allocator, &re);
+    defer sim.deinit();
+    return re.lineMatch(&sim, record);
+}
+
+test "records: `^` holds after an interior newline, not only at the record's start" {
+    const rec = "aex\nzz\nehead";
+    try std.testing.expect(try matchesRecord("^zz", rec));
+    try std.testing.expect(try matchesRecord("^ehead", rec));
+    try std.testing.expect(try matchesRecord("^aex", rec)); // the record's own start still counts
+    try std.testing.expect(!try matchesRecord("^ex", rec)); // and a mid-line offset still does not
+    // The per-line default must be untouched: there `^` is the haystack's edge,
+    // because a line holds no newline for the assertion to be about.
+    try std.testing.expect(!try matches("^zz", rec));
+    try std.testing.expect(try matches("^aex", rec));
+}
+
+test "records: `$` holds before an interior newline" {
+    const rec = "aex\nzz\nehead";
+    try std.testing.expect(try matchesRecord("aex$", rec));
+    try std.testing.expect(try matchesRecord("zz$", rec));
+    try std.testing.expect(try matchesRecord("ehead$", rec)); // the record's own end too
+    try std.testing.expect(!try matchesRecord("ae$", rec));
+    try std.testing.expect(try matchesRecord("^zz$", rec)); // both at once, on one interior line
+}
+
+test "records: a trailing newline is CONTENT, so it opens the empty line after it" {
+    // The one fact the two wide models do not share (`Regex.nl_terminates`). In
+    // the document model a file ending `ab\n` has one line and no phantom empty
+    // second one. In a record the terminator was the NUL — stripped before the
+    // engine saw these bytes — so the final `\n` is an ordinary byte and the gap
+    // after it is a line start like any other. `rg --null-data -c '^$'` and
+    // `grep -z -c '^$'` both report a match here; `rg -U -c '^$'` on the same
+    // bytes reports none, which is ripgrep disagreeing with itself, not a model.
+    try std.testing.expect(try matchesRecord("^$", "ab\n"));
+    try std.testing.expect(try matchesRecord("^x*$", "ab\n"));
+    try std.testing.expect(try matchesRecord("^$", "ab\n\ncd")); // and the interior one, unchanged
+    try std.testing.expect(!try matchesRecord("^$", "ab")); // no newline, no empty line
+    // The document model keeps its refusal — this is the regression that would
+    // fire if `nl_terminates` were ever read the same way in both.
+    try std.testing.expect(!try matches("^$", "ab"));
+}
+
+test "records: `\\A`/`\\z` are the RECORD's ends, distinct from `^`/`$`" {
+    const rec = "aex\nzz";
+    try std.testing.expect(try matchesRecord("\\Aaex", rec));
+    try std.testing.expect(!try matchesRecord("\\Azz", rec)); // `^zz` holds; `\A` does not
+    try std.testing.expect(try matchesRecord("zz\\z", rec));
+    try std.testing.expect(!try matchesRecord("aex\\z", rec));
+}
+
+test "records: `(?s).` may consume a newline, and a class keeps its `\\n`" {
+    // Both were identities in the per-line model (a line has no `\n` to admit),
+    // so both were being dropped at parse/lower time. Under a record they are not.
+    var re = try Regex.compileOpts(std.testing.allocator, "a.z", .{ .records = true, .dotall = true });
+    defer re.deinit();
+    var sim = try Regex.Sim.init(std.testing.allocator, &re);
+    defer sim.deinit();
+    try std.testing.expect(re.lineMatch(&sim, "a\nz"));
+    try std.testing.expect(try matchesRecord("[\\n]+", "ab\ncd"));
+    try std.testing.expect(try matchesRecord("b\nc", "ab\ncd"));
+}
+
+test "records: `(?-m)` still pins `^` to the record's own start" {
+    // The two facts stay separable in the other direction as well: the haystack is
+    // still wide (a class may cross `\n`), while `^` is the haystack's edge again.
+    var re = try Regex.compileOpts(std.testing.allocator, "^zz", .{ .records = true, .line_anchors = false });
+    defer re.deinit();
+    var sim = try Regex.Sim.init(std.testing.allocator, &re);
+    defer sim.deinit();
+    try std.testing.expect(!re.lineMatch(&sim, "aex\nzz"));
+    try std.testing.expect(re.lineMatch(&sim, "zz\naex"));
+}
+
+test "records: the span arm agrees with the boolean arm about the phantom line" {
+    // The failure this closes was not a divergence from rg but a divergence from
+    // OURSELVES: `-c` reported the record matched while `-o`/`--count-matches`
+    // found nothing in it, because the two arms resolved `^` through different
+    // code (`search.walk` vs `span.matchWindow`) and only one had been taught
+    // that a record's trailing `\n` is content. Assert both on the same bytes.
+    const gpa = std.testing.allocator;
+    const opts: Regex.Options = .{ .records = true };
+    var re = try Regex.compileOpts(gpa, "^$", opts);
+    defer re.deinit();
+    var sim = try Regex.Sim.init(gpa, &re);
+    defer sim.deinit();
+    var ss = try Regex.SpanSim.init(gpa, &re);
+    defer ss.deinit();
+
+    try std.testing.expect(re.lineMatch(&sim, "ab\n")); // boolean: the line after the `\n`
+    const sp = re.matchSpan(&ss, "ab\n", 0) orelse return error.SpanArmMissedPhantom;
+    try std.testing.expectEqual(@as(usize, 3), sp.start);
+    try std.testing.expectEqual(@as(usize, 3), sp.end);
+}
+
+test "records: a zero-width `^` seeds every line start including the phantom" {
+    const gpa = std.testing.allocator;
+    var re = try Regex.compileOpts(gpa, "^", .{ .records = true });
+    defer re.deinit();
+    var ss = try Regex.SpanSim.init(gpa, &re);
+    defer ss.deinit();
+    // "a\nb\n" holds three line starts under the record model: 0, 2, and 4.
+    var seen: [3]usize = undefined;
+    var n: usize = 0;
+    var from: usize = 0;
+    while (from <= 4 and n < seen.len) {
+        const sp = re.matchSpan(&ss, "a\nb\n", from) orelse break;
+        seen[n] = sp.start;
+        n += 1;
+        from = sp.start + 1;
+    }
+    try std.testing.expectEqual(@as(usize, 3), n);
+    try std.testing.expectEqualSlices(usize, &.{ 0, 2, 4 }, seen[0..3]);
+}
+
+// ── the record → line decomposition (`lower.lineLocal` / `split_lines`) ──
+//
+// A record is a sequence of lines whenever the pattern cannot see across one,
+// and the engine says so at compile time so the per-line ladder applies. These
+// assert the LICENCE (which patterns qualify), the MECHANISM (the machines that
+// come back when one does), and the EQUIVALENCE (the decomposed answer is the
+// newline-aware whole-haystack walk's answer) — the third being the only one
+// that would catch the decomposition being wrong rather than merely absent.
+
+test "records: a line-local pattern decomposes, and gets its automaton back" {
+    const gpa = std.testing.allocator;
+    for ([_][]const u8{ "^(?:alpha|beta|gamma)", "^zz", "zz$", "^[a-z]+$", "^", "^$", "\\bmid\\b" }) |pat| {
+        var re = try Regex.compileOpts(gpa, pat, .{ .records = true });
+        defer re.deinit();
+        try std.testing.expect(re.split_lines);
+        // The whole point: with the pieces newline-free, `^`/`$` are haystack
+        // edges again, so the eager determinization is expressible. An
+        // undecomposed record program has no DFA at all and walks the Pike VM.
+        try std.testing.expect(re.dfa != null or re.classrun != null or re.literal_scan != null);
+        // And the anchors must have followed the haystack down with it.
+        try std.testing.expect(!re.line_anchors);
+    }
+}
+
+test "records: a pattern that can cross a newline refuses to decompose" {
+    const gpa = std.testing.allocator;
+    // Each of these can match bytes on both sides of a `\n`, so splitting would
+    // lose an answer: an explicit newline, a class holding one, `\s`, and
+    // `(?s).`. Plus `\A`/`\z`, which are the RECORD's ends — a per-line walk
+    // would demote them to `^`/`$` and match where the record does not.
+    for ([_][]const u8{ "a\\nz", "[\\n]+", "[\\nz]+", "a\\s+z", "zz\\z", "\\Azz" }) |pat| {
+        var re = try Regex.compileOpts(gpa, pat, .{ .records = true });
+        defer re.deinit();
+        try std.testing.expect(!re.split_lines);
+    }
+    // `(?s)` reaches the engine as an option, not as a group — the CLI resolves a
+    // leading directive before compiling (`writ/directive.zig`), so spelling it
+    // inline here would only prove the parser rejects it.
+    var dot = try Regex.compileOpts(gpa, "a.z", .{ .records = true, .dotall = true });
+    defer dot.deinit();
+    try std.testing.expect(!dot.split_lines);
+}
+
+test "records: the decomposed ladder answers what the newline-aware walk answers" {
+    // The differential that makes the optimization safe rather than plausible.
+    // The reference is the `-U` whole-buffer Pike walk (`search.bufMatch`), which
+    // resolves `^`/`$` per position against `\n` adjacency and never decomposes
+    // anything — a different engine reaching the same verdict. Records without a
+    // trailing `\n` are used because that is where the two models' phantom-line
+    // rules deliberately differ (`nl_terminates`), and this is not the test for
+    // that distinction.
+    const gpa = std.testing.allocator;
+    const pats = [_][]const u8{
+        "^zz",      "zz$",       "^$",             "^",          "^.",
+        "^[a-z]+$", "^\\w+ mid", "\\bmid\\b",      "^(?:aa|zz)", "mid",
+        "^a",       "x$",        "^[a-z]+ [a-z]+", "^zz$",       "\\bzz",
+    };
+    // No empty record here, and not because it is awkward: the two models
+    // genuinely part company on it, in the same family as `nl_terminates`. An
+    // empty BUFFER has zero lines — rg's `-U` matches nothing in an empty input,
+    // even `a*` — while an empty RECORD is one empty line, which is what rg
+    // itself, Python `re`, and we all count for `--null-data -c '^$'`. Asserted
+    // on its own below rather than smuggled past this loop.
+    const recs = [_][]const u8{
+        "zz",               "aa\nzz",    "aa\nzz\nmid x", "\nzz",
+        "zz\n\nmid",        "aa",        "mid x\nzz\naa", "\n",
+        "a\nb\nc\nzz\nmid", "zz mid\nx", "\n\n",          "mid",
+    };
+    for (pats) |pat| {
+        var fast = try Regex.compileOpts(gpa, pat, .{ .records = true });
+        defer fast.deinit();
+        var slow = try Regex.compileOpts(gpa, pat, .{ .multiline = true });
+        defer slow.deinit();
+        var fsim = try Regex.Sim.init(gpa, &fast);
+        defer fsim.deinit();
+        var ssim = try Regex.Sim.init(gpa, &slow);
+        defer ssim.deinit();
+        var fss = try Regex.SpanSim.init(gpa, &fast);
+        defer fss.deinit();
+        var sss = try Regex.SpanSim.init(gpa, &slow);
+        defer sss.deinit();
+        for (recs) |rec| {
+            if (fast.lineMatch(&fsim, rec) != slow.bufMatch(&ssim, rec)) {
+                std.debug.print("boolean split {s} over {s}\n", .{ pat, rec });
+                return error.DecompositionChangedTheVerdict;
+            }
+            // Spans too, and the offsets must be the RECORD's, not a line's —
+            // the translation back is the half a boolean test cannot see.
+            const f = fast.matchSpan(&fss, rec, 0);
+            const s = slow.matchSpan(&sss, rec, 0);
+            if ((f == null) != (s == null) or (f != null and
+                (f.?.start != s.?.start or f.?.end != s.?.end)))
+            {
+                std.debug.print("span split {s} over {s}: {any} vs {any}\n", .{ pat, rec, f, s });
+                return error.DecompositionMovedTheSpan;
+            }
+        }
+    }
+}
+
+test "records: an empty record is one empty line, not zero lines" {
+    // The interior empty record of "a\0\0b\0". Verified against both incumbents
+    // on those bytes: `rg --null-data -c` and Python `re` with `re.MULTILINE`
+    // each count one record matching `^$` and three matching `^`. The buffer
+    // model is the one that differs (an empty `-U` input matches nothing at all),
+    // which is why the decomposition differential above excludes this case.
+    const gpa = std.testing.allocator;
+    for ([_][]const u8{ "^$", "^", "a*", "^x*$" }) |pat| {
+        var re = try Regex.compileOpts(gpa, pat, .{ .records = true });
+        defer re.deinit();
+        var sim = try Regex.Sim.init(gpa, &re);
+        defer sim.deinit();
+        try std.testing.expect(re.lineMatch(&sim, ""));
+    }
+    var re = try Regex.compileOpts(gpa, "^.", .{ .records = true });
+    defer re.deinit();
+    var sim = try Regex.Sim.init(gpa, &re);
+    defer sim.deinit();
+    try std.testing.expect(!re.lineMatch(&sim, "")); // one line, but no byte in it
+}

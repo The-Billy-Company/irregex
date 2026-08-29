@@ -27,6 +27,20 @@ const Scan = enum { anchored, skip, plain };
 /// differential fuzz compares against (so the test can force the Pike path).
 pub fn lineMatchPike(re: *const Regex, sim: *Sim, line: []const u8) bool {
     if (re.eol_empty) return true; // see `eol_empty`: matches every line (`\d*$`)
+    // `^`/`$` as `\n`-boundary assertions are unanswerable by the walk below, and
+    // silently so — which is the shape of bug this guard exists to close. That
+    // walk knows one positional fact, the `at_start` bool for offset 0, while the
+    // assertion is about the byte ADJACENT to each position; so `.anchored` (never
+    // re-seed, a match begins at offset 0) is sound exactly while the haystack is
+    // a line, and under `--null-data`, where the haystack is a NUL record holding
+    // newlines, it reported no match for every `^…` pattern instead.
+    //
+    // `walk` is the resolution — the same per-position `\n` adjacency `-U` runs
+    // on, over whatever slice it is handed. Reached here only for a wide haystack
+    // (`lower.zig` withholds the DFA and the tier from those programs, so this IS
+    // the engine for them); `-U` itself never arrives, because its caller hands
+    // the whole buffer to `bufMatch` instead of splitting it.
+    if (re.line_anchors) return walk(re, sim, line);
     if (re.anchored) return search(re, sim, line, .anchored);
     // A conditionally-nullable pattern (`x|\b$`, `\B{2}`) can match zero-width
     // at a bare boundary / EOL the `.skip` search never seeds — it only jumps
@@ -167,9 +181,23 @@ pub fn bufMatch(re: *const Regex, sim: *Sim, buf: []const u8) bool {
         if (!d.word_ctx) return d.match(buf);
         if (d.matchWord(buf)) |hit| return hit;
     };
+    return walk(re, sim, buf);
+}
+
+/// The `\n`-aware Pike walk itself: re-seed a start at every position, resolving
+/// `^`/`$` per position against the adjacent byte (`closureBuf`) instead of
+/// against an external BOL/EOL flag. Linear in `buf.len`.
+///
+/// Extracted because it has TWO callers with the same question and different
+/// prologues. `bufMatch` above owes the `-U` gate cascade (classrun, required
+/// literal, tier, buf-exact DFA) before it walks; `lineMatchPike` has already
+/// paid the per-line ladder's own version of that cascade and must not pay it
+/// twice. What is shared is the only part that is model-specific — the anchors —
+/// so this is the whole of what "a wide haystack" costs.
+fn walk(re: *const Regex, sim: *Sim, buf: []const u8) bool {
     sim.gen += 1;
     sim.cur.len = 0;
-    // Position 0 (buffer start ⇒ a line start; also a line end iff empty).
+    // Position 0 (haystack start ⇒ a line start; also a line end iff empty).
     if (eps.closureBuf(re, sim, &sim.cur, buf, 0).add(re.start)) return true;
     var i: usize = 0;
     while (i < buf.len) : (i += 1) {
@@ -187,7 +215,9 @@ pub fn bufMatch(re: *const Regex, sim: *Sim, buf: []const u8) bool {
         // opens no phantom empty last line), so no match may START there. A
         // bare `\z` therefore does NOT match "abc\n" while `\n\z` (a thread
         // started at the real last byte) does — both verified against rg -U.
-        const phantom = i + 1 == buf.len and c == '\n';
+        // Only where that `\n` is the line TERMINATOR, though; as `--null-data`
+        // content it opens the empty line after it like any other newline.
+        const phantom = re.nl_terminates and i + 1 == buf.len and c == '\n';
         if (!phantom) matched = cl.add(re.start) or matched;
         std.mem.swap(ThreadList, &sim.cur, &sim.nxt);
         if (matched) return true;

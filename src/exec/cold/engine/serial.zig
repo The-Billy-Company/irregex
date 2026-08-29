@@ -556,7 +556,20 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, env: *c
     // null for one file): fan the line-free literal fast path across cores over
     // its own body — the parallelism ripgrep can't apply to one file. `-l`
     // (files_only) is excluded (a lone first hit, nothing to parallelize).
-    const solo_fast = files.len == 1 and !heading and !join_groups and !no_par and !o.stats and o.mode != .files_with_matches and em.litFastEligible();
+    // Two independent reasons a lone file's body is worth cutting up: a sweep to
+    // jump on (the literal searcher loop), or a pure `-c` the class-run kernel can
+    // fuse — which needs no sweep at all, since it classifies every block anyway.
+    // Without the second arm a dense codepoint class (whose lead bytes are too
+    // common for a profitable skip) stayed single-threaded on the one shape where
+    // the whole body must be read regardless.
+    const solo_shardable = em.litFastEligible() or
+        (o.mode == .count and !o.invert and o.term() == '\n' and re.countRunFused());
+    // `-m` is a cap on the file's FIRST n matching lines, which no per-shard
+    // decision can express: each shard would honor the cap over its own slice
+    // and the partials would sum to n×shards (`-c -m2` over 16 shards reported
+    // 32). The cap is inherently sequential, so a capped run stays serial.
+    const solo_fast = files.len == 1 and !heading and !join_groups and !no_par and !o.stats and
+        o.max_per_file == 0 and o.mode != .files_with_matches and solo_shardable;
     if (solo_fast and emitFileSharded(gpa, a, &out, &em, re, o, use_color, line_needle, files[0], &matched_files, binary_detect, show_name)) {
         // handled by the single-file shard driver
     } else if (bounds) |b| {

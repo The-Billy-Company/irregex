@@ -75,12 +75,22 @@ pub fn closure(re: *const Regex, sim: anytype, list: *ThreadList, at_start: bool
 /// A gap position `p` (0..=buf.len) is a line start iff it is the buffer start
 /// or immediately follows a `\n`; a line end iff it is the buffer end or a `\n`
 /// begins there. These are the multiline `^`/`$` predicates.
-pub fn lineStart(buf: []const u8, p: usize) bool {
-    // BOF, or right after a `\n` that is NOT the final byte. A trailing final
-    // `\n` terminates the last line — it does not open a phantom empty line at
-    // `buf.len` (rg: `^$` matches "abc\n\n" at the real interior empty line but
-    // NOT "abc\n"). `$` has no such exclusion (`\n$` matches "abc\n" at EOF).
-    return p == 0 or (buf[p - 1] == '\n' and p < buf.len);
+pub fn lineStart(buf: []const u8, p: usize, nl_terminates: bool) bool {
+    // BOF always is. After a `\n`, it depends on what that `\n` IS, and at
+    // `p == buf.len` the two wide haystack models part company.
+    //
+    // `nl_terminates` — the document model, which is `-U` and every per-line
+    // caller — says the haystack's final `\n` TERMINATES its last line, so it
+    // opens no phantom empty line at `buf.len` (rg: `^$` matches "abc\n\n" at the
+    // real interior empty line but NOT "abc\n"). Cleared, the haystack is a
+    // `--null-data` RECORD whose terminator was the NUL and was stripped before
+    // this call, so a trailing `\n` is ordinary content and opens the empty line
+    // after it exactly as an interior one does — which is what `rg --null-data
+    // -c '^$'` and `grep -z -c '^$'` both report on a file ending `…mid\n`, and
+    // where ripgrep contradicts its own `-U` answer on the same bytes.
+    //
+    // `$` needs no such distinction either way (`\n$` matches "abc\n" at EOF).
+    return p == 0 or (buf[p - 1] == '\n' and (p < buf.len or !nl_terminates));
 }
 pub fn lineEnd(buf: []const u8, p: usize) bool {
     return p == buf.len or buf[p] == '\n';
@@ -90,7 +100,7 @@ pub fn lineEnd(buf: []const u8, p: usize) bool {
 /// adjacency (a line boundary), the per-line default against the buffer ends.
 /// Shared by `matchSpan` so one span engine serves both modes.
 pub fn atStart(re: *const Regex, buf: []const u8, p: usize) bool {
-    return if (re.line_anchors) lineStart(buf, p) else p == 0;
+    return if (re.line_anchors) lineStart(buf, p, re.nl_terminates) else p == 0;
 }
 pub fn atEnd(re: *const Regex, buf: []const u8, p: usize) bool {
     return if (re.line_anchors) lineEnd(buf, p) else p == buf.len;
@@ -103,7 +113,7 @@ pub fn atEnd(re: *const Regex, buf: []const u8, p: usize) bool {
 pub fn closureBuf(re: *const Regex, sim: *scratch.Sim, list: *ThreadList, buf: []const u8, p: usize) Closure {
     // `^`/`$` resolve against `\n` adjacency when the `m` flag is live, else
     // only the true buffer ends (`(?-m)` under `-U`).
-    const at_start = if (re.line_anchors) lineStart(buf, p) else p == 0;
+    const at_start = if (re.line_anchors) lineStart(buf, p, re.nl_terminates) else p == 0;
     const at_end = if (re.line_anchors) lineEnd(buf, p) else p == buf.len;
     var c = closure(re, sim, list, at_start, at_end, word.sides(re.unicode, buf, p));
     c.at_buf_start = p == 0;
