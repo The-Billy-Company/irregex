@@ -1585,7 +1585,7 @@ test "adversarial: by-value escape family vs rg (agreement + superset ledger)" {
 
     for (cases) |cs| {
         // The claim about MEANING, made without reference to either incumbent:
-        // the pattern matches the codepoint it names and rejects its neighbour.
+        // the pattern matches the codepoint it names and rejects its neighbor.
         // Byte-mode is checked too wherever the value fits in one, since `(?-u)`
         // is a different decode path with the same spelling.
         var re = Regex.compileOpts(a, cs.pat, .{ .unicode = true }) catch {

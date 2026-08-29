@@ -1255,7 +1255,7 @@ test "records: a zero-width `^` seeds every line start including the phantom" {
 //
 // A record is a sequence of lines whenever the pattern cannot see across one,
 // and the engine says so at compile time so the per-line ladder applies. These
-// assert the LICENCE (which patterns qualify), the MECHANISM (the machines that
+// assert the LICENSE (which patterns qualify), the MECHANISM (the machines that
 // come back when one does), and the EQUIVALENCE (the decomposed answer is the
 // newline-aware whole-haystack walk's answer) — the third being the only one
 // that would catch the decomposition being wrong rather than merely absent.

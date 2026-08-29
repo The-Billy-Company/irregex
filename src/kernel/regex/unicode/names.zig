@@ -14,7 +14,7 @@
 //!     `tools/build_unicode_names.py` for the encoding). A binary search over the
 //!     block heads, then one forward scan reconstructing at most 31 names.
 //!     Comparison is exact byte equality, so a name that is not in the database
-//!     cannot resolve to a neighbour — the failure mode a hash-keyed table could
+//!     cannot resolve to a neighbor — the failure mode a hash-keyed table could
 //!     not exclude.
 //!  2. **UAX #44 NR2** — the `PREFIX-XXXX` ideograph ranges (CJK, Tangut), whose
 //!     names are the prefix plus the codepoint in hex.
@@ -26,7 +26,7 @@
 //! Surrogates and private-use codepoints deliberately resolve to nothing, because
 //! they have no names — `<Private Use, First>` is a marker, not a name.
 //!
-//! Matching is ASCII-case-insensitive, which is `re`'s behaviour
+//! Matching is ASCII-case-insensitive, which is `re`'s behavior
 //! (`\N{latin small letter a}` resolves there). Whitespace is *not* normalized on
 //! either side: `re` rejects `\N{LATIN  SMALL LETTER A}`, and so do we.
 

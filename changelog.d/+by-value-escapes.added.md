@@ -11,7 +11,7 @@
   reports as "backreferences are not supported" and then points you at PCRE2.
   Since each engine *refuses* what the other accepts, accepting both reinterprets
   nothing. Measured over 30 (pattern, subject) triples against `re` and a real
-  `rg` process: zero superset violations, ten behaviours rg refuses, four `re`
+  `rg` process: zero superset violations, ten behaviors rg refuses, four `re`
   refuses.
 
   Octal is the one that needed a decision, because `\1` is ambiguous and `re`

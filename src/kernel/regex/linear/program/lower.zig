@@ -260,7 +260,7 @@ pub fn compileOpts(allocator: std.mem.Allocator, pattern: []const u8, opts: Opti
     // line. Split the record at its newlines and hand the pieces down one at a
     // time, and `^`/`$` are each piece's own edges — the exact case the eager
     // table encodes, so the DFA, the tier, the literal engine, and the class-run
-    // kernel all become expressible again. `lineLocal` is the licence: no
+    // kernel all become expressible again. `lineLocal` is the license: no
     // consuming class admits a `\n`, so no match could have crossed one and the
     // decomposition loses no answer; and no `\A`/`\z` is present, since those
     // mean the RECORD's ends and a per-line walk would quietly demote them to
