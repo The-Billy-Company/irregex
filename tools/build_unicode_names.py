@@ -4,7 +4,7 @@ r"""Lower the pinned UCD character names into src/kernel/regex/unicode/names.gen
 `\N{LATIN SMALL LETTER A}` is a name lookup, so the engine needs the Unicode
 character-name database — 40k names, ~1 MB of text if stored plainly. This
 generator lowers it to ~430 KB by front-coding the *sorted* name list: a sorted
-neighbour shares a long byte prefix ("LATIN SMALL LETTER A" then "LATIN SMALL
+neighbor shares a long byte prefix ("LATIN SMALL LETTER A" then "LATIN SMALL
 LETTER A WITH ACUTE"), so each entry stores only the prefix length it shares
 with the entry before it plus its own differing tail. That beat a word-lexicon
 encoding by 2x when both were measured against the real data (431 KB vs 831 KB),
@@ -26,6 +26,12 @@ Three name families are NOT stored, because they are computed: Hangul syllables
 ~97k entries that a dozen lines of arithmetic reproduce exactly. Surrogates and
 private-use codepoints have no names at all and must stay unresolvable.
 
+The emitted text is passed through `zig fmt` before it is compared or written.
+This file is checked by `zig fmt --check` like every other `.zig` in the tree,
+and the formatter owns decisions no generator should try to predict — where `++`
+sits relative to its operands, and the column widths it pads a numeric grid to.
+Asking it is exact; reimplementing it would drift the first time it changed.
+
 It is stdlib-only and deterministic, so
 `python3 tools/build_unicode_names.py --check` is a sound drift gate.
 
@@ -35,6 +41,8 @@ Run: python3 tools/build_unicode_names.py           # writes the .gen.zig
 
 from __future__ import annotations
 
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -147,7 +155,9 @@ def front_code(sorted_names: list[str]) -> tuple[bytes, list[int]]:
 
 def zig_string(blob: bytes, chunk: int = 4096) -> str:
     """`blob` as `++`-joined Zig string literals. Every byte is printable by
-    construction, so only `"` and `\\` need escaping."""
+    construction, so only `"` and `\\` need escaping. The operator trails its
+    left operand because that is where `zig fmt` puts it, and this file is
+    checked by `zig fmt --check` like any other."""
     pieces = []
     for start in range(0, len(blob), chunk):
         buf = []
@@ -155,7 +165,7 @@ def zig_string(blob: bytes, chunk: int = 4096) -> str:
             ch = chr(b)
             buf.append("\\" + ch if ch in '"\\' else ch)
         pieces.append('    "' + "".join(buf) + '"')
-    return "\n    ++\n".join(pieces)
+    return " ++\n".join(pieces)
 
 
 def render(names: dict[str, int], ranges: list[tuple[int, int, str]], alias_count: int) -> str:
@@ -239,11 +249,28 @@ def render(names: dict[str, int], ranges: list[tuple[int, int, str]], alias_coun
     return "\n".join(lines)
 
 
+def zig_fmt(text: str) -> str:
+    """`text` as `zig fmt` would write it. Fails loud rather than emitting
+    unformatted Zig, which would only surface later as a `zig fmt --check` CI
+    failure over a file nobody is supposed to hand-edit."""
+    zig = shutil.which("zig")
+    if zig is None:
+        print("zig is not on PATH, and it formats what this writes", file=sys.stderr)
+        raise SystemExit(1)
+    done = subprocess.run(
+        [zig, "fmt", "--stdin"], input=text, capture_output=True, text=True, check=False
+    )
+    if done.returncode != 0:
+        print(f"zig fmt refused the generated source:\n{done.stderr}", file=sys.stderr)
+        raise SystemExit(1)
+    return done.stdout
+
+
 def main() -> int:
     check = "--check" in sys.argv[1:]
     names, ranges = read_unicode_data()
     alias_count = read_aliases(names)
-    text = render(names, ranges, alias_count)
+    text = zig_fmt(render(names, ranges, alias_count))
     if check:
         if not OUT.exists():
             print(f"drift: {OUT} does not exist", file=sys.stderr)

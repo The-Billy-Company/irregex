@@ -12,6 +12,12 @@ extend-exclude = [
   "bindings/rust/vendor/",
   "tools/ucd/",
   "tools/whatwg/",
+  # The UCD name table, front-coded: the same excluded standards text as
+  # tools/ucd/, with every shared prefix elided. So a name's tail begins
+  # mid-word by construction, and the fragments left behind ("OT" from FOOT,
+  # "RELA" from a Cyrillic name) are artifacts of the encoding rather than
+  # words anything here chose to spell.
+  "src/kernel/regex/unicode/names.gen.zig",
 ]
 
 [default]
