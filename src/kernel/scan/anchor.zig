@@ -519,6 +519,24 @@ const pmi = [gaps][symbols][symbols]i8{
 /// line, so that tail is fixed by construction rather than by a length cap that
 /// would silently change policy at some magic needle length.
 pub fn select(needle: []const u8) Pair {
+    return priced(needle).pair;
+}
+
+/// `select`'s estimate of how RARE a needle is, in the same sixteenths-of-a-bit
+/// units the pair search minimizes (lower = rarer). Exposed so a caller choosing
+/// *between* two candidate needles ranks them under the same fitted model that
+/// will then scan the winner, instead of a second, differently-calibrated guess.
+///
+/// A one-byte needle has no pair to price, so it is its own marginal — the same
+/// unit, and the limit of the two-byte cost as the second term vanishes.
+pub fn selectivity(needle: []const u8) i32 {
+    if (needle.len == 0) return std.math.maxInt(i32);
+    if (needle.len == 1) return marginal[needle[0]];
+    return priced(needle).cost;
+}
+
+/// The pair search itself: the argmin and the value it attained.
+fn priced(needle: []const u8) struct { pair: Pair, cost: i32 } {
     std.debug.assert(needle.len > 1);
 
     // Pass 1 — the `candidates` marginally-rarest offsets, held sorted by rarity.
@@ -562,10 +580,11 @@ pub fn select(needle: []const u8) Pair {
 
     // The rarer byte probes — see `Pair`. A tie hands it to the earlier offset so
     // a hit is found on the earliest possible window.
-    return if (score(needle[hi]) < score(needle[lo]))
+    const pair: Pair = if (score(needle[hi]) < score(needle[lo]))
         .{ .probe = hi, .confirm = lo }
     else
         .{ .probe = lo, .confirm = hi };
+    return .{ .pair = pair, .cost = best };
 }
 
 /// Whether the single-load block filter is worth entering for this pair: one

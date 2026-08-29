@@ -436,6 +436,112 @@ test "classrun cp: differential fuzz — mixed ASCII, UTF-8, and junk bytes" {
     }
 }
 
+// ── the existence path (`min == 1`), which is its own algorithm ──────────────
+
+test "classrun countLines cp: a member codepoint straddling the block seam" {
+    // The bit-parallel existence path credits a codepoint at its LEAD and
+    // clears only the bits it consumed, so a sequence split across the 64-byte
+    // seam is counted by the block holding its lead and must not be counted
+    // (or lost) by the next one — the claim that lets it carry no run state.
+    // é is a member; è is not, so a false credit and a lost one both show up.
+    const ranges: []const [2]u21 = &.{.{ 0xE9, 0xE9 }};
+    const empty: [4]u64 = @splat(0); // ASCII projection is empty, as for [\u00a0-\u00ff]
+    for (0..4) |tail| {
+        // Walk the lead byte across the seam: at offset 63 the continuation
+        // byte lands in the following block on its own.
+        for (60..68) |at| {
+            var buf: [200]u8 = @splat('.');
+            buf[128] = '\n';
+            @memcpy(buf[at..][0..2], "\xc3\xa9"); // é
+            @memcpy(buf[at + 2 + tail ..][0..2], "\xc3\xa8"); // è, non-member
+            try checkCp(empty, ranges, 1, &buf);
+        }
+    }
+}
+
+test "classrun countLines cp: existence fuzz at min 1, high-byte dense" {
+    // The `min == 1` path is a different algorithm from the run-counting one,
+    // and the general cp fuzz draws min from 1..20 — so it lands here only
+    // about a twentieth of the time. This pins min and makes the corpus
+    // high-byte DENSE, which is the regime the path exists for (and the one
+    // where a whole block used to fall to a scalar walk).
+    var prng = std.Random.DefaultPrng.init(0x1ead_da5c_5eed);
+    const rnd = prng.random();
+    var buf: [512]u8 = undefined;
+
+    for (0..3000) |_| {
+        // A purely non-ASCII class some of the time — an empty byte projection
+        // is the shape `[\u00a0-\u00ff]` takes, where every answer must come
+        // from the high-byte resolver rather than the SIMD fold.
+        var bits: [4]u64 = @splat(0);
+        const ascii_half = rnd.boolean();
+        if (ascii_half) {
+            const lo: u8 = rnd.intRangeAtMost(u8, 0x20, 0x60);
+            var b: usize = lo;
+            while (b <= lo + 8) : (b += 1) B64.set(&bits, b);
+            B64.clear(&bits, '\n');
+        }
+        var ranges_buf: [4][2]u21 = undefined;
+        var nr: usize = 0;
+        if (ascii_half) {
+            for (0x20..0x80) |c| {
+                if (!B64.get(&bits, @intCast(c))) continue;
+                const start: u21 = @intCast(c);
+                var end = start;
+                var cc = c + 1;
+                while (cc < 0x80 and B64.get(&bits, @intCast(cc))) : (cc += 1) end = @intCast(cc);
+                ranges_buf[nr] = .{ start, end };
+                nr += 1;
+                break;
+            }
+        }
+        const hlo: u21 = rnd.intRangeAtMost(u21, 0xA0, 0x2000);
+        ranges_buf[nr] = .{ hlo, hlo +| rnd.intRangeAtMost(u21, 0, 0x200) };
+        nr += 1;
+        const ranges = ranges_buf[0..nr];
+
+        const len = rnd.intRangeAtMost(usize, 0, buf.len);
+        var i: usize = 0;
+        while (i < len) {
+            // Heavily non-ASCII: a high byte every few bytes is what makes the
+            // old path degrade, so it is what this fuzz should look like.
+            switch (rnd.intRangeAtMost(u8, 0, 7)) {
+                0, 1 => {
+                    buf[i] = rnd.intRangeAtMost(u8, 0x20, 0x7E);
+                    i += 1;
+                },
+                2...5 => { // a real codepoint, biased onto the range edges
+                    const pick = ranges[rnd.intRangeAtMost(usize, 0, ranges.len - 1)];
+                    const c: u21 = switch (rnd.intRangeAtMost(u8, 0, 3)) {
+                        0 => pick[0],
+                        1 => pick[1],
+                        2 => pick[0] -| 1, // just outside: a near miss must miss
+                        else => rnd.intRangeAtMost(u21, 0x80, 0x3FFF),
+                    };
+                    var tmp: [4]u8 = undefined;
+                    const n = std.unicode.utf8Encode(c, &tmp) catch 1;
+                    if (i + n > len) {
+                        buf[i] = '.';
+                        i += 1;
+                    } else {
+                        @memcpy(buf[i..][0..n], tmp[0..n]);
+                        i += n;
+                    }
+                },
+                6 => { // truncations and bare continuations, which must break
+                    buf[i] = rnd.intRangeAtMost(u8, 0x80, 0xFF);
+                    i += 1;
+                },
+                else => {
+                    buf[i] = '\n';
+                    i += 1;
+                },
+            }
+        }
+        try checkCp(bits, ranges, 1, buf[0..len]);
+    }
+}
+
 // ── span extraction (`-o` window rule) ───────────────────────────────────────
 
 /// Span ground truth, straight from the window rule: at each position the

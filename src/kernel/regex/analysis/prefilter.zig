@@ -16,6 +16,27 @@ const bitsmod = @import("../../math/bits.zig");
 const ByteSet = syn.ByteSet;
 
 const vlen: usize = std.simd.suggestVectorLength(u8) orelse 16;
+const Vec = @Vector(vlen, u8);
+const LaneMask = std.meta.Int(.unsigned, vlen);
+
+/// Windows folded into one `u64` lane mask per branch in `nextStartRange` — as
+/// many as the mask holds, so the width is the register's claim rather than a
+/// tuned constant (4 at NEON's 16 bytes, 2 under AVX2, 1 under AVX-512).
+const unroll: usize = @max(1, 64 / vlen);
+const skip_window: usize = unroll * vlen;
+
+/// Bit j ⇔ `blk[j]` falls in any of `ranges` — one `lo ≤ b ≤ hi` compare pair
+/// per range, OR-reduced across the window.
+inline fn laneHits(blk: *const [vlen]u8, ranges: []const Range) LaneMask {
+    const v: Vec = blk.*;
+    var hit: @Vector(vlen, bool) = @splat(false);
+    for (ranges) |rg| {
+        const lo: Vec = @splat(rg.lo);
+        const hi: Vec = @splat(rg.hi);
+        hit |= (v >= lo) & (v <= hi);
+    }
+    return bitsmod.laneMask(LaneMask, hit);
+}
 
 /// Fixed-point denominator for every probability in this file. Must track
 /// `rarity.zig`'s density scale, because `mass` is a sum of its cells: the two
@@ -101,21 +122,26 @@ pub const Prefilter = struct {
 
     /// Vectorized hunt for the first byte falling in any of `ranges`: one
     /// `lo ≤ b ≤ hi` compare per range across a `vlen`-wide window, OR the lane
-    /// masks, take the lowest set lane. The scalar tail handles the remainder.
+    /// masks, take the lowest set lane.
+    ///
+    /// `unroll` windows are folded into ONE 64-bit mask before the branch, so a
+    /// skip across barren text costs one test per `skip_window` bytes rather
+    /// than one per vector. The compares are independent, so the extra windows fill
+    /// issue slots the single-window loop left idle waiting on its own branch —
+    /// which is the whole of memchr's advantage over a naive vector loop, and
+    /// the reason this loop used to trail it on a sparse lead set however cheap
+    /// its per-byte work was. A `vlen`-wide loop then a scalar probe finish the
+    /// tail, so a short line never pays for the wide body.
     fn nextStartRange(self: *const Prefilter, line: []const u8, from: usize) ?usize {
-        const Vec = @Vector(vlen, u8);
-        const Mask = std.meta.Int(.unsigned, vlen);
         const ranges = self.ranges[0..self.nranges];
         var i = from;
+        while (i + skip_window <= line.len) : (i += skip_window) {
+            var bits: u64 = 0;
+            inline for (0..unroll) |k| bits |= @as(u64, laneHits(line[i + k * vlen ..][0..vlen], ranges)) << (k * vlen);
+            if (bits != 0) return i + @ctz(bits);
+        }
         while (i + vlen <= line.len) : (i += vlen) {
-            const blk: Vec = line[i..][0..vlen].*;
-            var hit: @Vector(vlen, bool) = @splat(false);
-            for (ranges) |rg| {
-                const lo: Vec = @splat(rg.lo);
-                const hi: Vec = @splat(rg.hi);
-                hit |= (blk >= lo) & (blk <= hi);
-            }
-            const bits: Mask = bitsmod.laneMask(Mask, hit);
+            const bits = laneHits(line[i..][0..vlen], ranges);
             if (bits != 0) return i + @ctz(bits);
         }
         return self.scalarFirst(line, i);

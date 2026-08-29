@@ -289,13 +289,27 @@ pub const ClassRun = struct {
         var seen = false; // current line already proven matching
         var i: usize = 0;
         while (i < hay.len) {
-            // Codepoint mode: a block touched by ≥ 0x80 (or the sub-block
-            // tail, whose scalar remainder only knows bytes) resolves scalar
-            // — the byte bit-path would misread a member codepoint's bytes
-            // as run breakers. High-byte-free blocks stay on the fast path.
+            // Codepoint mode: a block touched by ≥ 0x80 needs CODEPOINT-grained
+            // membership, because the byte bit-path would misread a member
+            // codepoint's own bytes as run breakers. How much that costs turns
+            // entirely on the run floor.
+            //
+            // `min == 1` — a bare class or `[…]+`, which is what nearly every
+            // real query spells — asks only whether a member OCCURS, so there
+            // is no run to carry and the question stays bit-parallel:
+            // `leadMaskCp` keeps the SIMD fold for the block's ASCII bytes and
+            // decodes only the high-byte spans. A higher floor counts
+            // codepoints across the block, which byte bit-tricks cannot
+            // express, so it keeps the scalar resolver.
             if (self.cp) |ranges| {
                 const stop = @min(i + W, hay.len);
                 if (stop - i < W or hasHigh(hay[i..][0..W])) {
+                    if (self.min == 1 and stop - i == W) {
+                        self.settleBlock(hay[i..][0..W], self.leadMaskCp(ranges, hay, i), &seen, &count);
+                        run = 0; // existence carries no run
+                        i += W;
+                        continue;
+                    }
                     while (i < stop) {
                         if (hay[i] == '\n') {
                             count += @intFromBool(seen);
@@ -315,26 +329,7 @@ pub const ClassRun = struct {
             // carry is all members, so no `\n` can sit inside it).
             if (run + @ctz(~blk.m) >= self.min) seen = true;
             const x = if (self.min <= W) runStarts(blk.m, self.min) else 0;
-            // Only a block that could settle a line pays for its newline
-            // mask: with no live proof (`seen`) and no run start, every line
-            // ending here counts zero and `seen` stays false — the miss-heavy
-            // regime skips everything below.
-            if (seen or x != 0) {
-                // Settle each line ending in this block: a line counts iff it
-                // was already seen or a run STARTS in its segment (runs never
-                // cross `\n`, so a start in the segment is a hit in the line).
-                var nls = nlMask(hay[i..][0..blk.len]);
-                var from: u32 = 0;
-                while (nls != 0) {
-                    const p: u32 = @ctz(nls);
-                    const seg = lowMask(p) & ~lowMask(from);
-                    count += @intFromBool(seen or (x & seg) != 0);
-                    seen = false;
-                    from = p + 1;
-                    nls &= nls - 1;
-                }
-                seen = seen or (x & ~lowMask(from)) != 0;
-            }
+            self.settleBlock(hay[i..][0..blk.len], x, &seen, &count);
             // Trailing member run within the block's live bytes seeds the next
             // carry; a fully-member block extends the carry wholesale (the
             // only way a > 64-byte `min` accumulates).
@@ -345,6 +340,65 @@ pub const ClassRun = struct {
         // The unterminated tail line: `seen` can only be true if member bytes
         // followed the last `\n`, so no phantom final line is ever counted.
         return count + @intFromBool(seen);
+    }
+
+    /// Settle every line ENDING in this block, then carry the tail line's
+    /// proof across the seam. `x` marks positions that prove the line holding
+    /// them matches — a run start for the byte path, a member codepoint's lead
+    /// for the existence path — and runs never cross `\n`, so a mark inside a
+    /// segment is a hit in that segment's line.
+    ///
+    /// Only a block that could settle something pays for its newline mask:
+    /// with no live proof and no mark, every line ending here counts zero and
+    /// `seen` cannot change. That early return is the miss-heavy regime's
+    /// whole cost.
+    inline fn settleBlock(self: *const ClassRun, live: []const u8, x: u64, seen: *bool, count: *u64) void {
+        _ = self;
+        if (!seen.* and x == 0) return;
+        var nls = nlMask(live);
+        var from: u32 = 0;
+        while (nls != 0) {
+            const p: u32 = @ctz(nls);
+            const seg = lowMask(p) & ~lowMask(from);
+            count.* += @intFromBool(seen.* or (x & seg) != 0);
+            seen.* = false;
+            from = p + 1;
+            nls &= nls - 1;
+        }
+        seen.* = seen.* or (x & ~lowMask(from)) != 0;
+    }
+
+    /// Positions in one FULL block where a member codepoint BEGINS — the
+    /// existence mask behind codepoint-mode `min == 1`.
+    ///
+    /// The block's ASCII members ride the ordinary SIMD membership fold, which
+    /// is sound for free: a codepoint class's byte projection holds no byte
+    /// ≥ 0x80 (`uclassAscii` stops at 0x7F), so every high byte classifies as a
+    /// non-member and no continuation byte can be mistaken for a member in its
+    /// own right. Only the maximal runs of high bytes decode, one codepoint at
+    /// a time, and each decoded codepoint clears the bits it consumed — so the
+    /// scalar work is proportional to the non-ASCII bytes actually present
+    /// rather than to the 64 bytes surrounding them.
+    ///
+    /// A sequence straddling the block's end is credited at its lead here, and
+    /// its continuation bytes are simply skipped when the next block reaches
+    /// them: 0x80–0xBF is not a lead byte, so the resolver breaks on them and
+    /// marks nothing. That is why existence needs no cross-block carry, where
+    /// the run-counting path does.
+    fn leadMaskCp(self: *const ClassRun, ranges: []const [2]u21, hay: []const u8, base: usize) u64 {
+        var m = self.memberMask(hay[base..]).m;
+        var hi = highMask(hay[base..][0..W]);
+        while (hi != 0) {
+            const p: u32 = @ctz(hi);
+            var run: u64 = 0;
+            const next = self.stepCp(ranges, hay, base + p, &run);
+            if (run != 0) m |= @as(u64, 1) << @intCast(p);
+            // `stepCp` always advances, so `hi` strictly shrinks and this
+            // terminates; a straddling sequence clamps to the block's end.
+            const end: u32 = @intCast(@min(next - base, W));
+            hi &= ~(lowMask(end) & ~lowMask(p));
+        }
+        return m;
     }
 
     /// Leftmost-first match span at/after `from` under the span-exact window
@@ -582,6 +636,18 @@ inline fn lowMask(k: u32) u64 {
 inline fn hasHigh(blk: *const [W]u8) bool {
     const v: @Vector(W, u8) = blk.*;
     return @reduce(.Max, v) >= 0x80;
+}
+
+/// Bit j ⇔ `blk[j] >= 0x80` — the codepoint resolver's work list, so it can
+/// visit the non-ASCII bytes themselves instead of the block that holds them.
+inline fn highMask(blk: *const [W]u8) u64 {
+    const hi16: V16 = @splat(0x80);
+    var m: u64 = 0;
+    inline for (0..W / 16) |k| {
+        const b: V16 = blk[k * 16 ..][0..16].*;
+        m |= @as(u64, bitsmod.laneMask(u16, b >= hi16)) << (k * 16);
+    }
+    return m;
 }
 
 /// Codepoint membership by binary search over sorted, coalesced ranges.

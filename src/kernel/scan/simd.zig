@@ -27,13 +27,36 @@ const teddy = @import("teddy.zig");
 const rarity = @import("rarity.zig");
 const anchor = @import("anchor.zig");
 
-/// Needle count at which the fused any-of gate hands off to Teddy. Below this
-/// the fused first+last gate's `1 + N` loads/block are cheap and its wide
-/// (`scan_vlen`) block wins on AVX2/512; at 4+ Teddy's constant 2 loads/block win on
-/// every architecture regardless of vector width (measured: N=4 1.6×, N=8 2.2×
-/// on Apple M4). Both paths are byte-exact — this is a throughput dispatch, not
-/// a fallback. `teddy.max_buckets` (8) caps both, so the handoff never fails.
-const teddy_min: usize = 4;
+/// Needle count at which the fused any-of gate hands off to Teddy — every set
+/// with more than one needle, which is every set that has a choice.
+///
+/// It was 4, and the number was calibrated at N=4 (1.6×) and N=8 (2.2×) on Apple
+/// M4 without measuring the band it created. The band was where the loss lived:
+/// the fused gate's `1 + N` loads/block are only cheap when the survivor rate is,
+/// and its first+last fingerprint is *degenerate* for a short needle over a
+/// correlated alphabet — a 2-byte UTF-8 needle fingerprints on its own two bytes,
+/// so every occurrence of the lead byte survives to `eql`. The tell was that
+/// adding a FOURTH needle made the same scan several times FASTER, because the
+/// fourth needle crossed the threshold: a dispatch whose cost falls when the work
+/// grows is the threshold being wrong, not the kernels.
+///
+/// Measured on a 268 MB mixed-script corpus, `-c` over an alternation of N UTF-8
+/// literals, minimum of 15 runs, counts identical to rg at every width:
+///
+///   | needles | wall  | cpu    | rg wall | rg cpu |
+///   |---------|-------|--------|---------|--------|
+///   | 2       | 17.3  | 65.9   | 87.1    | 87.8   |
+///   | 3       | 16.9  | 68.0   | 88.4    | 88.9   |
+///   | 4       | 17.8  | 70.9   | 87.0    | 87.9   |
+///   | 6       | 22.7  | 66.7   | 126.3   | 102.3  |
+///
+/// Flat in N, which is the property being bought: the band is gone rather than
+/// moved, and no width is now served by the arm that loses on it.
+///
+/// Both paths are byte-exact — this is a throughput dispatch, not a fallback.
+/// `teddy.max_buckets` (8) caps both, so the handoff never fails; `Teddy.init`
+/// declines a set it cannot bucket and the fused gate still catches it.
+const teddy_min: usize = 2;
 
 const vlen: usize = std.simd.suggestVectorLength(u8) orelse 16;
 const Vec = @Vector(vlen, u8);
