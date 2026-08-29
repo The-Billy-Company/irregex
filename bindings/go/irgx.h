@@ -149,6 +149,16 @@ int32_t irgx_last_fault(irgx_fault *out);
 #define IRGX_PCRE (1u << 8)        /* -P: PCRE2 grammar (lookaround...) */
 #define IRGX_MULTILINE (1u << 9)   /* (?m): ^ and $ also match a line   */
 #define IRGX_DOTALL (1u << 10)     /* (?s): . matches a newline too     */
+#define IRGX_VERBOSE (1u << 11)    /* (?x): skip whitespace + # comments*/
+
+/* IRGX_VERBOSE is Python's re.VERBOSE: between tokens, unescaped whitespace and
+ * a #-to-end-of-line comment are ignored, so a long pattern can be written over
+ * several annotated lines. Inside a class [ ] a space is still a space, a{1, 2}
+ * is still five literal characters, and a *? is still a lazy star -- CPython
+ * agrees on all three. \  (escaped space) and [ ] are how you match a real one.
+ * Both arms honor it (the linear parser, and PCRE2_EXTENDED under IRGX_PCRE), so
+ * commenting a pattern never costs the linear-time guarantee. Under IRGX_FIXED
+ * the bytes are data and it is inert. */
 
 /* IRGX_MULTILINE is the (?m) question and nothing more, off by default as it
  * is in re, rust-regex, PCRE2 and Go's regexp; \A and \z are the text's ends
@@ -158,12 +168,13 @@ int32_t irgx_last_fault(irgx_fault *out);
  * about lines. Under the per-line model the compiler may assume no haystack
  * holds a newline, and \s over "a\nb" found nothing at all. */
 
-/* A pattern may also ask for four of these itself, in the leading (?ims-u) form
+/* A pattern may also ask for five of these itself, in the leading (?imsx-u) form
  * every host language's own library accepts: i -> IRGX_IGNORE_CASE, s ->
- * IRGX_DOTALL, m -> IRGX_MULTILINE, and (?-u) -> IRGX_NO_UNICODE. Only a
+ * IRGX_DOTALL, m -> IRGX_MULTILINE, x -> IRGX_VERBOSE, and (?-u) ->
+ * IRGX_NO_UNICODE. Only a
  * LEADING run is folded, and what it says wins over the same bit in `flags`,
  * being the more specific statement. A non-leading (?i) is not a whole-pattern
- * option -- re itself has refused one since 3.11 -- and (?x) / (?U) / (?R) are
+ * option -- re itself has refused one since 3.11 -- and (?U) / (?R) are
  * flags this grammar does not have: both stay in the pattern, so the compile
  * refuses with IRGX_STALE and the retry is IRGX_PCRE, which implements them.
  * The scoped (?i:...) form is the parser's own and needs none of this.
@@ -527,10 +538,12 @@ typedef struct irgx_slate irgx_slate;
 /* One pattern of a slate: the bytes, and the same flag word irgx_compile takes.
  * Layout is append-only, so a later field is a compatible extension.
  *
- * IRGX_MULTILINE and IRGX_DOTALL are the two flags a slate cannot carry, and
+ * IRGX_MULTILINE, IRGX_DOTALL and IRGX_VERBOSE are the flags a slate cannot
+ * carry, and
  * they are REFUSED (IRGX_INVALID) rather than ignored: passing them means you
  * believe something about the answer you are about to get. A pattern whose own
- * head says (?m) or (?s) is refused the same way, with `refused` naming it.
+ * head says (?m), (?s) or (?x) is refused the same way, with `refused` naming
+ * it -- a single pattern that wants verbose wraps itself in (?x: ... ) instead.
  * Every other pattern flag means here exactly what it means there,
  * IRGX_SMART_CASE included -- resolved at compile against the same
  * has-uppercase predicate, and a leading (?i) / (?-u) likewise stays that one
@@ -683,7 +696,7 @@ typedef struct {
  * is no handle to read reasons from in that case; ask a different engine.
  *
  * `flags` is a SUBSET of the pattern plane's: IRGX_IGNORE_CASE, IRGX_NO_UNICODE
- * and IRGX_DOTALL are honored, and the other five are REFUSED (IRGX_INVALID)
+ * and IRGX_DOTALL are honored, and the other six are REFUSED (IRGX_INVALID)
  * rather than ignored, because honoring one here would be a lie you cannot see:
  *
  *   IRGX_PCRE       - the PCRE2 arm has no anchored-longest-over-N automaton at
@@ -702,6 +715,10 @@ typedef struct {
  *                     longest-match walk never learns where the buffer ended,
  *                     so $ and \z are reachable from neither. \A still means
  *                     the buffer's start and is false at a nonzero offset.
+ *   IRGX_VERBOSE    - a terminal in a slate is one token you named, and the
+ *                     whitespace in it is yours; a slate-wide rewrite of every
+ *                     terminal's spaces is not something a lexer asked for.
+ *                     A single terminal that wants it wraps itself: (?x: ... ).
  *
  * Note IRGX_DOTALL is honored HERE and refused by irgx_slate_compile. The three
  * planes carry three different masks because they can honor different things; do
