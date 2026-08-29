@@ -78,6 +78,16 @@ pub const Options = struct {
     /// backreferences, at backtracking's worst case.
     pcre: bool = false,
 
+    /// Ignore unescaped whitespace and `#`-to-end-of-line comments between
+    /// tokens — Python's `re.VERBOSE`/`re.X`, PCRE2's `(?x)`, Rust's `(?x)`. Off
+    /// by default, as in all three.
+    ///
+    /// Both arms honor it and agree, which is the point: verbose is a formatting
+    /// convenience, and a caller should not have to trade the linear-time
+    /// guarantee for the ability to comment a pattern. `(?x)` at the head of the
+    /// pattern says the same thing (`syntax/directive.zig`).
+    verbose: bool = false,
+
     /// `^` and `$` match at every line break as well as the text's ends —
     /// Python's `re.M`, Rust's and PCRE2's `(?m)`. Off by default, as it is in
     /// all three: `^` means the start of the text you passed. `\A` and `\z` are
@@ -129,6 +139,7 @@ pub const Options = struct {
             .multiline = self.multiline,
             .dotall = self.dotall,
             .word = self.word,
+            .verbose = self.verbose,
         };
     }
 
@@ -141,6 +152,7 @@ pub const Options = struct {
             .dotall = self.dotall,
             .word = self.word,
             .crlf = self.crlf,
+            .verbose = self.verbose,
         };
     }
 };

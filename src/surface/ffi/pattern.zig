@@ -194,11 +194,11 @@ pub fn compile(pattern: ?[*]const u8, len: usize, flags: u32, out: ?**Regex) Sta
     // Neither of the two arms that already own the syntax gets it read for them.
     // Under `-F` the bytes `(?i)` are data — a host searching for that literal
     // must find it, which is also rg's and the exact face's answer — and PCRE2
-    // implements the whole flag grammar itself, scoping and `(?x)` included, so
-    // reading it here would only be able to make that arm worse.
+    // implements the whole flag grammar itself, scoping included, so reading it
+    // here would only be able to make that arm worse.
     //
-    // `.beyond` (`(?x)`, `(?U)`, `(?R)`) is left whole on purpose: the compile
-    // below then fails and `refuse` asks PCRE2 — which has all three — turning a
+    // `.beyond` (`(?U)`, `(?R)`) is left whole on purpose: the compile
+    // below then fails and `refuse` asks PCRE2 — which has both — turning a
     // flat refusal into the declinature that names the arm which can answer.
     const asked: rx.syntax.Directive = switch (if (fixed or pcre) .none else rx.syntax.preamble(bytes)) {
         .asks => |d| d,
@@ -216,6 +216,10 @@ pub fn compile(pattern: ?[*]const u8, len: usize, flags: u32, out: ?**Regex) Sta
     const unicode = asked.unicode orelse (flags & contract.flag_no_unicode == 0);
     const line_anchors = asked.line_anchors orelse (flags & contract.flag_multiline != 0);
     const dotall = asked.dotall orelse (flags & contract.flag_dotall != 0);
+    // A leading `(?x)` and `IRGX_VERBOSE` are the same request; under `-P` the
+    // directive was not read at all, so only the bit can speak there — and
+    // PCRE2's own `(?x)` still works because those bytes were left in place.
+    const verbose = asked.verbose orelse (flags & contract.flag_verbose != 0);
 
     // Assembled by hand rather than with `errdefer`, which a Status-returning
     // entry never fires: each step below unwinds exactly what the steps before
@@ -237,6 +241,11 @@ pub fn compile(pattern: ?[*]const u8, len: usize, flags: u32, out: ?**Regex) Sta
         .multiline = line_anchors,
         .dotall = dotall,
         .pcre = pcre,
+        // `-F` wins here too, and for a sharper reason than with `-P`: a literal
+        // search for `"a b"` must find `"a b"`, and `escapeLiteral` has no
+        // reason to escape a space, so honoring verbose over an escaped literal
+        // would delete bytes the host asked to find.
+        .verbose = verbose and !fixed,
     }) catch |e| {
         if (escaped.len != 0) gpa.free(escaped);
         // Anything but exhaustion is a statement about the PATTERN, and this
@@ -1440,15 +1449,35 @@ test "a flag from the wider grammar routes to the arm that has it" {
     defer sc.end();
     var re: *Regex = undefined;
 
-    // `x`, `U` and `R` are not this grammar's, and the honest answer is the one
-    // the seam already has for every unsupported construct: a declinature that
-    // names the arm which can answer, with no fault installed. Reading the `i`
-    // out of `(?ix)` and dropping the `x` would be the silent wrong answer.
-    for ([_][]const u8{ "(?x)a b", "(?U)a+", "(?ix)a b" }) |p| {
+    // `U` (swap greediness) and `R` (CRLF line terminators) are not this
+    // grammar's, and the honest answer is the one the seam already has for every
+    // unsupported construct: a declinature that names the arm which can answer,
+    // with no fault installed. Reading the `i` out of `(?iU)` and dropping the
+    // `U` would be the silent wrong answer — a lazy `a+` reported as a greedy
+    // one — so a foreign letter voids the whole preamble rather than the letter.
+    for ([_][]const u8{ "(?U)a+", "(?iU)a+" }) |p| {
         try t.expectEqual(Status.stale, compile(p.ptr, p.len, 0, &re));
         try t.expect(fault.last() == null);
         try t.expectEqual(Status.ok, compile(p.ptr, p.len, contract.flag_pcre, &re));
         free(re);
+    }
+    // `R` declines the same way, and only the declinature is asserted: the
+    // letter means CRLF mode in rust-regex and *recursion* in PCRE2, so "the
+    // other arm has it" is true of `U` and not of this one.
+    const crlf = "(?R)^a$";
+    try t.expectEqual(Status.stale, compile(crlf.ptr, crlf.len, 0, &re));
+    try t.expect(fault.last() == null);
+
+    // `x` used to be in that list and is now on this side of the line: verbose
+    // is a whole-pattern statement this engine implements, so `(?x)` compiles
+    // here and MEANS it — the whitespace is trivia, not bytes to match. The
+    // assertion is the meaning rather than the status, because a seam that read
+    // the `x` and then ignored it would also return `ok`.
+    for ([_][]const u8{ "(?x)a b", "(?ix)a b" }) |p| {
+        try t.expectEqual(Status.ok, compile(p.ptr, p.len, 0, &re));
+        defer free(re);
+        try t.expectEqual(Status.match, isMatch(re, "ab", 2));
+        try t.expectEqual(Status.ok, isMatch(re, "a b", 3));
     }
 
     // A directive in front of a genuinely broken pattern still reports an offset

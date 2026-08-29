@@ -23,7 +23,7 @@ pub const Span = core.Regex.Span;
 
 /// Compile-time engine knobs mirroring `Regex.Options`. `unicode` selects
 /// PCRE2 UTF+UCP semantics (ripgrep's `-P` default); off ⇒ raw bytes / ASCII.
-pub const Options = struct { caseless: bool = false, multiline: bool = false, dotall: bool = false, unicode: bool = true, word: bool = false };
+pub const Options = struct { caseless: bool = false, multiline: bool = false, dotall: bool = false, unicode: bool = true, word: bool = false, verbose: bool = false };
 
 /// `-w` for this arm, as rg spells it for its own PCRE2 backend:
 /// `(?<!\w)(?:PAT)(?!\w)`. Lookaround is free here, so the boundary becomes part
@@ -168,15 +168,28 @@ pub const match_options: u32 = 0;
 /// length 0 but wants a non-null pointer. Shared by the match + capture engines.
 pub const empty_subject: [*]const u8 = &[_]u8{0};
 
-/// The `pcre2_compile` option bits for `opts` — CASELESS/MULTILINE/DOTALL plus,
-/// under `unicode`, UTF+UCP with invalid-UTF tolerance (rg's `-P` default). One
+/// The `pcre2_compile` option bits for `opts` — CASELESS/MULTILINE/DOTALL/
+/// EXTENDED plus, under `unicode`, UTF+UCP with invalid-UTF tolerance (rg's
+/// `-P` default). One
 /// mapping shared by the match program and the capture program so `-P -r` folds,
 /// anchors, and Unicode-matches exactly like the search that produced the span.
+///
+/// `EXTENDED` is PCRE2's `(?x)`: the same six whitespace bytes, the same
+/// `#`-to-newline comment, both inert inside a class. Mapping it keeps the flag
+/// meaning one thing across both arms, so `verbose=True, pcre=True` is not a
+/// silently different pattern from `verbose=True`.
+///
+/// The one place PCRE2 and Python differ is *inside* a brace bound: PCRE2 reads
+/// `a{1, 2}` as `a{1,2}` where `re` reads it as six literal characters. That is
+/// PCRE2's own reading and not something this mapping can repair — the linear
+/// arm refuses `a{1, 2}` outright (rust-regex's policy for a `{` that opens no
+/// valid bound), so no arm here silently agrees with `re` about it.
 pub fn compileOptionBits(opts: Options) u32 {
     var bits: u32 = 0;
     if (opts.caseless) bits |= ffi.CASELESS;
     if (opts.multiline) bits |= ffi.MULTILINE;
     if (opts.dotall) bits |= ffi.DOTALL;
+    if (opts.verbose) bits |= ffi.EXTENDED;
     if (opts.unicode) bits |= ffi.UTF | ffi.UCP | ffi.MATCH_INVALID_UTF;
     return bits;
 }
@@ -525,7 +538,16 @@ pub fn compileMode(allocator: std.mem.Allocator, pattern: []const u8, opts: Opti
     // Best-effort JIT; the interpreter is always the guaranteed fallback.
     const jit = enable_jit and jitHonors(limits) and ffi.pcre2_jit_compile_8(code, ffi.JIT_COMPLETE) == 0;
 
-    var req = try literal.required(allocator, pattern, opts.caseless);
+    // Both prefilters below read the PATTERN TEXT, and verbose changes what that
+    // text says: `literal.required` would report `"a b"` as required by `a b`,
+    // which no match of it contains, and the shadow rewriter would read a `(` or
+    // `[` inside a `#` comment as structure. A prefilter that is not an
+    // over-approximation does not slow a search down, it loses matches — the one
+    // failure mode nothing downstream can notice — so under verbose both decline
+    // and PCRE2 runs raw. (The linear arm keeps every prefilter, because it
+    // derives them from the single verbose-aware `lower.parse` rather than from
+    // the bytes.)
+    var req = if (opts.verbose) try allocator.alloc(u8, 0) else try literal.required(allocator, pattern, opts.caseless);
     errdefer allocator.free(req);
 
     // The shadow gate + prefilter upgrade — best-effort at every step: any
@@ -575,6 +597,10 @@ pub fn compileMode(allocator: std.mem.Allocator, pattern: []const u8, opts: Opti
 /// is provable / useful. Every failure short of OOM is a silent decline —
 /// PCRE2 then runs raw, exactly the pre-shadow behavior (fail-open by design).
 fn buildShadow(allocator: std.mem.Allocator, pattern: []const u8, opts: Options) error{OutOfMemory}!?core.Regex {
+    // See `compileMode`: the rewriter reads the bytes as structure, and under
+    // verbose a `(` inside a `#` comment is not structure. A shadow that is not
+    // a superset gates real matches out, so this declines rather than guesses.
+    if (opts.verbose) return null;
     const text = switch (try shadow_mod.overapprox(allocator, pattern)) {
         .got => |t| t,
         // The rewriter found no containment proof; PCRE2 runs raw.

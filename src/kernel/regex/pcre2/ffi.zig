@@ -27,6 +27,7 @@ pub const Size = usize;
 // ── compile / match option bits (subset; values from vendored pcre2.h) ──
 pub const CASELESS: u32 = 0x00000008;
 pub const DOTALL: u32 = 0x00000020;
+pub const EXTENDED: u32 = 0x00000080;
 pub const MULTILINE: u32 = 0x00000400;
 pub const UCP: u32 = 0x00020000;
 pub const UTF: u32 = 0x00080000;

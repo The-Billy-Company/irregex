@@ -81,6 +81,7 @@ NO_UNICODE = 1 << 6
 PCRE = 1 << 8
 MULTILINE = 1 << 9
 DOTALL = 1 << 10
+VERBOSE = 1 << 11
 
 
 def _locate(pattern: str | bytes | None, pos: int | None) -> tuple[int, int] | tuple[None, None]:

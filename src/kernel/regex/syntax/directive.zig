@@ -44,17 +44,22 @@ pub const Directive = struct {
     line_anchors: ?bool = null,
     /// `s` — `.` matches a newline too.
     dotall: ?bool = null,
+    /// `x` — verbose: ignore unescaped whitespace and `#` comments between
+    /// tokens. Python's `re.VERBOSE`, and the whole reason a `re` host reaches
+    /// for a leading directive at all: the idiom is a triple-quoted pattern
+    /// whose first four bytes are `(?x)`.
+    verbose: ?bool = null,
 };
 
 /// The three things the head of a pattern can turn out to be.
 ///
-/// `beyond` is the member that keeps this honest. `x` (verbose), `U` (swap
-/// greed) and `R` (CRLF line terminators) are flags of the wider grammar this
+/// `beyond` is the member that keeps this honest. `U` (swap greed) and `R`
+/// (CRLF line terminators) are flags of the wider grammar this
 /// engine does not implement, and reading them as "not a directive" would hand
 /// the parser a pattern it fails on for the wrong reason. Naming the letter lets
 /// each caller answer with the remedy it actually has: the CLI says which flag
 /// and points at ripgrep, and the ABI leaves the bytes alone so its PCRE2 arm —
-/// which has all three — is what the refusal routes a host to.
+/// which has both — is what the refusal routes a host to.
 pub const Preamble = union(enum) {
     /// Not a flag directive: no `(?` at all, or a `(?:`/`(?P<`/lookaround/
     /// scoped-flag head. The parser decides, exactly as it did before.
@@ -85,6 +90,7 @@ pub fn preamble(pattern: []const u8) Preamble {
             if (f.unicode) |v| out.unicode = v;
             if (f.line_anchors) |v| out.line_anchors = v;
             if (f.dotall) |v| out.dotall = v;
+            if (f.verbose) |v| out.verbose = v;
         },
     };
     return if (read) .{ .asks = out } else .none;
@@ -109,7 +115,8 @@ fn one(pattern: []const u8) ?Read {
         'u' => f.unicode = !off,
         'm' => f.line_anchors = !off,
         's' => f.dotall = !off,
-        'x', 'U', 'R' => return .{ .beyond = c },
+        'x' => f.verbose = !off,
+        'U', 'R' => return .{ .beyond = c },
         // A `:` lands here, which is how the scoped `(?i:…)` form stays out:
         // it is not a whole-pattern statement, so it is not this module's.
         else => return null,
@@ -177,12 +184,26 @@ test "everything that only looks like a directive is left to the parser" {
 
 test "a flag from the wider grammar names itself instead of hiding" {
     const t = std.testing;
-    try t.expectEqual(@as(u8, 'x'), preamble("(?x) a b ").beyond);
     try t.expectEqual(@as(u8, 'U'), preamble("(?U)a+").beyond);
     try t.expectEqual(@as(u8, 'R'), preamble("(?R)a$").beyond);
     // Mixed with letters this grammar does have, the foreign one still wins:
-    // honoring the `i` and dropping the `x` is the silent wrong answer.
-    try t.expectEqual(@as(u8, 'x'), preamble("(?ix)a b").beyond);
+    // honoring the `i` and dropping the `U` is the silent wrong answer.
+    try t.expectEqual(@as(u8, 'U'), preamble("(?iU)a+").beyond);
     // And a foreign letter later in a run is not reached past either.
-    try t.expectEqual(@as(u8, 'x'), preamble("(?i)(?x)a b").beyond);
+    try t.expectEqual(@as(u8, 'U'), preamble("(?i)(?U)a+").beyond);
+}
+
+test "verbose is a directive this grammar has, not a foreign letter" {
+    const t = std.testing;
+    // The Python idiom: the whole pattern is a commented block, and its first
+    // four bytes are what say so.
+    const got = preamble("(?x) a  b # trailing").asks;
+    try t.expectEqual(@as(?bool, true), got.verbose);
+    try t.expectEqualStrings(" a  b # trailing", got.rest);
+    // Negation and folding work like every other letter.
+    try t.expectEqual(@as(?bool, false), preamble("(?-x)a b").asks.verbose);
+    const mixed = preamble("(?ix)a b").asks;
+    try t.expectEqual(@as(?bool, true), mixed.caseless);
+    try t.expectEqual(@as(?bool, true), mixed.verbose);
+    try t.expectEqual(@as(?bool, true), preamble("(?i)(?x)a b").asks.verbose);
 }

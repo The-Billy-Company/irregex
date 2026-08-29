@@ -218,6 +218,7 @@ def compile(  # noqa: A001 - shadows the builtin exactly as `re.compile` does
     unicode: bool = True,
     multiline: bool = False,
     dotall: bool = False,
+    verbose: bool = False,
     pcre: bool = False,
 ) -> Pattern:
     """Compile ``pattern`` into a :class:`Pattern`.
@@ -227,11 +228,12 @@ def compile(  # noqa: A001 - shadows the builtin exactly as `re.compile` does
     offsets. Mixing the two raises :exc:`TypeError`.
 
     A pattern may ask for these flags itself, in :mod:`re`'s own leading
-    ``(?ims)`` form (plus ``(?-u)`` for ASCII semantics). Where both speak, the
+    ``(?imsx)`` form (plus ``(?-u)`` for ASCII semantics). Where both speak, the
     pattern wins, being the more specific statement: ``compile("(?-i)cat",
     ignore_case=True)`` is case-sensitive. As in :mod:`re` since 3.11, only a
-    *leading* run is a whole-pattern flag; ``(?x)`` and the other letters this
-    grammar does not have need ``pcre=True``.
+    *leading* run is a whole-pattern flag; the scoped ``(?x: … )`` form works
+    anywhere, and the letters this grammar does not have (``U``, ``R``) need
+    ``pcre=True``.
 
     :param fixed: treat the pattern as a literal string, not a regex.
     :param ignore_case: fold case when matching.
@@ -243,6 +245,12 @@ def compile(  # noqa: A001 - shadows the builtin exactly as `re.compile` does
         Off by default, so they mean the ends of the text you passed;
         ``\\A`` and ``\\z`` mean those regardless.
     :param dotall: ``re.S`` - ``.`` matches a newline too.
+    :param verbose: ``re.X`` - between tokens, unescaped whitespace and a
+        ``#``-to-end-of-line comment are ignored, so a long pattern can be
+        written over several annotated lines. Inside ``[ ]`` a space is still a
+        space, ``a{1, 2}`` is still five literal characters, and ``a *?`` is
+        still a lazy star - :mod:`re` agrees on all three. Escape a space
+        (``\\ ``) or bracket it (``[ ]``) to match one.
     :param pcre: use the PCRE2 grammar, which has lookaround and
         backreferences and is not linear time.
     :raises UnsupportedPattern: if the pattern is well-formed but outside the
@@ -260,6 +268,7 @@ def compile(  # noqa: A001 - shadows the builtin exactly as `re.compile` does
             unicode=unicode,
             multiline=multiline,
             dotall=dotall,
+            verbose=verbose,
             pcre=pcre,
         ),
     )

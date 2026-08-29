@@ -128,9 +128,20 @@ pub const flag_multiline: u32 = 1 << 9;
 /// before the buffer model above — the per-line parser had already removed the
 /// byte this flag exists to put back.
 pub const flag_dotall: u32 = 1 << 10;
+/// `(?x)`: ignore unescaped whitespace and `#`-to-end-of-line comments between
+/// tokens — Python's `re.VERBOSE`. Off by default.
+///
+/// It is a *pattern* flag rather than a host convenience because the alternative
+/// is worse: a host that pre-strips whitespace itself has to re-implement the
+/// grammar to know which spaces are inside a class and which are not, and it
+/// reports errors at offsets into a string the user never wrote. Both arms honor
+/// this bit (linear parser, PCRE2 `EXTENDED`), so it never forces a host off the
+/// linear-time guarantee just to comment a pattern.
+pub const flag_verbose: u32 = 1 << 11;
 
 pub const pattern_flags = flag_fixed | flag_ignore_case | flag_word |
-    flag_smart_case | flag_no_unicode | flag_pcre | flag_multiline | flag_dotall;
+    flag_smart_case | flag_no_unicode | flag_pcre | flag_multiline | flag_dotall |
+    flag_verbose;
 
 /// The subset of `pattern_flags` a slate pattern can carry.
 ///

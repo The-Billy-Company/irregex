@@ -31,6 +31,7 @@ from ._abi import (
     NO_UNICODE,
     PCRE,
     SMART_CASE,
+    VERBOSE,
     WORD,
 )
 
@@ -52,6 +53,7 @@ def flag_bits(
     unicode: bool = True,
     multiline: bool = False,
     dotall: bool = False,
+    verbose: bool = False,
     pcre: bool = False,
 ) -> int:
     """The bit word for a compiled pattern's semantics.
@@ -60,8 +62,8 @@ def flag_bits(
     default, so the bit that exists is ``IRGX_NO_UNICODE`` and passing
     ``unicode=True`` sets nothing.
 
-    ``multiline`` and ``dotall`` are ``re.M`` and ``re.S``, spelled as keywords
-    and defaulting off exactly as they do there.
+    ``multiline``, ``dotall`` and ``verbose`` are ``re.M``, ``re.S`` and
+    ``re.X``, spelled as keywords and defaulting off exactly as they do there.
     """
     return (
         (FIXED if fixed else 0)
@@ -71,6 +73,7 @@ def flag_bits(
         | (0 if unicode else NO_UNICODE)
         | (MULTILINE if multiline else 0)
         | (DOTALL if dotall else 0)
+        | (VERBOSE if verbose else 0)
         | (PCRE if pcre else 0)
     )
 

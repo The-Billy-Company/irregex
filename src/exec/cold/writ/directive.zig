@@ -38,8 +38,10 @@ const oom = @import("../../../surface/cli/outcome.zig").oom;
 ///   • `u` / `-u` → Unicode mode on/off for the WHOLE pattern (`u` = our
 ///     default; `-u` selects byte/ASCII), the run-wide analogue of `-i`
 ///     reconciled the same way (mixed per-pattern demands fail loud);
-///   • `x` `U` `R` → semantics the engine can't reproduce → die with the
-///     reason and the rg fallback.
+///   • `U` `R` → semantics the engine can't reproduce → die with the
+///     reason and the rg fallback; `x` is a mode the *engine* now has (the C ABI
+///     honors it) but this face has no per-run knob to carry it, so it refuses
+///     here rather than stripping the letter and searching non-verbosely.
 /// Anything else after `(?` (lookaround, a scoped `(?i:…)` group, `(?P<…>`) is
 /// not a flag directive — returns null and the regex parser decides.
 ///
@@ -50,7 +52,14 @@ const LeadingFlags = syntax.Directive;
 pub fn stripLeadingFlags(pat: []const u8) ?LeadingFlags {
     return switch (syntax.preamble(pat)) {
         .none => null,
-        .asks => |d| d,
+        // `x` reads as a directive now, so it has to be refused explicitly:
+        // returning it would silently drop the letter and search the pattern
+        // with its whitespace significant, which is the wrong answer rather
+        // than a missing one.
+        .asks => |d| if (d.verbose orelse false)
+            die("(?x) unsupported by gist's engine — use ripgrep for this\n", .{})
+        else
+            d,
         // The only part of the reading that is this face's own: a CLI has no
         // second engine to escalate to, so a flag the grammar lacks is a loud
         // exit naming the tool that has it. (The C ABI answers the same
@@ -112,7 +121,20 @@ pub fn combinePatterns(a: std.mem.Allocator, io: std.Io, parsed: args.Parsed, o:
     // The regex `m` flag rides `-U` by default (rg: `-U` is `m` ON); leading
     // `(?m)`/`(?-m)` directives below override it. Set before both branches so
     // the `-F` and no-directive paths inherit the base unchanged.
-    o.re_line_anchors = o.multiline;
+    //
+    // `--null-data` needs it for a different reason, and it is the one case where
+    // the per-line default is not self-evidently right. `^` in per-line mode means
+    // "the haystack's first byte", which is exact while a haystack IS a line — but
+    // under `--null-data` the haystack is a NUL-delimited RECORD that may hold many
+    // newlines, and there `^` would only ever match the record's own start. Both
+    // incumbents disagree: `rg --null-data '^zz'` and BSD `grep -z '^zz'` each match
+    // a `zz` sitting after an interior `\n`, because `^` in a line-oriented tool is
+    // an assertion about NEWLINES and the record separator does not retract it. So
+    // the `\n`-boundary anchor (`closure.zig`'s `lineStart`) is what `^` must mean
+    // here, which is exactly `re_line_anchors` — no new engine concept, just the
+    // one already built for `-U`, admitted for the one other mode whose haystack is
+    // wider than a line. `(?-m)` still overrides, as it does under `-U`.
+    o.re_line_anchors = o.multiline or o.null_data;
     if (parsed.opts.fixed) {
         for (pats.items) |*p| p.* = query_mod.escapeLiteral(a, p.*) catch oom();
     } else {

@@ -34,10 +34,10 @@ from ._shape import TEXTUAL
 # stay on ctypes, where a microsecond is noise against a determinization.
 _is_match, _which = transport("slate_is_match", "slate_which")
 
-#: The two flags a slate has nowhere to carry. Refused rather than dropped: a
+#: The flags a slate has nowhere to carry. Refused rather than dropped: a
 #: caller who passed one believes something about the answer they are about to
-#: get.
-_LINE_FLAGS = ("multiline", "dotall")
+#: get. A single member that wants verbose wraps itself in ``(?x: … )``.
+_LINE_FLAGS = ("multiline", "dotall", "verbose")
 
 
 class _CompiledSet:
@@ -216,21 +216,23 @@ class PatternSet:
 def compile_set(patterns: Any, **flags: bool) -> PatternSet:
     """Compile every pattern in ``patterns`` as one :class:`PatternSet`.
 
-    Takes the same keyword flags :func:`irgx.compile` does, minus ``multiline``
-    and ``dotall``, and applies them to every pattern - which is the honest shape
+    Takes the same keyword flags :func:`irgx.compile` does, minus ``multiline``,
+    ``dotall`` and ``verbose``, and applies them to every pattern - which is the
+    honest shape
     for a set that came out of a config file: one text, one question, one set of
     semantics. ``smart_case`` still resolves per pattern, against that pattern's
     own spelling, and so does a leading ``(?i)`` or ``(?-u)`` - one member can
     fold case without the rest of them folding. A pattern whose own head says
-    ``(?m)`` or ``(?s)`` is refused, for the same reason the keyword is.
+    ``(?m)``, ``(?s)`` or ``(?x)`` is refused, for the same reason the keyword
+    is; a member that wants verbose wraps itself in ``(?x: … )``.
 
     Compilation is all or nothing: one refused pattern refuses the set, rather
     than silently leaving a hole in the numbering. The exception is the one a lone
     :func:`irgx.compile` of that pattern would have raised, with
     :attr:`irgx.error.index` saying which one it was.
 
-    :raises ValueError: for ``multiline`` or ``dotall``, which this plane cannot
-        carry.
+    :raises ValueError: for ``multiline``, ``dotall`` or ``verbose``, which this
+        plane cannot carry.
     :raises UnsupportedPattern: if a pattern is well-formed but outside the
         linear grammar, in which case ``pcre=True`` compiles the set.
     :raises error: if a pattern is malformed.

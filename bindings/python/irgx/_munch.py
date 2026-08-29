@@ -52,11 +52,19 @@ if TYPE_CHECKING:
     from collections.abc import Iterable
 
 #: Flags a munch has nowhere to carry, and why each is refused rather than
-#: dropped. ``multiline`` names the ``(?m)`` line-anchor reading, which cannot be
-#: observed by a machine that only ever starts where you point it: ``^`` is true
-#: at the cursor and ``$`` is true at the end of it, whichever way the flag is
-#: set. Answering as if it had meant something is worse than saying so.
-_UNCARRIED = ("multiline",)
+#: dropped. Answering as if one had meant something is worse than saying so.
+_UNCARRIED = {
+    "multiline": (
+        "a scan is anchored at the cursor you pass, so the line-anchor reading "
+        "it asks for cannot be observed either way: `^` is true at the cursor "
+        "and `$` at the end of it, whichever way the flag is set"
+    ),
+    "verbose": (
+        "a terminal is one token you named and the whitespace in it is yours; "
+        "a slate-wide rewrite of every terminal's spaces is not what a lexer "
+        "asked for. A single terminal that wants it wraps itself: `(?x: ... )`"
+    ),
+}
 
 
 class Why(enum.IntEnum):
@@ -415,7 +423,8 @@ def _why(value: int) -> Why | int:
 def compile_munch(patterns: Iterable[Any], **flags: bool) -> Munch:
     """Compile ``patterns`` as one lexer slate.
 
-    Takes the same keyword flags :func:`irgx.compile` does, minus ``multiline``,
+    Takes the same keyword flags :func:`irgx.compile` does, minus ``multiline``
+    and ``verbose``,
     and applies them to every terminal - a munch determinizes them together, so
     per-pattern options are not a thing the machine can be. A leading ``(?i)`` on
     one terminal is likewise not available and is refused as a syntax problem by
@@ -425,17 +434,14 @@ def compile_munch(patterns: Iterable[Any], **flags: bool) -> Munch:
     out and reported in :attr:`Munch.declined`, and the rest lex. Only a slate
     where *nothing* could be seated raises.
 
-    :raises ValueError: for ``multiline``, which this plane cannot carry.
+    :raises ValueError: for ``multiline`` or ``verbose``, which this plane cannot
+        carry.
     :raises UnsupportedPattern: if not one terminal could be determinized.
     :raises error: if the compile failed outright.
     """
-    for name in _UNCARRIED:
+    for name, why in _UNCARRIED.items():
         if flags.get(name):
-            raise ValueError(
-                f"{name}=True is not available on a munch: a scan is anchored at "
-                f"the cursor you pass, so the line-anchor reading it asks for "
-                f"cannot be observed either way"
-            )
+            raise ValueError(f"{name}=True is not available on a munch: {why}")
     # An unknown keyword raises TypeError out of `flag_bits`, so a typo like
     # `ignorecase=True` fails loudly instead of silently matching case.
     return Munch(tuple(patterns), flag_bits(**flags))

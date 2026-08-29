@@ -156,12 +156,14 @@ pub fn compile(list: ?[*]const Pattern, count: usize, refused: ?*usize, out: ?**
             .asks => |d| d,
             .none, .beyond => .{ .rest = body },
         };
-        // `(?m)`/`(?s)` are refused rather than dropped, for the reason
+        // `(?m)`/`(?s)`/`(?x)` are refused rather than dropped, for the reason
         // `slate_flags` refuses their flag-word twins: a `Spec` has nowhere to
         // carry them, and a host that wrote one has a belief about the answer it
         // is about to get. Same status, same `refused` index, so the two
-        // spellings of the same request fail the same way.
-        if (asked.line_anchors != null or asked.dotall != null) {
+        // spellings of the same request fail the same way. A single pattern that
+        // wants verbose can still wrap itself in `(?x: … )`, which is the
+        // parser's own scoped form and needs no `Spec` field.
+        if (asked.line_anchors != null or asked.dotall != null or asked.verbose != null) {
             if (refused) |r| r.* = i;
             gpa.free(text);
             return contract.report(.{ .code = error.Unsupported });
@@ -536,7 +538,7 @@ test "a directive a slate cannot carry is refused by index, like its flag twin" 
     // `(?m)`/`(?s)` have nowhere to live in a `Spec`, so the two spellings of the
     // same request have to fail the same way — otherwise the flag word is
     // rejected and the pattern text silently isn't honored.
-    for ([_][]const u8{ "(?m)^b", "(?s)a.b" }) |p| {
+    for ([_][]const u8{ "(?m)^b", "(?s)a.b", "(?x)a b" }) |p| {
         var list = [_]Pattern{ spell("a", 0), spell(p, 0) };
         var refused: usize = std.math.maxInt(usize);
         try t.expectEqual(Status.invalid, compile(&list, list.len, &refused, &handle));
@@ -546,7 +548,7 @@ test "a directive a slate cannot carry is refused by index, like its flag twin" 
 
     // A flag this grammar does not have still routes to the arm that does, and
     // still says which pattern asked.
-    var wide = [_]Pattern{ spell("a", 0), spell("(?x)a b", 0) };
+    var wide = [_]Pattern{ spell("a", 0), spell("(?U)a+", 0) };
     var at: usize = std.math.maxInt(usize);
     try t.expectEqual(Status.stale, compile(&wide, wide.len, &at, &handle));
     try t.expectEqual(@as(usize, 1), at);
