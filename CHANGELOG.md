@@ -5,6 +5,325 @@ All notable changes to the `irregex` kernel (formerly `gist`; the gist CLI is it
 
 <!-- towncrier release notes start -->
 
+## [2.3.0] - 2026-08-29
+
+### Added
+
+- - The by-value escape family lands on the linear arm: `\uHHHH`, `\u{H..H}`,
+    `\UHHHHHHHH`, `\U{H..H}`, and the octal `\0oo` / `\ooo` — in atom position and
+    inside `[…]`, in byte mode and Unicode mode, where they can also bound a range
+    (`[\u00ab-\u00bb]`).
+
+    The surface is now a strict superset of both incumbents, which is the property
+    worth stating precisely: every pattern **rg** compiles keeps rg's meaning, and
+    every pattern **`re`** compiles keeps `re`'s meaning. That is not a
+    coincidence of taste — the two disagree here, and each one's gap is the other's
+    feature. rg has the braced spellings `re` lacks; `re` has octal, which rg
+    reports as "backreferences are not supported" and then points you at PCRE2.
+    Since each engine *refuses* what the other accepts, accepting both reinterprets
+    nothing. Measured over 30 (pattern, subject) triples against `re` and a real
+    `rg` process: zero superset violations, ten behaviors rg refuses, four `re`
+    refuses.
+
+    Octal is the one that needed a decision, because `\1` is ambiguous and `re`
+    resolves it *by position*: inside `[…]` every numeric escape is octal (`[\1]`
+    is U+0001), while at atom position `\1` and `\12` are group references, so only
+    a leading `0` or a full three digits commits to octal there. We adopt that rule
+    exactly, and a bare `\1` at atom position stays an error — not because it is
+    unparseable but because a group reference is the one construct a linear-time
+    engine cannot honor, and answering it with a literal would be a confident wrong
+    answer. `\8`/`\9` are not octal digits in any position, and `\400` is refused
+    rather than silently becoming U+0100, both matching `re`.
+
+    Mechanically this is a *collapse*, not an addition. The four positions the
+    grammar can reach a character escape from each carried their own `\x`-shaped
+    prong, which is precisely why `\u` was missing from all four at once: there was
+    no single place to add it. They now share one `escape.value`, on the principle
+    that what a character's value is cannot depend on where it was written. Two
+    things genuinely do differ, and they are the decoder's only two parameters: one
+    positional (whether a bare `\1` is octal — `re`'s rule, turning on `[…]`), and
+    one the spelling's own promise about its width (`Width`). `\xNN` and octal are
+    byte syntax, so `(?-u)\xe9` is the raw byte 0xE9; `\x{…}` `\u` `\U` `\N{…}` name
+    a character, so `(?-u)\u00e9` is its UTF-8 sequence, exactly as `(?-u)é` is. A
+    short counted run stays an error, because `\u00` is a typo and reading it as
+    U+0000 would match something nobody wrote; surrogates and values past U+10FFFF
+    are refused, since this engine emits well-formed UTF-8 or nothing.
+
+    Verified end to end: `gist -l` output is byte-identical to `rg -l` across the
+    whole Billy tree (23k files) for six escape-bearing patterns, including a
+    codepoint range.
+
+    There is no slow path to fall back to, because an escape is resolved at parse
+    time into the codepoint it names and reaches the same DFA, prefilter, and SIMD
+    kernels a literal does — nothing downstream can tell which way `é` was typed.
+    So the timings are the literal timings: over 50 MB, `-c`, minimum of 15
+    interleaved rounds with counts identical, the eight of these spellings rg can
+    run come in 3.5–5.9× faster on wall clock and 1.1–3.9× on CPU
+    (`[\u00e9\u00fc]` 9.9 ms against 58.3; `\U{2603}` 7.5 against 31.7). The other
+    eleven of the fifteen spellings measured rg cannot run at all.
+- - The cold face honors a leading `(?x)` now, so verbose mode reaches every CLI
+    built on it (`gist` first among them) instead of stopping at the library
+    boundary. It reconciles like `i`/`u`/`m`/`s` — one run compiles one engine, so
+    a pattern that *demands* verbose may not sit beside one that demands it off —
+    and rides both arms, `Regex.Options.verbose` on the linear side and
+    `PCRE2_EXTENDED` on the other.
+
+    The engine had supported the mode for a while. The face was still answering
+    "outside gist's linear-time syntax" to `(?x)`, which is the worst kind of gap:
+    the capability exists, the refusal is a leftover, and the person hitting it has
+    no way to tell those apart.
+
+    The wrap needed one byte of thought. This face wraps a pattern in `(?:…)` for
+    `-e`/`-x`, and under verbose a pattern may END INSIDE a `#` comment — a comment
+    runs to the next newline, so the `)` appended after one is swallowed rather
+    than closing anything. Ripgrep wraps the same way and dies exactly there:
+    `rg '(?x) alpha \s+ \d+  # count'` is "regex parse error: unclosed group", for
+    a pattern its own engine accepts, and it wraps even a lone pattern so there is
+    no spelling that dodges it. So every wrap closes with a newline, which under
+    verbose is both insignificant whitespace and a comment terminator: it cannot
+    change a pattern's meaning, and it makes a commented pattern compose with
+    `-e`/`-x` the way an uncommented one already did.
+- - Verbose mode — `re.VERBOSE`, `(?x)`, `IRGX_VERBOSE`, `verbose=True` — works on
+    the linear arm now, so a commented pattern no longer costs the linear-time
+    guarantee. `(?#…)` inline comments work in every mode, and `\Z` is Python's
+    absolute end instead of an unrecognized escape.
+
+    Refusing `(?x)` was the gap that stung most in practice, because verbose is not
+    a feature a caller opts into for power — it is how a *long* pattern gets
+    written, and long patterns are exactly the ones where a backtracker's worst
+    case matters. Every `re.VERBOSE` module in a codebase was structurally
+    ineligible for this engine, and the two workarounds are both bad: strip the
+    whitespace by hand (and now the pattern is unreadable and its error offsets
+    point at bytes nobody typed) or pass `pcre=True` (and trade away the one
+    property the pattern was long enough to need).
+
+    Verbose is purely lexical — it changes which bytes are a *token*, never what a
+    token means — so it belongs to the recursive descent and nowhere else. It is a
+    `trivia()` skip called at the two points where a token may begin: the concat
+    loop and the quantifier loop. Deliberately not called anywhere else, because
+    everywhere else the same bytes are significant, and `re` agrees byte-for-byte:
+    `[ ]` keeps its space, `a{1, 2}` is not a bound, and `a *?` is one lazy star
+    rather than a star and an optional. A source-rewriting pre-pass, the obvious
+    alternative, would have had to re-implement the grammar to know which spaces
+    are inside a class — and would then report every error at an offset into a
+    string the caller never wrote.
+
+    Both arms honor it and agree: the linear parser reads it, and PCRE2 gets
+    `PCRE2_EXTENDED`. On the PCRE2 arm the required-literal miner and the shadow
+    gate now stand down under verbose, because both read the pattern *text* — one
+    would have demanded the bytes `"a b"` of every match of `a b`, and the other
+    would have read a `(` inside a `#` comment as structure. A prefilter that is
+    not an over-approximation does not slow a search down, it loses matches. The
+    linear arm keeps every prefilter, since it derives them from the single
+    verbose-aware parse rather than from the bytes.
+
+    The planes that cannot carry it say so instead of dropping it: `compile_set`
+    and `compile_munch` raise, and a slate pattern whose own head says `(?x)` is
+    refused with `refused` naming it — a member that wants verbose wraps itself in
+    the scoped `(?x: … )`, which works anywhere. Measured against `re` over 30
+    verbose patterns on both arms: zero disagreements, and the same pattern
+    commented and uncommented scans within 0.5% of itself, which is the whole
+    claim — the mode is free at match time.
+
+### Changed
+
+- - The emit layer skips dead LINES with the engine's own opinion of what is rare,
+    instead of handing the engine every line and letting it decide one at a time.
+
+    The engine already skips dead spans *inside* a haystack with a first-byte set
+    priced against a fitted corpus model. One grain up, the layer that decides which
+    lines the engine ever sees was walking all of them. So the same set, and the same
+    economics, now travel upward: `prefilter` and `dwell` are exposed from the engine
+    root precisely so the emit layer cannot re-derive either and drift from the
+    engine's own judgment of when a skip pays.
+
+    Three shapes get three answers, and each is a necessary condition only — a hit
+    nominates a line and the real engine confirms it, so none of this can change an
+    answer:
+
+    - **A literal-bearing pattern jumps to candidate lines.** One whole-buffer sweep
+      over a literal set, the required literal, or the first-byte set marks the lines
+      worth entering; the rest are never visited. This is the `rare 2-byte literal`
+      and `rare wide class` rows in the table under *"Three scan dispatches…"* —
+      13.1 ms wall against ripgrep's 43.9, on 1.6× less CPU.
+    - **A pure `-c` over a class-run pattern is fused into one pass.** Counting needs
+      no spans, and the class-run kernel classifies every block anyway, so the whole
+      slice settles in ONE classification pass rather than jumping to each candidate
+      line and dispatching the engine on it — it needs no sweep to jump on at all.
+      That is the `dense class` row: `\w` over 268 MB in 21.1 ms wall / 98.8 ms CPU
+      against 141.2 / 142.3. Shards are cut at line starts so a count is never split
+      across a line.
+    - **A `^`-anchored pattern gets a document-grain needle.** `"\n" ++ prefix` sits
+      immediately before every match that is not in the buffer's first line, so an
+      anchored search skips dead lines with a two-byte memchr instead of testing the
+      anchor once per line. Null — and therefore silent — when the pattern is `-U`,
+      caseless, has no literal match-prefix, or is PCRE2's, whose program this
+      package does not analyze. The `anchored literal` row: 16.4 ms wall against
+      50.6.
+
+    A count is the same number either way and a span is the same span; these are
+    routing decisions above the engine, not a second matcher.
+- - Three scan dispatches were calibrated at their endpoints and lost in the band
+    between them. Every one is now measured across the band it actually serves, and
+    a Unicode class or a multi-way alternation no longer trails ripgrep on either
+    clock.
+
+    **The any-of gate hands off to Teddy at two needles, not four.** The old
+    threshold was fitted at N=4 and N=8 without measuring N=2–3, and the fused
+    gate's first+last fingerprint is *degenerate* exactly there: a 2-byte UTF-8
+    needle fingerprints on its own two bytes, so every occurrence of the lead byte
+    survives to a full compare. The tell was that adding a FOURTH needle made the
+    same scan several times faster, because the fourth needle crossed the
+    threshold — a dispatch whose cost falls when the work grows is the threshold
+    being wrong, not the kernels. The width sweep is flat now (17.3 / 16.9 / 17.8 ms
+    wall at N=2/3/4 against rg's 87.1 / 88.4 / 87.0), so the band is gone rather
+    than moved.
+
+    **A codepoint class asking only whether a member OCCURS stays bit-parallel.**
+    A block touched by a byte ≥ 0x80 needs codepoint-grained membership, because the
+    byte bit-path would misread a member codepoint's own continuation bytes as run
+    breakers — so the whole block fell to the scalar resolver. But a bare class or
+    `[…]+`, which is what nearly every real query spells, carries no run to count:
+    it asks for existence, and existence is expressible in bits. That case now keeps
+    the SIMD fold for the block's ASCII bytes and decodes only the maximal runs of
+    high bytes, so the scalar work is proportional to the non-ASCII bytes actually
+    present rather than to the 64 bytes around them. A higher run floor still needs
+    the resolver, which is the one thing bit tricks cannot express.
+
+    **The range prefilter folds four vector windows into one branch.** Its per-byte
+    work was already cheap and it still trailed `memchr` on a sparse lead set,
+    because it branched once per vector and stalled on its own branch. The compares
+    are independent, so four windows now fill the issue slots the single-window loop
+    left idle, and a skip across barren text costs one test per 64 bytes. The width
+    is the register's claim (`64 / vlen`), not a tuned constant, so it degrades to
+    one window under AVX-512 rather than guessing.
+
+    Measured on a 268 MB mixed-script corpus, `-c`, minimum of 25 runs per shape
+    with both tools sampled under the same load, counts identical everywhere. gist
+    is ahead on **both** clocks on every shape — which is the bar, since a wall-clock
+    win bought with 3× the CPU is a loss on any laptop doing something else:
+
+    | shape | cpu | rg cpu | cpu× | wall | rg wall | wall× |
+    |---|---|---|---|---|---|---|
+    | wide range class `[\u00a0-\u00ff]` | 46.4 | 59.1 | 1.27× | 16.3 | 58.2 | 3.56× |
+    | class + quantifier `[\u00e9\u65e5]+` | 69.5 | 94.1 | 1.35× | 17.6 | 93.2 | 5.30× |
+    | anchored literal `^\u00e9` | 47.2 | 51.0 | 1.08× | 16.4 | 50.6 | 3.09× |
+    | rare 2-byte literal `\u00ab` | 27.9 | 44.6 | 1.60× | 13.1 | 43.9 | 3.34× |
+    | rare wide class `[\u00ab-\u00bb]` | 27.1 | 41.7 | 1.54× | 13.3 | 41.2 | 3.09× |
+    | dense class `\w` | 98.8 | 142.3 | 1.44× | 21.1 | 141.2 | 6.69× |
+
+    All three are throughput dispatches, not fallbacks: both arms of each are
+    byte-exact, so nothing here can change an answer. `anchor.selectivity` is
+    exposed for the same reason — a caller ranking two candidate needles now prices
+    them under the same fitted model that will scan the winner, instead of a second,
+    differently-calibrated guess.
+
+### Fixed
+
+- - A caseless search could silently lose matches, because the two caseless
+    prefilters re-derived their needle under a hand-listed subset of the run's
+    options rather than the run's own. `gist -i '(?x) alpha \s+ \d+'` found
+    nothing while the same pattern through the library found every match.
+
+    Both `caselessGate` and `caselessFilter` recompile the pattern with folding OFF
+    to recover the literal underneath, and both spelled the recompile as
+    `.{ .unicode = …, .multiline = … }` — a list that was complete when it was
+    written and silently stopped being complete the moment a third option could
+    change what a byte *is*. Verbose was that option: the recompile parsed
+    `(?x) alpha` non-verbosely, mined the leading space as a required byte, and
+    handed the search a gate demanding a character the pattern deliberately does
+    not match. A prefilter that is not an over-approximation does not run slow, it
+    runs wrong.
+
+    Fixed at the shape rather than the symptom: one `unfoldedOptions` derives the
+    run's real options and turns off exactly the one thing being unfolded. A future
+    option is carried by construction, so the class of bug cannot come back by
+    someone adding a flag and not finding these two call sites.
+- - `(?-u)` no longer truncates a character to one byte. Disabling Unicode changes
+    what a class, a fold, and a boundary mean; it cannot change what a scalar value
+    IS, and rg draws the line in the same place. Two spellings were on the wrong
+    side of it.
+
+    `\x{H..H}` named a character and was read as a raw byte: `(?-u)\x{e9}` looked
+    for 0xE9, which a UTF-8 file does not contain, so it found nothing where rg
+    found `é` and found a match where rg found none — a silent wrong answer in both
+    directions, the worst shape a search bug has. Anything above 0xFF was refused
+    outright, so `(?-u)\x{2603}` was a parse error against rg's three bytes. Both
+    now match the character's UTF-8 sequence. Bare `\xNN` and octal are byte
+    syntax and keep naming the raw byte (`(?-u)\xe9` is 0xE9), which is rg's line
+    too; `escape.Width` now carries that promise from the spelling to the two
+    byte-mode sites that act on it.
+
+    A quantifier bound a character's last byte rather than the character. `(?-u)é+`
+    over `éé` answered `é`, because the atom walk emitted one byte per call and `+`
+    repeated only 0xA9, and `(?-u)é{2}` matched nothing at all. A character's bytes
+    are now chained into ONE atom, so both answer what rg answers.
+
+    Inside a byte-mode `[…]` a character above ASCII is now refused rather than
+    matching one byte of it: a byte class cannot hold a sequence, and matching a
+    fragment would be a confident wrong answer. rg refuses the same pattern
+    (`(?-u)[\x{e9}]`: "Unicode not allowed here").
+
+    Found by the new `records.py` conformance lane in gist rather than by
+    inspection, on its first run, in the one cell that crossed a byte-mode escape
+    with an output frame.
+- - `^` and `$` are newline assertions under a NUL record separator now, and a
+    record that holds newlines costs what the lines in it cost.
+
+    A `--null-data` haystack is not a line — it is a NUL-delimited record, and a
+    record holds newlines. The engine had no way to say that: `multiline` carried
+    the whole "this haystack is wider than a line" fact, and the record path did
+    not set it, so `^zz` reported no match for a `zz` sitting after an interior
+    newline. Both incumbents disagree — `rg --null-data '^zz'` and BSD `grep -z
+    '^zz'` each match it, because `^` in a line-oriented tool asserts about
+    NEWLINES and choosing a different record separator does not retract that. So
+    `records` is now its own option beside `multiline`, `wide` is their union, and
+    every decision that used to read `multiline` (anchor semantics, whether `(?s).`
+    may cross a `\n`, whether a class run stays line-local, whether an eager
+    anchored determinization is even expressible) asks that instead. The
+    `\n`-aware Pike walk `-U` already had is now shared with the per-line entry
+    rather than reimplemented, which is what made the two arms answer differently
+    in the first place.
+
+    A record's trailing `\n` is content, not a terminator — its terminator was the
+    NUL, and that was stripped before the engine saw it — so it opens the empty
+    line after it exactly as an interior newline does. That is one bit
+    (`nl_terminates`), read at every site where `^` is resolved, because the
+    boolean arm and the span arm answering it separately is how `-c` came to
+    report a record matched while `-o` printed nothing from it.
+
+    Then the speed, which is the same observation used twice: a record is a
+    SEQUENCE OF LINES whenever the pattern cannot see across one. An
+    assertion-bearing wide program gets no DFA and no accelerator tier — `^`/`$`
+    as `\n`-boundary predicates are content-dependent in a way an eager BOL/EOL
+    table cannot encode — so `^(?:alpha|beta|gamma)` fell all the way to the Pike
+    whole-record scan. When no consuming class admits a `\n` and no `\A`/`\z` is
+    present, splitting the record at its newlines loses no answer and hands every
+    piece to the ordinary per-line ladder, anchors and all.
+
+    Measured on 50 MB of NUL-delimited records against this same source with that
+    one switch forced off, both builds and a real `rg` run back to back inside each
+    round, minimum of 15, counts identical: `^\w+ mid` went from 341.9 ms wall /
+    2885 ms CPU to 16.2 / 50 — a 21× wall and **57× CPU** cut, because a `\w`-led
+    program is precisely what earns no DFA and no accelerator tier once the
+    haystack is wide. `^(?:alpha|beta|gamma)` went 45.7 / 387 → 11.8 / 37, and
+    `^[a-z]+ [a-z]+ [a-z]+` 16.8 / 104 → 8.2 / 18. The three rows a required
+    literal already carried moved by under 1%, which is the other half of the
+    claim: the decomposition is free where it buys nothing.
+
+    Against ripgrep that is now ahead on both axes rather than trading one for the
+    other — the alternation was already 1.6× faster on wall clock before any of
+    this, but on 387 ms of CPU against rg's 72, which is a loss on any laptop doing
+    something else with its cores. It is 6.2× faster on wall and 1.9× on CPU now.
+
+    Python `re` referees the result: over 322 cells of record-mode `-c` and `-o`
+    answers, we now agree with it on every one, and ripgrep disagrees on 13 — it
+    misses a record's own start for `^` (reading `^` as "after a `\n`", so a
+    record beginning after a NUL is not a line start to it), prints whole records
+    as `-o` rows for matches it rejected (`^.` yields `ef`, two bytes, for a
+    pattern that can match one), and matches nothing at all for `\z`, whose NUL it
+    keeps in the searched slice.
+
 ## [2.2.1] - 2026-08-28
 
 ### Added
