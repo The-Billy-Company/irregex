@@ -844,10 +844,10 @@ func TestALeadingInlineFlagSaysWhatTheFieldSays(t *testing.T) {
 }
 
 // Only the leading run is a whole-pattern flag, which is where stdlib regexp
-// draws the line too, and (?x)/(?U)/(?R) are letters this grammar does not have.
+// draws the line too, and (?U)/(?R) are letters this grammar does not have.
 // Refusing beats honoring the letters it recognizes and dropping the rest.
 func TestANonLeadingOrForeignInlineFlagIsDeclinedRatherThanIgnored(t *testing.T) {
-	for _, pat := range []string{"a(?i)b", "(?x) a b", "(?U)a+", "(?ix)a b"} {
+	for _, pat := range []string{"a(?i)b", "(?U)a+"} {
 		if _, err := irgx.Compile(pat); err == nil {
 			t.Errorf("%q compiled on the linear arm; an ignored flag is the "+
 				"failure mode CompileOpts exists to avoid", pat)
@@ -855,6 +855,35 @@ func TestANonLeadingOrForeignInlineFlagIsDeclinedRatherThanIgnored(t *testing.T)
 		// The PCRE arm does honor them.
 		if _, err := (irgx.CompileOpts{PCRE: true}).Compile(pat); err != nil {
 			t.Errorf("%q on the PCRE arm: %v", pat, err)
+		}
+	}
+}
+
+// (?x) was on that list until verbose entered the grammar. There is no
+// CompileOpts field for it - stdlib regexp has no such flag either - so the
+// pattern's own head is how you ask, and a (?ix) asking for two things has to
+// get both rather than whichever one the reader noticed first.
+func TestALeadingVerboseFlagIsHonoredAlongsideTheOthers(t *testing.T) {
+	for _, c := range []struct {
+		pat, text string
+		want      []string
+	}{
+		{"(?x) a b", "ab", []string{"ab"}},
+		{"(?ix)a b", "AB", []string{"AB"}},
+		// Without the i the space is still gone but the case is not, which is
+		// the half a single-flag reading would have silently handed back.
+		{"(?x)a b", "AB", nil},
+		// # opens a comment that runs to the end of the line, so the pattern
+		// here is one byte long.
+		{"(?x)a  # the space and this text are not the pattern", "a", []string{"a"}},
+	} {
+		re, err := irgx.Compile(c.pat)
+		if err != nil {
+			t.Errorf("%q should compile on the linear arm: %v", c.pat, err)
+			continue
+		}
+		if got := re.FindAllString(c.text, -1); !reflect.DeepEqual(got, c.want) {
+			t.Errorf("%q over %q: got %v, want %v", c.pat, c.text, got, c.want)
 		}
 	}
 }
