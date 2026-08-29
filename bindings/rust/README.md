@@ -284,7 +284,7 @@ PCRE2 rather than by matching the pattern against a list of constructs:
 
 **`Error::NeedsPcre`** - the pattern is fine, the linear grammar just cannot
 express it. Lookaround, backreferences, atomic groups, a flag letter it does not
-have (`(?x)`, `(?U)`, `(?R)`). A *leading* `(?i)`, `(?s)`, `(?m)` or `(?-u)` is
+have (`(?U)`, `(?R)`). A *leading* `(?i)`, `(?s)`, `(?m)`, `(?x)` or `(?-u)` is
 not in that list: it is read as the flag it asks for, exactly as `regex` reads
 it, and compiles on the linear engine, where it beats the same field on the
 builder because the pattern is the more specific statement.
@@ -353,8 +353,10 @@ than the default.
 searcher has had for decades and they have no `regex` equivalent.
 
 **No `Regex::shortest_match` or byte-slice `Regex`.** Anchors are in the grammar:
-use `\A` and `\z`. Note the spelling of the end anchor; it is `\z`, as in `regex`
-and RE2, not `\Z`. `RegexSet::matches_at` is absent too — the bounded search the
+use `\A` and `\z`. The canonical end anchor is `\z`, as in `regex` and RE2; `\Z`
+is accepted as that same absolute end, and PCRE's reading of it (the end, or just
+before a trailing newline) is deliberately not adopted.
+`RegexSet::matches_at` is absent too — the bounded search the
 single-pattern `find_at` rides on has no slate counterpart.
 
 The anchored *question* does have an answer now, and it is a different type rather

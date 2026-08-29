@@ -23,7 +23,7 @@
 //!
 //! [`Error::NeedsPcre`] means the pattern is fine and only the linear grammar
 //! cannot express it - lookaround, a backreference, a flag letter it does not
-//! have (`(?x)`, `(?U)`, `(?R)`). A *leading* `(?i)` is not in that list: it is
+//! have (`(?U)`, `(?R)`). A *leading* `(?i)` or `(?x)` is not in that list: it is
 //! read as the flag it asks for, as `regex` reads it, and compiles. The
 //! same pattern under [`RegexBuilder::pcre`] compiles, so the retry is a match
 //! arm:

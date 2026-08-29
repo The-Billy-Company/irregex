@@ -52,8 +52,10 @@ import (
 // [regexp] uses. Where both speak, the pattern wins - it is the more specific
 // statement, so CompileOpts{IgnoreCase: true}.Compile("(?-i)cat") is
 // case-sensitive. Only a leading run is a whole-pattern flag, as in regexp
-// itself; (?x), (?U) and (?R) are flags this grammar does not have and need
-// PCRE.
+// itself; (?U) and (?R) are flags this grammar does not have and need PCRE.
+// A leading (?x) is not one of them - verbose is in this grammar, even though
+// stdlib [regexp] has no such flag, so the form has no CompileOpts field and
+// the pattern's own head is how you ask for it.
 type CompileOpts struct {
 	// Fixed treats the pattern as a literal string rather than a regex, so a
 	// pattern full of metacharacters is data instead of a syntax error. It wins

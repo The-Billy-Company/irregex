@@ -316,8 +316,10 @@ purpose.
   takes a path their leftmost match does not - `(a)|(ab)` over `"ab"` - the
   groups would belong to the wrong match, so it raises and says so rather than
   answering. Anchoring in the pattern still works and needs none of this: `\A`
-  and `\z` are in the grammar. Note the spelling of the end anchor; it is `\z`,
-  as in Rust and RE2, not `\Z`.
+  and `\z` are in the grammar. The canonical end anchor is `\z`, as in Rust and
+  RE2; `\Z` is accepted as that same absolute end, so a `re` pattern carrying it
+  ports unchanged. PCRE reads `\Z` as the end *or* just before a trailing
+  newline, and that is deliberately not the reading you get here.
 - **`finditer` is eager.** The engine reports the whole match sequence in one
   call rather than handing back a cursor a Python loop advances, so the
   iterator knows its own `len()` before you walk it. The sequence itself is
