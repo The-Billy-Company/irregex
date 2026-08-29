@@ -60,6 +60,14 @@ pub const Parser = struct {
     /// engine (today's `(?-u)` behavior, byte-for-byte). Defaults off until the
     /// engine-wide default flip; callers opt in via `Regex.Options.unicode`.
     unicode: bool = false,
+    /// Verbose mode (`(?x)` · Python `re.X`/`re.VERBOSE`): between tokens,
+    /// unescaped whitespace and a `#`-to-end-of-line comment are ignored, so a
+    /// long pattern can be written over several annotated lines. It is a purely
+    /// LEXICAL mode — it changes which bytes are a token, never what a token
+    /// means — which is exactly why it belongs to this parser: refusing it used
+    /// to route the whole pattern to PCRE2 and surrender the linear-time
+    /// guarantee in exchange for a formatting convenience. Default off.
+    verbose: bool = false,
 
     pub fn peek(p: *const Parser) ?u8 {
         return if (p.pos < p.src.len) p.src[p.pos] else null;
@@ -105,6 +113,65 @@ pub const Parser = struct {
         try ss.addRange(cp, cp);
         return ss.finish(p.arena);
     }
+    /// One character as BYTES, for `(?-u)`: the raw byte a byte-width spelling
+    /// named, else the character's UTF-8 sequence chained into a single atom.
+    ///
+    /// Chained rather than emitted one byte per `parseAtom` call, because a
+    /// quantifier binds whatever this call returns: `(?-u)\u00e9+` then repeats
+    /// the CHARACTER, as rg does, where a byte-at-a-time walk would repeat only
+    /// its last byte and match `é` in `éé`.
+    fn byteSeqNode(p: *Parser, v: escape.Value) ParseError!*Node {
+        if (v.width == .byte or v.cp <= 0x7F) {
+            var s = ByteSet{};
+            s.set(@intCast(v.cp));
+            return p.node(.{ .class = s });
+        }
+        var buf: [4]u8 = undefined;
+        const n = std.unicode.utf8Encode(v.cp, &buf) catch return ParseError.BadPattern;
+        var acc: ?*Node = null;
+        for (buf[0..n]) |b| {
+            var s = ByteSet{};
+            s.set(b);
+            acc = try p.chain(acc, try p.node(.{ .class = s }));
+        }
+        return acc.?;
+    }
+    /// The bytes between two tokens that are not themselves a token: an inline
+    /// `(?#…)` comment always, plus — under `verbose` — whitespace and `#` line
+    /// comments.
+    ///
+    /// Called at the two points where a new token may begin (the concat loop and
+    /// the quantifier loop) and deliberately NOWHERE else, because the same
+    /// bytes are significant everywhere else and Python agrees byte-for-byte:
+    /// `[ ]` keeps its space, `a{1, 2}` is a literal five-character string, and
+    /// `a *?` is a lazy star rather than a star followed by an optional.
+    fn trivia(p: *Parser) ParseError!void {
+        while (p.pos < p.src.len) {
+            switch (p.src[p.pos]) {
+                // `(?#…)` is trivia in every mode (CPython reads to the first
+                // `)` with no escape processing). Unterminated is an error, not
+                // a comment that silently swallows the rest of the pattern.
+                '(' => {
+                    if (!std.mem.startsWith(u8, p.src[p.pos..], "(?#")) return;
+                    p.pos = 1 + (std.mem.indexOfScalarPos(u8, p.src, p.pos + 3, ')') orelse
+                        return ParseError.BadPattern);
+                },
+                // CPython's verbose whitespace set exactly: " \t\n\r\v\f".
+                ' ', '\t', '\n', '\r', 0x0B, 0x0C => {
+                    if (!p.verbose) return;
+                    p.pos += 1;
+                },
+                // To end of line; the `\n` itself is then eaten as whitespace,
+                // and an unterminated comment simply runs to end of pattern.
+                '#' => {
+                    if (!p.verbose) return;
+                    p.pos = std.mem.indexOfScalarPos(u8, p.src, p.pos, '\n') orelse p.src.len;
+                },
+                else => return,
+            }
+        }
+    }
+
     /// Parse a run of ASCII digits at `pos` as a decimal `usize`; null (without
     /// advancing) when the next byte isn't a digit.
     fn digits(p: *Parser) ?usize {
@@ -128,10 +195,12 @@ pub const Parser = struct {
         return left;
     }
 
-    // concat := repeat*
+    // concat := (trivia repeat)* trivia
     fn parseConcat(p: *Parser) ParseError!*Node {
         var acc: ?*Node = null;
-        while (p.peek()) |c| {
+        while (true) {
+            try p.trivia();
+            const c = p.peek() orelse break;
             if (c == '|' or c == ')') break;
             acc = try p.chain(acc, try p.parseRepeat());
         }
@@ -143,8 +212,12 @@ pub const Parser = struct {
     // `a{2,5}?`) — RE2/rust-regex non-greedy. `lazyMark` consumes that optional `?`.
     fn parseRepeat(p: *Parser) ParseError!*Node {
         var a = try p.parseAtom();
-        while (p.peek()) |c| {
-            switch (c) {
+        while (true) {
+            // A quantifier may be separated from its atom by trivia (`a  *`,
+            // `a(?#why)*`) — Python skips verbose whitespace at the top of the
+            // same loop, so `x {2}` counts and `x  #c\n{2}` counts too.
+            try p.trivia();
+            switch (p.peek() orelse break) {
                 '*', '+', '?' => {
                     const op = p.take();
                     const lazy = p.lazyMark();
@@ -271,15 +344,15 @@ pub const Parser = struct {
     /// hold for the body and for nothing after it, which is why they are put
     /// back rather than left on the parser.
     ///
-    /// `i`, `s` and `u` are the three whose meaning here is the same as the
-    /// caller's own option; `m` and `x` are not (this engine's `multiline` is
-    /// whole-buffer matching rather than JavaScript's line-anchored `^`), so
-    /// they refuse instead of quietly meaning something else. A bare `(?flags)`
+    /// `i`, `s`, `u` and `x` are the four whose meaning here is the same as the
+    /// caller's own option; `m` is not (this engine's `multiline` is
+    /// whole-buffer matching rather than JavaScript's line-anchored `^`), so it
+    /// refuses instead of quietly meaning something else. A bare `(?flags)`
     /// refuses for the same reason: its scope runs to the end of the enclosing
     /// group, and a flag that stops at the wrong paren is a wrong answer rather
     /// than a missing one.
     fn flagged(p: *Parser) ParseError!*Node {
-        const was: struct { bool, bool, bool } = .{ p.caseless, p.dotall, p.unicode };
+        const was: struct { bool, bool, bool, bool } = .{ p.caseless, p.dotall, p.unicode, p.verbose };
         var off = false;
         while (true) switch (p.peek() orelse return ParseError.BadPattern) {
             '-' => if (off) return ParseError.BadPattern else {
@@ -300,6 +373,10 @@ pub const Parser = struct {
                 _ = p.take();
                 p.unicode = !off;
             },
+            'x' => {
+                _ = p.take();
+                p.verbose = !off;
+            },
             ':' => {
                 _ = p.take();
                 break;
@@ -312,7 +389,7 @@ pub const Parser = struct {
         // this body alone has to fold its own, or it parses and then matches
         // case-sensitively, which is worse than refusing.
         if (p.caseless and !was[0]) try scalars.foldCaseAst(p.arena, inner, p.unicode);
-        p.caseless, p.dotall, p.unicode = was;
+        p.caseless, p.dotall, p.unicode, p.verbose = was;
         return inner;
     }
 
@@ -344,8 +421,8 @@ pub const Parser = struct {
                             if (p.peek() == '=' or p.peek() == '!') return ParseError.BadPattern;
                             name = try p.nameUntilGt();
                         },
-                        'i', 's', 'u', '-' => return p.flagged(),
-                        else => return ParseError.BadPattern, // (?=, (?!, (?m, (?x
+                        'i', 's', 'u', 'x', '-' => return p.flagged(),
+                        else => return ParseError.BadPattern, // (?=, (?!, (?m
                     }
                 }
                 // Assign the group index BEFORE parsing the body so nested groups
@@ -388,7 +465,7 @@ pub const Parser = struct {
                 // BadPattern (rg: "invalid escape sequence found in character
                 // class") — `parseEscape` enforces that.
                 if (p.peek()) |e| switch (e) {
-                    'b', 'B', '<', '>', 'A', 'z' => {
+                    'b', 'B', '<', '>', 'A', 'z', 'Z' => {
                         _ = p.take();
                         return p.node(switch (e) {
                             // `\b` alone is the plain boundary; `\b{…}` names one of
@@ -403,17 +480,20 @@ pub const Parser = struct {
                             // lower to the existing nodes (zero engine changes); under
                             // multiline the haystack is the whole buffer — a distinct
                             // assertion from the line-boundary `^`/`$` — so they get
-                            // their own nodes. (`\Z` is NOT rg syntax — it falls through
-                            // to `parseEscape`'s unrecognized-letter rejection.)
+                            // their own nodes. `\Z` is Python's spelling of the same
+                            // absolute end and aliases `\z` here; PCRE's reading of
+                            // `\Z` (end, or just before a trailing `\n`) is the one
+                            // this arm deliberately does NOT adopt, since the host
+                            // asking for `\Z` is a `re` caller.
                             'A' => if (p.multiline) .anchor_buf_start else .anchor_start,
                             else => if (p.multiline) .anchor_buf_end else .anchor_end,
                         });
                     },
                     else => {},
                 };
-                // Unicode mode: `\d \w \s` (+neg), `\p{…}`, and `\x`/`\x{…}` denote
-                // codepoint classes; the byte escapes (`\t \n …`, punctuation) fall
-                // through to the ASCII `parseEscape` (their UTF-8 == the byte).
+                // Unicode mode: `\d \w \s` (+neg) and `\p{…}` denote codepoint
+                // classes; the byte escapes (`\t \n …`, punctuation) fall through
+                // to the ASCII `parseEscape` (their UTF-8 == the byte).
                 if (p.unicode) {
                     if (p.peek()) |e| switch (e) {
                         'd', 'D', 'w', 'W', 's', 'S', 'p', 'P' => {
@@ -422,14 +502,24 @@ pub const Parser = struct {
                             if (e == 'p' or e == 'P') try bracket.addProp(p, &ss, e == 'P') else try bracket.addPerl(p, &ss, e);
                             return ss.finish(p.arena);
                         },
-                        'x' => {
-                            _ = p.take();
-                            return p.cpNode(try escape.hexCp(p));
-                        },
                         else => {},
                     };
                 }
-                return p.node(.{ .class = try escape.parseEscape(p) });
+                // `\xNN` `\x{…}` `\uHHHH` `\u{…}` `\UHHHHHHHH` `\U{…}`, octal
+                // `\0oo`/`\ooo`, and named `\N{…}` — in BOTH modes, because a
+                // by-value escape denotes a character either way and only the
+                // encoding of the answer differs. Atom position, so a bare `\1` is
+                // backreference syntax and errors rather than reading as octal;
+                // `value` decides that from the `false`.
+                if (p.peek()) |e| switch (e) {
+                    'x', 'u', 'U', 'N', '0'...'9' => {
+                        _ = p.take();
+                        const v = try escape.value(p, e, false);
+                        return if (p.unicode) p.cpNode(v.cp) else p.byteSeqNode(v);
+                    },
+                    else => {},
+                };
+                return p.node(.{ .class = try escape.parseEscape(p, false) });
             },
             '^', '$' => {
                 _ = p.take();
@@ -440,8 +530,15 @@ pub const Parser = struct {
             else => {
                 // A non-ASCII literal is one codepoint (its multi-byte UTF-8
                 // sequence), so `-i` can fold it and `.`/`[^…]` treat it atomically.
-                if (p.unicode and c >= 0x80) {
-                    if (p.decodeCp()) |cp| return p.cpNode(cp);
+                if (c >= 0x80) {
+                    // Byte mode keeps the same atom, spelled in bytes — a
+                    // quantifier binds the character rather than its last byte
+                    // (`(?-u)é+` finds `éé`, as rg does). Undecodable bytes fall
+                    // through and stay raw, which is what `(?-u)` is for.
+                    if (p.decodeCp()) |cp| {
+                        if (p.unicode) return p.cpNode(cp);
+                        return p.byteSeqNode(.{ .cp = cp, .width = .scalar });
+                    }
                 }
                 _ = p.take();
                 var s = ByteSet{};

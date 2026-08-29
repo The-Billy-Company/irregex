@@ -215,26 +215,138 @@ test "syntax/escape: metacharacter and punctuation escapes are literal" {
     }
 }
 
-test "syntax/escape: backreferences \\0-\\9 are BadPattern (rg parity), in atom and class" {
-    // rg (rust-regex) rejects `\0`…`\9` as backreference syntax, exit 2 — a
-    // linear-time engine can't do backreferences, and `\0` is NOT NUL there
-    // (NUL is spelled `\x00`). A silent NUL-class or literal digit was the
-    // original head-to-head divergence this suite pins.
-    inline for (.{ "\\0", "\\1", "\\5", "\\9", "a\\1b", "[\\047]", "[\\0]", "[a\\3]" }) |pat| {
+test "syntax/escape: a bare \\1 is still backreference syntax, at atom position" {
+    // A group reference is the one numeric escape a linear-time engine cannot
+    // honor, so it stays an error rather than becoming a confident literal.
+    // `re` agrees it is a reference here (it raises "invalid group reference");
+    // we simply have no groups to point at. `\8`/`\9` are not octal digits, so
+    // they are errors in EVERY position, which `re` also reports.
+    inline for (.{ "\\1", "\\5", "a\\1b", "\\12", "\\8", "\\9", "[\\8]", "[\\9]" }) |pat| {
         try std.testing.expectError(ParseError.BadPattern, parse(pat));
     }
-    // The supported NUL spelling still yields exactly the NUL byte.
-    var pr = try parse("\\x00");
-    defer pr.deinit();
-    const s = try classOf(&pr);
-    try std.testing.expect(s.has(0) and s.count() == 1);
+}
+
+test "syntax/escape: octal — \\0oo at atom, every numeric escape inside a class" {
+    // `re`'s rule, which rg refuses outright ("backreferences are not supported",
+    // then it points you at PCRE2): a leading `0` or a full three digits commits
+    // to octal at atom position, while inside `[…]` all of them do.
+    inline for (.{
+        .{ "\\0", @as(u8, 0) }, // NUL, no longer only spellable as \x00
+        .{ "\\00", 0 },
+        .{ "\\000", 0 },
+        .{ "\\101", 'A' }, // three digits: 0o101
+        .{ "\\377", 0xFF }, // the cap
+        .{ "[\\047]", '\'' }, // in-class: 0o47
+        .{ "[\\0]", 0 },
+        .{ "[\\1]", 1 }, // `re` reads a bare \1 as octal HERE
+        .{ "[\\12]", '\n' },
+    }) |case| {
+        var pr = try parse(case[0]);
+        defer pr.deinit();
+        const s = try classOf(&pr);
+        try std.testing.expect(s.has(case[1]) and s.count() == 1);
+    }
+    // Past `re`'s cap the value would need a second byte, so it is an error
+    // rather than a silent U+0100.
+    inline for (.{ "\\400", "\\777", "[\\400]" }) |pat| {
+        try std.testing.expectError(ParseError.BadPattern, parse(pat));
+    }
+}
+
+test "syntax/escape: \\u and \\U, counted and braced" {
+    // Counted is `re`'s and rg's alike; braced is rg's. An ASCII value is the
+    // same single byte whichever mode reads it.
+    inline for (.{
+        .{ "\\u0041", @as(u8, 'A') },
+        .{ "\\u{41}", 'A' },
+        .{ "\\U00000041", 'A' },
+        .{ "\\U{41}", 'A' },
+        .{ "[\\u0041]", 'A' },
+    }) |case| {
+        var pr = try parse(case[0]);
+        defer pr.deinit();
+        const s = try classOf(&pr);
+        try std.testing.expect(s.has(case[1]) and s.count() == 1);
+    }
+    // A short counted run is a typo, not a shorter character; empty braces, a
+    // surrogate, and a value past U+10FFFF are all refused — rg's judgments.
+    inline for (.{ "\\u00", "\\u{}", "\\uD800", "\\u{110000}", "\\U0041", "\\U{}" }) |pat| {
+        try std.testing.expectError(ParseError.BadPattern, parse(pat));
+    }
+    // Byte mode: a SCALAR spelling is the character's UTF-8 sequence, not a
+    // truncation of it, so nothing about it is unrepresentable. Measured against
+    // rg, which for `(?-u)\u00e9` matches `é` (0xC3 0xA9) and does not match a
+    // raw 0xE9 — disabling Unicode changes what a class, a fold, and a boundary
+    // mean; it cannot change what a scalar value IS.
+    inline for (.{
+        .{ "\\u00ab", "\xc2\xab" },
+        .{ "\\u00e9", "\xc3\xa9" },
+        .{ "\\u01ff", "\xc7\xbf" },
+        .{ "\\U{2603}", "\xe2\x98\x83" },
+        .{ "\\x{e9}", "\xc3\xa9" },
+        .{ "\\N{SNOWMAN}", "\xe2\x98\x83" },
+    }) |case| {
+        var pr = try parse(case[0]);
+        defer pr.deinit();
+        try std.testing.expectEqualStrings(case[1], try flattenLiteral(&pr));
+    }
+    // …while a BYTE spelling stays the raw byte. That is the whole distinction,
+    // and it is rg's line too: `\xNN` and octal are byte syntax, `\x{…}` `\u` `\U`
+    // `\N{…}` name characters.
+    inline for (.{ .{ "\\xe9", @as(u8, 0xE9) }, .{ "\\351", 0xE9 }, .{ "[\\xe9]", 0xE9 } }) |case| {
+        var pr = try parse(case[0]);
+        defer pr.deinit();
+        const s = try classOf(&pr);
+        try std.testing.expect(s.has(case[1]) and s.count() == 1);
+    }
+    // A byte-mode CLASS holds one byte per member, so a scalar spelling above
+    // ASCII names something it cannot express. rg refuses the same patterns
+    // (`(?-u)[\u00e9]` is a regex parse error) rather than matching one byte of
+    // the sequence, which is the only other option and a wrong answer.
+    inline for (.{ "[\\u00e9]", "[\\x{e9}]", "[\\N{SNOWMAN}]" }) |pat| {
+        try std.testing.expectError(ParseError.BadPattern, parse(pat));
+    }
+}
+
+test "syntax/escape: a byte-mode character is one atom, so a quantifier binds it" {
+    // `(?-u)é+` must repeat the CHARACTER, not its last byte — rg finds `éé` in
+    // `éé` and a byte-at-a-time walk finds `é`. Same for the escape spelling,
+    // which is the same atom written differently.
+    inline for (.{ "é", "\\u00e9", "\\x{e9}" }) |body| {
+        var pr = try parse(body ++ "{2}");
+        defer pr.deinit();
+        try std.testing.expectEqualStrings("\xc3\xa9\xc3\xa9", try flattenLiteral(&pr));
+    }
+}
+
+test "syntax/escape: \\u carries a codepoint in Unicode mode, and can bound a range" {
+    {
+        var pr = try parseMode("\\u00ac", false, true);
+        defer pr.deinit();
+        try std.testing.expectEqual(@as(u21, 0x00AC), pr.node.uclass[0][0]);
+    }
+    { // the range machinery already existed for `\x{…}`; `\u` reaches it now
+        var pr = try parseMode("[\\u00ab-\\u00bb]", false, true);
+        defer pr.deinit();
+        try std.testing.expect(try holdsCp(&pr, 0x00AB));
+        try std.testing.expect(try holdsCp(&pr, 0x00B0));
+        try std.testing.expect(try holdsCp(&pr, 0x00BB));
+        try std.testing.expect(!try holdsCp(&pr, 0x00AA));
+        try std.testing.expect(!try holdsCp(&pr, 0x00BC));
+    }
+    { // octal reaches Unicode mode as a codepoint too
+        var pr = try parseMode("\\377", false, true);
+        defer pr.deinit();
+        try std.testing.expect(try holdsCp(&pr, 0xFF));
+    }
 }
 
 test "syntax/escape: unrecognized ASCII-letter escapes are BadPattern (rg parity)" {
     // rg exits 2 with "unrecognized escape sequence" — this parser must never
-    // turn `\q` into a confident literal-'q' non-match. `\Z` is rust-regex's
-    // deliberate omission (end-of-haystack is `\z`), so it errors too.
-    inline for (.{ "\\q", "\\e", "\\y", "\\h", "\\V", "\\Z", "\\p", "a\\qb" }) |pat| {
+    // turn `\q` into a confident literal-'q' non-match. `\p` is here because a
+    // bare `\p` needs Unicode mode; `\Z` is NOT, since this arm reads it as
+    // `re`'s absolute end (see the `\Z` test below).
+    inline for (.{ "\\q", "\\e", "\\y", "\\h", "\\V", "\\p", "a\\qb" }) |pat| {
         try std.testing.expectError(ParseError.BadPattern, parse(pat));
     }
 }
@@ -659,10 +771,112 @@ test "syntax/flags: (?u:…) turns Unicode on for one group only" {
 }
 
 test "syntax/flags: the flags this engine spells differently refuse" {
-    // `m` is whole-buffer here and line-anchored in JavaScript, `x` is not
-    // implemented, and a bare `(?i)` scopes to the enclosing group - each is a
-    // wrong answer rather than a missing one, so none of them parse.
-    for ([_][]const u8{ "(?m:a)", "(?x:a b)", "(?i)a", "(?-i:a)" }) |src| {
+    // `m` is whole-buffer here and line-anchored in JavaScript, and a bare
+    // `(?i)` scopes to the enclosing group - each is a wrong answer rather than
+    // a missing one, so none of them parse.
+    for ([_][]const u8{ "(?m:a)", "(?i)a", "(?-i:a)" }) |src| {
         try std.testing.expectError(ParseError.BadPattern, parse(src));
     }
+}
+
+/// Parse under verbose mode — `(?x)` / Python's `re.VERBOSE`.
+fn parseVerbose(src: []const u8) ParseError!Parsed {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    errdefer arena.deinit();
+    var p = syn.Parser{ .src = src, .arena = arena.allocator(), .verbose = true };
+    const n = try p.parseAlt();
+    if (p.pos != src.len) return ParseError.BadPattern;
+    return .{ .arena = arena, .node = n };
+}
+
+test "syntax/verbose: trivia between tokens vanishes, trivia inside one does not" {
+    const t = std.testing;
+    // Whitespace and `#` comments between tokens leave a two-atom concat — the
+    // same tree `ab` produces. Every byte CPython skips is covered.
+    for ([_][]const u8{
+        "a b",         "a\tb",
+        "a\nb",        "a\rb",
+        "a\x0bb",      "a\x0cb",
+        "a   \t\n  b", "a # the b follows\nb",
+        "a#tight\nb",  "#lead\na b # trail",
+        "a(?#why)b",   " a b ",
+    }) |src| {
+        var pr = try parseVerbose(src);
+        defer pr.deinit();
+        try t.expect(pr.node.* == .concat);
+        try t.expect(pr.node.concat[0].class.has('a'));
+        try t.expect(pr.node.concat[1].class.has('b'));
+    }
+
+    // Inside a class the space is a member, and an escaped one is a literal —
+    // both are `re`'s reading too, and both would be silently deleted by a
+    // pre-pass that stripped whitespace from the source text.
+    var cls = try parseVerbose("[ a]");
+    defer cls.deinit();
+    try t.expect(cls.node.class.has(' ') and cls.node.class.has('a'));
+    var esc = try parseVerbose("a\\ b");
+    defer esc.deinit();
+    try t.expect(esc.node.concat[0].concat[1].class.has(' '));
+}
+
+test "syntax/verbose: a detached quantifier still binds its atom" {
+    const t = std.testing;
+    // `a *` is a star over `a`, not a literal star — the quantifier loop skips
+    // trivia at its own top, exactly where CPython's does.
+    for ([_][]const u8{ "a *", "a  \t*", "a # note\n*", "a(?#note)*" }) |src| {
+        var pr = try parseVerbose(src);
+        defer pr.deinit();
+        try t.expect(pr.node.* == .star);
+        try t.expect(!pr.node.star.lazy);
+    }
+    // The laziness `?` is read WITHOUT skipping first, so `a *?` is one lazy
+    // star and `a{1, 2}` is not a bound at all (it opens no valid one, which is
+    // rust-regex's refusal rather than `re`'s literal reading).
+    var lazy = try parseVerbose("a *?");
+    defer lazy.deinit();
+    try t.expect(lazy.node.star.lazy);
+    try t.expectError(ParseError.BadPattern, parseVerbose("a{1, 2}"));
+}
+
+test "syntax/verbose: an inline comment is trivia in every mode" {
+    const t = std.testing;
+    // `(?#…)` is not a verbose feature in `re` either, so it must work with the
+    // mode off — and an unterminated one is an error, not a comment that eats
+    // the rest of the pattern.
+    var plain = try parse("a(?#why)b");
+    defer plain.deinit();
+    try t.expect(plain.node.concat[0].class.has('a') and plain.node.concat[1].class.has('b'));
+    var quant = try parse("a(?#why)*");
+    defer quant.deinit();
+    try t.expect(quant.node.* == .star);
+    try t.expectError(ParseError.BadPattern, parse("a(?#never closed"));
+    // A `(` that only starts like one is left to the group parser.
+    try t.expectError(ParseError.BadPattern, parse("a(?#"));
+}
+
+test "syntax/verbose: the scoped form holds for its body and nothing after it" {
+    const t = std.testing;
+    var pr = try parse("(?x: a b )c d");
+    defer pr.deinit();
+    // Body: `ab`. After the group verbose is off again, so ` `, `c`, ` `, `d`
+    // are four atoms — five children in all under the left fold.
+    var n = pr.node;
+    var atoms: usize = 0;
+    while (n.* == .concat) : (n = n.concat[0]) atoms += 1;
+    try t.expectEqual(@as(usize, 4), atoms);
+    // And verbose can be turned back off inside a verbose region.
+    var off = try parseVerbose("a (?-x:b c) d");
+    defer off.deinit();
+    try t.expect(off.node.* == .concat);
+}
+
+test "syntax/verbose: \\Z is Python's absolute end, not an unknown escape" {
+    const t = std.testing;
+    var pr = try parse("a\\Z");
+    defer pr.deinit();
+    // Per-line default: the haystack IS the line, so `\Z` and `\z` both resolve
+    // to the same end anchor `$` does.
+    try t.expect(pr.node.concat[1].* == .anchor_end);
+    // Inside a class it stays an invalid escape, as `\z` and `\A` do.
+    try t.expectError(ParseError.BadPattern, parse("[\\Z]"));
 }

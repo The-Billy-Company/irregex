@@ -40,6 +40,26 @@ lives in [`../build_unicode_tables.py`](../build_unicode_tables.py) → emits
   hand-listed set is a set that silently stops matching the competitor the day
   Unicode adds one — sha256
   `33a9f2266ad6b8e8de05c0ea3dfac411ac62cf8839ff1c94057471e4c5f6a2b3`.
+- **`UnicodeData.txt`** provides the character *names* behind `\N{NAME}`, from
+  its second field — plus, from its `<…, First>`/`<…, Last>` range markers, which
+  codepoints get their names from a derivation rule instead of a table (the CJK
+  and Tangut ideographs, the Hangul syllables) and which have no name at all
+  (surrogates, private use). Read from the markers rather than a hand-listed set
+  of block bounds, for the same reason as `PropertyAliases.txt` above: Unicode
+  moves those bounds every release — sha256
+  `ff58e5823bd095166564a006e47d111130813dcf8bf234ef79fa51a870edb48f`.
+- **`NameAliases.txt`** provides the additional spellings `\N{}` must also
+  answer to. It is not optional garnish: a control character has *no* name in
+  `UnicodeData.txt` (its field is the marker `<control>`), so `\N{NULL}` and
+  `\N{LF}` resolve only through this file, and `re` resolves all five alias
+  types — sha256
+  `9953f0fcebf5ea8091c5c581e4df0e43f20d2533c84ccca7987a9bb819a896a8`.
+
+The last two feed a second generator,
+[`../build_unicode_names.py`](../build_unicode_names.py) →
+`src/kernel/regex/unicode/names.gen.zig`, kept separate because the name
+database is an order of magnitude larger than every property table combined and
+has its own encoding.
 
 Verify every pin at once by hashing the vendored files and comparing the
 output to the digests above:
@@ -49,5 +69,6 @@ shasum -a 256 *.txt
 ```
 
 To upgrade the Unicode version, re-fetch the whole set at the new version,
-update `UNICODE_VERSION` in the generator, run
-`python3 tools/build_unicode_tables.py`, and re-baseline the parity fixtures.
+update `UNICODE_VERSION` in **both** generators, run
+`python3 tools/build_unicode_tables.py` and
+`python3 tools/build_unicode_names.py`, and re-baseline the parity fixtures.

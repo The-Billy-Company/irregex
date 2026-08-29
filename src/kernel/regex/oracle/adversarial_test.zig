@@ -1490,3 +1490,160 @@ test "adversarial: grep -oP (PCRE) span differential — faithful, anchors on" {
         return error.PcreSpanDivergence;
     }
 }
+
+// ─────────── by-value escapes: agreement where rg has them, ledger where it doesn't ───────────
+//
+// `\xNN` `\x{…}` `\uHHHH` `\u{…}` `\UHHHHHHHH` `\U{…}` `\N{NAME}` and the octal
+// `\0oo`/`\ooo` all denote ONE character, and the two implementations that matter
+// each answer a proper subset: rg has the six hex spellings and refuses named and
+// octal; CPython's `re` has the counted hex spellings, named, and octal, and
+// refuses the braced ones. This engine answers the union, which is only sound if
+// every spelling rg DOES have keeps rg's exact meaning — the first claim below.
+//
+// The second is the superset itself, and it is asserted rather than annotated. A
+// row declared `lacks` that rg suddenly compiles means the functional claim went
+// stale; a row declared `has` that rg refuses means it was never true; a row this
+// engine stops answering means it went false. All three fail, so the claim cannot
+// rot quietly into prose while the code drifts underneath it.
+
+/// Whether rg COMPILES `pattern` at all, against a haystack that is already on
+/// disk. `rgMatchU` folds this into its null, which is the whole distinction the
+/// ledger is about: exit 2 is a refusal (evidence), a spawn failure is silence.
+fn rgCompiles(ctx: RgCtx, pattern: []const u8) ?bool {
+    const argv = [_][]const u8{ ctx.rg, "-q", "-a", "--color", "never", "-e", pattern, ctx.tmp };
+    const res = std.process.run(ctx.gpa, ctx.io, .{ .argv = &argv }) catch return null;
+    ctx.gpa.free(res.stdout);
+    ctx.gpa.free(res.stderr);
+    if (res.term != .exited) return null;
+    return switch (res.term.exited) {
+        0, 1 => true,
+        2 => false,
+        else => null,
+    };
+}
+
+/// One row: how a character is spelled, which codepoint it must denote, and
+/// whether rg is expected to have that spelling. `cp` is written as a number
+/// rather than derived from `pat`, so a decoder that merely agreed with itself
+/// would still be caught. `tail` is for the spellings whose interesting property
+/// is where they STOP — `\0101` is three octal digits and then a literal `1`, and
+/// a reader that took four would answer `A` and look correct without it.
+const EscCase = struct { pat: []const u8, cp: u21, rg: enum { has, lacks }, tail: []const u8 = "" };
+
+test "adversarial: by-value escape family vs rg (agreement + superset ledger)" {
+    const a = std.testing.allocator;
+    var threaded = std.Io.Threaded.init(a, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const rg = findRg(a, io) orelse return error.SkipZigTest; // hermetic without ripgrep
+
+    var tmp_buf: [64]u8 = undefined;
+    const tmp = try std.fmt.bufPrint(&tmp_buf, "/tmp/gist_esc_{x}.txt", .{@intFromPtr(&threaded)});
+    const ctx = RgCtx{ .io = io, .gpa = a, .tmp = tmp, .rg = rg };
+    defer fault.spare("remove temp file", std.Io.Dir.cwd().deleteFile(io, tmp));
+
+    var col = Collector.init(a);
+    defer col.deinit();
+
+    const cases = [_]EscCase{
+        // ── counted hex: `re`'s spellings and rg's alike ──
+        .{ .pat = "\\x41", .cp = 'A', .rg = .has },
+        .{ .pat = "\\xab", .cp = 0xAB, .rg = .has },
+        .{ .pat = "\\u0041", .cp = 'A', .rg = .has },
+        .{ .pat = "\\u00ab", .cp = 0xAB, .rg = .has },
+        .{ .pat = "\\u00e9", .cp = 0xE9, .rg = .has }, // é — two UTF-8 bytes
+        .{ .pat = "\\u65e5", .cp = 0x65E5, .rg = .has }, // 日 — three
+        .{ .pat = "\\U00000041", .cp = 'A', .rg = .has },
+        .{ .pat = "\\U0001F600", .cp = 0x1F600, .rg = .has }, // 😀 — four
+        // ── braced hex: rg's alone; `re` calls each an incomplete escape ──
+        .{ .pat = "\\x{41}", .cp = 'A', .rg = .has },
+        .{ .pat = "\\x{1F600}", .cp = 0x1F600, .rg = .has },
+        .{ .pat = "\\u{41}", .cp = 'A', .rg = .has },
+        .{ .pat = "\\u{65e5}", .cp = 0x65E5, .rg = .has },
+        .{ .pat = "\\U{41}", .cp = 'A', .rg = .has },
+        .{ .pat = "\\U{10FFFF}", .cp = 0x10FFFF, .rg = .has },
+        // ── octal: `re`'s alone; rg reads it as a backreference and refuses ──
+        .{ .pat = "\\101", .cp = 'A', .rg = .lacks },
+        .{ .pat = "\\0101", .cp = 0x08, .rg = .lacks, .tail = "1" }, // `\010`, then a literal `1`
+        .{ .pat = "\\052", .cp = '*', .rg = .lacks },
+        .{ .pat = "\\377", .cp = 0xFF, .rg = .lacks }, // the cap, both sides
+        .{ .pat = "[\\101]", .cp = 'A', .rg = .lacks }, // inside a class every digit is octal
+        .{ .pat = "[\\052-\\101]", .cp = 'A', .rg = .lacks }, // …and may bound a range
+        // ── named: `re`'s alone, and the one spelling neither incumbent shares ──
+        .{ .pat = "\\N{LATIN CAPITAL LETTER A}", .cp = 'A', .rg = .lacks },
+        .{ .pat = "\\N{LATIN SMALL LETTER E WITH ACUTE}", .cp = 0xE9, .rg = .lacks },
+        .{ .pat = "\\N{GRINNING FACE}", .cp = 0x1F600, .rg = .lacks },
+        .{ .pat = "\\N{NULL}", .cp = 0x00, .rg = .lacks }, // a NameAlias — no name at all in UnicodeData
+        .{ .pat = "\\N{CJK UNIFIED IDEOGRAPH-65E5}", .cp = 0x65E5, .rg = .lacks }, // derived, not stored
+        .{ .pat = "\\N{HANGUL SYLLABLE GA}", .cp = 0xAC00, .rg = .lacks }, // jamo-composed
+        .{ .pat = "[\\N{GRINNING FACE}]", .cp = 0x1F600, .rg = .lacks },
+    };
+
+    var agreed: usize = 0; // rows rg has, on which the two engines agree
+    var superset: usize = 0; // rows rg refuses and this engine answers correctly
+    var b: [160]u8 = undefined;
+
+    for (cases) |cs| {
+        // The claim about MEANING, made without reference to either incumbent:
+        // the pattern matches the codepoint it names and rejects its neighbour.
+        // Byte-mode is checked too wherever the value fits in one, since `(?-u)`
+        // is a different decode path with the same spelling.
+        var re = Regex.compileOpts(a, cs.pat, .{ .unicode = true }) catch {
+            col.report("ESC-REFUSED", cs.pat, "", "this engine failed to compile a spelling it claims");
+            continue;
+        };
+        defer re.deinit();
+        var sim = Regex.Sim.init(a, &re) catch continue;
+        defer sim.deinit();
+
+        var hay: [16]u8 = undefined;
+        var n: usize = std.unicode.utf8Encode(cs.cp, &hay) catch {
+            col.report("ESC-BAD-EXPECTATION", cs.pat, "", "the row's own codepoint is not encodable");
+            continue;
+        };
+        @memcpy(hay[n..][0..cs.tail.len], cs.tail);
+        n += cs.tail.len;
+        if (!re.lineMatch(&sim, hay[0..n]))
+            col.report("ESC-MEANING", cs.pat, hay[0..n], std.fmt.bufPrint(&b, "did not match U+{X:0>4}{s}", .{ cs.cp, cs.tail }) catch "");
+
+        var other: [8]u8 = undefined;
+        const m = std.unicode.utf8Encode(if (cs.cp == 'A') 'B' else 'A', &other) catch unreachable;
+        if (re.lineMatch(&sim, other[0..m]))
+            col.report("ESC-OVERMATCH", cs.pat, other[0..m], std.fmt.bufPrint(&b, "U+{X:0>4} spelling matched an unrelated character", .{cs.cp}) catch "");
+
+        // The claim about rg. `rgCompiles` needs a haystack on disk; write the
+        // positive one, so the same call also settles whether rg AGREES.
+        std.Io.Dir.cwd().writeFile(io, .{ .sub_path = tmp, .data = hay[0..n] }) catch continue;
+        const compiles = rgCompiles(ctx, cs.pat) orelse continue;
+        switch (cs.rg) {
+            .has => {
+                if (!compiles) {
+                    col.report("ESC-LEDGER-STALE", cs.pat, "", "declared as rg's, and rg refused it");
+                } else {
+                    // Full agreement, over the positive AND the negative
+                    // haystack, through the same helper the Unicode
+                    // differential uses.
+                    rgAgreesU(&col, ctx, cs.pat, false, hay[0..n]);
+                    rgAgreesU(&col, ctx, cs.pat, false, other[0..m]);
+                    agreed += 1;
+                }
+            },
+            .lacks => {
+                if (compiles) {
+                    col.report("ESC-LEDGER-STALE", cs.pat, "", "declared beyond rg, and rg compiled it — reclassify the row");
+                } else superset += 1;
+            },
+        }
+    }
+
+    // Floors rather than totals, so a row deleted to make a run green fails the
+    // run instead. Both halves must stay populated: agreement alone would mean
+    // the superset evaporated, superset alone that parity was never checked.
+    try std.testing.expect(agreed >= 12);
+    try std.testing.expect(superset >= 12);
+
+    if (col.fails != 0) {
+        std.debug.print("escape family differential: {} divergence(s) over {} rg-shared + {} rg-refused spellings\n", .{ col.fails, agreed, superset });
+        return error.EscapeFamilyDivergence;
+    }
+}

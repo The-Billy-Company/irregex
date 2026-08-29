@@ -162,11 +162,14 @@ fn readClassAtom(p: *Parser, ss: *ScalarSet) ParseError!ClassAtom {
             try addProp(p, ss, e == 'P');
             return .class;
         },
-        'x' => return .{ .cp = try escape.hexCp(p) },
+        // The by-value family — one codepoint, so it can also bound a range
+        // (`[\u00ab-\u00bb]`). Inside a class every numeric escape is octal, which
+        // is `re`'s reading and the `true` here; rg refuses them outright.
+        'x', 'u', 'U', 'N', '0'...'9' => return .{ .cp = try escape.valueCp(p, e, true) },
         't', 'n', 'r', 'f', 'v', 'a' => return .{ .cp = escape.ctrlByte(e) },
-        // Backrefs (`\0`–`\9`) and assertion escapes (`\b \B \A \z \< \>`,
-        // all alphabetic/`<`/`>`) are invalid inside a class — rg rejects them.
-        '0'...'9', '<', '>' => return ParseError.BadPattern,
+        // Assertion escapes (`\b \B \A \z \< \>`, all alphabetic/`<`/`>`) are
+        // invalid inside a class — rg rejects them.
+        '<', '>' => return ParseError.BadPattern,
         else => {
             if (std.ascii.isAlphabetic(e)) return ParseError.BadPattern;
             return .{ .cp = e }; // escaped punctuation → the literal codepoint
@@ -281,7 +284,7 @@ pub fn parseClassU(p: *Parser) ParseError!*Node {
 /// escape here whose set isn't a singleton.
 fn readByteAtom(p: *Parser, s: *ByteSet) ParseError!?u8 {
     if (!p.eat('\\')) return p.take();
-    const esc = try escape.parseEscape(p);
+    const esc = try escape.parseEscape(p, true);
     if (esc.only()) |b| return b;
     s.unionWith(esc);
     return null;

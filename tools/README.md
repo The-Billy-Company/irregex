@@ -3,19 +3,27 @@
 The Python builders that lower fixed data into Zig tables. None of them touches
 the network; regenerating is always an explicit, reviewed step.
 
-Two of them are hermetic — the input is vendored bytes, so the output is a
+Three of them are hermetic — the input is vendored bytes, so the output is a
 generated file and regenerating after a pin bump is mechanical.
 
-- **[`ucd/`](ucd)** takes Unicode 16.0.0 UCD text and writes
-  `src/kernel/regex/unicode/tables.gen.zig`.
+- **[`ucd/`](ucd)** feeds two generators from one pinned Unicode 16.0.0 set.
+  `build_unicode_tables.py` writes the *property* tables
+  (`src/kernel/regex/unicode/tables.gen.zig`) — the Perl classes, case-fold
+  orbits, and `\p{…}` categories. `build_unicode_names.py` writes the *name*
+  table (`src/kernel/regex/unicode/names.gen.zig`) behind `\N{NAME}`. They are
+  separate because the name database is larger than every property table
+  combined and is encoded differently: front-coded sorted names rather than
+  scalar ranges.
 - **[`whatwg/`](whatwg)** takes the WHATWG encoding indexes and writes
   `src/corpus/read/encoding_tables.gen.zig`.
 
-Run either generator and its matching drift check with these commands:
+Run any generator and its matching drift check with these commands:
 
 ```bash
-python3 tools/build_unicode_tables.py            # UCD → unicode tables
+python3 tools/build_unicode_tables.py            # UCD → unicode property tables
 python3 tools/build_unicode_tables.py --check    # drift gate
+python3 tools/build_unicode_names.py             # UCD → \N{NAME} table
+python3 tools/build_unicode_names.py --check     # drift gate
 python3 tools/build_encoding_tables.py           # WHATWG → encoding tables
 python3 tools/build_encoding_tables.py --check   # drift gate
 python3 tools/build_schema_tables.py             # contract → schema tables (Zig + this package's own Go/Python/Rust bindings)
