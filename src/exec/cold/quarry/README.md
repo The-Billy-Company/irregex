@@ -16,7 +16,11 @@ cold-engine deep-module split).
   only what the question needs.
 - **`order.zig`** holds the canonical file order — ripgrep's `--sort`/
   `--sortr`, exactly.
-- **`stream.zig`** admits stdin as a haystack: admitting and draining fd 0.
+- **`stream.zig`** admits stdin as a haystack: classifying and draining fd
+  0. A pipe's fd *type* does not tell you whether reading it terminates, so a
+  stream has to prove itself with a first byte before we commit to draining
+  it — the difference between a producer that is merely late and a write end
+  someone is holding open forever.
 - **`notice.zig`** decides how a failed descent reads on stderr — the
   unopenable path, the `-L` loop, the walk that admitted nothing.
 - **`witness.zig`** answers the one question the searched bytes cannot:

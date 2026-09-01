@@ -569,6 +569,7 @@ test {
     _ = @import("exec/cold/engine/serial.zig"); // the unified engine (rgsuite parity drop-in)
     _ = @import("exec/cold/quarry/elide.zig"); // the indexed→live read-elision oracle both cold engines admit
     _ = @import("exec/cold/quarry/witness.zig"); // the same index asked in reverse: which file OUTSIDE the scope holds it
+    _ = @import("exec/cold/quarry/stream.zig"); // fd 0 as a haystack: the first-byte proof a silent pipe fails, and the ceiling an unbounded one gets
     _ = @import("exec/cold/engine/swarm/swarm.zig"); // the fused work-stealing walk: eligibility + run lifecycle
     _ = @import("exec/cold/engine/swarm/crew.zig"); // worker state, pool topology, the ordered --sort replay
     _ = @import("exec/cold/read/ingest.zig"); // -z/--pre/-E content transforms (decompress/preprocess/transcode)
