@@ -17,7 +17,6 @@ We published this patch with the operator-authorized expedited release path. Nat
   streams finish at EOF; an explicit first-byte timeout or a failed read returns
   an error instead of searching the working directory or partial input.
 
-
 ## [2.4.1] - 2026-09-05
 
 ### Fixed
