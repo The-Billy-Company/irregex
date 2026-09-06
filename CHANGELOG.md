@@ -5,6 +5,19 @@ All notable changes to the `irregex` kernel (formerly `gist`; the gist CLI is it
 
 <!-- towncrier release notes start -->
 
+## [2.4.2] - 2026-09-05
+
+We published this patch with the operator-authorized expedited release path. Native artifacts were rebuilt; CI and tests were skipped for this release.
+
+### Fixed
+
+- We retain static libraries from the wheel build for Rust and Go packaging, so the release can use its native build runner without another local compilation.
+
+- We keep a quiet pipe or socket as stdin, however long its producer takes. Empty
+  streams finish at EOF; an explicit first-byte timeout or a failed read returns
+  an error instead of searching the working directory or partial input.
+
+
 ## [2.4.1] - 2026-09-05
 
 ### Fixed
