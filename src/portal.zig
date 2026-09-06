@@ -184,17 +184,12 @@ pub fn read(h: Handle, buf: []u8) ReadError!usize {
     };
 }
 
-/// Is `h` readable within `timeout_ms`? A negative timeout waits without bound,
-/// which is `poll(2)`'s own spelling and the posture a pipe gets — the caller
-/// that spends a *finite* window here is bounding the one pathological case a
-/// blocking read cannot escape: a peer that never writes and never closes
-/// (`exec/cold/quarry/stream.zig`).
+/// Can a read resolve within `timeout_ms`, including EOF or a read error? Used
+/// only for an explicitly requested first-byte deadline; source classification
+/// never polls. A negative timeout is POSIX's unbounded wait.
 ///
-/// Windows cannot reach that case — a unix-domain socket cannot be this process's
-/// stdin there, so `inode`'s Windows leg never classifies stdin as `.socket` and
-/// this is never consulted. It reports "ready" rather than growing a
-/// `WaitForSingleObject` path for a caller that does not exist. A pipe there is
-/// therefore admitted on its type alone and block-read, which is rg's own rule.
+/// Windows keeps its existing blocking-read behavior: this POSIX readiness
+/// probe does not enforce a deadline there. Descriptor admission is identical.
 ///
 /// Not the same question as the daemon's `conduit/vigil.zig`, which is why both
 /// exist: this one is asked of *stdin*, whatever the shell handed us, while
@@ -210,40 +205,10 @@ pub fn readable(h: Handle, timeout_ms: i32) bool {
 fn pollReadable(h: Handle, timeout_ms: i32) bool {
     var fds = [_]std.posix.pollfd{.{ .fd = h, .events = std.posix.POLL.IN, .revents = 0 }};
     const n = std.posix.poll(&fds, timeout_ms) catch return false;
-    // Only IN counts. A bare HUP/ERR must not read as "a frame arrived" — that
-    // would skip a deadline and race a closing peer. A peer that closed after
-    // writing nothing still sets IN (the read returns 0), so EOF is not lost.
-    return n > 0 and fds[0].revents & std.posix.POLL.IN != 0;
-}
-
-/// Does THIS process hold `h`'s write end?
-///
-/// True only for a descriptor opened read-write, which for a pipe is the
-/// `exec 9<>fifo` shape: the sole writer is us, we are never going to write, and
-/// no other writer's exit can deliver the EOF a reader is waiting for. That
-/// makes it the one stdin silence which is provably permanent rather than merely
-/// long — the distinction `quarry/stream.zig` needs in order to wait for every
-/// pipe that *could* still speak without waiting forever on one that cannot.
-///
-/// One `F_GETFL`, asked once per process alongside the `stat` that classified
-/// fd 0. Linux answers through the raw syscall for the same reason `inode` does
-/// (no libc dependency on that target); everyone else asks libc. Windows has no
-/// `F_GETFL` and no way to reach the shape — a pipe handed to a child there is
-/// one-directional — so it answers `false` and the caller keeps waiting.
-pub fn holdsWriteEnd(h: Handle) bool {
-    if (comptime windows) return false;
-    const bits: u32 = blk: {
-        if (comptime builtin.os.tag == .linux) {
-            const rc = std.os.linux.fcntl(h, std.os.linux.F.GETFL, 0);
-            if (std.os.linux.E.init(rc) != .SUCCESS) return false;
-            break :blk @truncate(rc);
-        }
-        const rc = std.c.fcntl(h, std.c.F.GETFL);
-        if (rc < 0) return false;
-        break :blk @bitCast(rc);
-    };
-    const flags: std.posix.O = @bitCast(bits);
-    return flags.ACCMODE == .RDWR;
+    // Empty pipes can report HUP alone. Let the actual read distinguish EOF,
+    // buffered bytes and errors instead of treating absence of IN as silence.
+    const ready = std.posix.POLL.IN | std.posix.POLL.HUP | std.posix.POLL.ERR | std.posix.POLL.NVAL;
+    return n > 0 and fds[0].revents & ready != 0;
 }
 
 /// The canonical, symlink-resolved spelling of `path` into `buf`, or null when
