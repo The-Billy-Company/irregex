@@ -28,6 +28,11 @@ on:
   # Buildable and verifiable without publishing, so the matrix can be exercised
   # without minting a version.
   workflow_dispatch:
+    inputs:
+      expedite:
+        description: "Publish without CI or test gates (operator-authorized release)"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -83,7 +88,7 @@ jobs:
       # that needed thirty-one. An hour is that measurement with room for a
       # queued runner, and still bounded, so a genuinely stuck slate fails the
       # release instead of publishing without a verdict.
-      - if: startsWith(github.ref, 'refs/tags/v')
+      - if: startsWith(github.ref, 'refs/tags/v') && !inputs.expedite
         uses: The-Billy-Company/.github/actions/package-release@18530e6f8b7ad634dcfe52e423e2a0a8e7bd521e # main
         with:
           command: ci-status
@@ -132,6 +137,7 @@ jobs:
       # possible place to find out — so the floor is proven here, on the
       # artifact about to be published, not asserted in a TOML file.
       - name: Prove the declared floor on the built artifact
+        if: ${{ !inputs.expedite }}
         run: |
           set -euo pipefail
           uv venv --python 3.12 /tmp/floor
@@ -175,6 +181,7 @@ jobs:
   # this is where that surfaces — not in a bug report from whoever installed
   # first.
   smoke:
+    if: ${{ !inputs.expedite }}
     name: smoke (${{ matrix.target }})
     needs: wheels
     runs-on: ${{ matrix.runner }}
@@ -222,7 +229,7 @@ jobs:
 
   publish:
     # Only a tag publishes. A manual run builds and verifies and stops there.
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: ${{ !cancelled() && startsWith(github.ref, 'refs/tags/v') && needs.wheels.result == 'success' && (needs.smoke.result == 'success' || inputs.expedite) && needs.preflight.result == 'success' }}
     needs: [preflight, wheels, smoke]
     runs-on: ubuntu-latest
     environment: pypi
@@ -379,7 +386,7 @@ jobs:
       # --locked: publish the dependency graph that was tested, not whatever the
       # index happens to offer at upload time.
       - if: steps.state.outputs.result == 'absent'
-        run: cargo publish --locked
+        run: cargo publish --locked ${{ inputs.expedite && '--no-verify' || '' }}
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
   # ── Go module

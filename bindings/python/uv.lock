@@ -2,6 +2,15 @@ version = 1
 revision = 3
 requires-python = ">=3.12"
 
+[options]
+exclude-newer = "0001-01-01T00:00:00Z" # This has no effect and is included for backwards compatibility when using relative exclude-newer values.
+exclude-newer-span = "P2D"
+
+[options.exclude-newer-package]
+torchaudio = false
+unstd = "2026-09-01T06:20:00Z"
+torch = false
+
 [[package]]
 name = "cffi"
 version = "2.1.1"
@@ -122,7 +131,7 @@ wheels = [
 
 [[package]]
 name = "irregex"
-version = "2.4.0"
+version = "2.4.1"
 source = { editable = "." }
 
 [package.dev-dependencies]

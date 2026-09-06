@@ -5,6 +5,12 @@ All notable changes to the `irregex` kernel (formerly `gist`; the gist CLI is it
 
 <!-- towncrier release notes start -->
 
+## [2.4.1] - 2026-09-05
+
+### Fixed
+
+- We put JSON transport options before literal query operands, so a query following `--` stays intact across cold search transports.
+
 ## [2.4.0] - 2026-09-01
 
 ### Note
