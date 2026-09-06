@@ -184,14 +184,12 @@ pub fn read(h: Handle, buf: []u8) ReadError!usize {
     };
 }
 
-/// Is `h` readable within `timeout_ms`? Used only to bound the one pathological
-/// case a blocking read cannot escape: a socket peer that never writes and never
-/// closes (`exec/cold/quarry/stream.zig`).
+/// Can a read resolve within `timeout_ms`, including EOF or a read error? Used
+/// only for an explicitly requested first-byte deadline; source classification
+/// never polls. A negative timeout is POSIX's unbounded wait.
 ///
-/// Windows cannot reach that case — a unix-domain socket cannot be this process's
-/// stdin there, so `inode`'s Windows leg never classifies stdin as `.socket` and
-/// this is never consulted. It reports "ready" rather than growing a
-/// `WaitForSingleObject` path for a caller that does not exist.
+/// Windows keeps its existing blocking-read behavior: this POSIX readiness
+/// probe does not enforce a deadline there. Descriptor admission is identical.
 ///
 /// Not the same question as the daemon's `conduit/vigil.zig`, which is why both
 /// exist: this one is asked of *stdin*, whatever the shell handed us, while
@@ -207,10 +205,10 @@ pub fn readable(h: Handle, timeout_ms: i32) bool {
 fn pollReadable(h: Handle, timeout_ms: i32) bool {
     var fds = [_]std.posix.pollfd{.{ .fd = h, .events = std.posix.POLL.IN, .revents = 0 }};
     const n = std.posix.poll(&fds, timeout_ms) catch return false;
-    // Only IN counts. A bare HUP/ERR must not read as "a frame arrived" — that
-    // would skip a deadline and race a closing peer. A peer that closed after
-    // writing nothing still sets IN (the read returns 0), so EOF is not lost.
-    return n > 0 and fds[0].revents & std.posix.POLL.IN != 0;
+    // Empty pipes can report HUP alone. Let the actual read distinguish EOF,
+    // buffered bytes and errors instead of treating absence of IN as silence.
+    const ready = std.posix.POLL.IN | std.posix.POLL.HUP | std.posix.POLL.ERR | std.posix.POLL.NVAL;
+    return n > 0 and fds[0].revents & ready != 0;
 }
 
 /// The canonical, symlink-resolved spelling of `path` into `buf`, or null when

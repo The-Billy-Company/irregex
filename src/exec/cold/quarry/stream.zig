@@ -3,37 +3,28 @@
 //! `cmd | … pat` must search the stream instead of walking the tree, which
 //! makes "is fd 0 readable?" a correctness question, not a convenience. The rule
 //! is ripgrep's (`is_readable_stdin`: not a tty, and a file / FIFO / socket),
-//! with two deliberate departures the sections below justify in full: a stream
-//! must prove itself with a byte before we commit to draining it, and a haystack
-//! with no a-priori length still gets a ceiling.
+//! with one deliberate departure: a haystack with no a-priori length still gets
+//! a ceiling. A caller can also explicitly bound its wait for the first byte;
+//! reaching that deadline refuses the input instead of searching another source.
 //!
 //! The classification is non-consuming, so the warm daemon client can ask the
 //! same question and decline to cold without stealing the bytes cold will read.
 //!
-//! ## Why an fd TYPE is not enough
+//! ## Source identity does not expire
 //!
-//! ripgrep asks what fd 0 *is* and infers what it will *do*: a FIFO is a pipe, a
-//! pipe has a writer, a writer eventually closes, so a blocking read to EOF
-//! always terminates. Every step of that holds for a pipeline someone typed and
-//! fails for a pipe someone merely *inherited* — an agent harness, a `sleep 20 |
-//! …`, an `exec 9<>fifo` — where the write end is held open by a process that
-//! will never write and never exit. `read(2)` then blocks forever, and a tool
-//! asked to search a tree becomes a process someone has to go and kill. That is
-//! the observed failure this module exists to make impossible; a socket was
-//! already guarded against it, and a FIFO — the shape an agent actually hands
-//! us — was not.
+//! A regular file, FIFO or socket selects stdin immediately. A quiet producer
+//! can still send bytes or close; neither a deadline nor an O_RDWR descriptor
+//! proves otherwise. The old first-byte probe changed a slow pipeline into a
+//! CWD search. Raising its timeout from two seconds to a minute merely moved
+//! the same wrong answer later. Admission is now one non-consuming stat, shared
+//! by the warm client and cold engine, with no readiness wait or corpus switch.
 //!
-//! The fix is not a tighter type test and not a timeout on every read. It is the
-//! observation that the two cases differ in something exact: **a real producer
-//! eventually delivers a first byte, and a dead stdin never delivers one.** So
-//! the wait is bounded before the first byte and unbounded after it (`admit`). A
-//! slow producer is admitted the instant it speaks, however long it took; a
-//! stream that pauses for minutes mid-transfer is still drained to a true EOF,
-//! byte-for-byte rg; and a silent-forever fd 0 falls through to the directory
-//! walk, which is what the caller meant by running a search with no PATH args.
-//! Polling every chunk — the older shape, kept only for sockets — could do
-//! neither: it dropped a producer that was merely late, and it silently
-//! truncated one that stalled after speaking.
+//! Reading waits for bytes or true EOF and remains interruptible by the caller.
+//! An inherited, unused pipe is a harness configuration question: pass a PATH
+//! or /dev/null when the intended source is a tree. `STDIN_WAIT_MS` still lets a
+//! caller request a first-byte deadline, but expiry is exit 2 with no result.
+//! Past that first byte, pauses never truncate the stream. Read failures are
+//! also refusals; partial input cannot produce a trustworthy search answer.
 //!
 //! ## Why a regular file is its own case
 //!
@@ -72,24 +63,12 @@ const outcome = @import("../../../surface/cli/outcome.zig");
 const oom = outcome.oom;
 const die = outcome.die;
 
-/// How long fd 0 has to produce its FIRST byte before it is judged not to be a
-/// haystack at all. Only a stream (FIFO / socket) can be silent, so only a
-/// stream ever spends this — a tty, a `/dev/null`, and a regular file are each
-/// decided with no `poll` at all, which is every shape but one.
-///
-/// Generous on purpose, because the two errors are not symmetric: waiting too
-/// long costs a bounded pause on a stdin nobody was writing to, while waiting
-/// too little DROPS a real stream and answers from the tree instead. The
-/// previous socket-only guard was 200 ms and was measured dropping a producer
-/// whose first byte landed at 500 ms; two seconds is well clear of that and
-/// still turns "forever" into a blink.
-const first_byte_ms_default: i32 = 2_000;
+/// Optional first-byte deadline, in milliseconds. Zero requires bytes or EOF
+/// already waiting; expiry refuses this source, never selects another one.
+const wait_knob = "STDIN_WAIT_MS";
 
-/// Operator override for the window above, in milliseconds. `0` is meaningful —
-/// it means "admit only a stream with bytes already buffered", the posture a
-/// harness that never pipes anything wants.
-fn firstByteMs() i32 {
-    const ms = assay.knobUsize("STDIN_WAIT_MS") orelse return first_byte_ms_default;
+fn pinnedWaitMs() ?i32 {
+    const ms = assay.knobUsize(wait_knob) orelse return null;
     return @intCast(@min(ms, std.math.maxInt(i32)));
 }
 
@@ -136,24 +115,19 @@ fn shareOf(physical_bytes: u64) u64 {
 /// doubling climb, and a refusal decided before any allocation at all.
 const Admission = union(enum) {
     /// A tty, a `/dev/null` char device, a directory — no haystack here, walk
-    /// the tree. Also where a stream that never spoke lands.
+    /// the tree. A quiet stream never becomes this case.
     none,
     /// A regular file, whose `read` cannot block and whose length we know.
     file: u64,
-    /// A FIFO or socket that has proven itself with a readable first byte.
+    /// A FIFO or socket, including an empty or temporarily quiet one.
     /// Length unknown, so the ceiling is checked as bytes arrive.
     stream,
 };
 
 /// fd 0's verdict, resolved at most once per process.
 ///
-/// Memoized because the answer must be the SAME one every asker gets, and
-/// because asking is no longer free: `admit` can spend the first-byte window,
-/// and a stream that timed out for the layout probe but not for the search
-/// branch would search an empty haystack and report a clean miss — a silent
-/// wrong answer, which is worse than the hang this module removes. One verdict
-/// also means fd 0 is `stat`ed once where the engine used to do it three times,
-/// so the guard arrives at a lower syscall count than the code it replaced.
+/// Memoized so the layout probe, daemon client and search branch agree on their
+/// source. One verdict also means one stat where the engine previously did three.
 ///
 /// A plain `var` with no lock: every caller resolves this on the main thread
 /// before any search worker exists (the engine's layout decision precedes the
@@ -161,7 +135,7 @@ const Admission = union(enum) {
 /// install discipline `beacon` documents.
 var verdict: ?Admission = null;
 
-/// Classify fd 0 and — for a stream — wait for it to prove itself.
+/// Classify fd 0 without waiting for or consuming any bytes.
 ///
 /// ripgrep's `is_readable_stdin` is the type half: `!is_terminal(fd0) &&
 /// (is_file || is_fifo || is_socket)`. Whitelisting exactly those three by
@@ -170,38 +144,15 @@ var verdict: ?Admission = null;
 /// wire fd 0 to a socketpair; omitting it silently diverged from rg on
 /// piped-socket input.
 ///
-/// The wait is the second half, and it is this module's departure from rg (see
-/// the header). It is non-consuming — `poll` moves no bytes — so a delayed
-/// pipe's first byte is still there for `readStdin` to read.
-///
-/// An EOF counts as proof, not as silence: a writer that closed having written
-/// nothing sets `POLLIN` and its `read` returns 0, so `: | … pat` still searches
-/// an empty haystack and exits 1 exactly as rg does. Only a timeout — nothing
-/// arriving and nothing closing — is judged `.none`.
-///
-/// On Windows `portal.readable` answers an optimistic `true`, so a stream is
-/// admitted on its type alone there, which is what both this and the previous
-/// socket-only guard already did on that target.
+/// EOF and silence do not affect admission. Reading an empty stream returns an
+/// empty haystack on every platform, regardless of its readiness event shape.
 fn admit() Admission {
     const st = inode.statFd(portal.stdin()) orelse return .none;
     return switch (st.kind) {
         .file => .{ .file = st.size },
-        .fifo, .socket => if (portal.readable(portal.stdin(), firstByteMs())) .stream else silent(),
+        .fifo, .socket => .stream,
         else => .none, // tty, /dev/null char device, … ⇒ fall through to the walk
     };
-}
-
-/// A stream that never spoke: fall through to the walk, and say so.
-///
-/// The line is not optional noise. Falling back silently would mean a caller who
-/// believes they are searching a pipe gets an answer from the tree with nothing
-/// to distinguish it — the same invisible divergence a truncated haystack would
-/// be. It goes to the fault channel, so stdout stays the rg-shaped bytes an
-/// agent parses, the FFI's dark sink stays silent, and a captured run keeps it.
-fn silent() Admission {
-    assay.diag("stdin produced no data in {d}ms — searching the tree instead " ++
-        "(pipe something, pass a PATH, or set {s}STDIN_WAIT_MS)\n", .{ firstByteMs(), assay.identity.env_prefix });
-    return .none;
 }
 
 /// True iff fd 0 is a readable stdin haystack. `pub` for the warm client
@@ -255,20 +206,26 @@ fn drainFile(a: std.mem.Allocator, size: u64) []const u8 {
 }
 
 /// A stream: length unknown, so grow and check the ceiling as bytes arrive. No
-/// per-chunk deadline — the first byte already proved a producer exists, and a
-/// real stream that pauses mid-transfer must be waited for, not truncated.
+/// per-chunk deadline: a stream that pauses mid-transfer must be waited for,
+/// not truncated. Only an explicit first-byte deadline can refuse the wait.
 fn drainStream(a: std.mem.Allocator) []const u8 {
+    if (pinnedWaitMs()) |ms| {
+        if (!portal.readable(portal.stdin(), ms))
+            die("stdin did not become readable within {d}ms ({s}{s}); input was not searched\n", .{
+                ms, assay.identity.env_prefix, wait_knob,
+            });
+    }
     var buf: std.ArrayList(u8) = .empty;
     return pump(a, &buf, ceiling());
 }
 
 /// The shared read loop: block to true EOF, refusing at the chunk that crosses
-/// `cap`. A failed `read` ends the haystack — the bytes already in hand are the
-/// answer, exactly as a mid-file read error ends a file.
+/// `cap`. A failed read refuses the input; partial bytes cannot answer a search.
 fn pump(a: std.mem.Allocator, buf: *std.ArrayList(u8), cap: u64) []const u8 {
     var tmp: [64 * 1024]u8 = undefined;
     while (true) {
-        const n = portal.read(portal.stdin(), &tmp) catch break;
+        const n = portal.read(portal.stdin(), &tmp) catch |err|
+            die("cannot read stdin: {s}\n", .{@errorName(err)});
         if (n == 0) break;
         if (buf.items.len + n > cap) refuse(buf.items.len + n, cap);
         buf.appendSlice(a, tmp[0..n]) catch oom();
@@ -329,13 +286,123 @@ test "an unreadable machine size still admits the ordinary pipeline" {
     try t.expect(floor > 0);
 }
 
+// ── fd 0 is the subject, so every test below installs its own ────────────────
+//
+// Under `zig build test --listen=-` fd 0 is the build runner's command pipe: a
+// live FIFO, silent between commands, held open by a process that will not write
+// again until this binary reports back. That is the wedge shape exactly, so a
+// test that simply asked about the ambient fd 0 would either judge the runner's
+// pipe or wait on a writer that is waiting on it.
+const Borrowed = struct {
+    saved: c_int,
+
+    /// Make `fd` this process's stdin, forgetting any verdict reached about the
+    /// previous one.
+    fn stdin(fd: std.posix.fd_t) Borrowed {
+        const saved = std.c.dup(0);
+        _ = std.c.dup2(fd, 0);
+        test_api.forget();
+        return .{ .saved = saved };
+    }
+
+    fn give_back(self: Borrowed) void {
+        if (self.saved >= 0) {
+            _ = std.c.dup2(self.saved, 0);
+            _ = std.c.close(self.saved);
+        }
+        test_api.forget();
+    }
+};
+
+extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
+extern "c" fn unsetenv(name: [*:0]const u8) c_int;
+
+test "a producer slower than the window that used to drop it is still the haystack" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const t = std.testing;
+
+    // The regression this module shipped: the first-byte deadline was 2s, and a
+    // pipeline whose command took longer than that to say its first word had its
+    // bytes thrown away and the DIRECTORY searched in their place — exit 0, rows
+    // that look right, not one of them from what was piped in. So the producer
+    // here is deliberately slower than that deadline, and the assertion is that
+    // its bytes are still what gets searched.
+    var threaded = std.Io.Threaded.init(t.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var slow = try std.process.spawn(io, .{
+        .argv = &.{ "/bin/sh", "-c", "sleep 2.4; printf 'needle\\n'" },
+        .stdout = .pipe,
+        .stderr = .ignore,
+    });
+    defer _ = slow.wait(io) catch {};
+
+    const held = Borrowed.stdin(slow.stdout.?.handle);
+    defer held.give_back();
+
+    try t.expect(readableStdin());
+    const got = readStdin(t.allocator);
+    defer t.allocator.free(got);
+    try t.expectEqualStrings("needle\n", got);
+}
+
+test "a pinned deadline cannot reclassify a quiet pipe as a tree" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const t = std.testing;
+
+    // Readiness can refuse a read, but never determine the source. In
+    // particular a zero deadline must not turn this quiet pipe into a tree.
+    const fds = try std.Io.Threaded.pipe2(.{});
+    defer _ = std.c.close(fds[0]);
+    defer _ = std.c.close(fds[1]);
+
+    _ = setenv(assay.identity.env_prefix ++ wait_knob, "0", 1);
+    defer _ = unsetenv(assay.identity.env_prefix ++ wait_knob);
+
+    const held = Borrowed.stdin(fds[0]);
+    defer held.give_back();
+
+    try t.expect(!portal.readable(portal.stdin(), 0));
+    try t.expect(readableStdin());
+    // A later byte changes readiness, while the memoized source stays a stream.
+    _ = std.c.write(fds[1], "x", 1);
+    try t.expect(portal.readable(portal.stdin(), 0));
+    try t.expect(readableStdin());
+}
+
 test "the verdict is resolved once and reused" {
     const t = std.testing;
-    // Two asks must agree even though `admit` can spend a wall-clock window — an
-    // engine that classified fd 0 twice and got two answers would search an
-    // empty haystack and call it a clean miss.
-    test_api.forget();
+    // The layout and search branch must agree about their source. /dev/null
+    // is a char device, so it still selects the ordinary interactive tree.
+    const nul = std.c.open("/dev/null", .{ .ACCMODE = .RDONLY });
+    if (nul < 0) return error.SkipZigTest;
+    defer _ = std.c.close(nul);
+
+    const held = Borrowed.stdin(nul);
+    defer held.give_back();
+
     const first = readableStdin();
     try t.expectEqual(first, readableStdin());
     try t.expect(verdict != null);
+}
+
+test "an empty closed pipe remains an empty haystack including a pinned deadline" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const t = std.testing;
+    // POSIX can report bare HUP for an empty pipe. That is EOF, not a timeout
+    // and never permission to answer from a directory containing a match.
+    const fds = try std.Io.Threaded.pipe2(.{});
+    defer _ = std.c.close(fds[0]);
+    _ = std.c.close(fds[1]);
+
+    _ = setenv(assay.identity.env_prefix ++ wait_knob, "0", 1);
+    defer _ = unsetenv(assay.identity.env_prefix ++ wait_knob);
+    const held = Borrowed.stdin(fds[0]);
+    defer held.give_back();
+    try t.expect(readableStdin());
+    try t.expect(portal.readable(portal.stdin(), 0));
+    const got = readStdin(t.allocator);
+    defer t.allocator.free(got);
+    try t.expectEqualStrings("", got);
 }
