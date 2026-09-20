@@ -12,6 +12,12 @@
 //! — see `anchor`. The climb that finds it (`ascent`, `probe`, `max_climb`) is
 //! the same one the charter walk performs one tier up, and lives here because
 //! this is the lowest tier that has to answer "which checkout is this?".
+//!
+//! And it answers a second question the first one turns out to depend on:
+//! WHETHER this is a checkout at all — see `confines`. A tree is a project; a
+//! person's home directory is not one, and the difference stopped being
+//! academic when these binaries started shipping inside a product that runs in
+//! the user's own folders rather than in a repository.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -80,7 +86,7 @@ pub fn anchor() []const u8 {
     if (anchored.len.load(.acquire) == 0) {
         while (anchored.locked.swap(true, .acquire)) std.atomic.spinLoopHint();
         defer anchored.locked.store(false, .release);
-        if (anchored.len.load(.acquire) == 0) anchored.len.store(seek(portal.cwd(), &anchored.buf).len, .release);
+        if (anchored.len.load(.acquire) == 0) anchored.len.store(seek(portal.cwd(), &anchored.buf, confines().levels).len, .release);
     }
     return anchored.buf[0..anchored.len.load(.acquire)];
 }
@@ -97,16 +103,158 @@ const anchored = struct {
 /// write, plus the directory name appended to it.
 pub const min_buf: usize = max_climb * 3 + default_out_dir.len;
 
+// ── a tree is a project, and a person's computer is not one ──────────────────
+
+/// How far the climb may look, and whether what it finds may be written to.
+///
+/// The climb's original stopping rule was `max_climb` and nothing else, which
+/// is the right rule for the only place these binaries ran: a checkout, nested
+/// somewhere under a person's home, whose boundary is always found long before
+/// forty levels. It is the wrong rule the moment the working directory is a
+/// folder the *user* named rather than a repository — which is what happens
+/// when this engine ships inside a product that operates on someone's own
+/// Documents, Desktop, and Downloads.
+///
+/// Two failures follow from the same missing boundary, and both were observed:
+///
+///   * **Adoption from above.** One stray artifact directory at `$HOME` — and
+///     one `index` run standing there puts it exactly there — is then found by
+///     every later climb from anywhere beneath it. Every project on the machine
+///     silently shares one home, one index, and one daemon socket.
+///   * **A corpus with no edge.** With no boundary above, `index` anchors at
+///     the working directory and takes the whole tree beneath it as the corpus.
+///     Run once from `$HOME`, that is the person's entire computer: their mail,
+///     their photo library, every dependency tree they have ever installed.
+///
+/// So the climb stops below the dwelling, and a working directory that IS the
+/// dwelling (or a filesystem root) is `hosted = false`: there is no project
+/// here, so there is nothing to persist an artifact set for. Searching is
+/// untouched — it never needed an artifact and the live walk answers the same
+/// bytes — which is the usual shape of everything in this family: the
+/// accelerator declines, the answer does not move.
+pub const Confines = struct {
+    /// Levels of ascent the climb may probe. Zero looks only at the working
+    /// directory itself.
+    levels: usize,
+    /// May an artifact set be written for this tree? False at the dwelling and
+    /// at a filesystem root, where a corpus has no edge to be bounded by.
+    hosted: bool,
+
+    /// What a caller that holds a handle rather than a path has to assume: the
+    /// old rule, `max_climb` and no dwelling. It is the honest answer there —
+    /// confinement is derived from an absolute path, and a handle is the one
+    /// thing here that cannot portably be turned back into one.
+    pub const unconfined: Confines = .{ .levels = max_climb, .hosted = true };
+};
+
+/// This process's confines, memoized like the anchor it bounds (both are
+/// properties of a working directory that the CLI never changes after startup;
+/// `standAtRoot` republishes all three together).
+pub fn confines() Confines {
+    if (confined.len.load(.acquire) == 0) {
+        while (confined.locked.swap(true, .acquire)) std.atomic.spinLoopHint();
+        defer confined.locked.store(false, .release);
+        if (confined.len.load(.acquire) == 0) {
+            var here: [portal.max_path]u8 = undefined;
+            var there: [portal.max_path]u8 = undefined;
+            const cwd_abs: ?[]const u8 = if (portal.realpath(".", &here)) |p| p else null;
+            const c = confinesOf(cwd_abs, dwelling(&there));
+            confined.hosted.store(c.hosted, .release);
+            confined.len.store(c.levels + 1, .release);
+        }
+    }
+    return .{ .levels = confined.len.load(.acquire) - 1, .hosted = confined.hosted.load(.acquire) };
+}
+
+/// May this tree carry a persisted artifact set at all? The one question every
+/// mutating lifecycle action asks before it writes.
+pub fn hosted() bool {
+    return confines().hosted;
+}
+
+/// `+1` on the published length for the same reason `stationed` carries one: a
+/// legitimate zero (standing one level under the dwelling) must read as a
+/// FILLED memo rather than as a miss re-resolved on every call.
+const confined = struct {
+    var locked: std.atomic.Value(bool) = .init(false);
+    var len: std.atomic.Value(usize) = .init(0);
+    var hosted: std.atomic.Value(bool) = .init(true);
+};
+
+/// The rule itself, pure — so every edge is testable without a home directory
+/// to stand in, and so a sibling package can state the same boundary rather
+/// than re-derive it.
+///
+/// `cwd` is the canonicalized working directory and `dwell` the canonicalized
+/// home, either of which the platform may decline to name. A null `cwd` is the
+/// fail-closed case — a process that cannot say where it is standing gets the
+/// tightest confines, not the loosest — while a null `dwell` only removes the
+/// dwelling rule and leaves the filesystem root still binding.
+pub fn confinesOf(cwd: ?[]const u8, dwell: ?[]const u8) Confines {
+    const here = trimmed(cwd orelse return .{ .levels = 0, .hosted = false });
+    if (here.len == 0) return .{ .levels = 0, .hosted = false }; // the root itself
+    if (dwell) |d| {
+        const home_dir = trimmed(d);
+        // Standing IN the dwelling: no project, and nowhere above worth asking.
+        if (std.mem.eql(u8, here, home_dir)) return .{ .levels = 0, .hosted = false };
+        if (home_dir.len < here.len and
+            std.mem.startsWith(u8, here, home_dir) and here[home_dir.len] == '/')
+            return .{ .levels = depth(here[home_dir.len + 1 ..]) - 1, .hosted = true };
+    }
+    // Outside the dwelling (`/opt/src`, a CI checkout, a mounted volume): the
+    // filesystem root is the only boundary left, and probing it would ask the
+    // same adoption question of every user on the machine at once.
+    return .{ .levels = depth(here[1..]) - 1, .hosted = true };
+}
+
+/// Separator-trimmed, and `""` for a root — so `/` and `/Users/x/` compare the
+/// way a reader expects without a special case at every site.
+fn trimmed(p: []const u8) []const u8 {
+    return std.mem.trimEnd(u8, p, "/");
+}
+
+/// How many components `rel` (already separator-free at both ends) names.
+/// Always at least one, so a caller may subtract the level that would land on
+/// the boundary itself without underflowing.
+fn depth(rel: []const u8) usize {
+    return std.mem.count(u8, rel, "/") + 1;
+}
+
+/// This machine's home directory, canonicalized into `buf`.
+///
+/// `HOME` before the Windows spelling for the same reason the preferences
+/// lookup orders them that way: a Windows shell that sets `HOME` (Git for
+/// Windows, MSYS2) is one where the person's own files genuinely live there.
+/// Canonicalized because the comparison is against a canonicalized working
+/// directory, and on macOS `/tmp`, `/var`, and every home under a mounted
+/// volume resolve through a symlink that a raw string compare would miss.
+fn dwelling(buf: *[portal.max_path]u8) ?[]const u8 {
+    var raw: [portal.max_path]u8 = undefined;
+    const named_home = assay.envSpan("HOME") orelse
+        (if (comptime builtin.os.tag == .windows) assay.envSpan("USERPROFILE") else null) orelse
+        return null;
+    const z = std.fmt.bufPrintZ(&raw, "{s}", .{named_home}) catch return named_home;
+    if (portal.realpath(z, buf)) |resolved| return resolved;
+    return named_home;
+}
+
 /// One uncached resolution into `buf` (at least `min_buf` bytes), climbing from
 /// `at` — what `anchor` memoizes over the working directory. Uncached and
 /// handle-taking because the answer is a property of a directory, not of the
 /// process: a caller holding several checkouts open (an embedder walking a
 /// fleet, a test) has to be able to ask about each of them.
-pub fn seek(at: portal.Handle, buf: []u8) []const u8 {
+///
+/// `ceiling` is how many levels the climb may probe, which `anchor` takes from
+/// `confines` and a handle-holding caller supplies itself. It is a separate
+/// argument rather than a lookup because confinement is a fact about a path,
+/// and a handle is the one thing in this module that cannot be resolved back
+/// to one portably — so the caller that knows where it is standing is the
+/// caller that gets to say.
+pub fn seek(at: portal.Handle, buf: []u8, ceiling: usize) []const u8 {
     std.debug.assert(buf.len >= min_buf);
     var scratch: [max_climb * 3 + 32]u8 = undefined;
     var up: usize = 0;
-    while (up <= max_climb) : (up += 1) {
+    while (up <= @min(ceiling, max_climb)) : (up += 1) {
         const dir = ascent(buf, up);
         if (probe(at, &scratch, dir, default_out_dir) or probe(at, &scratch, dir, ".git")) return named(buf, dir);
     }
@@ -206,10 +354,14 @@ pub fn standAtRoot(io: std.Io) bool {
     const pre = treePrefix();
     if (pre.len == 0) return false;
     std.process.setCurrentPath(io, pre) catch return false;
-    // Both memos were filled against the old directory and every one of their
-    // answers just changed. Republished under the same spinlocks that fill them.
+    // All three memos were filled against the old directory and every one of
+    // their answers just changed. Republished under the same spinlocks that
+    // fill them. `confined` goes too: moving to the tree root moves this
+    // process's distance from the dwelling, and a stale ceiling here would let
+    // a later resolution climb past the boundary it was hired to stop at.
     forget(anchored);
     forget(stationed);
+    forget(confined);
     return true;
 }
 
