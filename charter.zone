@@ -48,7 +48,8 @@ zones {
     fault       fault.zig
 
     // The wire floor: framing primitives (`frame.zig`), the one artifact
-    // digest (`signet.zig`), and the artifact home (`home.zig`). It lives
+    // digest (`signet.zig`), the artifact home (`home.zig`), and what that
+    // home may weigh (`allowance.zig`). It lives
     // under `corpus/index/` on disk because that is what it frames, but it
     // sits HERE on the page because the crest sieve stamps its schema with
     // the same signet the corpus artifacts use — pure byte discipline, no
@@ -210,8 +211,8 @@ keep **/*_fuzz.zig to root.zig
 // two other lists: what is sealable for free right now, and the entry-file
 // bypass count for everything still open. Both are burndown queues, not
 // failures. (`corpus/index/frame/` is deliberately NOT sealed: it is the wire
-// floor, three peer entry points — `frame.zig`, `signet.zig`, `home.zig` —
-// not one deep module.)
+// floor, peer entry points — `frame.zig`, `signet.zig`, `home.zig`,
+// `allowance.zig` — not one deep module.)
 
 // The instrumentation floor's whole point is one import for every call site;
 // span/tally/channel are its internals.
