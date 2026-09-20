@@ -753,16 +753,45 @@ pub const Elision = struct {
 /// time — "it re-read more than it spared" is arithmetic on what this run did,
 /// where "the index is old" would be a guess about whether that mattered.
 pub fn indexVerdict(e: Elision) void {
-    fault.spare("render the index verdict", emitIndexVerdict(e));
+    const reflexed = lapsed(e) and (if (onLapse) |reflex| reflex() else false);
+    fault.spare("render the index verdict", emitIndexVerdict(e, reflexed));
 }
 
-fn emitIndexVerdict(e: Elision) !void {
+/// What a host does when the index stops paying — and the whole reason this
+/// verdict is a value rather than only a sentence.
+///
+/// Printing the inversion was the first answer and it is half of one. It works
+/// in a terminal somebody is reading; it does nothing at all in the two places
+/// this engine now spends most of its life — inside an agent's tool call, and
+/// inside a product running on a user's machine, where there is no one to read
+/// the note and no one who would know what `gist index` is if they did. An
+/// index whose upkeep is a chore nobody was assigned does not stay fresh; it
+/// ages until it costs more than it saves, and then keeps costing that.
+///
+/// So the fact and the reflex are split. This module knows the fact — it is the
+/// only place the elision counts are final — and says nothing about how to act
+/// on it. The host installs the reflex, because re-anchoring means starting a
+/// process, which is a product decision a library has no business making: the
+/// CLI re-anchors in the background, and an embedder that would rather not
+/// have its host process fork simply installs nothing and keeps the note.
+///
+/// Returning `true` means "I have taken care of it", which is what lets the
+/// rendered line stop assigning homework it knows is already being done.
+pub var onLapse: ?*const fn () bool = null;
+
+/// The gate, named once: an index that spared at least as many reads as it
+/// bought back is doing its job, however old its anchor is.
+fn lapsed(e: Elision) bool {
+    return e.stale > e.elided;
+}
+
+fn emitIndexVerdict(e: Elision, reflexed: bool) !void {
     if (!corpus_mod.hintsEnabled()) return;
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const a = arena.allocator();
     var out: std.ArrayList(u8) = .empty;
-    if (try renderVerdict(a, &out, e)) assay.diag("{s}", .{out.items});
+    if (try renderVerdict(a, &out, e, reflexed)) assay.diag("{s}", .{out.items});
 }
 
 /// Pure half — true when it had something to say.
@@ -770,8 +799,14 @@ fn emitIndexVerdict(e: Elision) !void {
 /// The gate is the claim: an index that spared at least as many reads as it
 /// bought back is doing its job, however old its anchor is, and saying anything
 /// there would be noise on a healthy run. Only the inversion earns words.
-fn renderVerdict(a: std.mem.Allocator, out: *std.ArrayList(u8), e: Elision) !bool {
-    if (e.stale <= e.elided) return false;
+///
+/// `reflexed` says the host already started the repair, which changes what the
+/// second line is FOR: an instruction the reader cannot decline to follow is
+/// just noise, so it becomes a report of work in flight instead. The first line
+/// is unchanged either way — the counts are what this run measured, and they
+/// are true whether or not anything is being done about them.
+fn renderVerdict(a: std.mem.Allocator, out: *std.ArrayList(u8), e: Elision, reflexed: bool) !bool {
+    if (!lapsed(e)) return false;
     const total = e.elided + e.stale + e.unindexed + e.candidate;
     var left: usize = 2;
     try line(a, out, &left, .note, try std.fmt.allocPrint(
@@ -779,11 +814,19 @@ fn renderVerdict(a: std.mem.Allocator, out: *std.ArrayList(u8), e: Elision) !boo
         "the index spared {d} of {d} reads and bought back {d} that changed since its anchor{s} — it is re-reading more than it elides",
         .{ e.elided, total, e.stale, try anchorAge(a, e.anchor_age_s) },
     ));
-    try line(a, out, &left, .act, try std.fmt.allocPrint(
-        a,
-        "gist index — re-anchoring lets those {d} files be proven out again",
-        .{e.stale},
-    ));
+    if (reflexed) {
+        try line(a, out, &left, .note, try std.fmt.allocPrint(
+            a,
+            "re-anchoring in the background — the next query proves those {d} files out again",
+            .{e.stale},
+        ));
+    } else {
+        try line(a, out, &left, .act, try std.fmt.allocPrint(
+            a,
+            "gist index — re-anchoring lets those {d} files be proven out again",
+            .{e.stale},
+        ));
+    }
     return true;
 }
 
@@ -1365,8 +1408,12 @@ test "a probe budget keeps a courtesy from becoming the slow part" {
 // ── the index verdict ────────────────────────────────────────────────────
 
 fn verdict(a: std.mem.Allocator, e: Elision) !?[]u8 {
+    return verdictWith(a, e, false);
+}
+
+fn verdictWith(a: std.mem.Allocator, e: Elision, reflexed: bool) !?[]u8 {
     var out: std.ArrayList(u8) = .empty;
-    return if (try renderVerdict(a, &out, e)) try out.toOwnedSlice(a) else null;
+    return if (try renderVerdict(a, &out, e, reflexed)) try out.toOwnedSlice(a) else null;
 }
 
 test "a healthy index says nothing, however old its anchor" {
@@ -1407,6 +1454,29 @@ test "an inverted index reports the counts it proved and names the fix" {
         .candidate = 18_993,
         .anchor_age_s = 316_074,
     })).?);
+}
+
+test "a host that already started the repair is not told to start it" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // Same counts, same first line — what this run measured does not change
+    // because somebody acted on it. The second line does: an `act` the reader
+    // cannot decline is noise, so it becomes a report instead of an errand.
+    try t.expectEqualStrings(
+        \\gist: note: the index spared 812 of 22442 reads and bought back 2431 that changed since its anchor (set 3.7 days ago) — it is re-reading more than it elides
+        \\gist: note: re-anchoring in the background — the next query proves those 2431 files out again
+        \\
+    , (try verdictWith(a, .{
+        .elided = 812,
+        .stale = 2431,
+        .unindexed = 206,
+        .candidate = 18_993,
+        .anchor_age_s = 316_074,
+    }, true)).?);
+    // And a healthy index still says nothing, reflex or no reflex: the gate is
+    // the counts, never the fact that a host is willing to act.
+    try t.expect(try verdictWith(a, .{ .elided = 19_000, .stale = 240 }, true) == null);
 }
 
 test "a brand-new file is unindexed, never stale — the count the verdict rests on" {
