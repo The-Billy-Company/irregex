@@ -7,7 +7,7 @@ directory.
 It lives under `corpus/index/` on disk because that is what it frames, but
 the ward places it on the floor page so the codex kernel and the crest sieve
 can stamp schema with the same signet without importing corpus knowledge.
-Deliberately **not sealed** — three peer entry points, not one deep module.
+Deliberately **not sealed** — peer entry points, not one deep module.
 
 ## Files
 
@@ -19,7 +19,39 @@ Deliberately **not sealed** — three peer entry points, not one deep module.
 - **`quill.zig`** is `writeAtomic`'s streaming twin — a sealed artifact
   emitted region by region, so a corpus-sized blob is never resident.
 - **`home.zig`** owns `outDir()` and `ArtifactPath` — where the trigram
-  index, atlas, shelf, freshness anchor, and daemon socket live.
+  index, atlas, shelf, freshness anchor, and daemon socket live — and
+  `confines()` / `hosted()`, which say whether this directory is a place they
+  may live at all.
+- **`allowance.zig`** owns how many bytes they may weigh once they are there.
+
+## Where Artifacts May Live, And What They May Weigh
+
+Two questions that only became load-bearing when these binaries stopped being
+things a developer installs into a checkout and started shipping inside a
+product that runs in a user's own folders.
+
+**`home.zig` answers where.** The climb that finds a tree used to stop at forty
+levels and nothing else. That is the right rule in a checkout, whose boundary
+is always found long before forty, and the wrong one in a folder nobody ever
+made a repository out of: one stray artifact directory at `$HOME` is then
+adopted by every climb beneath it, and a rootless build standing in `$HOME`
+takes the person's whole machine as its corpus. The climb now stops below the
+dwelling, and a working directory that *is* the dwelling — or a filesystem
+root — is `hosted() == false`: no project here, so nothing to persist for.
+`confinesOf` is the rule, pure, so both edges are tested without a home
+directory to stand in.
+
+**`allowance.zig` answers how much.** Every tier here was individually
+justified and nobody was adding them up; on this repository they reached 635 MB
+against a 300 MB corpus. What it rations is narrow on purpose — the tiers whose
+size *is* the corpus rather than a fraction of it (the content shard, the
+kinship package's shelf and atlases), because those are the ones that turn a
+hidden directory into a second copy of somebody's files. The trigram pair is
+never declined: a build that refuses it has not saved anyone disk, it has
+uninstalled the product.
+
+Both fail the same way everything in this family fails — the accelerator
+declines and the answer does not move.
 
 ## Framing (`frame.zig`)
 

@@ -133,6 +133,9 @@ pub const index = struct {
     pub const signet = @import("corpus/index/frame/signet.zig");
     /// Where artifacts live, and how a foreign tree's are recognized as inert.
     pub const home = @import("corpus/index/frame/home.zig");
+    /// How many bytes of disk those artifacts may occupy — the other resource
+    /// the resident session's memory ration has an answer for.
+    pub const allowance = @import("corpus/index/frame/allowance.zig");
 };
 
 // ── the regex engine ──
@@ -479,6 +482,7 @@ test {
     _ = @import("corpus/index/trigrams/trigram_fuzz.zig"); // T0 loader long fuzz (seeds + mutations; GIST_FUZZ_ITERS)
     _ = @import("corpus/index/frame/frame_test.zig"); // shared artifact-load protocol: tree binding + future-anchor refusal, no leak on reject
     _ = @import("corpus/index/frame/home_test.zig"); // artifact home: one tree one home, worktree edges, adopted placements, the climb ceiling
+    _ = @import("corpus/index/frame/allowance.zig"); // artifact disk allowance: the copy-shaped tiers admitted in priority order
     _ = @import("corpus/index/phantom/treemap_test.zig"); // phantom tree.map layout: round-trip, root resolve, torn blobs fail closed
     _ = @import("corpus/index/content/shard.zig"); // content shard: body round-trip, freshness gate, torn blobs fail closed
     _ = @import("kernel/codex/codex_test.zig"); // SA-IS/RRR/wavelet/FM-index differential vs naive oracles
