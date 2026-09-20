@@ -96,8 +96,8 @@ test "one tree, one home — however deep in it you were standing" {
 
     var a: [home.min_buf]u8 = undefined;
     var b: [home.min_buf]u8 = undefined;
-    const from_deep = home.seek(deep, &a);
-    const from_shallow = home.seek(shallow, &b);
+    const from_deep = home.seek(deep, &a, home.max_climb);
+    const from_shallow = home.seek(shallow, &b, home.max_climb);
 
     // Different ascents, one directory — the whole point of the change.
     var pa: [portal.max_path]u8 = undefined;
@@ -125,7 +125,7 @@ test "a `.git` file is an edge too — a worktree is still a checkout" {
     const at = try fx.at("pkg/sub");
     defer portal.close(at);
     var buf: [home.min_buf]u8 = undefined;
-    try std.testing.expectEqualStrings("../../" ++ dir_name, home.seek(at, &buf));
+    try std.testing.expectEqualStrings("../../" ++ dir_name, home.seek(at, &buf, home.max_climb));
 }
 
 test "an artifact directory already placed is adopted before the boundary" {
@@ -145,7 +145,7 @@ test "an artifact directory already placed is adopted before the boundary" {
     const at = try fx.at("nested/src");
     defer portal.close(at);
     var buf: [home.min_buf]u8 = undefined;
-    const found = home.seek(at, &buf);
+    const found = home.seek(at, &buf, home.max_climb);
     try std.testing.expectEqualStrings("../" ++ dir_name, found);
 
     var pa: [portal.max_path]u8 = undefined;
@@ -175,5 +175,94 @@ test "a boundary past the ceiling is not found, and the walk stays where it stoo
     const at = try fx.at(deep.items);
     defer portal.close(at);
     var buf: [home.min_buf]u8 = undefined;
-    try std.testing.expectEqualStrings(dir_name, home.seek(at, &buf));
+    try std.testing.expectEqualStrings(dir_name, home.seek(at, &buf, home.max_climb));
+}
+
+test "a climb confined to the working directory adopts nothing above it" {
+    const gpa = std.testing.allocator;
+    var threaded = std.Io.Threaded.init(gpa, .{});
+    defer threaded.deinit();
+    var fx = try Fixture.init(gpa, &threaded, "confined");
+    defer fx.deinit();
+
+    // The shape the dwelling rule exists for: a boundary sits one level up, and
+    // a caller standing one level under the dwelling may not look at it. With
+    // the old unconditional `max_climb` this resolved to `../<dir>`; the whole
+    // repair is that it no longer can.
+    try fx.mkdirp(".git");
+    try fx.mkdirp(dir_name);
+    try fx.mkdirp("project");
+
+    const at = try fx.at("project");
+    defer portal.close(at);
+    var buf: [home.min_buf]u8 = undefined;
+    try std.testing.expectEqualStrings("../" ++ dir_name, home.seek(at, &buf, 1));
+    try std.testing.expectEqualStrings(dir_name, home.seek(at, &buf, 0));
+}
+
+test "the dwelling is a floor the climb may not reach" {
+    const t = std.testing;
+    const dwell = "/Users/someone";
+
+    // One level under it: the climb may look at the project it is standing in
+    // and nowhere else, because the only thing above is the person.
+    const one = home.confinesOf("/Users/someone/project", dwell);
+    try t.expectEqual(@as(usize, 0), one.levels);
+    try t.expect(one.hosted);
+
+    // Deeper: every level between here and the dwelling is fair game, and the
+    // level that would land ON it is not. `a/b/c` is three components, so two
+    // ascents (`a/b`, `a`) and not the third.
+    try t.expectEqual(@as(usize, 2), home.confinesOf("/Users/someone/a/b/c", dwell).levels);
+
+    // Trailing separators and the dwelling's own spelling must not change the
+    // arithmetic — a `HOME` with a trailing slash is ordinary.
+    try t.expectEqual(@as(usize, 2), home.confinesOf("/Users/someone/a/b/c/", "/Users/someone/").levels);
+}
+
+test "there is no project at the dwelling, nor at a filesystem root" {
+    const t = std.testing;
+    const dwell = "/Users/someone";
+
+    // Standing in the home directory itself. This is the invocation that used
+    // to take the whole computer as a corpus, and it is now unhosted: search
+    // still answers live, and nothing is written.
+    const at_home = home.confinesOf(dwell, dwell);
+    try t.expectEqual(@as(usize, 0), at_home.levels);
+    try t.expect(!at_home.hosted);
+    try t.expect(!home.confinesOf("/Users/someone/", dwell).hosted);
+
+    // The filesystem root is unhosted whether or not a dwelling is known — a
+    // corpus rooted there has no edge at all.
+    try t.expect(!home.confinesOf("/", dwell).hosted);
+    try t.expect(!home.confinesOf("/", null).hosted);
+
+    // A process that cannot say where it is standing gets the tightest
+    // confines, never the loosest. Fail-closed: an unknowable location must
+    // not be the one that authorizes writing an artifact set.
+    const nowhere = home.confinesOf(null, dwell);
+    try t.expectEqual(@as(usize, 0), nowhere.levels);
+    try t.expect(!nowhere.hosted);
+}
+
+test "a tree outside the dwelling is still a project, bounded by the root" {
+    const t = std.testing;
+    const dwell = "/Users/someone";
+
+    // A CI checkout, a mounted volume, `/opt` — hosted, and the climb stops one
+    // level below `/` rather than asking the root directory the same adoption
+    // question on behalf of every user on the machine.
+    const opt = home.confinesOf("/opt/src/checkout", dwell);
+    try t.expect(opt.hosted);
+    try t.expectEqual(@as(usize, 2), opt.levels);
+    try t.expectEqual(@as(usize, 0), home.confinesOf("/scratch", dwell).levels);
+
+    // A near-miss on the dwelling prefix is not the dwelling. `/Users/someone2`
+    // is a different person, and a string prefix test without the separator
+    // check would have handed them each other's confines.
+    try t.expect(home.confinesOf("/Users/someone2/proj", dwell).hosted);
+    try t.expectEqual(@as(usize, 2), home.confinesOf("/Users/someone2/proj", dwell).levels);
+
+    // No dwelling known at all (a daemon with no `HOME`): the root still binds.
+    try t.expectEqual(@as(usize, 1), home.confinesOf("/a/b", null).levels);
 }
