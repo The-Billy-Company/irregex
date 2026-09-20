@@ -35,6 +35,7 @@ from __future__ import annotations
 import argparse
 import os
 import platform
+import runpy
 import shutil
 import subprocess
 import sys
@@ -167,6 +168,7 @@ def build_library(target: Target, prefix: Path) -> Path:
     command = [
         "zig",
         "build",
+        "-j1",
         "-Doptimize=ReleaseFast",
         "-Dstrip=true",
         f"-Dtarget={target.zig}",
@@ -230,6 +232,9 @@ def main() -> int:
     )
     parser.add_argument("--list", action="store_true", help="print the matrix and exit")
     parser.add_argument("--outdir", default=str(PROJECT / "dist"), help="where wheels land")
+    parser.add_argument(
+        "--native-archives", type=Path, help="retain the same build's static libraries for Rust/Go"
+    )
     args = parser.parse_args()
 
     here = native_target()
@@ -244,12 +249,24 @@ def main() -> int:
     outdir = Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
     failures: list[tuple[str, str]] = []
+    strip = None
+    if args.native_archives:
+        vendor = runpy.run_path(str(ENGINE / "bindings/rust/scripts/vendor_libraries.py"))
+        strip = vendor["find_tool"]("llvm-strip", "LLVM_STRIP")
+        if not strip:
+            raise SystemExit("llvm-strip is required to retain native archives")
 
     for target in chosen_targets(args.only):
         print(f"\n=== {target.name} ({target.zig}) -> {target.tag} ===", flush=True)
         try:
             with tempfile.TemporaryDirectory(prefix=f"irregex-{target.name}-") as staging:
                 library = build_library(target, Path(staging))
+                if args.native_archives:
+                    archive = Path(staging) / "lib/libirgx.a"
+                    destination = args.native_archives.resolve() / target.name / archive.name
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(archive, destination)
+                    subprocess.run([strip, "--strip-debug", str(destination)], check=True)
                 build_wheel(target, library, outdir)
                 # One library, two wheels: the accelerator is a second file
                 # beside the same `.dylib`/`.so`, so the Zig build above is not
