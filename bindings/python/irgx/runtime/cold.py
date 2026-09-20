@@ -106,7 +106,7 @@ def answer(
     """
     out = shell.run_verb(
         tool,
-        [verb, *argv, "--json", *(os.fspath(r) for r in roots)],
+        [verb, "--json", *argv, *(os.fspath(r) for r in roots)],
         cwd=cwd,
         timeout=timeout,
         ok_codes=(0, 1),
