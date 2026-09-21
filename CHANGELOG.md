@@ -5,6 +5,104 @@ All notable changes to the `irregex` kernel (formerly `gist`; the gist CLI is it
 
 <!-- towncrier release notes start -->
 
+## [2.5.0] - 2026-09-21
+
+### Added
+
+- - **The artifact set has a disk allowance, the way a resident session already
+    had a memory ration.** Every persisted tier here was individually justified
+    and nobody was adding them up. Added up on this repository they came to 635 MB
+    against a 300 MB corpus: a 60 MB trigram pair and its 6 MB crest, a 303 MB
+    content shard, and - from the kinship package writing into the same home - an
+    87 MB codex shelf, a 69 MB atlas, and a 40 MB fragment atlas.
+
+    `corpus/index/frame/allowance.zig` states the ceiling and admits tiers against
+    it in priority order. What it rations is deliberately narrow: the tiers whose
+    size *is* the corpus rather than a fraction of it - the content shard here,
+    the shelf and both atlases next door. Those are the ones that turn a hidden
+    directory into a second copy of somebody's files. The trigram pair is never
+    declined, because a build that refuses it has not saved anyone disk, it has
+    uninstalled the product.
+
+    The default is 512 MiB, chosen as the smallest round number that leaves every
+    tier standing on the largest tree we actually index, so the fix costs a
+    developer checkout nothing. `GIST_DISK_MB` moves it, in the same units and
+    with the same spelling as `GIST_MEMORY_MB`, because it is the same question
+    asked of the other resource. Zero is a legitimate answer and means "write no
+    corpus-copy artifact on this machine at all".
+- - **The index verdict is a fact a host can act on, not only a sentence.** The
+    oracle that notices an index has stopped paying for itself - `stale > elided`,
+    arithmetic on what this run did rather than a guess about how old the anchor
+    is - could print the discovery and nothing else. "Run `gist index`" is only an
+    instruction if somebody is reading, and both places this engine now spends its
+    life have nobody reading: an agent's tool call, where stderr is a line in a
+    receipt, and a product on a user's machine, where there is no terminal and no
+    reason the person would know the word.
+
+    `hints.onLapse` is the seam. This module keeps the fact - it is the only place
+    the elision counts are final - and says nothing about how to act on it;
+    re-anchoring means starting a process, which is a product decision a library
+    has no business making. A host that installs nothing keeps exactly the old
+    behavior. A host that installs a reflex and returns `true` gets a line that
+    reports the repair in flight instead of assigning homework it knows is already
+    being done.
+
+### Fixed
+
+- - **A person's home directory is no longer a searchable corpus.** The climb
+    that finds a tree's artifact home (`corpus/index/frame/home.zig`) stopped at
+    forty levels and nothing else, which is the right rule in a checkout and the
+    wrong one everywhere these binaries have since started running - inside a
+    product, on a user's machine, pointed at folders nobody ever made a repository
+    out of. Two things went wrong there and both were one missing boundary. A
+    single stray artifact directory at `$HOME` was then adopted by every climb
+    from anywhere beneath it, so every project on the machine silently shared one
+    home, one index, and one daemon socket. And with no boundary above, a rootless
+    build standing in `$HOME` took the whole tree beneath it as the corpus - mail,
+    photo library, every dependency tree ever installed.
+
+    The climb now stops below the dwelling, and a working directory that *is* the
+    dwelling (or a filesystem root) reports `home.hosted() == false`: there is no
+    project here, so there is nothing to persist an artifact set for. The rule is
+    one pure function, `home.confinesOf`, so both edges are pinned by tests rather
+    than by a home directory the suite would have to stand in.
+
+    Searching is untouched. It never needed an artifact and the live walk answers
+    the same bytes, which is the shape of everything in this family: the
+    accelerator declines, the answer does not move.
+- - **A slow command on stdin is searched instead of quietly discarded.** The
+    first-byte deadline that stopped `gist` hanging on an inherited pipe was set
+    at 2 seconds, which is shorter than plenty of real producers take to say their
+    first word - a cold `git log -p`, a `curl` over a bad link, a container pull.
+    Past it, the pipe's bytes were dropped and the *directory* was searched in
+    their place: exit 0, rows that look right, not one of them from what was piped
+    in, and nothing on the screen to say the corpus had changed underneath you.
+
+    That was the deadline sized against the caller's patience. It is now sized
+    against the worst honest producer - a full minute - which is affordable
+    because it bounds the wait for the FIRST byte and nothing after it, and
+    because a producer that exits ends the wait early by itself (closing the pipe
+    makes it readable, `read` returns 0, and an empty stdin search exits 1 on
+    ripgrep's schedule). So the minute is only ever spent on a pipe with a live
+    writer that is saying nothing, which is the wedge case and the only one.
+
+    Two things keep that wedge from being a hang. After 2 seconds of silence the
+    wait says on stderr that it is still waiting and names the knob that ends it
+    (`GIST_STDIN_WAIT_MS`, in milliseconds, `0` meaning "search the tree now") -
+    the case `zig build test` hits, since it hands its own test binaries a command
+    pipe that is open forever and silent between commands. And the one pipe whose
+    silence is *provably* permanent is no longer waited for at all: if this process
+    holds the write end (`exec 9<>fifo`), no other writer's exit can ever produce
+    the EOF a reader is waiting for, and `F_GETFL` says so outright instead of a
+    clock guessing at it.
+
+    A socket on fd 0 keeps its short window unchanged. It is what a sandboxed
+    harness wires up as a control channel, it is never how a shell spells a
+    pipeline, so nothing anyone typed is judged by it.
+- We keep a quiet pipe or socket as stdin, however long its producer takes. Empty
+  streams finish at EOF; an explicit first-byte timeout or a failed read returns
+  an error instead of searching the working directory or partial input.
+
 ## [2.4.2] - 2026-09-05
 
 We published this patch with the operator-authorized expedited release path. Native artifacts were rebuilt; CI and tests were skipped for this release.
