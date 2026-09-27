@@ -33,6 +33,7 @@ _ESCAPES = {
 }
 
 _DIGITS = "0123456789"
+_OCTAL = "01234567"
 
 
 class Template:
@@ -131,7 +132,9 @@ def compile_template(template: str | bytes, pattern: Pattern) -> Template:
             index = close + 1
             if not name:
                 raise error("missing group name in '\\g<>' in the replacement template")
-            if name.isdigit():
+            # ASCII decimals only, `re`'s rule: `isdigit` alone would read
+            # `\g<١>` or `\g<²>` as a group number.
+            if name.isdecimal() and name.isascii():
                 use(int(name), f"\\g<{name}>")
             else:
                 number = pattern.groupindex.get(name)
@@ -139,16 +142,38 @@ def compile_template(template: str | bytes, pattern: Pattern) -> Template:
                     raise error(f"unknown group name {name!r} in the replacement template")
                 use(number, f"\\g<{name}>")
             continue
-        if char in _DIGITS:
+        if char == "0":
+            # `\0` and up to two more octal digits is a character, never a group.
             digits = char
-            # Two digits at most, `re`'s rule, so `\1` followed by a literal 0
-            # is spelled `\g<1>0` in both libraries.
-            if char != "0" and index < size and text[index] in _DIGITS:
+            while len(digits) < 3 and index < size and text[index] in _OCTAL:
                 digits += text[index]
                 index += 1
-            if digits[0] == "0":
-                literal.append(chr(int(digits, 8)))
-                continue
+            literal.append(chr(int(digits, 8)))
+            continue
+        if char in _DIGITS:
+            # A group of one or two digits - so `\1` then a literal 0 is spelled
+            # `\g<1>0` in both libraries - unless three octal digits follow the
+            # backslash, which `re` reads as a character (`\101` is `A`).
+            digits = char
+            if index < size and text[index] in _DIGITS:
+                digits += text[index]
+                index += 1
+                if (
+                    char in _OCTAL
+                    and digits[1] in _OCTAL
+                    and index < size
+                    and text[index] in _OCTAL
+                ):
+                    digits += text[index]
+                    index += 1
+                    value = int(digits, 8)
+                    if value > 0o377:
+                        raise error(
+                            f"octal escape value \\{digits} outside of range 0-0o377 "
+                            f"in the replacement template"
+                        )
+                    literal.append(chr(value))
+                    continue
             use(int(digits), f"\\{digits}")
             continue
         if char in _ESCAPES:
@@ -156,7 +181,9 @@ def compile_template(template: str | bytes, pattern: Pattern) -> Template:
             continue
         if char.isascii() and char.isalpha():
             raise error(f"bad escape '\\{char}' in the replacement template")
-        literal.append(char)
+        # Any other escaped character stays as written, backslash and all -
+        # `re`'s reading, so `\ ` or `\é` in a ported template means the same.
+        literal.append("\\" + char)
 
     flush()
     return Template(parts, as_bytes)

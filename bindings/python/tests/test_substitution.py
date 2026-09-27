@@ -9,6 +9,8 @@ that domain is codepoints and the engine's is bytes.
 
 from __future__ import annotations
 
+import re
+
 import irgx
 import pytest
 
@@ -66,6 +68,31 @@ def test_a_template_naming_a_group_that_does_not_exist_is_refused_up_front():
         irgx.sub(r"(a)", r"\g<nope>", "zzz")
     with pytest.raises(irgx.error):
         irgx.sub(r"(a)", "\\", "zzz")
+
+
+def test_octal_escapes_read_the_way_re_reads_them():
+    # `\0` takes up to two more octal digits; three octal digits after the
+    # backslash are a character, never a group; past 0o377 is refused. Each of
+    # these used to render as NUL-then-digits or as a group plus a digit.
+    groups = "(a)(b)(c)(d)(e)(f)(g)(h)(i)(j)(k)(l)"
+    subject = "abcdefghijkl"
+    for template in (r"\07", r"\012", r"\0123", r"\101", r"\123", r"\377", r"\128"):
+        assert irgx.sub(groups, template, subject) == re.sub(groups, template, subject)
+    assert irgx.sub(rb"x", rb"\101\377", b"x") == b"A\xff"
+    with pytest.raises(irgx.error):
+        irgx.sub(r"x", r"\400", "x")
+
+
+def test_an_unknown_non_letter_escape_keeps_its_backslash():
+    assert irgx.sub(r"x", r"\ ", "x") == re.sub(r"x", r"\ ", "x") == "\\ "
+    assert irgx.sub(r"x", "\\é", "x") == "\\é"
+
+
+def test_a_group_number_is_ascii_decimal_only():
+    # `isdigit` would read these as group 1; `re` refuses them.
+    for template in (r"\g<١>", r"\g<²>"):
+        with pytest.raises(irgx.error):
+            irgx.sub(r"(a)", template, "a")
 
 
 def test_a_callable_replacement_receives_the_match():
