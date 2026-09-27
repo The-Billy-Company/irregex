@@ -94,7 +94,9 @@ def _find_all(regex: int, subject: Any, start: int, limit: int) -> list[tuple[in
         # written, where `find_all_in` walks on to owe the text's total.
         cap = min(cap, limit)
         out = (Span * cap)()
-        status = lib.irgx_find_upto_in(regex, data, size, start, size, out, cap, ctypes.byref(written))
+        status = lib.irgx_find_upto_in(
+            regex, data, size, start, size, out, cap, ctypes.byref(written)
+        )
         if status < 0:
             return int(status)
         return [(out[i].start, out[i].end) for i in range(written.value)]
