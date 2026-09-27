@@ -20,10 +20,11 @@
  * buffer sizing, the short-window retry and the result construction in C where
  * they cost nothing. Everything above it - Match, findall, split, sub, the
  * lexer plane, the set plane - stays Python and gets faster for free, because
- * every one of them funnels through these twelve verbs. Two of them - `texts`
- * and `group_texts` - go further than deleting the marshaling: they collapse
- * a whole findall, which used to be one crossing per match plus one for the
- * walk, into a single crossing that hands back the finished list.
+ * every one of them funnels through these sixteen verbs. Six of them - `texts`
+ * and `group_texts` for findall, `spliced` and `rendered` for sub, `pieces` and
+ * `group_pieces` for split - go further than deleting the marshaling: they
+ * collapse a whole answer, which used to be one crossing per match plus one for
+ * the walk, into a single crossing that hands back the finished result.
  *
  * WHAT IT IS NOT
  *
@@ -120,6 +121,7 @@ typedef int32_t (*fn_occurrences)(void *, const uint8_t *, size_t, irgx_occurren
 struct engine_table {
   fn_is_match_in is_match_in;
   fn_find_all_in find_all_in;
+  fn_find_all_in find_upto_in; /* same signature; `*written` is what was written */
   fn_find_first_in find_first_in;
   fn_captures captures;
   fn_present slate_is_match;
@@ -147,13 +149,15 @@ static const struct {
     {"find_all", "irgx_find_all_in", offsetof(struct engine_table, find_all_in)},
     {"find_first", "irgx_find_first_in", offsetof(struct engine_table, find_first_in)},
     {"captures", "irgx_captures", offsetof(struct engine_table, captures)},
-    /* The two whole-answer verbs compose symbols already rowed above, so they
-     * bind against the one that distinguishes them; `group_texts` checks its
-     * second pointer itself, since a build that has either has both. */
+    /* The whole-answer verbs compose symbols already rowed above, so they bind
+     * against the one that distinguishes them; the group-reading ones check
+     * their second pointer themselves, since a build that has either has both. */
     {"texts", "irgx_find_all_in", offsetof(struct engine_table, find_all_in)},
     {"group_texts", "irgx_captures", offsetof(struct engine_table, captures)},
     {"spliced", "irgx_find_all_in", offsetof(struct engine_table, find_all_in)},
     {"pieces", "irgx_find_all_in", offsetof(struct engine_table, find_all_in)},
+    {"rendered", "irgx_captures", offsetof(struct engine_table, captures)},
+    {"group_pieces", "irgx_captures", offsetof(struct engine_table, captures)},
     {"slate_is_match", "irgx_slate_is_match", offsetof(struct engine_table, slate_is_match)},
     {"slate_which", "irgx_slate_which", offsetof(struct engine_table, slate_which)},
     {"munch_scan", "irgx_munch_scan", offsetof(struct engine_table, munch_scan)},
@@ -165,6 +169,16 @@ static const struct {
 #define VERBS (sizeof(table) / sizeof(table[0]))
 
 static char is_bound[VERBS];
+
+/* Symbols the verbs above use when present but no verb is named after, so
+ * `bound()` never reports them: an engine without one answers every verb the
+ * way it always did, just without the shortcut. */
+static const struct {
+  const char *symbol;
+  size_t slot;
+} helpers[] = {
+    {"irgx_find_upto_in", offsetof(struct engine_table, find_upto_in)},
+};
 
 /* ── the subject ───────────────────────────────────────────────────────── */
 
@@ -389,7 +403,11 @@ static int32_t walk_spans(size_t rx, const subject *s, size_t from, size_t limit
   size_t written = 0;
   int32_t status;
   if (widen(cap, sizeof(irgx_span), inln, heap, (void **)out) < 0) return WALK_PYERR;
-  IRGX_RUN(*s, status, engine.find_all_in((void *)rx, s->bytes, n, from, n, *out, cap, &written));
+  /* A limit is a prefix, and the engine can stop walking once it is written -
+   * where `find_all_in` walks on to owe the text's total. `*written` from the
+   * capped verb is what it wrote, so the retry below never fires on it. */
+  fn_find_all_in walk = limit && engine.find_upto_in ? engine.find_upto_in : engine.find_all_in;
+  IRGX_RUN(*s, status, walk((void *)rx, s->bytes, n, from, n, *out, cap, &written));
   if (status >= 0 && written > cap && limit == 0) {
     cap = written;
     if (widen(cap, sizeof(irgx_span), inln, heap, (void **)out) < 0) return WALK_PYERR;
@@ -397,6 +415,23 @@ static int32_t walk_spans(size_t rx, const subject *s, size_t from, size_t limit
              engine.find_all_in((void *)rx, s->bytes, n, from, n, *out, cap, &written));
   }
   *rows = written < cap ? written : cap;
+  return status;
+}
+
+/* `walk_spans` for a verb that thins before it applies `limit`: the capped walk
+ * when that is safe, the whole walk when it is not. Thinning drops an empty
+ * match inside a multi-byte character, so a decoded prefix can come up short
+ * of `limit` while the text still holds more - only then is the whole walk
+ * paid for, which a pattern with no empty matches never triggers. */
+static int mid_character(const subject *s, int64_t at, int decode);
+
+static int32_t walk_kept(size_t rx, const subject *s, size_t limit, int decode, irgx_span *inln,
+                         void **heap, irgx_span **out, size_t *rows) {
+  int32_t status = walk_spans(rx, s, 0, limit, inln, heap, out, rows);
+  if (status < 0 || !limit || !decode || *rows < limit) return status;
+  for (size_t i = 0; i < *rows; i++)
+    if (mid_character(s, (*out)[i].start, decode))
+      return walk_spans(rx, s, 0, 0, inln, heap, out, rows);
   return status;
 }
 
@@ -718,7 +753,7 @@ static PyObject *verb_spliced(PyObject *self, IRGX_ARGS) {
   irgx_span *out = NULL;
   void *heap = NULL;
   size_t rows = 0;
-  int32_t status = walk_spans(rx, &s, 0, 0, inln, &heap, &out, &rows);
+  int32_t status = walk_kept(rx, &s, limit, decode, inln, &heap, &out, &rows);
   if (status == WALK_PYERR || status < 0) {
     subject_done(&s);
     subject_done(&blade);
@@ -818,7 +853,7 @@ static PyObject *verb_pieces(PyObject *self, IRGX_ARGS) {
   void *heap = NULL;
   size_t rows = 0;
   PyObject *list = NULL;
-  int32_t status = walk_spans(rx, &s, 0, 0, inln, &heap, &out, &rows);
+  int32_t status = walk_kept(rx, &s, limit, decode, inln, &heap, &out, &rows);
   if (status == WALK_PYERR || status < 0) {
     subject_done(&s);
     PyMem_Free(heap);
@@ -854,6 +889,287 @@ fail:
   PyMem_Free(heap);
   Py_XDECREF(list);
   return NULL;
+}
+
+/* ── group-reading whole answers ───────────────────────────────────────── */
+
+/* The capture pass for the kept span `span`, into `*caps` (grown as needed).
+ * 1 with `*written` set, a negative engine status to hand back, 0 when the two
+ * arms disagree about the match, or WALK_PYERR with an exception set. Shared by
+ * the two verbs below so they refuse, retry and cross-check identically - the
+ * same discipline `group_texts` spells inline. */
+static int32_t captured(size_t rx, const subject *s, irgx_span span, irgx_span *inln, void **heap,
+                        irgx_span **caps, size_t *gcap, size_t *written) {
+  int32_t st;
+  for (;;) {
+    st = engine.captures((void *)rx, s->bytes, (size_t)s->len, (size_t)span.start, *caps, *gcap,
+                         written);
+    if (st != 1 || *written <= *gcap) break;
+    *gcap = *written;
+    if (widen(*gcap, sizeof(irgx_span), inln, heap, (void **)caps) < 0) return WALK_PYERR;
+  }
+  if (st < 0) return st;
+  return st == 1 && (*caps)[0].start == span.start && (*caps)[0].end == span.end ? 1 : 0;
+}
+
+/* A byte run that grows by doubling - the answer `rendered` cannot size ahead,
+ * because a group reference is as wide as whatever that match captured. */
+typedef struct {
+  char *buf;
+  size_t len, cap;
+} run;
+
+static int run_put(run *r, const void *bytes, size_t n) {
+  if (n == 0) return 0; /* memcpy into a not-yet-allocated run is UB even at 0 bytes */
+  if (n > r->cap - r->len) {
+    size_t want = r->cap ? r->cap : 64;
+    while (want - r->len < n) {
+      if (want > SIZE_MAX / 2) {
+        PyErr_NoMemory();
+        return -1;
+      }
+      want *= 2;
+    }
+    char *grown = PyMem_Realloc(r->buf, want);
+    if (grown == NULL) {
+      PyErr_NoMemory();
+      return -1;
+    }
+    r->buf = grown;
+    r->cap = want;
+  }
+  memcpy(r->buf + r->len, bytes, n);
+  r->len += n;
+  return 0;
+}
+
+/* One part of a compiled replacement: a literal run, or a group number. */
+typedef struct {
+  const char *bytes;
+  Py_ssize_t len;
+  Py_ssize_t group; /* -1 for a literal */
+} part;
+
+/* `sub` with a template that reads groups, as one crossing: the walk, the
+ * thinning, a capture pass per match (skipped when the template reads only
+ * `\g<0>`), every rendered replacement and the join - where the Python walk
+ * built a `Match` and crossed once more per match.
+ *
+ * `parts` is the template already lowered to the engine's domain: a tuple of
+ * bytes (a literal, UTF-8 for a `str` caller) and ints (a group the pattern is
+ * known to declare). A group the match did not enter renders empty, `re`'s
+ * rule. Answers `(text, made)`, the status of a refusal, or - when the capture
+ * pass contradicts the walk - the disagreeing span as `(start, end)`, which a
+ * caller tells from the answer by its first element being an int. */
+static PyObject *verb_rendered(PyObject *self, IRGX_ARGS) {
+  (void)self;
+  if (arity(IRGX_NARGS, 6) < 0) return NULL;
+  size_t rx, limit, groups;
+  if (as_size(IRGX_ARG(0), &rx) < 0 || as_size(IRGX_ARG(3), &limit) < 0 ||
+      as_size(IRGX_ARG(4), &groups) < 0)
+    return NULL;
+  int decode = PyObject_IsTrue(IRGX_ARG(5));
+  if (decode < 0) return NULL;
+  PyObject *spec = IRGX_ARG(2);
+  if (!PyTuple_Check(spec)) {
+    PyErr_SetString(PyExc_TypeError, "rendered() takes the template as a tuple of parts");
+    return NULL;
+  }
+  if (engine.find_all_in == NULL) {
+    PyErr_SetString(PyExc_RuntimeError, "rendered needs irgx_find_all_in bound");
+    return NULL;
+  }
+
+  /* Lower the parts once per call; the tuple keeps every bytes alive for it. */
+  Py_ssize_t nparts = PyTuple_Size(spec);
+  part *parts = PyMem_Malloc((size_t)(nparts ? nparts : 1) * sizeof(part));
+  if (parts == NULL) return PyErr_NoMemory();
+  int reads_groups = 0;
+  for (Py_ssize_t p = 0; p < nparts; p++) {
+    PyObject *item = PyTuple_GetItem(spec, p);
+    if (PyBytes_Check(item)) {
+      char *at = NULL;
+      if (PyBytes_AsStringAndSize(item, &at, &parts[p].len) < 0) goto bad_parts;
+      parts[p].bytes = at;
+      parts[p].group = -1;
+      continue;
+    }
+    Py_ssize_t g = PyLong_AsSsize_t(item);
+    if (g == -1 && PyErr_Occurred()) goto bad_parts;
+    if (g < 0 || (size_t)g > groups) {
+      PyErr_SetString(PyExc_ValueError, "a template part names a group the pattern lacks");
+      goto bad_parts;
+    }
+    parts[p].group = g;
+    reads_groups |= g > 0;
+  }
+
+  subject s;
+  if (subject_of(IRGX_ARG(1), &s) < 0) goto bad_parts;
+  irgx_span inln[INLINE_ROWS];
+  irgx_span *out = NULL;
+  void *heap = NULL;
+  irgx_span caps_inln[INLINE_ROWS];
+  irgx_span *caps = NULL;
+  void *caps_heap = NULL;
+  run r = {NULL, 0, 0};
+  PyObject *answer = NULL;
+  size_t rows = 0, gcap = groups + 1;
+  int32_t status = walk_kept(rx, &s, limit, decode, inln, &heap, &out, &rows);
+  if (status == WALK_PYERR) goto done;
+  if (status < 0) {
+    answer = refused(status);
+    goto done;
+  }
+  if (widen(gcap, sizeof(irgx_span), caps_inln, &caps_heap, (void **)&caps) < 0) goto done;
+
+  size_t cut = 0, made = 0;
+  for (size_t i = 0; i < rows && TAKEN(i, limit, made); i++) {
+    if (mid_character(&s, out[i].start, decode)) continue;
+    size_t written = 1;
+    if (reads_groups) {
+      int32_t st = captured(rx, &s, out[i], caps_inln, &caps_heap, &caps, &gcap, &written);
+      if (st == WALK_PYERR) goto done;
+      if (st < 0) {
+        answer = refused(st);
+        goto done;
+      }
+      if (st == 0) {
+        answer = pair(out[i].start, out[i].end);
+        goto done;
+      }
+    }
+    if (run_put(&r, s.bytes + cut, gap_at(out[i].start, cut)) < 0) goto done;
+    for (Py_ssize_t p = 0; p < nparts; p++) {
+      const part *pt = &parts[p];
+      int rc = 0;
+      if (pt->group < 0) {
+        rc = run_put(&r, pt->bytes, (size_t)pt->len);
+      } else if (pt->group == 0) {
+        rc = run_put(&r, s.bytes + out[i].start, (size_t)(out[i].end - out[i].start));
+      } else if ((size_t)pt->group < written && caps[pt->group].start >= 0 &&
+                 caps[pt->group].end >= 0) {
+        irgx_span g = caps[pt->group];
+        rc = run_put(&r, s.bytes + g.start, (size_t)(g.end - g.start));
+      }
+      if (rc < 0) goto done;
+    }
+    cut = (size_t)out[i].end;
+    made++;
+  }
+  if (run_put(&r, s.bytes + cut, (size_t)s.len - cut) < 0) goto done;
+
+  PyObject *text = decode ? PyUnicode_FromStringAndSize(r.buf, (Py_ssize_t)r.len)
+                          : PyBytes_FromStringAndSize(r.buf, (Py_ssize_t)r.len);
+  PyObject *tally = text == NULL ? NULL : PyLong_FromSize_t(made);
+  answer = tally == NULL ? NULL : PyTuple_New(2);
+  if (answer == NULL) {
+    Py_XDECREF(text);
+    Py_XDECREF(tally);
+    goto done;
+  }
+  PyTuple_SetItem(answer, 0, text); /* steals */
+  PyTuple_SetItem(answer, 1, tally);
+
+done:
+  subject_done(&s);
+  PyMem_Free(heap);
+  PyMem_Free(caps_heap);
+  PyMem_Free(r.buf);
+  PyMem_Free(parts);
+  return answer;
+
+bad_parts:
+  PyMem_Free(parts);
+  return NULL;
+}
+
+/* `split` with declared groups, as one crossing: each piece between matches,
+ * then that match's group texts (None for a group it did not enter, `re`'s
+ * rule), then the tail. Same thinning and cap as `pieces`; the same refusal and
+ * disagreement answers as `group_texts`. */
+static PyObject *verb_group_pieces(PyObject *self, IRGX_ARGS) {
+  (void)self;
+  if (arity(IRGX_NARGS, 5) < 0) return NULL;
+  size_t rx, limit, groups;
+  if (as_size(IRGX_ARG(0), &rx) < 0 || as_size(IRGX_ARG(2), &limit) < 0 ||
+      as_size(IRGX_ARG(3), &groups) < 0)
+    return NULL;
+  int decode = PyObject_IsTrue(IRGX_ARG(4));
+  if (decode < 0) return NULL;
+  if (engine.find_all_in == NULL) {
+    PyErr_SetString(PyExc_RuntimeError, "group_pieces needs irgx_find_all_in bound");
+    return NULL;
+  }
+  subject s;
+  if (subject_of(IRGX_ARG(1), &s) < 0) return NULL;
+
+  irgx_span inln[INLINE_ROWS];
+  irgx_span *out = NULL;
+  void *heap = NULL;
+  irgx_span caps_inln[INLINE_ROWS];
+  irgx_span *caps = NULL;
+  void *caps_heap = NULL;
+  PyObject *list = NULL, *answer = NULL;
+  size_t rows = 0, gcap = groups + 1;
+  int32_t status = walk_kept(rx, &s, limit, decode, inln, &heap, &out, &rows);
+  if (status == WALK_PYERR) goto done;
+  if (status < 0) {
+    answer = refused(status);
+    goto done;
+  }
+  if (widen(gcap, sizeof(irgx_span), caps_inln, &caps_heap, (void **)&caps) < 0) goto done;
+  if ((list = PyList_New(0)) == NULL) goto done;
+
+  size_t cut = 0, taken = 0;
+  for (size_t i = 0; i < rows && TAKEN(i, limit, taken); i++) {
+    if (mid_character(&s, out[i].start, decode)) continue;
+    size_t written = 0;
+    int32_t st = captured(rx, &s, out[i], caps_inln, &caps_heap, &caps, &gcap, &written);
+    if (st == WALK_PYERR) goto done;
+    if (st < 0) {
+      answer = refused(st);
+      goto done;
+    }
+    if (st == 0) {
+      answer = pair(out[i].start, out[i].end);
+      goto done;
+    }
+    PyObject *piece =
+        text_of(&s, (int64_t)cut, (int64_t)(cut + gap_at(out[i].start, cut)), decode);
+    if (piece == NULL || PyList_Append(list, piece) < 0) {
+      Py_XDECREF(piece);
+      goto done;
+    }
+    Py_DECREF(piece);
+    for (size_t g = 1; g <= groups; g++) {
+      PyObject *one = (g >= written || caps[g].start < 0 || caps[g].end < 0)
+                          ? (Py_INCREF(Py_None), Py_None)
+                          : text_of(&s, caps[g].start, caps[g].end, decode);
+      if (one == NULL || PyList_Append(list, one) < 0) {
+        Py_XDECREF(one);
+        goto done;
+      }
+      Py_DECREF(one);
+    }
+    cut = (size_t)out[i].end;
+    taken++;
+  }
+  PyObject *tail = text_of(&s, (int64_t)cut, s.len, decode);
+  if (tail == NULL || PyList_Append(list, tail) < 0) {
+    Py_XDECREF(tail);
+    goto done;
+  }
+  Py_DECREF(tail);
+  answer = list;
+  list = NULL;
+
+done:
+  subject_done(&s);
+  PyMem_Free(heap);
+  PyMem_Free(caps_heap);
+  Py_XDECREF(list);
+  return answer;
 }
 
 /* ── Match, as a C type ────────────────────────────────────────────────── */
@@ -1791,6 +2107,14 @@ static PyObject *verb_bind(PyObject *self, PyObject *mapping) {
     memcpy((char *)&engine + table[i].slot, &fn, sizeof fn);
     is_bound[i] = 1;
   }
+  for (size_t i = 0; i < sizeof(helpers) / sizeof(helpers[0]); i++) {
+    PyObject *found = PyDict_GetItemString(mapping, helpers[i].symbol);
+    if (found == NULL) continue;
+    size_t address;
+    if (as_size(found, &address) < 0) return NULL;
+    void *fn = (void *)address;
+    memcpy((char *)&engine + helpers[i].slot, &fn, sizeof fn);
+  }
   Py_RETURN_NONE;
 }
 
@@ -1831,6 +2155,10 @@ static PyMethodDef methods[] = {
      "spliced(regex, text, sep, count, decode) -> (text, made) | status"},
     {"pieces", IRGX_VERB(verb_pieces), IRGX_CALL,
      "pieces(regex, text, maxsplit, decode) -> [text] | status"},
+    {"rendered", IRGX_VERB(verb_rendered), IRGX_CALL,
+     "rendered(regex, text, parts, count, groups, decode) -> (text, made) | span | status"},
+    {"group_pieces", IRGX_VERB(verb_group_pieces), IRGX_CALL,
+     "group_pieces(regex, text, maxsplit, groups, decode) -> [text | None] | span | status"},
     {"slate_is_match", IRGX_VERB(verb_slate_is_match), IRGX_CALL, "slate_is_match(slate, text) -> status"},
     {"slate_which", IRGX_VERB(verb_slate_which), IRGX_CALL, "slate_which(slate, text, cap) -> [i] | status"},
     {"munch_scan", IRGX_VERB(verb_munch_scan), IRGX_CALL,

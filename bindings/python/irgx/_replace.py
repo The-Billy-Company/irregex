@@ -39,11 +39,19 @@ _OCTAL = "01234567"
 class Template:
     """A parsed replacement: literal chunks interleaved with group numbers."""
 
-    __slots__ = ("_as_bytes", "_constant", "_parts")
+    __slots__ = ("_as_bytes", "_constant", "_parts", "_wire")
 
     def __init__(self, parts: list[str | int], as_bytes: bool) -> None:
         self._parts = parts
         self._as_bytes = as_bytes
+        # The parts in the engine's own domain - literal bytes (UTF-8 for a `str`
+        # template) and group numbers - which is the shape the one-crossing
+        # `rendered` verb takes, so a group-reading substitution never builds a
+        # `Match`. Lowered once here, like everything else about a template.
+        self._wire = tuple(
+            part if type(part) is int else part.encode("latin-1" if as_bytes else "utf-8")  # type: ignore[union-attr]
+            for part in parts
+        )
         # A template with no group reference renders the same text for every
         # match, so the whole substitution is the subject cut at each span with
         # one constant between the pieces - an answer the engine's own spans
@@ -64,6 +72,11 @@ class Template:
     def constant(self) -> Any:
         """The text every match renders to, or ``None`` when a group decides it."""
         return self._constant
+
+    @property
+    def wire(self) -> tuple[bytes | int, ...]:
+        """The parts lowered to the engine's domain: literal bytes and group numbers."""
+        return self._wire
 
     def render(self, match: Match) -> Any:
         pieces = []

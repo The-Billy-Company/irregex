@@ -14,7 +14,7 @@
 use std::borrow::Cow;
 
 use crate::error::Error;
-use crate::matches::Captures;
+use crate::matches::{Captures, Matches};
 use crate::pattern::{Regex, expect};
 
 impl Regex {
@@ -64,7 +64,12 @@ impl Regex {
         limit: usize,
         mut rep: R,
     ) -> Result<Cow<'t, str>, Error> {
-        let found = self.try_find_iter(text)?;
+        // A limit is a prefix, so no match past it is walked.
+        let found = if limit == 0 {
+            self.try_find_iter(text)?
+        } else {
+            Matches::new(text, self.find_upto(text, limit)?)
+        };
         if found.len() == 0 {
             return Ok(Cow::Borrowed(text));
         }

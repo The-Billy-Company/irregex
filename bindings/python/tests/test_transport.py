@@ -1,6 +1,6 @@
 """The two transports are one answer, asked two ways.
 
-:mod:`irgx._engine` routes fourteen per-text verbs to a C extension when one is
+:mod:`irgx._engine` routes sixteen per-text verbs to a C extension when one is
 present and to ctypes when it is not, which is the only optimization in this
 package that could change what a caller sees. A binding that got this wrong
 would not crash; it would answer *slightly* differently on one platform, in one
@@ -213,6 +213,49 @@ def test_pieces_agrees_on_the_tail_the_cap_and_a_miss(regex):
     assert agree("pieces", regex, "nothing here", 0, True) == ["nothing here"]
     assert agree("pieces", regex, b"x a@b y", 0, False) == [b"x ", b" y"]
     assert len(agree("pieces", regex, "a@b " * 5_000, 0, True)) == 5_001
+
+
+def test_rendered_agrees_on_groups_absence_the_cap_and_the_tally(regex):
+    # The native verb renders into one growing buffer where ctypes joins slices,
+    # and reads groups off a capture pass per match: the swap, an absent group
+    # rendering empty (`re`'s rule), the cap, and the tally are four separate
+    # agreements about that assembly.
+    swap = (2, b"=", 1)
+    assert agree("rendered", regex, "a@b c@d", swap, 0, 2, True) == ("b=a d=c", 2)
+    assert agree("rendered", regex, "a@ c@d", swap, 0, 2, True) == ("=a d=c", 2)
+    assert agree("rendered", regex, "a@b c@d", swap, 1, 2, True) == ("b=a c@d", 1)
+    assert agree("rendered", regex, "nothing here", swap, 0, 2, True) == ("nothing here", 0)
+    assert agree("rendered", regex, b"a@b", swap, 0, 2, False) == (b"b=a", 1)
+    # Group 0 alone needs no capture pass; the answer must not notice.
+    assert agree("rendered", regex, "a@b", (b"<", 0, b">"), 0, 2, True) == ("<a@b>", 1)
+    # Past the first window, and past the output's first growth many times over.
+    text, made = agree("rendered", regex, "a@b " * 5_000, swap, 0, 2, True)
+    assert made == 5_000 and text == "b=a " * 5_000
+
+
+def test_rendered_and_group_pieces_agree_on_wide_text():
+    # Literal parts arrive as UTF-8 and the groups are cut on character
+    # boundaries, so the one decode at the end is the caller's string - and an
+    # empty match on a continuation byte is dropped before anything is rendered.
+    compiled = Compiled(rb"(\w+)=(\w+)", 0)
+    rx = compiled.ptr.value
+    text = "clé=vâl ñ=δ"
+    assert agree("rendered", rx, text, (2, "→".encode(), 1), 0, 2, True) == ("vâl→clé δ→ñ", 2)
+    assert agree("group_pieces", rx, text, 0, 2, True) == ["", "clé", "vâl", " ", "ñ", "δ", ""]
+    empty = Compiled(rb"(x*)", 0)
+    erx = empty.ptr.value
+    assert agree("rendered", erx, "é", (b"-", 1), 0, 1, True) == ("-é-", 2)
+    assert agree("group_pieces", erx, "é", 0, 1, True) == ["", "", "é", "", ""]
+
+
+def test_group_pieces_agrees_on_absence_the_cap_and_a_miss(regex):
+    # Group texts ride between the pieces, and an absent group is None there -
+    # `re.split`'s reading, which is not `sub`'s empty string.
+    assert agree("group_pieces", regex, "a@b c@", 0, 2, True) == ["", "a", "b", " ", "c", None, ""]
+    assert agree("group_pieces", regex, "a@b c@d", 1, 2, True) == ["", "a", "b", " c@d"]
+    assert agree("group_pieces", regex, "nothing here", 0, 2, True) == ["nothing here"]
+    assert agree("group_pieces", regex, b"x a@b", 0, 2, False) == [b"x ", b"a", b"b", b""]
+    assert len(agree("group_pieces", regex, "a@b " * 5_000, 0, 2, True)) == 3 * 5_000 + 1
 
 
 # ── the slate and needle planes ───────────────────────────────────────────

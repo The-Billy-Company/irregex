@@ -455,6 +455,20 @@ int32_t irgx_find_all_in(irgx_regex *re, const uint8_t *text, size_t len,
                          size_t from, size_t to, irgx_span *out, size_t cap,
                          size_t *written);
 
+/* The first `cap` matches in the window [from, to], and no more walked:
+ * out[0..n] with n in *written. IRGX_MATCH when n > 0, IRGX_OK when the window
+ * holds none, negative on error; cap 0 is refused (irgx_find_all_in with cap 0
+ * is already the count query).
+ *
+ * *written is how many were WRITTEN, never a total. That is the difference from
+ * irgx_find_all_in, whose count obliges it to walk the whole window: a host's
+ * sub(count=n), split(maxsplit=n) or FindAll(b, n) wants a prefix and nothing
+ * after it. n < cap means the window ran out; n == cap says nothing about what
+ * follows. Same region, assertion and mode contract as irgx_find_all_in. */
+int32_t irgx_find_upto_in(irgx_regex *re, const uint8_t *text, size_t len,
+                          size_t from, size_t to, irgx_span *out, size_t cap,
+                          size_t *written);
+
 /* irgx_find_first over the window [from, to]. The match must fit inside the
  * region; every assertion still reads text[0..len]. */
 int32_t irgx_find_first_in(irgx_regex *re, const uint8_t *text, size_t len,

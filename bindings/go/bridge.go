@@ -114,6 +114,14 @@ static int32_t go_find_all_in(irgx_regex *re, const uint8_t *text, size_t len,
   return st;
 }
 
+static int32_t go_find_upto_in(irgx_regex *re, const uint8_t *text, size_t len,
+                               size_t from, size_t to, irgx_span *out,
+                               size_t cap, size_t *written, irgx_fault *f) {
+  int32_t st = irgx_find_upto_in(re, text, len, from, to, out, cap, written);
+  capture(st, f);
+  return st;
+}
+
 static int32_t go_munch_compile(const irgx_munch_pattern *pats, size_t count,
                                 uint32_t flags, irgx_munch **out,
                                 irgx_fault *f) {
@@ -415,7 +423,37 @@ func (re *Regexp) findSpans(h *handle, text string, limit int) [][2]int {
 	if re.nullable {
 		return truncate(goSequence(re.rawSpans(h, text, -1), text), limit)
 	}
+	if limit > 0 {
+		return re.uptoSpans(h, text, wholeOf(text), limit)
+	}
 	return re.rawSpans(h, text, limit)
+}
+
+// uptoSpans is the first limit spans of win, and nothing after them walked.
+//
+// find_all's *written owes the caller the count the whole region holds, so a
+// limited fetch through it still walked to the end; FindAll(b, 3) paid for every
+// match in b. irgx_find_upto_in is the same walk stopped at the limit, and its
+// *written is what it wrote. Only for a non-nullable pattern, whose sequence the
+// thinning cannot shorten - a nullable one needs the whole walk before the limit
+// can apply, which findSpans already pays.
+func (re *Regexp) uptoSpans(h *handle, text string, win region, limit int) [][2]int {
+	buf := make([]C.irgx_span, window(limit, win.to-win.from+1, limit))
+	var (
+		written C.size_t
+		fault   C.irgx_fault
+	)
+	st := C.go_find_upto_in(h.ptr, bytePtr(text), C.size_t(len(text)),
+		C.size_t(win.from), C.size_t(win.to), &buf[0], C.size_t(len(buf)), &written, &fault)
+	runtime.KeepAlive(text)
+	if st < 0 {
+		panic(newError(st, &fault, "search with "+strconv.Quote(re.expr)))
+	}
+	out := make([][2]int, int(written))
+	for i := range out {
+		out[i] = [2]int{int(buf[i].start), int(buf[i].end)}
+	}
+	return out
 }
 
 // region is the window a single find is asked over. The zero value is not a
@@ -818,16 +856,15 @@ func (re *Regexp) spansIn(text string, from, to, limit int) [][2]int {
 	}
 	// A nullable pattern's sequence can be changed by the thinning, so it pays
 	// for the whole answer before the limit applies - findSpans's reasoning,
-	// which holds here for the same reason.
-	want := limit
+	// which holds here for the same reason. Anything else walks only as far as
+	// the limit reaches.
 	if re.nullable {
-		want = -1
+		return truncate(goSequence(re.fillSpansIn(h, text, from, to, -1), text), limit)
 	}
-	spans := re.fillSpansIn(h, text, from, to, want)
-	if re.nullable {
-		return truncate(goSequence(spans, text), limit)
+	if limit > 0 {
+		return re.uptoSpans(h, text, region{from, to}, limit)
 	}
-	return spans
+	return re.fillSpansIn(h, text, from, to, limit)
 }
 
 // fillSpansIn runs the windowed find_all, growing once if the first window came

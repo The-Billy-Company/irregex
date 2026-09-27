@@ -285,6 +285,22 @@ unsafe extern "C" {
         to: usize,
         out: *mut Span,
     ) -> i32;
+    /// The first `cap` matches, and then stop.
+    ///
+    /// `irgx_find_first_in` generalized from one span to `cap`: `*written` is
+    /// how many were WRITTEN, never the total `irgx_find_all_in` owes, so the
+    /// walk ends at the cap. What `replacen` and `splitn` want; `cap` 0 is
+    /// refused.
+    pub fn irgx_find_upto_in(
+        re: *mut Regex,
+        text: *const u8,
+        len: usize,
+        from: usize,
+        to: usize,
+        out: *mut Span,
+        cap: usize,
+        written: *mut usize,
+    ) -> i32;
     pub fn irgx_captures(
         re: *mut Regex,
         text: *const u8,

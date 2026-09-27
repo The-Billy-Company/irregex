@@ -499,6 +499,55 @@ pub fn findAllIn(re: *Regex, text: ?[*]const u8, len: usize, from: usize, to: us
     return gather(re, askOf(text, len, from, to, 0, null), out, cap, written);
 }
 
+/// The first `cap` matches in the window, and not one more walked: `out[0..n]`
+/// with `n` in `*written`, `.match` when `n > 0`, `.ok` when the window holds
+/// none, negative on error.
+///
+/// `findAllIn`'s `*written` is the count the text HAS, which is the right
+/// contract for "give me everything" and the wrong one for `sub(count=2)`,
+/// `split(maxsplit=1)` or `FindAll(b, 3)`: those want the first few and nothing
+/// after, and a verb that owes a total must walk to the end to report it. So
+/// this is `leftmost` generalized from one span to `cap` - the same walk, modes
+/// and refusals, stopped where the host's own limit stops. `*written` here is
+/// therefore how many were WRITTEN, never a total: `n < cap` means the window
+/// ran out, and `n == cap` says nothing about what comes after.
+///
+/// `cap = 0` asks for nothing and is refused rather than answered, since
+/// `findAllIn` with `cap = 0` is already the count query. An earliest walk that
+/// halts undecided before the cap is refused exactly as `gather` refuses it.
+pub fn findUptoIn(re: *Regex, text: ?[*]const u8, len: usize, from: usize, to: usize, out: ?[*]Span, cap: usize, written: ?*usize) Status {
+    contract.beginCall();
+    return upto(re, askOf(text, len, from, to, 0, null), out, cap, written);
+}
+
+fn upto(re: *Regex, want: ?Ask, out: ?[*]Span, cap: usize, written: ?*usize) Status {
+    // Zeroed before the request is judged, so a host that passed a `written`
+    // slot always finds a number in it - `gather`'s order.
+    const count = written orelse return .invalid;
+    count.* = 0;
+    const slots = out orelse return .invalid;
+    if (cap == 0) return .invalid;
+    const req = want orelse return .invalid;
+    if (req.stopped()) return .stale;
+
+    var cur = re.inner.walk(req.win, .{ .anchored = req.anchored, .earliest = req.earliest }) catch |e|
+        return contract.report(.{ .code = faultOf(e) });
+    defer cur.deinit();
+    var n: usize = 0;
+    while (n < cap) : (n += 1) {
+        const sp = cur.next() orelse {
+            if (cur.undecided) return contract.report(.{ .code = error.Unsupported });
+            break;
+        };
+        // A stop discards the partial answer, as `gather` does: a prefix the
+        // host did not know was cut short is the one answer it cannot act on.
+        if (req.stopped()) return .stale;
+        slots[n] = .{ .start = @intCast(sp.start), .end = @intCast(sp.end) };
+    }
+    count.* = n;
+    return if (n > 0) .match else .ok;
+}
+
 /// The leftmost match in `text[0..len]`, and nothing else: `out[0]` on a hit,
 /// `.ok` on none. The whole-text spelling of `findFirstIn`.
 pub fn findFirst(re: *Regex, text: ?[*]const u8, len: usize, out: ?*Span) Status {
@@ -803,6 +852,52 @@ test "find_first is find_all's first span, for every pattern and every text" {
             }
         }
     }
+}
+
+test "find_upto is find_all's first cap spans, for every pattern, text and cap" {
+    // The verb's whole claim, checked the way `find_first`'s is: the same walk
+    // stopped at `cap`, so the prefix it writes is exactly the prefix `find_all`
+    // would have written, `*written` is that prefix's length rather than a total,
+    // and a window the text cannot fill reports the whole sequence.
+    for ([_][]const u8{ "a+", "x*", "^a", "c$", "wa(l|t)rus", "b|cd", "\\bbc", "z" }) |pat| {
+        const re = try open(pat, 0);
+        defer free(re);
+        for ([_][]const u8{ "aa b aaa", "abc", "a walrus here", "a walnut here", "\nabc", "abc\n", "" }) |text| {
+            const all = try spansOf(re, text);
+            defer t.allocator.free(all);
+            for (1..all.len + 3) |cap| {
+                var buf: [16]Span = undefined;
+                var n: usize = 99;
+                const st = findUptoIn(re, text.ptr, text.len, 0, text.len, &buf, cap, &n);
+                const want = @min(cap, all.len);
+                try t.expectEqual(want, n);
+                try t.expectEqual(if (want == 0) Status.ok else Status.match, st);
+                try t.expectEqualSlices(Span, all[0..want], buf[0..n]);
+            }
+        }
+    }
+}
+
+test "find_upto takes the window, and refuses what find_all refuses" {
+    const a = try open("a", 0);
+    defer free(a);
+    var buf: [4]Span = undefined;
+    var n: usize = 0;
+    // The region bounds which matches are reachable, exactly as for `find_all_in`.
+    try t.expectEqual(Status.match, findUptoIn(a, "aBaBa", 5, 1, 5, &buf, 4, &n));
+    try t.expectEqualSlices(Span, &.{ .{ .start = 2, .end = 3 }, .{ .start = 4, .end = 5 } }, buf[0..n]);
+    try t.expectEqual(Status.ok, findUptoIn(a, "aBaBa", 5, 2, 2, &buf, 4, &n));
+    try t.expectEqual(@as(usize, 0), n);
+    // Caller errors: no slot, no buffer, a zero cap (`find_all_in` with cap 0 is
+    // the count query; this verb has no such question), and a bad region. The
+    // count is zeroed before any of them is judged.
+    n = 7;
+    try t.expectEqual(Status.invalid, findUptoIn(a, "aa", 2, 0, 2, &buf, 0, &n));
+    try t.expectEqual(@as(usize, 0), n);
+    try t.expectEqual(Status.invalid, findUptoIn(a, "aa", 2, 0, 2, null, 4, &n));
+    try t.expectEqual(Status.invalid, findUptoIn(a, "aa", 2, 0, 2, &buf, 4, null));
+    try t.expectEqual(Status.invalid, findUptoIn(a, "abc", 3, 2, 1, &buf, 4, &n));
+    try t.expectEqual(Status.invalid, findUptoIn(a, null, 3, 0, 3, &buf, 4, &n));
 }
 
 test "find_first refuses the caller errors find_all refuses, in the same words" {

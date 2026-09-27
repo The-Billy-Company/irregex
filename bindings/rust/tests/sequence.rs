@@ -64,6 +64,35 @@ fn nullable_patterns_yield_the_same_sequence_as_the_regex_crate() {
     }
 }
 
+/// `replacen` and `splitn` walk only as far as their limit reaches, and the
+/// thinning then runs over that prefix alone. That is exact because the
+/// thinning is causal - but only if the capped walk falls back to the whole one
+/// when thinning left it short, which is what every nullable pattern over these
+/// texts exercises, at every limit.
+#[test]
+fn a_limited_replace_or_split_is_the_regex_crates_answer_at_every_limit() {
+    for pattern in NULLABLE.iter().chain(&["a", "b|c", r"\w"]) {
+        let (mine, reference) = (
+            Regex::new(pattern).unwrap(),
+            regex::Regex::new(pattern).unwrap(),
+        );
+        for text in TEXTS {
+            for limit in 0..8 {
+                assert_eq!(
+                    mine.replacen(text, limit, "-"),
+                    reference.replacen(text, limit, "-"),
+                    "replacen {pattern:?} over {text:?} at {limit}"
+                );
+                assert_eq!(
+                    mine.splitn(text, limit).collect::<Vec<_>>(),
+                    reference.splitn(text, limit).collect::<Vec<_>>(),
+                    "splitn {pattern:?} over {text:?} at {limit}"
+                );
+            }
+        }
+    }
+}
+
 /// The rule that removes a span: an empty match starting exactly where the
 /// previous match ended is not reported. `a*` over `"abc"` matches `a` at 0..1,
 /// and the empty match at 1 abuts it, so neither crate shows it.

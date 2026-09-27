@@ -506,7 +506,41 @@ impl Regex {
     /// On an engine fault, or if a match boundary is not a UTF-8 boundary.
     #[must_use]
     pub fn splitn<'t>(&self, text: &'t str, limit: usize) -> Split<'t> {
-        Split::new(text, self.find_iter(text), limit)
+        // At most `limit - 1` matches cut anything, so no more are walked.
+        let cuts = match limit.saturating_sub(1) {
+            0 => Vec::new(),
+            need => expect(self.find_upto(text, need)),
+        };
+        Split::new(text, Matches::new(text, cuts), limit)
+    }
+
+    /// The first `limit` matches in the crate's sequence, walking no further
+    /// than they reach - where `find_all` walks the whole text to learn a count.
+    ///
+    /// The thinning is causal (whether a span survives depends only on the
+    /// spans before it), so a capped prefix thins to the full sequence's prefix
+    /// whenever it still holds `limit` spans afterwards. Only when thinning left
+    /// it short of a window the walk filled is the whole walk paid for, which a
+    /// pattern with no empty matches never triggers.
+    pub(crate) fn find_upto(&self, text: &str, limit: usize) -> Result<Vec<(usize, usize)>, Error> {
+        let mut out = vec![sys::Span::default(); limit.min(text.len() + 1)];
+        let written = self.upto(text, &mut out)?;
+        out.truncate(written.min(out.len()));
+        let walked = out.len();
+        let raw = out
+            .into_iter()
+            .map(|span| self.set(span))
+            .collect::<Result<_, _>>()?;
+        let spans = crate_sequence(raw, text);
+        if spans.len() < limit && walked == limit {
+            let mut all = self.find_all(text)?;
+            all.truncate(limit);
+            return Ok(all);
+        }
+        spans
+            .into_iter()
+            .map(|span| self.boundaries(text, span))
+            .collect()
     }
 
     // ── the two engine calls ─────────────────────────────────────────────
@@ -534,6 +568,38 @@ impl Regex {
                 body.as_ptr(),
                 body.len(),
                 from,
+                body.len(),
+                out.as_mut_ptr(),
+                out.len(),
+                &raw mut written,
+            )
+        };
+        if status < 0 {
+            return Err(fault(status, |status, detail| Error::Search {
+                status,
+                detail,
+            }));
+        }
+        Ok(written)
+    }
+
+    /// One capped walk into `out`, returning how many spans were WRITTEN - the
+    /// sibling of [`Regex::scan`] whose count is not a total, so the engine
+    /// stops at `out.len()`.
+    fn upto(&self, text: &str, out: &mut [sys::Span]) -> Result<usize, Error> {
+        let lease = self.pool.lease()?;
+        let body = text.as_bytes();
+        let mut written: usize = 0;
+        // SAFETY: as for `scan` - an exclusive lease, live slices passed with
+        // their own lengths (`out` is never empty: the one caller sizes it at
+        // `min(limit, len + 1)` with both at least one), a live `written`, and
+        // the inert bound `to == len`.
+        let status = unsafe {
+            sys::irgx_find_upto_in(
+                lease.raw(),
+                body.as_ptr(),
+                body.len(),
+                0,
                 body.len(),
                 out.as_mut_ptr(),
                 out.len(),

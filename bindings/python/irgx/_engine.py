@@ -1,6 +1,6 @@
 """One interface over two transports: the native accelerator, or ctypes.
 
-Fourteen verbs in this ABI are asked once per *text* - a search, a scan, a
+Sixteen verbs in this ABI are asked once per *text* - a search, a scan, a
 classification - and the rest are asked once per *program*: open a handle,
 describe it, compile a slate, free it. The cost of crossing the FFI boundary is
 the same either way, and it only matters for the first group:
@@ -9,7 +9,7 @@ the same either way, and it only matters for the first group:
     irgx_find_all_in   engine  66.1 ns   through ctypes  585 ns
 
 That is a linear-time engine spending eight times longer being *called* than
-running, and no amount of work on the Zig side can touch it. So the fourteen hot
+running, and no amount of work on the Zig side can touch it. So the sixteen hot
 verbs get a second transport - :mod:`irgx._accel`, a stable-ABI C extension that
 takes the caller's own ``str`` and hands back finished Python objects - and this
 module is where the package picks one and stops caring which.
@@ -88,9 +88,16 @@ def _find_all(regex: int, subject: Any, start: int, limit: int) -> list[tuple[in
     data = _raw(subject)
     size = len(data)
     cap = min(size + 1, _FIRST_WINDOW)
-    if limit:
-        cap = min(cap, limit)
     written = _SIZE()
+    if limit:
+        # A limit is a prefix, and `find_upto_in` stops walking once it is
+        # written, where `find_all_in` walks on to owe the text's total.
+        cap = min(cap, limit)
+        out = (Span * cap)()
+        status = lib.irgx_find_upto_in(regex, data, size, start, size, out, cap, ctypes.byref(written))
+        if status < 0:
+            return int(status)
+        return [(out[i].start, out[i].end) for i in range(written.value)]
     out = (Span * cap)()
     status = lib.irgx_find_all_in(regex, data, size, start, size, out, cap, ctypes.byref(written))
     if status < 0:
@@ -99,7 +106,7 @@ def _find_all(regex: int, subject: Any, start: int, limit: int) -> list[tuple[in
     # cannot find a different number, so there is no growth schedule - one
     # retry, sized at the count, and never a third. A caller who asked for a
     # limit has everything they asked for already.
-    if written.value > cap and not limit:
+    if written.value > cap:
         cap = written.value
         out = (Span * cap)()
         status = lib.irgx_find_all_in(
@@ -187,6 +194,26 @@ def _group_texts(
     return out
 
 
+def _kept(regex: int, data: bytes, limit: int, decode: bool) -> list[tuple[int, int]] | int:
+    """The thinned spans a verb capped at ``limit`` needs, walking no further than it must.
+
+    The capped walk when that is safe, the whole walk when it is not: thinning
+    drops an empty match inside a multi-byte character, so a decoded prefix can
+    come up short of ``limit`` while the text still holds more - only then is
+    the whole walk paid for. The native ``walk_kept`` decides it the same way.
+    """
+    found = _find_all(regex, data, 0, limit)
+    if type(found) is int:
+        return found
+    kept = _thinned(found, data, decode)
+    if limit and len(found) == limit and len(kept) < limit:
+        found = _find_all(regex, data, 0, 0)
+        if type(found) is int:
+            return found
+        kept = _thinned(found, data, decode)
+    return kept
+
+
 def _thinned(found: list[tuple[int, int]], data: bytes, decode: bool) -> list[tuple[int, int]]:
     """``found`` with the spans no caller has a position for dropped.
 
@@ -212,13 +239,13 @@ def _spliced(regex: int, subject: Any, sep: Any, count: int, decode: bool) -> tu
     decoding each piece because every cut sits on a character boundary.
     """
     data = _raw(subject)
-    found = _find_all(regex, data, 0, 0)
+    found = _kept(regex, data, count, decode)
     if type(found) is int:
         return found
     blade = sep.encode("utf-8") if decode else sep
     out: list[bytes] = []
     cut = made = 0
-    for at, end in _thinned(found, data, decode):
+    for at, end in found:
         if count and made >= count:
             break
         out.append(data[cut:at])
@@ -233,18 +260,99 @@ def _spliced(regex: int, subject: Any, sep: Any, count: int, decode: bool) -> tu
 def _pieces(regex: int, subject: Any, maxsplit: int, decode: bool) -> list[Any] | int:
     """``split`` with no groups: every piece between the matches, in one verb."""
     data = _raw(subject)
-    found = _find_all(regex, data, 0, 0)
+    found = _kept(regex, data, maxsplit, decode)
     if type(found) is int:
         return found
     out: list[bytes] = []
     cut = 0
-    for taken, (at, end) in enumerate(_thinned(found, data, decode)):
+    for taken, (at, end) in enumerate(found):
         if maxsplit and taken >= maxsplit:
             break
         out.append(data[cut:at])
         cut = end
     out.append(data[cut:])
     return [piece.decode("utf-8") for piece in out] if decode else out
+
+
+def _grouped(
+    regex: int, data: bytes, span: tuple[int, int], groups: int
+) -> list[tuple[int, int] | None] | tuple[int, int] | int:
+    """The capture pass for one walked span, cross-checked against it.
+
+    The spans, a negative status to hand back, or ``span`` itself when the two
+    arms disagree about the match - the same three answers the native verbs
+    give, decided the same way.
+    """
+    caps = _captures(regex, data, span[0], groups)
+    if type(caps) is int:
+        return caps if caps < 0 else span
+    return caps if caps[0] == span else span
+
+
+def _rendered(
+    regex: int, subject: Any, parts: tuple[bytes | int, ...], count: int, groups: int, decode: bool
+) -> tuple[Any, int] | int:
+    """``sub`` with a template that reads groups: ``(text, made)``, a status, or a span.
+
+    ``parts`` is the template lowered to the engine's domain - literal bytes and
+    group numbers. A group the match did not enter renders empty, ``re``'s rule;
+    the capture pass is skipped when only ``\\g<0>`` is read. A span answer means
+    the capture pass contradicted the walk at that match.
+    """
+    data = _raw(subject)
+    found = _kept(regex, data, count, decode)
+    if type(found) is int:
+        return found
+    reads_groups = any(type(p) is int and p > 0 for p in parts)
+    out: list[bytes] = []
+    cut = made = 0
+    for at, end in found:
+        if count and made >= count:
+            break
+        caps: Any = None
+        if reads_groups:
+            caps = _grouped(regex, data, (at, end), groups)
+            if type(caps) is not list:
+                return caps
+        out.append(data[cut:at])
+        for p in parts:
+            if type(p) is bytes:
+                out.append(p)
+            elif p == 0:
+                out.append(data[at:end])
+            elif (span := caps[p] if p < len(caps) else None) is not None:
+                out.append(data[span[0] : span[1]])
+        cut = end
+        made += 1
+    out.append(data[cut:])
+    whole = b"".join(out)
+    return (whole.decode("utf-8") if decode else whole), made
+
+
+def _group_pieces(
+    regex: int, subject: Any, maxsplit: int, groups: int, decode: bool
+) -> list[Any] | tuple[int, int] | int:
+    """``split`` with declared groups: pieces interleaved with each match's group texts."""
+    data = _raw(subject)
+    found = _kept(regex, data, maxsplit, decode)
+    if type(found) is int:
+        return found
+    out: list[Any] = []
+    cut = 0
+    for taken, span in enumerate(found):
+        if maxsplit and taken >= maxsplit:
+            break
+        caps = _grouped(regex, data, span, groups)
+        if type(caps) is not list:
+            return caps
+        out.append(data[cut : span[0]])
+        out.extend(None if g is None else data[g[0] : g[1]] for g in caps[1 : groups + 1])
+        out.extend(None for _ in range(groups + 1 - len(caps)))
+        cut = span[1]
+    out.append(data[cut:])
+    if not decode:
+        return out
+    return [None if piece is None else piece.decode("utf-8") for piece in out]
 
 
 def _captures(regex: int, subject: Any, at: int, groups: int) -> list[tuple[int, int] | None] | int:
@@ -373,6 +481,8 @@ _FALLBACK: dict[str, Callable[..., Any]] = {
     "group_texts": _group_texts,
     "spliced": _spliced,
     "pieces": _pieces,
+    "rendered": _rendered,
+    "group_pieces": _group_pieces,
     "slate_is_match": _slate_is_match,
     "slate_which": _slate_which,
     "munch_scan": _munch_scan,

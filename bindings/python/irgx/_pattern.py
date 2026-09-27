@@ -31,8 +31,12 @@ from ._anchored import full as anchored_full
 from ._engine import native, transport
 from ._match import Match, TextView, matches, over, viewing, wrong_subject
 from ._pool import Compiled, Pool
-from ._replace import compile_template
+from ._replace import Template, compile_template
 from ._shape import TEXTUAL
+
+#: How many parsed templates one pattern keeps. A program substitutes with a
+#: handful; a bound is only there so a template built per call cannot grow it.
+_TEMPLATES = 64
 
 # The three verbs this plane crosses the FFI with once per text, each resolved
 # to the native transport where there is one and to the ctypes implementation
@@ -44,8 +48,26 @@ from ._shape import TEXTUAL
 # :meth:`Pattern.is_match` for the measurement that routes it elsewhere. It stays
 # bound in the seam, and under parity test, because it is the right verb again
 # the day its kernel stops declining on a character class.
-_find_first_in, _find_all_in, _captures, _texts, _group_texts, _spliced, _pieces = transport(
-    "find_first", "find_all", "captures", "texts", "group_texts", "spliced", "pieces"
+(
+    _find_first_in,
+    _find_all_in,
+    _captures,
+    _texts,
+    _group_texts,
+    _spliced,
+    _pieces,
+    _rendered,
+    _group_pieces,
+) = transport(
+    "find_first",
+    "find_all",
+    "captures",
+    "texts",
+    "group_texts",
+    "spliced",
+    "pieces",
+    "rendered",
+    "group_pieces",
 )
 
 
@@ -106,6 +128,7 @@ class Pattern:
         "_pool",
         "_slate",
         "_source",
+        "_templates",
     )
 
     def __init__(self, pattern: str | bytes, flags: int) -> None:
@@ -125,6 +148,12 @@ class Pattern:
         # the determinization is the expensive half of `irgx._anchored`, and a
         # program that never calls `fullmatch` should never pay for it.
         self._slate: Any = None
+        # Parsed replacement templates, keyed by the template text: parsing one
+        # costs several times what the one-crossing substitution it feeds does,
+        # and a program calls `sub` with the same template over and over - `re`
+        # caches the same thing for the same reason. Per pattern, because a
+        # template is resolved against this pattern's groups.
+        self._templates: dict[str | bytes, Template] = {}
 
         # Compiling here rather than on first use means a bad pattern raises
         # from `compile()`, where the caller can see which pattern it was.
@@ -600,35 +629,49 @@ class Pattern:
             return []
         if type(found) is tuple:
             # The walk found a match the capture pass will not reproduce, so
-            # there are no groups to report for it. Refusing beats inventing
-            # them — and it refuses as `error`, which is `re.error`, because a
-            # caller who swapped `re` for this keeps its handlers. `findall` is
-            # the verb that used to raise a bare `RuntimeError` past them.
-            raise error(
-                f"internal disagreement in the engine: find_all reported {found} "
-                f"for {self._source!r}, but captures answered differently from the "
-                f"same offset",
-                self._source,
-            )
+            # there are no groups to report for it. Refusing beats inventing them.
+            raise self._disagree(found)
         return found
+
+    def _disagree(self, span: tuple[int, int]) -> error:
+        """The refusal for a match the capture pass would not reproduce.
+
+        Raised as `error`, which is `re.error`, so a caller who swapped `re` for
+        this keeps its handlers.
+        """
+        return error(
+            f"internal disagreement in the engine: find_all reported {span} "
+            f"for {self._source!r}, but captures answered differently from the "
+            f"same offset",
+            self._source,
+        )
 
     def split(self, text: str | bytes, maxsplit: int = 0) -> list[Any]:
         """``text`` split around each match; declared groups are kept in the result."""
-        # No groups to interleave means the answer is only the text between the
-        # matches, which the `pieces` verb cuts in the engine's own domain — so
-        # the whole split is one crossing with no `Match`, no `TextView` and no
-        # character index anywhere in it. A pattern that declares groups, or one
-        # whose capture arm refused, keeps the walk below.
-        if not self._groups and (type(text) is bytes if self._is_bytes else type(text) is str):
+        # One crossing either way, cut in the engine's own domain with no `Match`,
+        # no `TextView` and no character index anywhere in it: `pieces` when there
+        # are no groups to interleave, `group_pieces` when there are. Anything
+        # other than an exact type in the pattern's domain keeps the walk below
+        # for `_view`'s diagnostics - and a pattern whose capture arm refused
+        # (`_groups is None`) has no groups to report, so it splits like one
+        # that declares none.
+        if type(text) is bytes if self._is_bytes else type(text) is str:
             pool = self._pool
             try:
                 handle = pool._local.address
             except AttributeError:
                 handle = pool.handle()
-            found = _pieces(handle, text, maxsplit, not self._is_bytes)
+            decode = not self._is_bytes
+            found = (
+                _group_pieces(handle, text, maxsplit, self._groups, decode)
+                if self._groups
+                else _pieces(handle, text, maxsplit, decode)
+            )
             if type(found) is int:
                 check(found, f"could not search with {self._source!r}", self._source)
                 return [text]
+            if type(found) is tuple:
+                raise self._disagree(found)
             return found
         view = self._view(text)
         pieces: list[Any] = []
@@ -643,6 +686,25 @@ class Pattern:
         pieces.append(view.slice(cut, len(view.original)))
         return pieces
 
+    def _template(self, repl: str | bytes) -> Template:
+        """``repl`` parsed against this pattern, from the cache when it has been before.
+
+        Only an exact ``str``/``bytes`` is kept: anything else may be mutable
+        (a ``bytearray``) or unhashable, and is parsed per call. A bad template
+        raises and is never stored. Full means cleared rather than evicted in
+        order, which no concurrent caller can race.
+        """
+        if type(repl) is not str and type(repl) is not bytes:
+            return compile_template(repl, self)
+        cache = self._templates
+        template = cache.get(repl)
+        if template is None:
+            template = compile_template(repl, self)
+            if len(cache) >= _TEMPLATES:
+                cache.clear()
+            cache[repl] = template
+        return template
+
     def sub(
         self, repl: str | bytes | Callable[[Match], Any], text: str | bytes, count: int = 0
     ) -> Any:
@@ -656,25 +718,31 @@ class Pattern:
         if callable(repl):
             render = repl
         else:
-            template = compile_template(repl, self)
-            # A template with no group reference renders the same text for every
-            # match, so the whole substitution is the engine's spans, the
-            # subject's own bytes and one constant between them — `spliced` does
-            # all of it in one crossing. A template that reads a group needs a
-            # `Match` per match and keeps the walk below.
-            constant = template.constant
-            if constant is not None and (
-                type(text) is bytes if self._is_bytes else type(text) is str
-            ):
+            template = self._template(repl)
+            # One crossing for any template: a constant one is the engine's spans,
+            # the subject's own bytes and one text between them (`spliced`); one
+            # that reads a group lowers to literal bytes and group numbers and is
+            # rendered per match on the far side (`rendered`), so no `Match` is
+            # ever built. Anything other than an exact type in the pattern's
+            # domain keeps the walk below for `_view`'s diagnostics.
+            if type(text) is bytes if self._is_bytes else type(text) is str:
                 pool = self._pool
                 try:
                     handle = pool._local.address
                 except AttributeError:
                     handle = pool.handle()
-                found = _spliced(handle, text, constant, count, not self._is_bytes)
+                decode = not self._is_bytes
+                constant = template.constant
+                found = (
+                    _spliced(handle, text, constant, count, decode)
+                    if constant is not None
+                    else _rendered(handle, text, template.wire, count, self._groups or 0, decode)
+                )
                 if type(found) is int:
                     check(found, f"could not search with {self._source!r}", self._source)
                     return text, 0
+                if type(found[0]) is int:
+                    raise self._disagree(found)
                 return found
             render = template.render
         view = self._view(text)

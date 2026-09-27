@@ -390,11 +390,11 @@ top, because ctypes converts every argument, allocates a buffer object per call,
 and builds the result out of Python objects one at a time. On a megabyte that is
 invisible. On a 17-byte string it is most of the wall clock.
 
-So the twelve verbs that get asked *once per text* - `search`, `finditer`,
+So the sixteen verbs that get asked *once per text* - `search`, `finditer`,
 `is_match`, the group spans behind `Match`, the set / needle / munch scans, and
-the two whole-answer verbs behind `findall`, which walk the matches, run the
-capture pass and build the finished list of texts in a single crossing - run
-through a small C extension when one is installed:
+the whole-answer verbs behind `findall`, `sub` and `split`, which walk the
+matches, run the capture pass and build the finished answer in a single
+crossing - run through a small C extension when one is installed:
 
 ```python
 from irgx import _engine

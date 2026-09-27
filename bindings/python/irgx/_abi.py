@@ -18,7 +18,7 @@ that can ``dlopen`` the bundled library.
 
 What it is not is cheap per call - ctypes converts every argument through its
 own type machinery on every crossing, which costs more than the engine does on a
-short subject. So the twelve verbs that are asked once per *text* have an optional
+short subject. So the sixteen verbs that are asked once per *text* have an optional
 second transport, :mod:`irgx._accel`, and :func:`declare` hands it the pointers
 it has just resolved. That keeps one library loaded, one ABI check and one
 ``IRGX_LIB``; :mod:`irgx._engine` is where the choice between the two is made,
@@ -345,6 +345,11 @@ _SIGNATURES = (
         "irgx_find_first_in",
         ctypes.c_int32,
         (_VOID, _U8P, _SIZE, _SIZE, _SIZE, ctypes.POINTER(Span)),
+    ),
+    (
+        "irgx_find_upto_in",
+        ctypes.c_int32,
+        (_VOID, _U8P, _SIZE, _SIZE, _SIZE, ctypes.POINTER(Span), _SIZE, ctypes.POINTER(_SIZE)),
     ),
     (
         "irgx_captures",

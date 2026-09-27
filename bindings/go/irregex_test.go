@@ -462,6 +462,23 @@ func TestWordSearchResumesPastARejectedSpan(t *testing.T) {
 	}
 }
 
+// A limit is a prefix, so a pattern with no empty matches walks only as far as
+// the limit reaches - and a nullable one still pays for the whole walk before
+// the thinning, since goSequence can shorten it. Both answers are stdlib's at
+// every limit, over the texts where an empty match lands inside a rune.
+func TestALimitIsStdlibsPrefixAtEveryLimit(t *testing.T) {
+	for _, pattern := range []string{`a`, `b|c`, `[a-z]`, `x*`, `a*`, `é*`, `(a)?`} {
+		mine, theirs := irgx.MustCompile(pattern), regexp.MustCompile(pattern)
+		for _, text := range []string{"", "abc", "aXaXa", "héllo", "ééé", "b c b"} {
+			for n := -1; n < 8; n++ {
+				if got, want := mine.FindAllStringIndex(text, n), theirs.FindAllStringIndex(text, n); !reflect.DeepEqual(got, want) {
+					t.Fatalf("%q over %q at n=%d: got %v, want %v", pattern, text, n, got, want)
+				}
+			}
+		}
+	}
+}
+
 func TestFindLimits(t *testing.T) {
 	re := irgx.MustCompile(`a`)
 	const text = "aaaaa"

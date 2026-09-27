@@ -70,6 +70,42 @@ def test_a_template_naming_a_group_that_does_not_exist_is_refused_up_front():
         irgx.sub(r"(a)", "\\", "zzz")
 
 
+def test_a_capped_sub_or_split_is_re_s_answer_for_every_cap():
+    # The capped walk stops at the cap, and thinning then drops any empty match
+    # inside a multi-byte character - so a nullable pattern over wide text is
+    # where a prefix can come up short and the whole walk must be paid instead.
+    cases = [(r"x*", "éé ab"), (r"(x*)", "é€😀"), (r"\d", "a1b2c3"), (r"(\w)(\d)?", "a1 b c3")]
+    for pattern, text in cases:
+        for n in range(6):
+            assert irgx.subn(pattern, "-", text, count=n) == re.subn(pattern, "-", text, count=n)
+            assert irgx.subn(pattern, r"<\g<0>>", text, count=n) == re.subn(
+                pattern, r"<\g<0>>", text, count=n
+            )
+            assert irgx.split(pattern, text, maxsplit=n) == re.split(pattern, text, maxsplit=n)
+
+
+def test_a_capped_walk_never_pays_for_the_whole_text(monkeypatch):
+    # The point of `irgx_find_upto_in`: a capped verb over a pattern with no empty
+    # matches must not reach `irgx_find_all_in`, whose count obliges it to walk
+    # to the end. Driven through the ctypes verbs directly, so this holds under
+    # either transport.
+    from irgx import _abi, _engine
+    from irgx._pool import Compiled
+
+    compiled = Compiled(rb"(\w)=(\w)", 0)
+    rx = compiled.ptr.value
+
+    def refused(*_):
+        raise AssertionError("a capped verb walked the whole text")
+
+    monkeypatch.setattr(_abi.lib, "irgx_find_all_in", refused)
+    text = "k=v; " * 1000
+    assert _engine._spliced(rx, text, "-", 2, True) == ("-; -; " + "k=v; " * 998, 2)
+    assert _engine._pieces(rx, text, 1, True)[0] == ""
+    assert _engine._rendered(rx, text, (2, b"=", 1), 1, 2, True)[1] == 1
+    assert _engine._group_pieces(rx, text, 1, 2, True)[:3] == ["", "k", "v"]
+
+
 def test_octal_escapes_read_the_way_re_reads_them():
     # `\0` takes up to two more octal digits; three octal digits after the
     # backslash are a character, never a group; past 0o377 is refused. Each of
@@ -93,6 +129,26 @@ def test_a_group_number_is_ascii_decimal_only():
     for template in (r"\g<١>", r"\g<²>"):
         with pytest.raises(irgx.error):
             irgx.sub(r"(a)", template, "a")
+
+
+def test_parsed_templates_are_reused_and_bounded():
+    from irgx import _pattern
+
+    pattern = irgx.compile(r"(\w)")
+    assert pattern.sub(r"<\1>", "ab") == pattern.sub(r"<\1>", "ab") == "<a><b>"
+    assert list(pattern._templates) == [r"<\1>"]
+    # A mutable template is parsed per call and never kept.
+    bytes_pattern = irgx.compile(rb"(\w)")
+    assert bytes_pattern.sub(bytearray(rb"<\1>"), b"ab") == b"<a><b>"
+    assert not bytes_pattern._templates
+    # A bad template raises every time, and is never stored.
+    for _ in range(2):
+        with pytest.raises(irgx.error):
+            pattern.sub(r"\2", "ab")
+    assert r"\2" not in pattern._templates
+    for n in range(_pattern._TEMPLATES + 5):
+        pattern.sub(f"{n}", "a")
+    assert len(pattern._templates) <= _pattern._TEMPLATES
 
 
 def test_a_callable_replacement_receives_the_match():
@@ -147,3 +203,26 @@ def test_split_reports_empty_leading_and_trailing_fields():
 
 def test_split_over_non_ascii_text():
     assert irgx.split(r"·", "café·thé·eau") == ["café", "thé", "eau"]
+
+
+def test_group_templates_and_group_splits_agree_with_re_on_every_route():
+    # The fast path serves an exact `str`/`bytes`; a subclass takes the Match walk.
+    # Both must be `re`'s answer, including an absent group (empty in `sub`, None
+    # in `split`), a cap, and wide text around every cut.
+    class Text(str):
+        pass
+
+    cases = [
+        (r"(\w+)=(\w+)", r"\2=\1", "clé=vâl; a=b; ñ=δ", 0),
+        (r"(a)|(b)", r"<\1\2>", "abcab", 0),
+        (r"(\w+)=(\w+)", r"[\g<0>|\2]", "k=v; x=y; p=q", 2),
+    ]
+    for pattern, template, text, count in cases:
+        want = re.subn(pattern, template, text, count=count)
+        assert irgx.subn(pattern, template, text, count=count) == want
+        assert irgx.subn(pattern, template, Text(text), count=count) == want
+        splits = re.split(pattern, text, maxsplit=count)
+        assert irgx.split(pattern, text, maxsplit=count) == splits
+        assert irgx.split(pattern, Text(text), maxsplit=count) == splits
+    assert irgx.sub(rb"(\w)(\w)", rb"\2\1", b"abcd") == re.sub(rb"(\w)(\w)", rb"\2\1", b"abcd")
+    assert irgx.split(rb"(,)|(;)", b"a,b;c") == re.split(rb"(,)|(;)", b"a,b;c")

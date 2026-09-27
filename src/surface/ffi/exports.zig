@@ -172,6 +172,17 @@ export fn irgx_find_all_in(re: *pattern.Regex, text: ?[*]const u8, len: usize, f
     return @intFromEnum(pattern.findAllIn(re, text, len, from, to, out, cap, written));
 }
 
+/// The first `cap` matches in the window `[from, to]` of `text[0..len]`, and no
+/// more walked: `out[0..n]` with `n` in `*written` - how many were WRITTEN, never
+/// the total `irgx_find_all_in` reports. 1 when `n > 0`, 0 when the window holds
+/// none, negative on error; `cap = 0` is refused. The verb behind a host's
+/// `sub(count=n)`, `split(maxsplit=n)` and `FindAll(b, n)`, which want a prefix
+/// and would otherwise pay for the whole text to learn a count they discard.
+/// Same region and assertion contract as `irgx_find_all_in`.
+export fn irgx_find_upto_in(re: *pattern.Regex, text: ?[*]const u8, len: usize, from: usize, to: usize, out: ?[*]pattern.Span, cap: usize, written: ?*usize) i32 {
+    return @intFromEnum(pattern.findUptoIn(re, text, len, from, to, out, cap, written));
+}
+
 /// Write the LEFTMOST match in `text[0..len]` into `*out`. Returns 1 on a match,
 /// 0 on none, negative on error.
 ///
