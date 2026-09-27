@@ -5,6 +5,67 @@ All notable changes to the `irregex` kernel (formerly `gist`; the gist CLI is it
 
 <!-- towncrier release notes start -->
 
+## [2.6.0] - 2026-09-27
+
+### Added
+
+- - **`irgx_find_upto_in`: the first `cap` matches, and no more walked.**
+    `irgx_find_all_in` owes the caller the count the whole window holds, so a cap
+    on it bounds what gets written and never what gets walked - `sub(count=2)`,
+    `split(maxsplit=1)` and `FindAll(b, 3)` all paid for every match in the text
+    to learn a total they then threw away. The new verb is `irgx_find_first_in`
+    generalized from one span to `cap`: same walk, modes and refusals, stopped at
+    the cap, with `*written` reporting what was written. Additive, so the ABI
+    version stays 2.
+
+    Every binding uses it where a limit is a prefix: Python's capped `sub`,
+    `subn` and `split` on both transports, Go's `FindAll…(n)` for `n > 0` (and the
+    windowed `…In` spellings), and Rust's `replacen` and `splitn`. A binding's
+    thinning of empty matches is causal, so a capped prefix thins to the full
+    sequence's prefix whenever it still reaches the cap; only when thinning left
+    it short of a window the walk filled does the binding pay for the whole walk,
+    which a pattern with no empty matches never triggers. Go and Rust's vendored
+    archives are rebuilt to carry the symbol.
+
+### Changed
+
+- - **`sub` with a group-reading template and `split` with groups are one crossing each.**
+    `findall` already walked, captured and built its answer in a single call into
+    the engine; these two still built a `Match` per match and crossed once more
+    for each one's groups. Two new whole-answer verbs, `rendered` and
+    `group_pieces`, do the walk, the capture pass and the assembly on the far side,
+    with the same thinning, cap, refusal and disagreement rules as the verbs beside
+    them - and a template that reads only `\g<0>` skips the capture pass entirely.
+
+    On a 10 KB text with the accelerator, `sub(r"(\w+)=(\w+)", r"\2=\1", …)` goes
+    from about 7x slower than `re` to 0.8x (0.5x with an optional group), and a
+    grouped `split` from 12-51x slower to about 2x. The ctypes transport gets the
+    same verbs and roughly halves.
+
+    Parsed templates are also kept per pattern, as `re` keeps them: parsing one
+    cost several times what the substitution it fed did, so a short `sub` spent
+    most of its time re-reading a template it had read the call before.
+
+### Fixed
+
+- - **Replacement templates read octal and unknown escapes the way `re` does.**
+    Three spellings quietly meant something else here, so a template ported from
+    `re` produced different text with no error:
+
+    - `\0` takes up to two more octal digits (`\07` is BEL, not NUL then `7`), and
+      three octal digits after a backslash are a character rather than a group
+      (`\101` is `A`, not group 10 then `1`). Past `\377` is refused.
+    - An escaped character that is not a letter keeps its backslash (`\é` stays
+      `\é`, and a backslash before a space stays both), where it used to be
+      dropped.
+    - `\g<...>` takes ASCII decimals only as a group number. `str.isdigit` also
+      accepts `١` and `²`, which `re` refuses.
+
+    Checked against `re` over every template of up to four tokens from the escape
+    alphabet, `str` and `bytes` - 108,480 templates. The one remaining difference
+    is deliberate: an unknown group name raises `irgx.error` (which is `re.error`)
+    where `re` raises a bare `IndexError`.
+
 ## [2.5.0] - 2026-09-21
 
 ### Added
