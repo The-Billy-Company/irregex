@@ -37,6 +37,10 @@ doc_radar:
       contains: ["\"test-optimize\"", "orelse .ReleaseSafe;"]
     - file: towncrier.toml
       contains: ["ignore = [ \".gitkeep\", \"README.md\" ]", "wrap = false"]
+    - file: bindings/python/pyproject.toml
+      contains: ['extend = "../../quality/ruff.toml"', 'src = [ "../.." ]']
+    - file: quality/ruff.toml
+      contains: ['line-length = 100', 'target-version = "py312"', 'extend-exclude = [ "*.gen.py" ]']
 ---
 
 # Release notes

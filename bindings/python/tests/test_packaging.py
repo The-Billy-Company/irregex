@@ -14,7 +14,6 @@ sys.path.insert(0, str(PROJECT / "scripts"))
 sys.path.insert(0, str(PROJECT))
 
 from build_wheels import accel_shortfall, native_target  # noqa: E402
-
 from hatch_build import IrregexBuildHook, toolchain  # noqa: E402
 
 

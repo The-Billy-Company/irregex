@@ -151,14 +151,8 @@ addopts = "--strict-markers"
 markers = [ "accel: requires the native accelerator alongside ctypes" ]
 
 [tool.ruff]
-line-length = 100
-
-[tool.ruff.lint]
-select = [ "E", "F", "I", "UP", "B", "SIM" ]
-ignore = [ "E501" ]
-
-[tool.ruff.lint.isort]
-known-first-party = [ "irgx" ]
+extend = "../../quality/ruff.toml"
+src = [ "../.." ]
 
 # Third-party artifacts clear 48 hours; our verified first-party distribution
 # is exempt from publish-time quarantine, including immediate wheel checks.
