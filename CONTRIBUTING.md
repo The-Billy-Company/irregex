@@ -9,6 +9,8 @@ doc_radar:
       contains: ['rust-version = "1.85"']
     - file: .github/workflows/ci.yml
       contains: ['ruff==0.16.10', 'editorconfig-checker==3.11.1', 'zizmor==1.30.1']
+    - file: .github/workflows/release.yml
+      contains: ['uv pip sync --require-hashes --only-binary :all: --strict', 'dist/pypi-attestations.txt']
 ---
 
 # Contributing
@@ -455,6 +457,10 @@ is open, on three axes, so that none of them is a step anyone has to remember:
    which means no CI runs on it at all rather than failing visibly.
 
 What is left for a person: read the folded notes, and merge.
+
+We ship the signer's reviewed requirements with the wheels. The publish job
+installs only hashed binary distributions into an isolated environment before
+signing; retries keep using that same tool graph.
 
 This repository's tag, changelog, and publish steps are one instance of a
 model shared across every Billy-Company OSS package - see

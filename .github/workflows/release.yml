@@ -178,10 +178,15 @@ jobs:
       - name: Check the metadata the index will read
         run: uv run --no-project --with twine==7.0.0 twine check dist/*.whl
 
+      - name: Carry the reviewed signing tool graph with the wheels
+        run: cp ../../.github/pypi-attestations.txt dist/pypi-attestations.txt
+
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: wheels
-          path: bindings/python/dist/*.whl
+          path: |
+            bindings/python/dist/*.whl
+            bindings/python/dist/pypi-attestations.txt
           if-no-files-found: error
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -269,7 +274,12 @@ jobs:
       # ambient identity is this workflow/environment's OIDC identity; signing
       # fails before publication if that identity or an artifact is invalid.
       - name: Sign the wheel set with this Trusted Publisher
-        run: uv run --no-project --python 3.12 --with pypi-attestations==0.0.30 python -m pypi_attestations sign dist/*.whl
+        run: |
+          set -euo pipefail
+          uv venv --python 3.12.15 "$RUNNER_TEMP/irregex-publish"
+          uv pip sync --require-hashes --only-binary :all: --strict \
+            --python "$RUNNER_TEMP/irregex-publish/bin/python" dist/pypi-attestations.txt
+          "$RUNNER_TEMP/irregex-publish/bin/python" -m pypi_attestations sign dist/*.whl
       # A version-level probe misses partially uploaded matrices. uv compares
       # each filename and SHA-256 against the index, skips only identical bytes,
       # and rejects a collision. Retrying still signs every candidate, so a
