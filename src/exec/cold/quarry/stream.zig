@@ -294,20 +294,32 @@ test "an unreadable machine size still admits the ordinary pipeline" {
 // test that simply asked about the ambient fd 0 would either judge the runner's
 // pipe or wait on a writer that is waiting on it.
 const Borrowed = struct {
-    saved: c_int,
+    saved: portal.Handle,
+
+    fn replace(fd: portal.Handle) void {
+        if (@import("builtin").os.tag == .windows) {
+            std.os.windows.peb().ProcessParameters.hStdInput = fd;
+        } else if (fd == portal.invalid_handle) {
+            _ = std.c.close(0);
+        } else {
+            _ = std.c.dup2(fd, 0);
+        }
+    }
 
     /// Make `fd` this process's stdin, forgetting any verdict reached about the
     /// previous one.
-    fn stdin(fd: std.posix.fd_t) Borrowed {
-        const saved = std.c.dup(0);
-        _ = std.c.dup2(fd, 0);
+    fn stdin(fd: portal.Handle) Borrowed {
+        const saved = if (@import("builtin").os.tag == .windows) portal.stdin() else std.c.dup(0);
+        replace(fd);
         test_api.forget();
         return .{ .saved = saved };
     }
 
     fn give_back(self: Borrowed) void {
-        if (self.saved >= 0) {
-            _ = std.c.dup2(self.saved, 0);
+        if (@import("builtin").os.tag == .windows) {
+            replace(self.saved);
+        } else if (self.saved >= 0) {
+            replace(self.saved);
             _ = std.c.close(self.saved);
         }
         test_api.forget();
@@ -373,18 +385,40 @@ test "a pinned deadline cannot reclassify a quiet pipe as a tree" {
 
 test "the verdict is resolved once and reused" {
     const t = std.testing;
-    // The layout and search branch must agree about their source. /dev/null
-    // is a char device, so it still selects the ordinary interactive tree.
-    const nul = std.c.open("/dev/null", .{ .ACCMODE = .RDONLY });
-    if (nul < 0) return error.SkipZigTest;
-    defer _ = std.c.close(nul);
+    // Layout and search must agree about their source. Character devices such
+    // as /dev/null select the tree; real files let this proof run on Windows too.
+    var tmp = t.tmpDir(.{});
+    defer tmp.cleanup();
+    const initial = try tmp.dir.createFile(t.io, "initial", .{ .read = true });
+    defer initial.close(t.io);
+    const next = try tmp.dir.createFile(t.io, "next", .{ .read = true });
+    defer next.close(t.io);
+    try next.writeStreamingAll(t.io, "x");
 
-    const held = Borrowed.stdin(nul);
+    const held = Borrowed.stdin(initial.handle);
     defer held.give_back();
 
     const first = readableStdin();
+    try t.expect(first);
+    try t.expectEqual(@as(u64, 0), standing().file);
+    // Replacing the real handle must not re-stat a source already admitted.
+    Borrowed.replace(next.handle);
     try t.expectEqual(first, readableStdin());
-    try t.expect(verdict != null);
+    try t.expectEqual(@as(u64, 0), standing().file);
+    test_api.forget();
+    try t.expectEqual(@as(u64, 1), standing().file);
+
+    // A rejected source is memoized too. An invalid native handle selects the
+    // tree on both platforms; replacing it with a real file cannot change that
+    // verdict until the same explicit invalidation admits the new source.
+    Borrowed.replace(portal.invalid_handle);
+    test_api.forget();
+    try t.expect(!readableStdin());
+    Borrowed.replace(next.handle);
+    try t.expect(!readableStdin());
+    test_api.forget();
+    try t.expect(readableStdin());
+    try t.expectEqual(@as(u64, 1), standing().file);
 }
 
 test "an empty closed pipe remains an empty haystack including a pinned deadline" {

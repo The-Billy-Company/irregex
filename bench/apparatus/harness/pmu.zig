@@ -1067,6 +1067,7 @@ test "cycles measure work, not elapsed time" {
 }
 
 test "counters are per-thread, so a busy neighbor cannot inflate them" {
+    _ = requestPerformanceQos(); // a supported host may honor the existing hint
     var m = Meter.init();
     defer m.deinit();
     if (!m.has_pmu) return;
@@ -1076,12 +1077,14 @@ test "counters are per-thread, so a busy neighbor cannot inflate them" {
         const a = try stood(m.counters()) orelse return;
         std.mem.doNotOptimizeAway(spin(iters));
         const b = try stood(m.counters()) orelse return;
-        break :blk b.cycles -% a.cycles;
+        break :blk .{ .cycles = b.cycles -% a.cycles, .instructions = b.instructions -% a.instructions };
     };
 
     // Ten agents share this machine, so a counter that accrued a sibling's work
     // would make every measurement a function of who else is building. Saturate
-    // another thread and require the same answer.
+    // another thread and require the same retired work. Cycles per instruction
+    // can change with contention, frequency, or core class even when the
+    // instruction budget is identical; those changes are not sibling work.
     const Sibling = struct {
         stop: std.atomic.Value(bool) = .init(false),
         sink: u64 = 0,
@@ -1101,17 +1104,30 @@ test "counters are per-thread, so a busy neighbor cannot inflate them" {
     }
     nap(10 * std.time.ns_per_ms); // let it get going
 
+    // Independently catch a mixed backend with per-thread instructions but
+    // process-wide cycles: the sibling keeps working while this thread sleeps.
+    // Reuse the work-versus-sleep test's real 50 ms window and fourfold bound.
+    const idle_a = try stood(m.counters()) orelse return;
+    nap(50 * std.time.ns_per_ms);
+    const idle_b = try stood(m.counters()) orelse return;
+    const idle = idle_b.cycles -% idle_a.cycles;
+
     const shared = blk: {
         const a = try stood(m.counters()) orelse return;
         std.mem.doNotOptimizeAway(spin(iters));
         const b = try stood(m.counters()) orelse return;
-        break :blk b.cycles -% a.cycles;
+        break :blk .{ .cycles = b.cycles -% a.cycles, .instructions = b.instructions -% a.instructions };
     };
 
-    // Generous bound: contention for shared cache and the memory system can
-    // legitimately slow this thread. What it must not do is *add* the sibling's
-    // retired cycles, which would be a multiple, not a fraction.
-    try std.testing.expect(shared < solo * 2);
+    try std.testing.expect(shared.cycles > idle * 4);
+    // Keep the original twofold attribution bound. Instrumented backends count
+    // the fixed spin's retired instructions; cycles-only backends still prove
+    // it with real cycles rather than inventing an instruction measurement.
+    if (m.has_instructions) {
+        try std.testing.expect(shared.instructions < solo.instructions * 2);
+    } else {
+        try std.testing.expect(shared.cycles < solo.cycles * 2);
+    }
 }
 
 test "an undersized read is refused rather than half-filled" {
