@@ -41,6 +41,11 @@ on:
         options:
           - ReleaseSafe
           - Debug
+      archive_diagnostic:
+        description: "Compare ARM64 archive compiler stripping; diagnostic only, not full CI"
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -54,6 +59,7 @@ env:
 
 jobs:
   native:
+    if: ${{ !inputs.archive_diagnostic }}
     name: ${{ inputs.test_filter != '' && 'diagnostic' || 'native' }} (${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
     defaults:
@@ -152,7 +158,7 @@ jobs:
   # is not untested, though: it is the same engine build, for the same Zig
   # triple, that the Go arm64 step below links and runs on this kernel.
   bindings:
-    if: ${{ github.event_name != 'workflow_dispatch' || inputs.test_filter == '' }}
+    if: ${{ !inputs.archive_diagnostic && (github.event_name != 'workflow_dispatch' || inputs.test_filter == '') }}
     name: bindings (${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
@@ -228,13 +234,53 @@ jobs:
           rustup target add ${{ matrix.rust_target }}
           cargo test --target ${{ matrix.rust_target }}
 
+  archive-diagnostic:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.archive_diagnostic }}
+    name: archive diagnostic (arm64)
+    runs-on: windows-11-arm
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: $/.github/actions/setup-zig-windows
+        with:
+          version: ${{ env.ZIG_VERSION }}
+          into: ${{ runner.temp }}\zig
+      - name: Put Zig on PATH
+        shell: pwsh
+        run: Add-Content -LiteralPath $env:GITHUB_PATH -Value "$env:RUNNER_TEMP\zig"
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: bindings/go/go.mod
+      - name: Prepare the pinned native inspection tools
+        shell: pwsh
+        working-directory: bindings/rust
+        run: |
+          rustup component add llvm-tools
+          if ($LASTEXITCODE -ne 0) { throw "rustup component add exited $LASTEXITCODE" }
+          $toolchain = (& rustup show active-toolchain).Split(' ')[0]
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "RUSTUP_TOOLCHAIN=$toolchain"
+      - name: Compare the actual archive and both compiler strip postures
+        shell: pwsh
+        run: |
+          python tools/archive_diagnostic.py --out "$env:RUNNER_TEMP\archive-diagnostic"
+          if ($LASTEXITCODE -ne 0) { throw "archive diagnostic exited $LASTEXITCODE" }
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: ${{ !cancelled() }}
+        with:
+          name: archive-diagnostic
+          path: ${{ runner.temp }}/archive-diagnostic/
+          if-no-files-found: error
+          retention-days: 7
+
   required:
     name: native
     # A newer draft push deliberately cancels this run. Preserve the aggregate for
     # real matrix failures, but do not turn an obsolete cancellation into a
     # second, misleading failed check.
     # A filtered manual run is a diagnostic, not an aggregate release verdict.
-    if: ${{ !cancelled() && (github.event_name != 'workflow_dispatch' || inputs.test_filter == '') }}
+    if: ${{ !cancelled() && !inputs.archive_diagnostic && (github.event_name != 'workflow_dispatch' || inputs.test_filter == '') }}
     needs: [native, bindings]
     runs-on: ubuntu-latest
     steps:

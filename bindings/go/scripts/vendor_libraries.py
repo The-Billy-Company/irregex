@@ -86,6 +86,19 @@ int main(void) {
   // The Go binding builds its whole name table out of this one, so an archive
   // that cannot resolve it is a broken `go build` rather than a broken search.
   if (irgx_group_name(re, 1, &name) != IRGX_MATCH) return 5;
+  // Invalid patterns exercise the thread-local diagnostic storage too. A
+  // successful match alone missed broken ARM64 COFF TLS relocations.
+  for (uint32_t flags = 0; flags <= IRGX_PCRE; flags += IRGX_PCRE) {
+    irgx_regex *bad = NULL;
+    irgx_fault fault = {0};
+    fault.struct_size = sizeof fault;
+    if (irgx_compile((const uint8_t *)"(unclosed", 9, flags, &bad) != IRGX_INVALID) return 6;
+    if (bad != NULL || irgx_last_fault(&fault) != IRGX_MATCH) return 7;
+    if (fault.status != IRGX_INVALID || fault.at_space != IRGX_AT_PATTERN || fault.at > 9) return 8;
+    if (fault.name == NULL || fault.name[0] == 0) return 9;
+    if (irgx_is_match(re, (const uint8_t *)"aa b", 4) != IRGX_MATCH) return 10;
+    if (irgx_last_fault(&fault) != IRGX_OK || fault.name == NULL || fault.name[0] != 0) return 11;
+  }
   irgx_free(re);
   printf("%s %s %u %lld\\n", irgx_version(), irgx_pcre2_version(),
          irgx_abi_version(), (long long)spans[0].end);
