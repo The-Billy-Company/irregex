@@ -38,7 +38,9 @@ doc_radar:
     - file: bindings/go/bridge.go
       contains: ["//go:build cgo"]
     - file: tools/archive_diagnostic.py
-      contains: ["for compiler_strip in (True, False):", "probe(\"committed\", target.archive, required=False)", "corrected-go-suite", "DLL_PROBE"]
+      contains: ["for compiler_strip in (True, False):", "probe(\"committed\", target.archive, required=False)", "corrected-go-suite", "DLL_PROBE", "probe(\"alternate-linker\", committed, required=True, compiler=compiler)", "irregex-go-cache-alternate"]
+    - file: .github/actions/setup-zig-windows/action.yml
+      contains: ["linker-diagnostic:", 'default: "false"', "if (-not $diagnostic -and $declared -ne $ver)", "$target = 'aarch64-windows'", "sha256 mismatch"]
     - file: build.zig
       contains: ["\"test-optimize\"", "orelse .ReleaseSafe;"]
     - file: towncrier.toml

@@ -265,10 +265,17 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "rustup component add exited $LASTEXITCODE" }
           $toolchain = (& rustup show active-toolchain).Split(' ')[0]
           Add-Content -LiteralPath $env:GITHUB_ENV -Value "RUSTUP_TOOLCHAIN=$toolchain"
+      - name: Install an alternate linker for the existing archive
+        uses: $/.github/actions/setup-zig-windows
+        with:
+          version: "0.17.0"
+          into: ${{ runner.temp }}\zig-alternate
+          linker-diagnostic: "true"
       - name: Compare the actual archive and both compiler strip postures
         shell: pwsh
         run: |
-          python tools/archive_diagnostic.py --out "$env:RUNNER_TEMP\archive-diagnostic"
+          python tools/archive_diagnostic.py --out "$env:RUNNER_TEMP\archive-diagnostic" `
+            --alternate-zig "$env:RUNNER_TEMP\zig-alternate\zig.exe"
           if ($LASTEXITCODE -ne 0) { throw "archive diagnostic exited $LASTEXITCODE" }
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: ${{ !cancelled() }}

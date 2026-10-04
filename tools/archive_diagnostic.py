@@ -31,6 +31,7 @@ print('invalid pattern refused by the actual DLL')
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--alternate-zig", type=Path)
     args = parser.parse_args()
     if sys.platform != "win32" or platform.machine().lower() not in ("arm64", "aarch64"):
         raise SystemExit("this diagnostic must execute on a native Windows ARM64 kernel")
@@ -44,8 +45,17 @@ def main() -> int:
         raise SystemExit("pinned Rust llvm-tools must provide strip and objdump")
     records: dict[str, dict] = {}
 
-    def run(name: str, command: list[str], *, cwd: Path = ENGINE, required: bool = True) -> int:
-        result = subprocess.run(command, cwd=cwd, capture_output=True, text=True, check=False)
+    def run(
+        name: str,
+        command: list[str],
+        *,
+        cwd: Path = ENGINE,
+        required: bool = True,
+        env: dict[str, str] | None = None,
+    ) -> int:
+        result = subprocess.run(
+            command, cwd=cwd, env=env, capture_output=True, text=True, check=False
+        )
         stdout, stderr = out / f"{name}.stdout.txt", out / f"{name}.stderr.txt"
         stdout.write_text(result.stdout)
         stderr.write_text(result.stderr)
@@ -56,14 +66,14 @@ def main() -> int:
             raise RuntimeError(f"{name} failed; see {stdout} and {stderr}")
         return result.returncode
 
-    def probe(label: str, archive: Path, *, required: bool) -> None:
+    def probe(label: str, archive: Path, *, required: bool, compiler: str = "zig") -> None:
         records[label] = {"archive_sha256": hashlib.sha256(archive.read_bytes()).hexdigest()}
         source, binary = out / f"{label}.c", out / f"{label}.exe"
         source.write_text(vendor["PROBE"])
         run(
             f"{label}-link",
             [
-                "zig",
+                compiler,
                 "cc",
                 "-target",
                 target.zig,
@@ -88,6 +98,15 @@ def main() -> int:
                 "-dr",
                 "--disassemble-symbols=.Lkernel.regex.pcre2.engine.Pcre.compileOpts,kernel.regex.pcre2.engine.Pcre.compileOpts",
                 str(archive),
+            ],
+        )
+        run(
+            f"{label}-linked-tls",
+            [
+                dump,
+                "-dr",
+                "--disassemble-symbols=.Lkernel.regex.pcre2.engine.Pcre.compileOpts,kernel.regex.pcre2.engine.Pcre.compileOpts",
+                str(binary),
             ],
         )
         shutil.copy2(archive, out / f"{label}.a")
@@ -145,6 +164,34 @@ def main() -> int:
             os.environ["GOCACHE"] = str(out.parent / "irregex-go-cache-corrected")
             run("corrected-go-vet", ["go", "vet", "-p", "1", "./..."], cwd=module)
             run("corrected-go-suite", ["go", "test", "-p", "1", "-count=1", "./..."], cwd=module)
+    if args.alternate_zig:
+        compiler = str(args.alternate_zig.resolve())
+        run("alternate-zig-version", [compiler, "version"])
+        run("alternate-clang-version", [compiler, "cc", "--version"])
+        committed = out / "committed.a"
+        probe("alternate-linker", committed, required=True, compiler=compiler)
+        # Only the consumer linker changes. These are the exact failing archive
+        # bytes, with a third empty Go build cache outside the evidence upload.
+        shutil.copy2(committed, target.archive)
+        alternate_env = os.environ | {
+            "CC": f'"{compiler}" cc -target {target.zig}',
+            "GOCACHE": str(out.parent / "irregex-go-cache-alternate"),
+        }
+        run(
+            "alternate-go-build",
+            ["go", "test", "-c", "-o", str(out / "alternate-go.exe")],
+            cwd=module,
+            env=alternate_env,
+        )
+        run(
+            "alternate-go-native",
+            [
+                str(out / "alternate-go.exe"),
+                "-test.run=^TestDecodingOverAUsedPatternDoesNotKeepTheOldOne$",
+                "-test.v",
+            ],
+            env=alternate_env,
+        )
     print(f"comparison complete: {out / 'results.json'}")
     return 0
 
