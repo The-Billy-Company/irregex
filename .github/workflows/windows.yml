@@ -33,6 +33,14 @@ on:
         type: string
         required: false
         default: ""
+      test_optimize:
+        description: "Filtered diagnostics only; Debug retains failing assertion traces"
+        type: choice
+        required: false
+        default: ReleaseSafe
+        options:
+          - ReleaseSafe
+          - Debug
 
 permissions:
   contents: read
@@ -83,10 +91,11 @@ jobs:
         if: ${{ matrix.suite }}
         env:
           IRREGEX_TEST_FILTER: ${{ github.event_name == 'workflow_dispatch' && inputs.test_filter || '' }}
+          IRREGEX_TEST_OPTIMIZE: ${{ github.event_name == 'workflow_dispatch' && inputs.test_optimize || 'ReleaseSafe' }}
         run: |
           $zigArgs = @('build', 'test', "-Dtarget=$($env:ZIG_TARGET)", '-j1')
           if ($env:IRREGEX_TEST_FILTER) {
-            $zigArgs += @("-Dtest-filter=$($env:IRREGEX_TEST_FILTER)", '-Dtest-shards=1')
+            $zigArgs += @("-Dtest-filter=$($env:IRREGEX_TEST_FILTER)", '-Dtest-shards=1', "-Dtest-optimize=$($env:IRREGEX_TEST_OPTIMIZE)")
           }
           & zig @zigArgs
           if ($LASTEXITCODE -ne 0) { throw "Unit suite exited $LASTEXITCODE" }
