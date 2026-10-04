@@ -93,7 +93,14 @@ def main() -> int:
         shutil.copy2(archive, out / f"{label}.a")
 
     probe("committed", target.archive, required=False)
-    env = os.environ | {"CC": f"zig cc -target {target.zig}", "CGO_ENABLED": "1", "GOMAXPROCS": "2"}
+    env = os.environ | {
+        "CC": f"zig cc -target {target.zig}",
+        "CGO_ENABLED": "1",
+        "GOMAXPROCS": "2",
+        # Go does not track changed external static-library bytes in its build
+        # cache. Separate empty caches prove each archive really reaches cgo.
+        "GOCACHE": str(out.parent / "irregex-go-cache-committed"),
+    }
     os.environ.update(env)
     module = ENGINE / "bindings/go"
     run("committed-go-build", ["go", "test", "-c", "-o", str(out / "committed-go.exe")], cwd=module)
@@ -135,6 +142,7 @@ def main() -> int:
         )
         if not compiler_strip:
             shutil.copy2(archive, target.archive)
+            os.environ["GOCACHE"] = str(out.parent / "irregex-go-cache-corrected")
             run("corrected-go-vet", ["go", "vet", "-p", "1", "./..."], cwd=module)
             run("corrected-go-suite", ["go", "test", "-p", "1", "-count=1", "./..."], cwd=module)
     print(f"comparison complete: {out / 'results.json'}")
