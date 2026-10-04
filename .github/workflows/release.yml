@@ -144,6 +144,34 @@ jobs:
       - name: Build every target
         run: uv run --python 3.12 python scripts/build_wheels.py --native-archives dist/native-archives
 
+      - name: Check the accelerator's Zig compiler fallback
+        run: |
+          uv run --python 3.12 python - <<'PY'
+          import importlib.util
+          import json
+          import tempfile
+          from pathlib import Path
+          from scripts.build_accel import toolchain
+          from scripts.build_wheels import native_target
+
+          target = native_target()
+          if target is None:
+              raise SystemExit('the release host has no wheel matrix target')
+          # The real compiler uses the same seam as the packaging hook.
+          toolchain.compilers = lambda: [['zig', 'cc']]
+          with tempfile.TemporaryDirectory(prefix='irregex-zig-accel-') as staging:
+              out = Path(staging) / toolchain.filename()
+              failed = toolchain.compile(out, zig_target=target.zig, zig_cpu=target.cpu)
+              if failed:
+                  raise SystemExit('Zig accelerator compilation failed: ' + '; '.join(failed))
+              toolchain.check_macos_floor(out, target.tag)
+              spec = importlib.util.spec_from_file_location('_accel', out)
+              module = importlib.util.module_from_spec(spec)
+              spec.loader.exec_module(module)
+              print(json.dumps({'target': target.zig, 'cpu_policy': target.cpu,
+                                'bytes': out.stat().st_size, 'stable_abi_import': True}))
+          PY
+
       - name: Validate both consumer archive sets
         working-directory: .
         run: |
