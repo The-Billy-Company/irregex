@@ -4,7 +4,7 @@ doc_radar:
     - file: .mise.toml
       contains: ['min_version = "2026.10.0"', 'minimum_release_age = "2d"', '"pipx:zoning" = "1.4.0"', 'node = "26.10.0"']
     - file: .githooks/pre-push
-      contains: ['mise install --locked -j 1 node npm:markdownlint-cli2']
+      contains: ['mise install --locked -j 1 node npm:markdownlint-cli2', 'mise install --locked -j 1 zig', 'ast-check "./${path}"']
     - file: bindings/rust/Cargo.toml
       contains: ['rust-version = "1.85"']
     - file: .github/workflows/ci.yml
@@ -76,6 +76,11 @@ sidecars freeze npm and Python tool dependencies. New tool dependencies wait
 two days. The pins are mirrors of the files in
 the third column and never the authority, so bumping one means bumping the
 other in the same commit.
+
+Our push hook checks changed Zig files with `zig ast-check` and changed Markdown
+with markdownlint. It reads the pushed commit and resolves both tools from that
+commit's locked mise configuration. The AST check catches local declaration
+errors without compiling the engine; it does not replace the full suite.
 
 The Rust row asks for `llvm-tools` as well. That is what puts `llvm-nm` and
 `llvm-strip` within reach of the vendoring scripts under `bindings/*/scripts/`,
