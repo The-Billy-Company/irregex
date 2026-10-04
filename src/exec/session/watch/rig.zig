@@ -13,7 +13,7 @@
 //! an in-place edit is seen, a newcomer is covered for its later edits too, a
 //! cross-directory move lands on both ends, a case-only rename resolves to one
 //! spelling, a deletion stays gone, a served root declines to scope and is right
-//! anyway — and the only honest way to hold two backends to one promise is to make
+//! anyway — and the only honest way to hold three backends to one promise is to make
 //! them run the same cases. A per-backend copy of this rig would let the promises
 //! drift apart silently, which is exactly the fork the kinship face's copy
 //! sweep exists to find.
@@ -50,13 +50,12 @@ const ResidentSession = resident.ResidentSession;
 ///     same cases on the native CI lane, which is the only place a Windows kernel
 ///     exists to answer them.
 ///
-/// Linux is deliberately NOT in the set yet, and saying so is the point: nobody
-/// has run this rig against `inotify.zig`, whose watches neither recurse nor
-/// coalesce, so adding it here would either pass vacuously or fail for reasons
-/// that have nothing to do with the backend under review. Widening it is its own
-/// pass with its own evidence, not a line changed in passing.
+///   * Linux — `inotify.zig`, exact on a byte-keyed root. Its watches neither
+///     recurse nor coalesce, so the native Linux lane must prove coverage growth
+///     and parent membership with these same real mutations; refusing to arm
+///     in the fixture fails the proof rather than passing vacuously.
 pub const live = switch (builtin.os.tag) {
-    .macos, .windows => true,
+    .macos, .linux, .windows => true,
     else => false,
 };
 
@@ -154,7 +153,8 @@ pub const Tree = struct {
 /// full pass a scoped reconcile is only sound downstream of. `boot` returns null
 /// when the watcher did not arm exact — a machine whose descriptor budget or whose
 /// volume driver refuses coverage is a legitimate fail-closed outcome, not a test
-/// failure, and the caller skips rather than asserting against the baseline.
+/// failure on macOS, and the caller skips rather than asserting against the
+/// baseline. Linux and Windows fixtures require actual exact coverage.
 pub const Rig = struct {
     session: *ResidentSession,
     watcher: *watch.Watcher(ResidentSession),
@@ -168,9 +168,10 @@ pub const Rig = struct {
         tree: *Tree,
     ) !?Rig {
         watcher.start();
-        // Native Windows fixtures must exercise the actual subscription. Unlike
-        // per-vnode backends, this arm has no descriptor-budget refusal to cover.
-        if (comptime builtin.os.tag == .windows) {
+        // Native Linux and Windows fixtures must exercise actual subscriptions.
+        // Watch-limit or volume refusals remain safe product fallbacks, but do
+        // not certify native runtime coverage for this fixture.
+        if (comptime builtin.os.tag == .windows or builtin.os.tag == .linux) {
             try std.testing.expect(session.seqlock.armed());
             try std.testing.expect(session.dirty_log.exact);
         }

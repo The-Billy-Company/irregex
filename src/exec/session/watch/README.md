@@ -2,9 +2,15 @@
 doc_radar:
   sentinels:
     - file: src/exec/session/watch/notify.zig
-      contains: [ "extended: bool = true", "pending: bool = false", "root.pending = false", "if (haystack.underSkippedDir(rel)) return false;" ]
+      contains: [ "extended: bool = true", "pending: bool = false", "root.pending = false", "haystack.underSkippedDir(rel, haystack.isPolicySkip)", "directory and haystack.isPolicySkip(std.fs.path.basename(rel))" ]
     - file: src/exec/session/watch/rig.zig
-      contains: [ "if (comptime builtin.os.tag == .windows)", "try std.testing.expect(session.seqlock.armed());", "try std.testing.expect(session.dirty_log.exact);" ]
+      contains: [ "if (comptime builtin.os.tag == .windows or builtin.os.tag == .linux)", "try std.testing.expect(session.seqlock.armed());", "try std.testing.expect(session.dirty_log.exact);" ]
+    - file: src/corpus/fresh/fresh.zig
+      contains: [ "haystack.underSkippedDir(path, haystack.isSkipDir)" ]
+    - file: src/exec/session/watch/coverage.zig
+      contains: [ "haystack.isPolicySkip(name)", "!ig.shouldSkip(key, true, name, false, false)" ]
+    - file: src/exec/session/watch/watch_test.zig
+      contains: [ "exact: an unignored baseline directory remains admitted and its edits retire held answers", "exact: a declared policy subtree stays excluded and admitted edits still reconcile" ]
     - file: src/exec/session/watch/notify_test.zig
       contains: [ "notify: a foreign request context retires trust without stealing the real request" ]
 ---
@@ -64,12 +70,12 @@ generic `Watcher`.
   POSIX arms share it so they cannot drift on what "now" means; Windows
   reads the `FILETIME` its own records carry.
 - **[`rig.zig`](rig.zig)** is the test harness — the tree fixture and
-  session rig the barrier suite runs on, so both exact backends are judged
+  session rig the barrier suite runs on, so all three exact backends are judged
   by the same cases instead of each proving whatever its own file happened
   to test.
 
 Suites: `kqueue_test.zig`, `notify_test.zig`, and `watch_test.zig` sit
-beside their subjects. Windows fixtures require the subscription to arm
+beside their subjects. Linux and Windows fixtures require exact subscriptions to arm
 before a case proceeds; an unavailable native backend fails the runtime proof.
 
 `kqueue.zig` and `coverage.zig` are two halves of one macOS backend, the
@@ -87,11 +93,10 @@ compiles on every target and the unused backends lower to nothing.
 The three backends are not three spellings of one mechanism; they can
 witness different things, and the facade's job is to know which.
 
-Linux and Windows both subscribe recursively per root, so a directory
-created after arming is covered by the subscription that was already
-there. macOS registers one descriptor per admitted vnode, which is why it
-alone needs an admission walk (`coverage.zig`) and a descriptor ceiling
-(`budget.zig`), and why it alone extends coverage by walking a new subtree.
+Windows subscribes recursively per root. Linux adds a watch to each directory
+and covers new subtrees before the next reconcile. macOS registers one
+descriptor per admitted vnode, so its admission walk (`coverage.zig`) and
+descriptor ceiling (`budget.zig`) keep that cost proportional to the corpus.
 
 Windows is the one that can witness *more* than POSIX rather than less, in
 two places worth naming because both remove a refusal rather than adding a
@@ -115,7 +120,9 @@ bound what it missed.
 We keep each Windows request's identity and record class with its root. The
 completion port returns that identity before we read or reuse the buffer; a
 foreign packet retires trust without consuming the real request. A batch that
-only touches skipped subtrees leaves the session clean.
+only touches declared policy subtrees leaves the session clean. We track a
+birth, death or rename as a change to parent membership too; ordinary content
+edits keep their file scope.
 
 Stopping cancels every outstanding request and drains its completion without
 re-posting. Only then do we free the buffers and status blocks. Joining the
@@ -123,3 +130,17 @@ watcher thread alone does not retire the kernel's writes. A driver that never
 acknowledges cancellation can block `stop`; an unexpected cancellation or
 port-dequeue failure terminates the process. Returning with a live request
 would let the caller destroy its allocator while the kernel still owns it.
+
+## Admission follows the session
+
+We use the cold walk's declared skip policy for resident watches and the annals.
+An unignored directory named `node_modules` is still searchable; an edit there
+must dirty the session and retire held answers. Persisted index freshness keeps
+its existing baseline exclusions. The caller supplies that distinction to the
+shared ancestor predicate, which still admits an equally named plain file.
+
+The macOS walk also uses the existing `Ignore` rules. Linux and Windows can
+observe extra ignored paths and let reconcile discard them; extra work is safe,
+missing an admitted change is not. The shared native rig checks real file edits,
+new coverage, parent membership, policy churn and answer retirement. Platform
+runtime results certify those promises; compilation alone does not.

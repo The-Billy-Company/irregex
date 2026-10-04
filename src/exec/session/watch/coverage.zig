@@ -174,7 +174,7 @@ fn joinKey(self: anytype, key: []const u8, name: []const u8) ![]const u8 {
 /// directories are out of the walked set and can only enter it by a rename
 /// their parent reports; the rest answer to the same ignore rules.
 fn descends(self: anytype, name: []const u8, key: []const u8) bool {
-    if (name[0] == '.' or haystack.isSkipDir(name)) return false;
+    if (name[0] == '.' or haystack.isPolicySkip(name)) return false;
     const ig = if (self.ig) |*p| p else return true;
     return !ig.shouldSkip(key, true, name, false, false);
 }

@@ -2,7 +2,8 @@
 //! read it. Takes its shape from ripgrep's own split (`crates/core/haystack.rs`)
 //! between classifying a walk entry as searchable and actually opening it, but
 //! adapted to irregex's general program: the shared gitignore engine plus one
-//! corpus-only skip-dir policy (`isSkipDir`) govern every consumer.
+//! persisted-corpus skip-dir policy (`isSkipDir`) shape indexed walks; cold
+//! search and its resident watchers use the declared policy (`isPolicySkip`).
 //! Before this, `corpus.zig`'s index build, `exec/cold/engine/serial.zig`'s tree-walk
 //! enumeration, `index/trigrams/fresh.zig`'s mtime+ctime freshness stat-walk, and the
 //! no-prefilter live scan each re-derived the identical
@@ -36,8 +37,8 @@ pub const Haystack = struct {
     name: []const u8,
 };
 
-/// Directory basenames every corpus walk skips (gitignore + VCS + build
-/// output) — the one skip-dir policy shared by the index build, `--live`,
+/// Directory basenames persisted corpus walks skip (VCS + build output) —
+/// the baseline skip-dir policy shared by the index build, `--live`,
 /// the freshness overlay, and the no-prefilter live scan. `isSkipDir` runs
 /// once per DIRECTORY the walk enters (not per file), but a monorepo this
 /// size still enters thousands of them per index build, so it's worth
@@ -221,7 +222,7 @@ pub fn inBaselineSkipSet(name: []const u8) bool {
     return skip_dirs.has(name);
 }
 
-/// Is `name` a directory basename every corpus walk skips? (`skip_dirs`
+/// Is `name` a directory basename persisted corpus walks skip? (`skip_dirs`
 /// baseline + `<prefix>SKIP`/`skips.list` extension.)
 pub fn isSkipDir(name: []const u8) bool {
     if (inBaselineSkipSet(name)) return true;
@@ -241,13 +242,15 @@ pub fn isPolicySkip(name: []const u8) bool {
     return false;
 }
 
-/// Whether any directory component of `path` is excluded from the corpus.
+/// Whether any directory component of `path` is excluded by the caller's walk.
+/// Persisted freshness uses `isSkipDir`; cold-backed resident sessions use
+/// `isPolicySkip`, leaving ordinary ignore admission to their existing `Ignore`.
 /// The basename is deliberately ignored: a file named like a skipped directory
 /// remains admissible, matching the walk.
-pub fn underSkippedDir(path: []const u8) bool {
+pub fn underSkippedDir(path: []const u8, comptime skipped: fn ([]const u8) bool) bool {
     var rest = path;
     while (std.mem.indexOfScalar(u8, rest, '/')) |i| {
-        if (isSkipDir(rest[0..i])) return true;
+        if (skipped(rest[0..i])) return true;
         rest = rest[i + 1 ..];
     }
     return false;

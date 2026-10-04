@@ -12,6 +12,7 @@
 const std = @import("std");
 const bulkstat = @import("bulkstat.zig");
 const haystack = @import("haystack.zig");
+const paths = @import("../scope/paths.zig");
 const fault = @import("../../fault.zig");
 const portal = @import("../../portal.zig");
 const Dir = std.Io.Dir;
@@ -80,7 +81,10 @@ test "bulkstat.visitFresh ≡ the stat-based walk over a real tree (old/new meta
     defer scope.release();
 
     var scratch: [portal.max_path]u8 = undefined;
-    const root = try std.fmt.allocPrint(a, "{s}/gist_bulkstat_test_{x}", .{ portal.scratchDir(&scratch), @intFromPtr(&threaded) });
+    // The independent expected set uses the same declared slash spelling as
+    // corpus paths, including a native Windows scratch-directory prefix.
+    const scratch_root = try paths.slashed(a, portal.scratchDir(&scratch));
+    const root = try std.fmt.allocPrint(a, "{s}/gist_bulkstat_test_{x}", .{ scratch_root, @intFromPtr(&threaded) });
     fault.spare("clear leftover fixture", Dir.cwd().deleteTree(io, root)); // best-effort clean slate from a prior crashed run
     try Dir.cwd().createDirPath(io, root);
     defer fault.spare("remove fixture", Dir.cwd().deleteTree(io, root));

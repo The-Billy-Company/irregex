@@ -24,6 +24,8 @@ const resident = @import("../warm/resident.zig");
 const rig = @import("rig.zig");
 const truth = @import("../warm/truth.zig");
 const watch = @import("watch.zig");
+const haystack = @import("../../../corpus/tree/haystack.zig");
+const keepmod = @import("../answer/keep.zig");
 const fault = @import("../../../fault.zig");
 const portal = @import("../../../portal.zig");
 const Dir = std.Io.Dir;
@@ -320,4 +322,70 @@ test "exact: stop() releases the watch set and the session survives it" {
     try std.testing.expect(!watcher.flushSync());
     try truth.expectFiles(&session, &tree, gpa, "needle");
     watcher.stop(); // idempotent — the deinit path runs twice in fail-fast callers
+}
+
+test "exact: an unignored baseline directory remains admitted and its edits retire held answers" {
+    try rig.withSeededRig("baseline_admitted", struct {
+        fn seed(tree: *rig.Tree) !void {
+            try rig.seedTree(tree);
+            try tree.mkdir("node_modules/pkg");
+            try tree.write("node_modules/pkg/source.txt", "needle admitted by the cold walk\n");
+        }
+    }.seed, struct {
+        fn run(r: *Rig) !void {
+            try r.expectOracle("needle");
+            const before = r.session.annals.epoch() orelse return error.TestUnexpectedResult;
+            var keep = keepmod.Keep.init(r.gpa);
+            defer keep.deinit();
+            keep.retain("needle", before, 0, "answer before the admitted file changed\n");
+            try std.testing.expect(keep.recall("needle", before) == .hit);
+            try rig.advanceClock(r.tree.io);
+            try r.tree.write("node_modules/pkg/source.txt", "hushed in an admitted subtree\n");
+            try r.expectScopedOracle("needle");
+            const after = r.session.annals.epoch() orelse return error.TestUnexpectedResult;
+            try std.testing.expect(after > before);
+            try std.testing.expect(keep.recall("needle", after) == .stale);
+            var changed = r.session.annals.since(r.gpa, r.session.annals.floor_ns) orelse return error.TestUnexpectedResult;
+            defer changed.deinit(r.gpa);
+            var found = false;
+            for (changed.paths) |path| {
+                if (std.mem.eql(u8, path, "node_modules/pkg/source.txt")) found = true;
+            }
+            try std.testing.expect(found);
+        }
+    }.run);
+}
+
+test "exact: a declared policy subtree stays excluded and admitted edits still reconcile" {
+    try rig.withSeededRig("policy_excluded", struct {
+        fn seed(tree: *rig.Tree) !void {
+            haystack.installSkipOverlay(.{ .names = &.{"node_modules"} });
+            try rig.seedTree(tree);
+            try tree.mkdir("node_modules/pkg");
+            try tree.writeIgnored("node_modules/pkg/source.txt", "needle excluded by stated policy\n");
+        }
+    }.seed, struct {
+        fn run(r: *Rig) !void {
+            try r.expectOracle("needle");
+            const before = r.session.annals.epoch() orelse return error.TestUnexpectedResult;
+            var keep = keepmod.Keep.init(r.gpa);
+            defer keep.deinit();
+            keep.retain("needle", before, 0, "answer from the admitted corpus\n");
+            const scoped_before = r.session.scoped_reconciles.load(.monotonic);
+            try rig.advanceClock(r.tree.io);
+            try r.tree.writeIgnored("node_modules/pkg/source.txt", "needle policy churn\n");
+            try std.testing.expect(r.watcher.flushSync());
+            try std.testing.expect(r.session.seqlock.provenClean());
+            try std.testing.expectEqual(before, r.session.annals.epoch().?);
+            try std.testing.expect(keep.recall("needle", before) == .hit);
+            try r.expectOracle("needle");
+            try std.testing.expectEqual(scoped_before, r.session.scoped_reconciles.load(.monotonic));
+            try rig.advanceClock(r.tree.io);
+            try r.tree.write("sub/b.txt", "hushed admitted file\n");
+            try r.expectScopedOracle("needle");
+            const after = r.session.annals.epoch() orelse return error.TestUnexpectedResult;
+            try std.testing.expect(after > before);
+            try std.testing.expect(keep.recall("needle", after) == .stale);
+        }
+    }.run);
 }

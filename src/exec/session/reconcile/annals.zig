@@ -33,9 +33,10 @@
 //!
 //! Entries are stored REPO-RELATIVE: `note` strips the armed absolute root
 //! prefix (accepting the `/System/Volumes/Data` firmlink alias a macOS path may
-//! resolve under) and drops paths under walk-skipped directories —
-//! the same shaping `journal.zig`'s replay applies, so an annals answer and a
-//! journal answer describe the same corpus surface.
+//! resolve under) and drops paths under declared policy skips. The resident
+//! cold walk admits unignored baseline names, so those deliveries must advance
+//! its epoch. A persisted-index amend confirms metadata and baseline admission
+//! itself; an annals superset remains conservative, never a missing change.
 //!
 //! Threading: `note`/`noteDoubt` run on the watcher (or FlushSync caller)
 //! thread, `since` on the serve thread; the same shared `Latch` the dirty log
@@ -153,7 +154,7 @@ pub const Annals = struct {
     /// shaping matches `note`. Returns false on OOM (caller aborts the seed
     /// WITHOUT extending coverage — the ledger stays sound, just younger).
     pub fn seed(self: *Annals, rel: []const u8, ts_ns: i128) bool {
-        if (rel.len == 0 or haystack.underSkippedDir(rel)) return true;
+        if (rel.len == 0 or haystack.underSkippedDir(rel, haystack.isPolicySkip)) return true;
         self.mu.lock();
         defer self.mu.unlock();
         self.stamp += 1;
@@ -173,7 +174,7 @@ pub const Annals = struct {
     /// Record one exact FILE delivery (absolute path, wall instant). Relative
     /// shaping happens here so the hot callback stays a single call: strip the
     /// armed prefix (firmlink alias accepted), drop the root itself and
-    /// anything under a walk-skipped directory, and store `rel → now_ns`
+    /// anything under a policy-skipped directory, and store `rel → now_ns`
     /// (a re-noted path replaces its instant). A delivery OUTSIDE the armed
     /// prefix is the OS disagreeing with the stream's scope — sticky doubt,
     /// exactly like the journal replay. OOM while noting is doubt too.
@@ -182,7 +183,7 @@ pub const Annals = struct {
         defer self.mu.unlock();
         const pfx = self.prefix orelse return; // unarmed: unanswerable anyway
         const rel = relativize(pfx, abs) orelse return self.poison();
-        if (rel.len == 0 or haystack.underSkippedDir(rel)) return; // the root itself / never-walked subtree
+        if (rel.len == 0 or haystack.underSkippedDir(rel, haystack.isPolicySkip)) return; // the root itself / never-walked subtree
         self.stamp += 1;
         // Past this line the ledger records WHICH file moved, and a poisoned
         // ledger has stopped doing that. The stamp above is the WHETHER, and it
@@ -406,6 +407,8 @@ test "firmlink alias resolves; foreign prefix poisons" {
 }
 
 test "skip-dir subtrees and the root itself are dropped, files named like skip dirs kept" {
+    const scope = haystack.stateSkipOverlay(.{ .names = &.{ ".git", "node_modules" } });
+    defer scope.release();
     const t = std.testing;
     var an = Annals.init(t.allocator);
     defer an.deinit();
@@ -440,6 +443,8 @@ test "eviction advances the floor past evicted deliveries" {
 }
 
 test "boot seed extends coverage backward with per-path instants" {
+    const scope = haystack.stateSkipOverlay(.{ .names = &.{".git"} });
+    defer scope.release();
     const t = std.testing;
     var an = Annals.init(t.allocator);
     defer an.deinit();
@@ -474,6 +479,8 @@ test "doubt is sticky forever" {
 }
 
 test "an unarmed ledger has no epoch; an armed still one is a stable epoch" {
+    const scope = haystack.stateSkipOverlay(.{ .names = &.{".git"} });
+    defer scope.release();
     const t = std.testing;
     var an = Annals.init(t.allocator);
     defer an.deinit();
@@ -547,4 +554,28 @@ test "doubt keeps the epoch answerable and advances it" {
     an.note("/r/b.zig", 20);
     try t.expect(an.epoch().? > after);
     try t.expect(an.since(t.allocator, 0) == null); // still no WHICH, as before
+}
+
+test "unignored baseline names seed and note the resident epoch and path ledger" {
+    const scope = haystack.stateSkipOverlay(.none);
+    defer scope.release();
+    const t = std.testing;
+    var an = Annals.init(t.allocator);
+    defer an.deinit();
+    armFor(&an, "/r", 0);
+    const before = an.epoch() orelse return error.TestUnexpectedResult;
+    try t.expect(an.seed("node_modules/pkg/source.txt", 10));
+    try t.expectEqual(before + 1, an.epoch().?);
+    an.note("/r/target/source.txt", 20);
+    try t.expectEqual(before + 2, an.epoch().?);
+    var changed = an.since(t.allocator, 0) orelse return error.TestUnexpectedResult;
+    defer changed.deinit(t.allocator);
+    try t.expectEqual(@as(usize, 2), changed.paths.len);
+    for ([_][]const u8{ "node_modules/pkg/source.txt", "target/source.txt" }) |want| {
+        var found = false;
+        for (changed.paths) |path| {
+            if (std.mem.eql(u8, path, want)) found = true;
+        }
+        try t.expect(found);
+    }
 }

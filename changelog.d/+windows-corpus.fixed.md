@@ -4,7 +4,7 @@ doc_radar:
     - file: src/corpus/tree/haystack.zig
       contains: ['paths.slashInPlace(buf);']
     - file: src/exec/session/watch/notify.zig
-      contains: ['const Action = enum(u32)', 'directory and haystack.isSkipDir(std.fs.path.basename(rel))', 'self.session.dirty_log.note(std.fs.path.dirname(path) orelse root.abs)']
+      contains: ['const Action = enum(u32)', 'directory and haystack.isPolicySkip(std.fs.path.basename(rel))', 'self.session.dirty_log.note(std.fs.path.dirname(path) orelse root.abs)']
     - file: .github/workflows/windows.yml
       contains: ['test_filter:', "github.event_name == 'workflow_dispatch' && inputs.test_filter || ''"]
 ---

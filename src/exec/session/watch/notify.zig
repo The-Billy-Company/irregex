@@ -391,12 +391,12 @@ fn noteRecord(self: anytype, root: *const Root, rec: []const u8, name: []const u
         self.noteUnattributable();
         return true;
     };
-    // The subtrees the walk never enters, dropped whole. inotify gets this by
-    // simply not watching them; a `WatchTree` subscription has no such choice, so
-    // `.git`, `node_modules` and `zig-cache` churn is filtered here instead —
-    // otherwise every object write in a `git` operation would dirty the session.
+    // Declared policy subtrees are dropped whole, as inotify does by not watching
+    // them. A `WatchTree` subscription cannot decline them at registration. Cold
+    // search admits unignored baseline names, so generic index exclusions cannot
+    // filter these events; other ignore rules are resolved by the reconcile walk.
     const directory = isDirectory(root, rec);
-    if (haystack.underSkippedDir(rel) or (directory and haystack.isSkipDir(std.fs.path.basename(rel)))) return false;
+    if (haystack.underSkippedDir(rel, haystack.isPolicySkip) or (directory and haystack.isPolicySkip(std.fs.path.basename(rel)))) return false;
     const path = abs[0 .. root.abs.len + 1 + rel.len];
     self.session.dirty_log.note(path);
     // A name birth/death moves the PARENT's membership, including a served root.

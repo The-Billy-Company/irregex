@@ -120,7 +120,7 @@ fn addWatchesRecursive(self: anytype, fd: i32, path: []const u8) bool {
     var it = dir.iterate();
     while (it.next(self.io) catch null) |e| {
         if (e.kind != .directory) continue;
-        if (haystack.isSkipDir(e.name)) continue;
+        if (haystack.isPolicySkip(e.name)) continue;
         const child = haystack.joinPath(self.gpa, path, e.name) catch return false;
         defer self.gpa.free(child);
         if (!addWatchesRecursive(self, fd, child)) return false;
@@ -195,7 +195,7 @@ fn processRecords(self: anytype, buf: []const u8) void {
 /// any step that cannot be resolved poisons the session (fail-closed).
 fn coverNewDir(self: anytype, ev: *const linux.inotify_event, buf: []const u8, rec_end: usize) void {
     const name = nameOf(ev, buf, rec_end) orelse return self.session.markDoubtForever();
-    if (haystack.isSkipDir(name)) return;
+    if (haystack.isPolicySkip(name)) return;
     const parent = self.wd_paths.get(ev.wd) orelse return self.session.markDoubtForever();
     const child = haystack.joinPath(self.gpa, parent, name) catch return self.session.markDoubtForever();
     defer self.gpa.free(child);
@@ -253,6 +253,10 @@ fn noteEvent(self: anytype, ev: *const linux.inotify_event, buf: []const u8, rec
     const child = haystack.joinPath(self.gpa, parent, name) catch return self.noteUnattributable();
     defer self.gpa.free(child);
     self.session.dirty_log.note(child);
+    // Entry birth/death changes parent membership; a served root must decline
+    // to a full walk. Content-only edits retain their exact file scope.
+    if (ev.mask & (linux.IN.CREATE | linux.IN.DELETE | linux.IN.MOVED_FROM | linux.IN.MOVED_TO) != 0)
+        self.session.dirty_log.note(parent);
     if (ev.mask & linux.IN.ISDIR == 0) noteAnnals(self, child);
 }
 

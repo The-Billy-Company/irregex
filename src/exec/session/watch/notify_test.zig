@@ -24,6 +24,7 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
+const haystack = @import("../../../corpus/tree/haystack.zig");
 const resident = @import("../warm/resident.zig");
 const rig = @import("rig.zig");
 const truth = @import("../warm/truth.zig");
@@ -107,6 +108,7 @@ test "notify: a skipped subtree's churn does not dirty the session" {
     try rig.withSeededRig("nt_skipped", struct {
         fn seed(tree: *Tree) !void {
             try rig.seedTree(tree);
+            haystack.installSkipOverlay(.{ .names = &.{"node_modules"} });
             // A `WatchTree` subscription has no way to decline a subtree, so the
             // filtering is `notify.zig`'s own. Without it every object write in a
             // `git` operation would dirty the session and cost it the fast path,
@@ -290,6 +292,7 @@ test "notify: excluded directory births stay clean but an equally named file sta
     if (comptime !is_windows) return;
     try rig.withSeededRig("nt_skip_kind", struct {
         fn seed(tree: *Tree) !void {
+            haystack.installSkipOverlay(.{ .names = &.{"node_modules"} });
             try rig.seedTree(tree);
             try tree.write("sub/node_modules", "needle in a plain file\n");
         }
