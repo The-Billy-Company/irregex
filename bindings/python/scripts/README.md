@@ -1,3 +1,12 @@
+---
+doc_radar:
+  sentinels:
+    - file: bindings/python/hatch_build.py
+      contains: ['os.environ.get("IRGX_ZIG_TARGET") or macos_target', 'toolchain.check_macos_floor(source, platform_tag)', 'toolchain.check_macos_floor(accel, platform_tag)']
+    - file: bindings/python/accel/toolchain.py
+      contains: ['-mmacosx-version-min=', '"xcrun", "lipo", "-archs"', '"xcrun", "vtool", "-show-build"']
+---
+
 # Build Scripts
 
 ## `build_wheels.py`
@@ -17,7 +26,9 @@ python3 scripts/build_wheels.py --list         # what the matrix covers
 Wheels land in `dist/`. A target that fails is reported at the end and does not
 stop the others, so one broken toolchain does not cost you the rest of the
 matrix. Running it requires `zig` on PATH, and either `uv` or `python3 -m
-build`.
+build`. Building macOS wheels also needs Apple's Command Line Tools
+(`xcode-select --install`); we use `lipo` and `vtool` to inspect the real
+binaries before packaging them.
 
 - **`macos-arm64`** builds at the `aarch64-macos.11.0` Zig triple, tagged
   `macosx_11_0_arm64`, at the `baseline` CPU floor.
@@ -66,10 +77,14 @@ passes four environment variables:
   would be a lie when cross-building.
 - **`IRGX_ZIG_TARGET`** is the triple, so the hook knows which OS's file
   layout and library name to expect.
-- **`IRGX_ZIG_CPU`** is the CPU floor to build at. Left unset, the hook falls
-  back to the same rule the matrix above encodes: `baseline` for an `aarch64`
-  target, `x86_64_v2` for an `x86_64` one.
+- **`IRGX_ZIG_CPU`** is the CPU floor for the engine and the accelerator's
+  Zig C-compiler fallback. Left unset, the hook falls back to the same rule
+  the matrix above encodes: `baseline` for an `aarch64` target, `x86_64_v2` for
+  an `x86_64` one.
 
 Building a wheel directly with `uv build` and none of those set is the
-local-development path: the hook runs `zig build` itself and derives this
-machine's tag.
+local-development path. On macOS we derive the engine target from the
+interpreter's corrected platform tag, and pass its deployment floor to the
+accelerator's compiler too. Both binaries must fit that tag's architecture and
+minimum OS. A missing tool or incompatible prebuilt binary fails the build;
+an import on the newer build host would miss that mismatch.

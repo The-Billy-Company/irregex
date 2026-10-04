@@ -111,8 +111,12 @@ class IrregexBuildHook(BuildHookInterface):
         if self.target_name != "wheel":
             return
 
-        zig_target = os.environ.get("IRGX_ZIG_TARGET")
+        platform_tag = self._platform_tag()
+        macos_target = toolchain.macos_target(platform_tag)
+        zig_target = os.environ.get("IRGX_ZIG_TARGET") or macos_target
         which_os = _os_of(zig_target)
+        if (which_os == "macos") != (macos_target is not None):
+            raise RuntimeError(f"{zig_target} does not fit wheel platform {platform_tag}")
         _, installed_name = _LAYOUT[which_os]
 
         prebuilt = os.environ.get("IRGX_PREBUILT_LIB")
@@ -123,6 +127,7 @@ class IrregexBuildHook(BuildHookInterface):
         else:
             source = self._build_with_zig(zig_target, which_os)
 
+        toolchain.check_macos_floor(source, platform_tag)
         build_data["pure_python"] = False
         build_data["infer_tag"] = False
         include = build_data.setdefault("force_include", {})
@@ -131,9 +136,10 @@ class IrregexBuildHook(BuildHookInterface):
         accel = self._build_accel(zig_target, which_os)
         python = "py3-none"
         if accel is not None:
+            toolchain.check_macos_floor(accel, platform_tag)
             include[str(accel)] = f"irgx/{accel.name}"
             python = f"cp{toolchain.ABI3_FLOOR[0]}{toolchain.ABI3_FLOOR[1]}-abi3"
-        build_data["tag"] = f"{python}-{self._platform_tag()}"
+        build_data["tag"] = f"{python}-{platform_tag}"
 
     def _build_accel(self, zig_target: str | None, which_os: str) -> Path | None:
         """Compile ``accel/irgx_accel.c``, or answer ``None`` to ship without it.
@@ -168,7 +174,9 @@ class IrregexBuildHook(BuildHookInterface):
         # file has to outlive `initialize` for hatchling to read it back.
         self._accel_dir = tempfile.TemporaryDirectory(prefix="irregex-accel-")
         out = Path(self._accel_dir.name) / toolchain.filename()
-        failed = toolchain.compile(out)
+        failed = toolchain.compile(
+            out, zig_target=zig_target, zig_cpu=_zig_cpu(zig_target) if zig_target else None
+        )
         if not failed:
             return out
         if required:
@@ -193,8 +201,8 @@ class IrregexBuildHook(BuildHookInterface):
             # Naming a target also opts out of native CPU detection - Zig falls
             # back to that target's baseline, and x86_64's baseline is SSE2,
             # below the SSSE3 the scan kernels want. So a target implies a
-            # floor. `scripts/build_wheels.py` sets both; a bare source build
-            # names neither and keeps Zig's native detection, which is right.
+            # floor. The matrix sets both; a bare macOS source build derives
+            # the OS floor from its tag and uses the same portable CPU rule.
             command += [f"-Dtarget={zig_target}", f"-Dcpu={_zig_cpu(zig_target)}"]
         subprocess.run(command, cwd=root, check=True)
 

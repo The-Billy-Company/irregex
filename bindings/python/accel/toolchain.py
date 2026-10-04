@@ -61,8 +61,9 @@ def compilers() -> list[list[str]]:
     The interpreter's own ``CC`` first, because an extension compiled by the
     compiler that built CPython is the one combination nobody has to reason
     about. ``zig cc`` last and always considered, because Zig is already
-    required to build the engine - so a machine that can build this project at
-    all can build the accelerator, with no second toolchain to install.
+    required to build the engine, so it is also available if the interpreter's
+    configured compiler cannot build the accelerator. macOS wheel packaging
+    additionally uses Apple's tools to inspect the binaries before shipping.
     """
     found: list[list[str]] = []
     if sys.platform != "win32":
@@ -104,7 +105,80 @@ def filename() -> str:
     return "_accel.pyd" if sys.platform == "win32" else "_accel.abi3.so"
 
 
-def compile(out: Path, *, loud: bool = False) -> list[str]:
+def macos_target(platform_tag: str) -> str | None:
+    """The macOS deployment target a wheel tag promises, or ``None`` elsewhere."""
+    if not platform_tag.startswith("macosx_"):
+        return None
+    try:
+        _, major, minor, arch = platform_tag.split("_", 3)
+        version = f"{int(major)}.{int(minor)}"
+        cpu = {"arm64": "aarch64", "x86_64": "x86_64"}[arch]
+    except (ValueError, KeyError) as exc:
+        raise RuntimeError(f"unsupported macOS wheel platform {platform_tag!r}") from exc
+    return f"{cpu}-macos.{version}"
+
+
+def check_macos_floor(artifact: Path, platform_tag: str) -> None:
+    """Ask Apple's tools whether this binary fits its wheel's architecture and floor.
+
+    Both the engine and the extension must pass. An import on the build host
+    cannot catch an extension that inherited that host's newer deployment target.
+    This checks the real Mach-O load commands, without rewriting their promise.
+    """
+    target = macos_target(platform_tag)
+    if target is None:
+        return
+    if shutil.which("xcrun") is None:
+        raise RuntimeError(
+            "macOS wheel validation needs Apple's Command Line Tools: xcode-select --install"
+        )
+    arch = platform_tag.split("_", 3)[3]
+    arches = subprocess.check_output(["xcrun", "lipo", "-archs", str(artifact)], text=True)
+    if arches.split() != [arch]:
+        raise RuntimeError(
+            f"{artifact}: architectures {arches.strip()!r} do not fit {platform_tag}"
+        )
+    output = subprocess.check_output(["xcrun", "vtool", "-show-build", str(artifact)], text=True)
+    commands: list[dict[str, str]] = []
+    for line in output.splitlines():
+        fields = line.split()
+        if len(fields) != 2:
+            continue
+        name, value = fields
+        if name == "cmd":
+            commands.append({name: value})
+        elif commands:
+            commands[-1][name] = value
+    builds = [
+        cmd for cmd in commands if cmd["cmd"] in ("LC_BUILD_VERSION", "LC_VERSION_MIN_MACOSX")
+    ]
+    if len(builds) != 1:
+        raise RuntimeError(f"{artifact}: expected one macOS deployment load command, got {builds}")
+    build = builds[0]
+    if build["cmd"] == "LC_BUILD_VERSION" and build.get("platform") != "MACOS":
+        raise RuntimeError(f"{artifact}: deployment platform is not macOS: {build}")
+    minimum = build.get("minos") if build["cmd"] == "LC_BUILD_VERSION" else build.get("version")
+    if not minimum:
+        raise RuntimeError(f"{artifact}: missing macOS deployment version: {build}")
+
+    def version(text: str) -> tuple[int, ...]:
+        parts = tuple(map(int, text.split(".")))
+        return parts + (0,) * (3 - len(parts))
+
+    promised = target.split("-macos.", 1)[1]
+    if version(minimum) > version(promised):
+        raise RuntimeError(
+            f"{artifact}: requires macOS {minimum}, but {platform_tag} promises {promised}"
+        )
+
+
+def compile(
+    out: Path,
+    *,
+    loud: bool = False,
+    zig_target: str | None = None,
+    zig_cpu: str | None = None,
+) -> list[str]:
     """Build the extension at ``out``. Returns what failed, empty on success.
 
     Every compiler is tried in turn rather than the first being decisive,
@@ -125,9 +199,20 @@ def compile(out: Path, *, loud: bool = False) -> list[str]:
         str(out),
     ]
     flags = link_flags()
+    if zig_target and "-macos." in zig_target:
+        # Explicit flags override CPython's CC and the host SDK/environment.
+        flags.append(f"-mmacosx-version-min={zig_target.split('-macos.', 1)[1]}")
     attempts: list[str] = []
     for compiler in compilers():
-        command = [*compiler, *flags, *common]
+        target = []
+        if compiler == ["zig", "cc"] and zig_target:
+            # An implicit Zig target detects the build host's CPU. Reuse the
+            # engine's explicit target and CPU policy instead of narrowing a
+            # portable wheel to the newer machine that happened to build it.
+            target = ["-target", zig_target]
+            if zig_cpu:
+                target.append(f"-mcpu={zig_cpu}")
+        command = [*compiler, *target, *flags, *common]
         if loud:
             print(f"$ {' '.join(command)}", flush=True)
         done = subprocess.run(command, capture_output=not loud, text=True)

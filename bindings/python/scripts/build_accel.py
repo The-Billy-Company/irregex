@@ -14,7 +14,9 @@ Windows), which is gitignored and which ``irgx._abi`` finds by plain import.
 the suite runs the whole surface on both transports.
 
 How to compile is ``accel/toolchain.py``'s, the same module the wheel hook asks,
-so a binary built here cannot differ from the one that ships.
+so compiler selection, stable-ABI flags and filenames stay in one place. This
+development build follows the host; the wheel hook additionally supplies its
+declared deployment target and CPU policy.
 """
 
 from __future__ import annotations

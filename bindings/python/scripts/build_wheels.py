@@ -188,9 +188,8 @@ def build_wheel(target: Target, library: Path, outdir: Path, *, accel: bool = Fa
         "IRGX_PREBUILT_LIB": str(library),
         "IRGX_WHEEL_PLATFORM": target.tag,
         "IRGX_ZIG_TARGET": target.zig,
-        # Unused on this path, which hands over a library already built above,
-        # but it keeps this matrix the single table: a source build triggered
-        # with the same environment resolves the same floor.
+        # The prebuilt engine and the accelerator's Zig-CC fallback share this
+        # CPU policy. A source build with the same environment does too.
         "IRGX_ZIG_CPU": target.cpu,
         # Never `auto` from here. Each wheel this script makes is one of the two
         # deliberately, so a machine that quietly lost its compiler publishes a

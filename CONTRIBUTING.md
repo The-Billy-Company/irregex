@@ -11,6 +11,8 @@ doc_radar:
       contains: ['ruff==0.16.10', 'editorconfig-checker==3.11.1', 'zizmor==1.30.1']
     - file: .github/workflows/release.yml
       contains: ['uv pip sync --require-hashes --only-binary :all: --strict', 'dist/pypi-attestations.txt']
+    - file: bindings/python/hatch_build.py
+      contains: ['toolchain.check_macos_floor(source, platform_tag)', 'toolchain.check_macos_floor(accel, platform_tag)']
 ---
 
 # Contributing
@@ -58,19 +60,25 @@ One toolchain is mandatory. The rest you need only for the binding you touch.
 | --- | --- | --- |
 | the engine | Zig **0.16.0** | `minimum_zig_version` in [`build.zig.zon`](build.zig.zon), `ZIG_VERSION` in CI |
 | the Python binding | [uv](https://docs.astral.sh/uv/) | `requires-python` floor 3.12 |
+| macOS wheel builds | Apple Command Line Tools (`xcode-select --install`) | `vtool` and `lipo` inspect the binaries against the wheel tag |
 | the Rust binding | rustup | `bindings/rust/rust-toolchain.toml` |
 | the Go binding | Go | `bindings/go/go.mod` |
 | the discipline gate | markdownlint-cli2, typos, shellcheck, golangci-lint | the actions in [`ci.yml`](.github/workflows/ci.yml), mirrored into `.mise.toml` |
 | Markdownlint's interpreter | Node **26.10.0** | `.mise.toml` and its native platform locks |
 | the topology gate | [zoning](https://github.com/The-Billy-Company/zoning) **1.4.0** | the `topology` job in [`ci.yml`](.github/workflows/ci.yml), mirrored into `.mise.toml` |
 
-If you run [mise](https://mise.jdx.dev), that whole table is one command:
+If you run [mise](https://mise.jdx.dev), it installs the pinned tools:
 
 ```bash
 mise install
 ```
 
-We use mise 2026.10.0 or newer. `.mise.toml` pins every row at the version CI uses;
+macOS wheel builds also need Apple's Command Line Tools. Run
+`xcode-select --install` once; mise does not install these system tools. The
+packaging hook checks both the engine and accelerator's architecture and minimum
+OS against the wheel tag before shipping them.
+
+We use mise 2026.10.0 or newer. `.mise.toml` pins the managed tools at the versions CI uses;
 `mise.lock` carries the checksums for all four release platforms and native
 sidecars freeze npm and Python tool dependencies. New tool dependencies wait
 two days. The pins are mirrors of the files in
