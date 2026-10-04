@@ -1,3 +1,12 @@
+---
+doc_radar:
+  sentinels:
+    - file: tools/build_unicode_tables.py
+      contains: [ 'UNICODE_VERSION = "17.0.0"' ]
+    - file: bindings/python/pyproject.toml
+      contains: [ 'import-names = [ "irgx" ]' ]
+---
+
 # irregex - a linear-time regex engine for Python
 
 A regex engine for Python that matches in linear time, shipped as a single
@@ -99,6 +108,8 @@ module-level verbs.
   default.
 - **`pcre`** switches to the PCRE2 grammar - lookaround and backreferences,
   and no linear-time guarantee.
+
+We use Unicode 17 in both engines, independently of the interpreter. New Unicode 17 letters and digits can match here while `re` on Python 3.12-3.14 still treats them as unassigned; use `unicode=False` for ASCII semantics. `str` offsets count characters and `bytes` offsets count bytes.
 
 Each flag composes with the others, and none of them touches the pattern text:
 

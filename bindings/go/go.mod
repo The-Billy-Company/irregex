@@ -11,4 +11,4 @@ module github.com/The-Billy-Company/irregex/bindings/go/v2
 
 go 1.24
 
-toolchain go1.26.5
+toolchain go1.27.1

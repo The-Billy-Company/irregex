@@ -11,7 +11,7 @@
 # cannot import the package.
 
 [build-system]
-requires = [ "hatchling>=1.27" ]
+requires = [ "hatchling>=1.32.4" ]
 build-backend = "hatchling.build"
 
 [project]
@@ -63,6 +63,9 @@ keywords = [
   "zig",
 ]
 dependencies = [  ]
+# PEP 794 names the import instead of asking installers to infer it from the
+# distribution name: we publish `irregex`, and callers import `irgx`.
+import-names = [ "irgx" ]
 classifiers = [
   "Development Status :: 4 - Beta",
   "Intended Audience :: Developers",
@@ -135,7 +138,7 @@ include = [
 # It is here so the suites that assert the two transports agree actually run.
 # `hatchling` is here for the same reason at one remove: it is the build backend,
 # and `test_description.py` drives the metadata hook that decides what PyPI shows.
-dev = [ "pytest>=8.0", "cffi>=1.17", "hatchling>=1.27" ]
+dev = [ "pytest>=8.0", "cffi>=1.17", "hatchling>=1.32.4" ]
 
 [tool.pytest.ini_options]
 testpaths = [ "tests" ]
@@ -156,3 +159,11 @@ ignore = [ "E501" ]
 
 [tool.ruff.lint.isort]
 known-first-party = [ "irgx" ]
+
+# Third-party artifacts clear 48 hours; our verified first-party distribution
+# is exempt from publish-time quarantine, including immediate wheel checks.
+[tool.uv]
+exclude-newer = "P2D"
+
+[tool.uv.exclude-newer-package]
+irregex = false

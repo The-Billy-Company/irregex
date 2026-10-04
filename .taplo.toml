@@ -11,6 +11,8 @@ exclude = [
   "**/zig-pkg/**",
   "**/Cargo.lock",
   "mise.lock",
+  # Native mise sidecars are byte-owned by their dependency resolvers too.
+  ".mise/locks/**",
   # This mirror is byte-checked against the kinship package's authored contract.
   "contract/kinship.toml",
 ]

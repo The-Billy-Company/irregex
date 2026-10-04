@@ -1,3 +1,10 @@
+---
+doc_radar:
+  sentinels:
+    - file: bindings/go/go.mod
+      contains: ['go 1.24', 'toolchain go1.27.1']
+---
+
 # irregex
 
 A regex engine for Go that matches in linear time, shipped as an ordinary Go
@@ -14,6 +21,9 @@ for your platform and links it into your program.
 
 You do need cgo, which means a C compiler. `CGO_ENABLED=0` will not build; see
 "The cgo Requirement" below.
+
+We support Go 1.24 and newer. The default contributor toolchain is Go 1.27.1;
+on macOS that compiler requires macOS 13 or newer.
 
 ## Reasons to Use It
 

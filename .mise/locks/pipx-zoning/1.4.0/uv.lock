@@ -1,0 +1,30 @@
+version = 1
+revision = 5
+requires-python = ">=3.9"
+
+[options]
+exclude-newer = "2026-10-02T09:57:30.093502Z"
+
+[[package]]
+name = "mise-pypi-tool-environment"
+version = "0.0.0"
+source = { virtual = "." }
+dependencies = [
+    { name = "zoning" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "zoning", specifier = "==1.4.0" }]
+
+[[package]]
+name = "zoning"
+version = "1.4.0"
+source = { registry = "https://pypi.org/simple/" }
+sdist = { url = "https://files.pythonhosted.org/packages/41/de/f64d355f790b415ff4d13c2562c9ea5b714ad5529f1c7f7a9632b2481419/zoning-1.4.0.tar.gz", hash = "sha256:4e8659fe35cea1166232aaf155e79a16db6a4fa88a0083fec733e887cd03c244", size = 301524, upload-time = "2026-08-17T19:25:09.65Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/45/fb/3c6d24821b1b653e344522b7147082ffbcae3c2a9cceb2720026c7faa63a/zoning-1.4.0-py3-none-macosx_10_12_x86_64.whl", hash = "sha256:3f6408419aafd9aa6ba8f555a28600736d61bce9d3d728eaf9505b626e444057", size = 1725599, upload-time = "2026-08-17T19:25:02.645Z" },
+    { url = "https://files.pythonhosted.org/packages/1e/12/028671fc3a8185ad296590512cbcb682bb99d38cdf3b51abc91d676cd4b7/zoning-1.4.0-py3-none-macosx_11_0_arm64.whl", hash = "sha256:9bc833d5cbbc5230e9313fe61229c8b9d5471c8b6c1efa1834d22adb5b2aed87", size = 1617475, upload-time = "2026-08-17T19:25:04.276Z" },
+    { url = "https://files.pythonhosted.org/packages/b8/5e/364315739618b7c80529698112eb781b774572cdc2c9373abe88911e12a6/zoning-1.4.0-py3-none-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:b54c647ba83db5f9627316034dc1e899b2a1d2cb1a7b8927de9f7b7efb770fc9", size = 1646345, upload-time = "2026-08-17T19:25:05.706Z" },
+    { url = "https://files.pythonhosted.org/packages/9b/82/42d2741b3934d9c50588f7af52e587329e6835d4b64114c713e8ce2083e0/zoning-1.4.0-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:cdad1e54634f7968f8d38e855eaf86bd75d80d378f51df2baf5daa5c53e8310b", size = 1768823, upload-time = "2026-08-17T19:25:06.932Z" },
+    { url = "https://files.pythonhosted.org/packages/b7/2e/534af581e4bf4b5bd6a09460e932d8adeaf0a06daf6980bba5ef6060c327/zoning-1.4.0-py3-none-win_amd64.whl", hash = "sha256:89877e7ba21838ada3f2bb8bc05b04dbdab3a3a12d891caf4bfdff9eefe1dd64", size = 1678886, upload-time = "2026-08-17T19:25:08.335Z" },
+]

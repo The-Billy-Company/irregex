@@ -1,0 +1,1 @@
+The push hook resolves Markdown discipline and its Node interpreter from the pushed commit's native mise lock and integrity-checked dependency sidecar. Its temporary snapshot still checks the committed Markdown; missing or damaged tool locks fail before an unpinned npm install can run. NUL-delimited filenames also work with macOS's bundled Bash, including spaces and newlines.

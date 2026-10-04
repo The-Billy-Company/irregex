@@ -37,6 +37,9 @@ permissions:
   contents: read
 
 env:
+  UV_EXCLUDE_NEWER: P2D
+  # Pinned uv carries eligible, immutable standalone interpreter URLs too.
+  UV_MANAGED_PYTHON: "true"
   ZIG_VERSION: 0.16.0
 
 jobs:
@@ -149,7 +152,9 @@ jobs:
       # the skip check below is here to catch.
       - name: Build the library the suite drives
         run: zig build --summary none
-      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: "0.12.22"
       # The binding ships two transports and a source checkout has one, so
       # without this the suite proves the ctypes half and reports green over the
       # C extension every published wheel for this platform actually contains.
@@ -218,7 +223,7 @@ jobs:
       # toolchain it needs is already standing up in this job.
       - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
-          version: v2.12.2
+          version: v2.14.0
           working-directory: bindings/go
 
   rust:
@@ -247,9 +252,10 @@ jobs:
       # layout that differs in every one of these repositories. This is a
       # plain step, so it inherits the working directory and the toolchain
       # rustup already resolved above.
-      - uses: taiki-e/install-action@7f4eb899022d8fe70b20c4f3de697aa85c309026 # v2.85.11
+      - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
         with:
-          tool: cargo-deny@0.19.0
+          tool: cargo-deny@0.20.2
+          fallback: none
       # deny.toml has been checked in the whole time with nothing running it.
       # `check` is all four: a RustSec advisory against anything in the graph,
       # the banned crates that would mean this binding grew a TLS stack or an
@@ -330,13 +336,15 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: "0.12.22"
       - name: Markdown structure and layout
         uses: DavidAnson/markdownlint-cli2-action@21c1be1b93ad9ed58fa840aacc3f279cde2a72ff # v24.2.0
         with:
           globs: "**/*.md"
       - name: Authored spelling
-        uses: crate-ci/typos@8a48f81b6c64dcfea44b3633223084c4be58ac5f # v1.49.0
+        uses: crate-ci/typos@00f422f3b19c57bc6338715ebfe3316d38768461 # v1.50.3
       - name: YAML structure
         run: uv run --no-project --with yamllint==1.38.0 yamllint .
       - name: TOML format and schemas
@@ -344,17 +352,17 @@ jobs:
           uv run --no-project --with taplo==0.9.3 taplo fmt --check
           uv run --no-project --with taplo==0.9.3 taplo lint
       - name: EditorConfig conformance
-        run: uv run --no-project --with editorconfig-checker==3.8.0 ec
+        run: uv run --no-project --with editorconfig-checker==3.11.1 ec
       - name: Python lint and format
         run: |
-          uv run --no-project --with ruff==0.16.1 ruff check --config quality/ruff.toml .
-          uv run --no-project --with ruff==0.16.1 ruff format --check --config quality/ruff.toml .
+          uv run --no-project --with ruff==0.16.10 ruff check --config quality/ruff.toml .
+          uv run --no-project --with ruff==0.16.10 ruff format --check --config quality/ruff.toml .
       - name: Shell correctness
         run: git ls-files -z '*.sh' | xargs -0 uv run --no-project --with shellcheck-py==0.11.0.1 shellcheck
       # Last, so it audits the exact file CI just interpreted — including every
       # action and permission this job itself introduced.
       - name: GitHub Actions security
-        run: uv run --no-project --with zizmor==1.29.0 zizmor --no-online-audits --strict-collection .
+        run: uv run --no-project --with zizmor==1.30.1 zizmor --no-online-audits --strict-collection .
 
   ratchets:
     # Five baseline-guarded lints over src/**/*.zig — see quality/ratchets/ —
@@ -372,7 +380,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: "0.12.22"
       # fix is in the code — never in the baseline.
       - run: uv run --no-project --python 3.12 python quality/ratchets/run.py
       # The detectors' own unit tests. A ratchet that stopped detecting reports
@@ -418,7 +428,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: "0.12.22"
       # The fix is in the code, or in a `variance ... because "..."` that says
       # what would retire it - never in quietly widening the contract to match
       # what the imports happen to do today.
@@ -427,7 +439,7 @@ jobs:
       # contract. A green run over the packages that opted in says nothing about
       # the one somebody adds next week, and coverage nobody checks decays.
       - name: Import topology
-        run: uv run --no-project --with zoning==1.3.1 zoning verify --complete
+        run: uv run --no-project --exclude-newer-package zoning=false --with zoning==1.4.0 zoning verify --complete
 
   version:
     # One number lives in `build.zig.zon`; the manifests that cannot import it —
@@ -437,14 +449,19 @@ jobs:
     # the interesting failure: nothing breaks until a release ships a package
     # claiming last version's number.
     #
-    # Stdlib-only, no Zig and no build — it reads lines.
+    # The shared gate parses the native manifests and checks every marked mirror.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
-      - run: uv run --no-project --python 3.12 python tools/version_parity.py
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: "0.12.22"
+      - uses: The-Billy-Company/.github/actions/package-release@a404e12749981c1909c8f751d477159a7bf74aee # main
+        with:
+          command: version
+          args: --root .
 
       # Every index this project publishes to shows the repository README as the
       # project's page, and each one resolves a relative link against its own
@@ -484,13 +501,15 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: "0.12.22"
       - name: every fragment is one towncrier recognizes
         run: |
           set -euo pipefail
           # The version is a placeholder — `--draft` writes nothing, and the
           # number only shows up in the heading it renders to stdout.
-          draft=$(uv run --no-project --with towncrier towncrier build --draft --version 0.0.0)
+          draft=$(uv run --no-project --with towncrier==26.9.0 towncrier build --draft --version 0.0.0)
           printf '%s\n' "$draft"
           # The vacuous-green guard, in the same spirit as `fmt`'s "found no .zig
           # files". A misconfigured `directory`, or a fragment directory towncrier
@@ -507,6 +526,9 @@ jobs:
             exit 1
           fi
 
+  windows:
+    uses: $/.github/workflows/windows.yml
+
   release-ready:
     # The one check `release.yml`'s preflight polls for on the exact tagged
     # commit (`release.toml`'s `[ci].required_check`). Everything above feeds
@@ -516,7 +538,7 @@ jobs:
     # anything upstream failed, which is exactly the case it has to report on.
     if: always()
     needs:
-      [engine, hermetic, python, go, rust, fmt, discipline, ratchets, topology, version, changelog]
+      [engine, hermetic, python, go, rust, fmt, discipline, ratchets, topology, version, changelog, windows]
     runs-on: ubuntu-latest
     steps:
       - name: every required job is green

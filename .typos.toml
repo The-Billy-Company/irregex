@@ -11,6 +11,7 @@ extend-exclude = [
   "vendor/",
   "bindings/rust/vendor/",
   "tools/ucd/",
+  "bindings/go/testdata/ucd/",
   "tools/whatwg/",
   # The UCD name table, front-coded: the same excluded standards text as
   # tools/ucd/, with every shared prefix elided. So a name's tail begins

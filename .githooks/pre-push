@@ -22,7 +22,7 @@ base_for() {
 }
 
 lint_ref() (
-  local local_sha=$1 remote_sha=$2 base work snapshot
+  local local_sha=$1 remote_sha=$2 base work snapshot path markdownlint node
   local -a markdown=() archive=()
 
   [[ "${local_sha}" != "${zero}" ]] || return 0
@@ -35,7 +35,9 @@ lint_ref() (
   work=$(mktemp -d "${TMPDIR:-/tmp}/markdown-pre-push.XXXXXX")
   trap 'rm -rf "${work}"' EXIT
   git diff --name-only -z --diff-filter=ACMR "${base}" "${local_sha}" -- '*.md' >"${work}/paths"
-  mapfile -d '' -t markdown <"${work}/paths"
+  while IFS= read -r -d '' path; do
+    markdown+=("${path}")
+  done <"${work}/paths"
   ((${#markdown[@]})) || return 0
 
   snapshot=${work}/tree
@@ -44,14 +46,26 @@ lint_ref() (
   if git cat-file -e "${local_sha}:.markdownlint-cli2.jsonc" 2>/dev/null; then
     archive+=(.markdownlint-cli2.jsonc)
   fi
+  # Resolve the tool from the same committed snapshot as the Markdown. Mise
+  # checks the native lock's sidecar digest and installs its complete graph;
+  # an absent lock must fail rather than silently resolve today's npm graph.
+  archive+=(.mise.toml mise.lock .mise/locks/npm-markdownlint-cli2)
   git archive "${local_sha}" -- "${archive[@]}" | tar -x -C "${snapshot}"
 
   printf 'pre-push: linting %d Markdown file(s) at %.12s\n' "${#markdown[@]}" "${local_sha}"
-  command -v npx >/dev/null 2>&1 || {
-    printf 'pre-push: npx is required to run Markdown discipline\n' >&2
+  command -v mise >/dev/null 2>&1 || {
+    printf 'pre-push: mise is required to run locked Markdown discipline\n' >&2
     return 1
   }
-  (cd "${snapshot}" && npx --yes markdownlint-cli2@0.23.1 --no-globs -- "${markdown[@]}")
+  (
+    cd "${snapshot}"
+    export MISE_TRUSTED_CONFIG_PATHS="${snapshot}"
+    mise install --locked -j 1 node npm:markdownlint-cli2
+    node=$(mise which --tool node node)
+    export PATH="${node%/*}:${PATH}"
+    markdownlint=$(mise which --tool npm:markdownlint-cli2 markdownlint-cli2)
+    "${markdownlint}" --no-globs -- "${markdown[@]}"
+  )
 )
 
 while read -r _local_ref local_sha _remote_ref remote_sha; do

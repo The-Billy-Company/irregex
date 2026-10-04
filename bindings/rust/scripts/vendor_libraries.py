@@ -286,7 +286,7 @@ def build(
         staging = work / "stage"
         run(
             [
-                zig, "build", "-Doptimize=ReleaseFast", f"-Dtarget={target.zig}",
+                zig, "build", "-j1", "-Doptimize=ReleaseFast", f"-Dtarget={target.zig}",
                 f"-Dcpu={target.cpu}",
                 "--prefix", str(staging), "--cache-dir", str(cache),
             ],

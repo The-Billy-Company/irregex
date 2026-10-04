@@ -4,7 +4,8 @@ version: "2"
 # correctness, error contracts, unsafe conversions, and suppression hygiene.
 run:
   timeout: 5m
-  go: "1.26"
+  # Analyze the public go.mod floor even when the contributor compiler is newer.
+  go: "1.24"
 
 linters:
   default: none

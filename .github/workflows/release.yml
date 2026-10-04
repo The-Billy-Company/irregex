@@ -42,6 +42,10 @@ concurrency:
   # A second tag run must wait; cancelling midway can strand a partial release.
   cancel-in-progress: false
 
+env:
+  UV_EXCLUDE_NEWER: P2D
+  UV_MANAGED_PYTHON: "true"
+
 jobs:
   preflight:
     # The shared release contract (`release.toml` + the org's `package-release`
@@ -56,26 +60,26 @@ jobs:
     runs-on: ubuntu-latest
     # Sized for the wait below, not for the work: everything this job does takes
     # seconds, and then it sits on `release-ready`.
-    timeout-minutes: 75
+    timeout-minutes: 195
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - id: version
         if: startsWith(github.ref, 'refs/tags/v')
-        uses: The-Billy-Company/.github/actions/package-release@18530e6f8b7ad634dcfe52e423e2a0a8e7bd521e # main
+        uses: The-Billy-Company/.github/actions/package-release@a404e12749981c1909c8f751d477159a7bf74aee # main
         with:
           command: version
           args: --root . --tag ${{ github.ref_name }}
       - if: startsWith(github.ref, 'refs/tags/v')
-        uses: The-Billy-Company/.github/actions/package-release@18530e6f8b7ad634dcfe52e423e2a0a8e7bd521e # main
+        uses: The-Billy-Company/.github/actions/package-release@a404e12749981c1909c8f751d477159a7bf74aee # main
         with:
           command: changelog
           args: >-
             --root . --require-fragments-empty
             --version ${{ fromJSON(steps.version.outputs.result).version }}
       - if: startsWith(github.ref, 'refs/tags/v')
-        uses: The-Billy-Company/.github/actions/package-release@18530e6f8b7ad634dcfe52e423e2a0a8e7bd521e # main
+        uses: The-Billy-Company/.github/actions/package-release@a404e12749981c1909c8f751d477159a7bf74aee # main
         with:
           command: tag-ancestor
           args: ${{ github.repository }} ${{ github.sha }} --branch main
@@ -85,16 +89,17 @@ jobs:
       # `main` today, and the check does not even appear until the jobs it
       # aggregates finish. The shared action's default 15-minute patience is a
       # race it loses every time: v2.1.0 gave up fifteen minutes into a slate
-      # that needed thirty-one. An hour is that measurement with room for a
-      # queued runner, and still bounded, so a genuinely stuck slate fails the
-      # release instead of publishing without a verdict.
+      # that needed thirty-one. Windows now feeds the same aggregate and its
+      # native jobs have a sixty-minute ceiling. The observed slowest Windows
+      # run needed 140 minutes including queueing and retries; three hours gives
+      # that observed bound room while a stuck slate still blocks publication.
       - if: startsWith(github.ref, 'refs/tags/v') && !inputs.expedite
-        uses: The-Billy-Company/.github/actions/package-release@18530e6f8b7ad634dcfe52e423e2a0a8e7bd521e # main
+        uses: The-Billy-Company/.github/actions/package-release@a404e12749981c1909c8f751d477159a7bf74aee # main
         with:
           command: ci-status
           args: >-
             ${{ github.repository }} ${{ github.sha }}
-            --timeout-seconds 3600 --interval-seconds 30
+            --timeout-seconds 10800 --interval-seconds 30
 
   wheels:
     needs: preflight
@@ -115,21 +120,26 @@ jobs:
         with:
           version: 0.16.0
           use-cache: false
-      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
+          version: "0.12.22"
           enable-cache: false
       # `preflight` already re-verified this against every mirror; the shared
       # action reads it the same way here so this job's own artifact never
       # disagrees with what preflight just approved.
       - name: The tag must name the version being published
         if: startsWith(github.ref, 'refs/tags/v')
-        uses: The-Billy-Company/.github/actions/package-release@18530e6f8b7ad634dcfe52e423e2a0a8e7bd521e # main
+        uses: The-Billy-Company/.github/actions/package-release@a404e12749981c1909c8f751d477159a7bf74aee # main
         with:
           command: version
           args: --root . --tag ${{ github.ref_name }}
 
       - name: Prepare the native archive strip tool
-        run: rustup component add llvm-tools
+        working-directory: bindings/rust
+        run: |
+          rustup component add llvm-tools
+          read -r toolchain _ <<<"$(rustup show active-toolchain)"
+          echo "RUSTUP_TOOLCHAIN=$toolchain" >> "$GITHUB_ENV"
 
       - name: Build every target
         run: uv run --python 3.12 python scripts/build_wheels.py --native-archives dist/native-archives
@@ -166,7 +176,7 @@ jobs:
           "
 
       - name: Check the metadata the index will read
-        run: uvx twine check dist/*.whl
+        run: uv run --no-project --with twine==7.0.0 twine check dist/*.whl
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -209,8 +219,9 @@ jobs:
         with:
           name: wheels
           path: dist
-      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
+          version: "0.12.22"
           enable-cache: false
 
       # `shell: bash` on every OS (Windows runners ship Git Bash) so one
@@ -250,31 +261,23 @@ jobs:
         with:
           name: wheels
           path: dist
-      - id: tag
-        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-      # Probed before the OIDC token is minted, the same idempotency the
-      # `crates` job proves below: a retry after a flake, or a dispatch on a
-      # tag that already shipped, must land on "already there" rather than
-      # spend a credential on an upload PyPI will reject anyway.
-      - id: probe
-        uses: The-Billy-Company/.github/actions/package-release@18530e6f8b7ad634dcfe52e423e2a0a8e7bd521e # main
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
-          command: registry-probe
-          args: pypi irregex ${{ steps.tag.outputs.version }}
-      - name: probe answered
-        env:
-          STATE: ${{ steps.probe.outputs.result }}
-          STEPS_TAG_OUTPUTS_VERSION: ${{ steps.tag.outputs.version }}
-        run: |
-          set -euo pipefail
-          if [ "$STATE" = error ]; then
-            echo "::error::PyPI did not answer for irregex ${STEPS_TAG_OUTPUTS_VERSION} —" \
-                 "a network failure is never treated as \"absent\"." >&2
-            exit 1
-          fi
-          echo "irregex ${STEPS_TAG_OUTPUTS_VERSION} on PyPI: $STATE"
-      - if: steps.probe.outputs.result == 'absent'
-        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+          version: "0.12.22"
+          enable-cache: false
+      # Preserve the action's PEP 740 provenance with PyPI's own signer. Its
+      # ambient identity is this workflow/environment's OIDC identity; signing
+      # fails before publication if that identity or an artifact is invalid.
+      - name: Sign the wheel set with this Trusted Publisher
+        run: uv run --no-project --python 3.12 --with pypi-attestations==0.0.30 python -m pypi_attestations sign dist/*.whl
+      # A version-level probe misses partially uploaded matrices. uv compares
+      # each filename and SHA-256 against the index, skips only identical bytes,
+      # and rejects a collision. Retrying still signs every candidate, so a
+      # missing slice never uploads without its adjacent publish attestation.
+      # Native Trusted Publishing revokes the short-lived token after upload,
+      # including failures; no persistent credential or image resolver is used.
+      - name: Publish the attested wheel set
+        run: uv publish --trusted-publishing always --check-url https://pypi.org/simple/ dist/*.whl
   # ── crates.io
   #
   # A sibling of `publish`, not a step inside it. The two registries fail
@@ -307,7 +310,7 @@ jobs:
       # the same way here means this job's own artifact never disagrees with
       # what preflight just approved.
       - name: The tag must name the version being published
-        uses: The-Billy-Company/.github/actions/package-release@18530e6f8b7ad634dcfe52e423e2a0a8e7bd521e # main
+        uses: The-Billy-Company/.github/actions/package-release@a404e12749981c1909c8f751d477159a7bf74aee # main
         with:
           command: version
           args: --root . --tag ${{ github.ref_name }}
@@ -329,7 +332,7 @@ jobs:
       - id: tag
         run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
       - id: state
-        uses: The-Billy-Company/.github/actions/package-release@18530e6f8b7ad634dcfe52e423e2a0a8e7bd521e # main
+        uses: The-Billy-Company/.github/actions/package-release@a404e12749981c1909c8f751d477159a7bf74aee # main
         with:
           command: registry-probe
           args: crates irgx ${{ steps.tag.outputs.version }}
@@ -519,8 +522,8 @@ jobs:
   # thirteen commits were `ci:` or `docs:` and both are `hidden`. This posts the
   # folded `## [X.Y.Z]` section over that body.
   #
-  # Deliberately not `needs: preflight`: preflight's last step waits up to an
-  # hour for `release-ready` on this commit, and the release page should read
+  # Deliberately not `needs: preflight`: preflight's last step waits up to
+  # three hours for `release-ready` on this commit, and the release page should read
   # correctly within a minute of the tag rather than after the publish gate
   # clears. Nothing here ships an artifact, so it does not need that gate — and
   # if the section is missing this fails loudly, leaving the release with the
@@ -537,7 +540,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: The-Billy-Company/.github/actions/package-release@18530e6f8b7ad634dcfe52e423e2a0a8e7bd521e # main
+      - uses: The-Billy-Company/.github/actions/package-release@a404e12749981c1909c8f751d477159a7bf74aee # main
         with:
           command: notes
           args: >-

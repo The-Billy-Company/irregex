@@ -1,3 +1,16 @@
+---
+doc_radar:
+  sentinels:
+    - file: .mise.toml
+      contains: ['min_version = "2026.10.0"', 'minimum_release_age = "2d"', '"pipx:zoning" = "1.4.0"', 'node = "26.10.0"']
+    - file: .githooks/pre-push
+      contains: ['mise install --locked -j 1 node npm:markdownlint-cli2']
+    - file: bindings/rust/Cargo.toml
+      contains: ['rust-version = "1.85"']
+    - file: .github/workflows/ci.yml
+      contains: ['ruff==0.16.10', 'editorconfig-checker==3.11.1', 'zizmor==1.30.1']
+---
+
 # Contributing
 
 Thanks for looking. This page is the practical half - what to install, what to
@@ -46,7 +59,8 @@ One toolchain is mandatory. The rest you need only for the binding you touch.
 | the Rust binding | rustup | `bindings/rust/rust-toolchain.toml` |
 | the Go binding | Go | `bindings/go/go.mod` |
 | the discipline gate | markdownlint-cli2, typos, shellcheck, golangci-lint | the actions in [`ci.yml`](.github/workflows/ci.yml), mirrored into `.mise.toml` |
-| the topology gate | [zoning](https://github.com/The-Billy-Company/zoning) **0.1.1** | the `topology` job in [`ci.yml`](.github/workflows/ci.yml), mirrored into `.mise.toml` |
+| Markdownlint's interpreter | Node **26.10.0** | `.mise.toml` and its native platform locks |
+| the topology gate | [zoning](https://github.com/The-Billy-Company/zoning) **1.4.0** | the `topology` job in [`ci.yml`](.github/workflows/ci.yml), mirrored into `.mise.toml` |
 
 If you run [mise](https://mise.jdx.dev), that whole table is one command:
 
@@ -54,8 +68,10 @@ If you run [mise](https://mise.jdx.dev), that whole table is one command:
 mise install
 ```
 
-`.mise.toml` pins every row at the version CI uses and `mise.lock` carries the
-checksums for all four release platforms. The pins are mirrors of the files in
+We use mise 2026.10.0 or newer. `.mise.toml` pins every row at the version CI uses;
+`mise.lock` carries the checksums for all four release platforms and native
+sidecars freeze npm and Python tool dependencies. New tool dependencies wait
+two days. The pins are mirrors of the files in
 the third column and never the authority, so bumping one means bumping the
 other in the same commit.
 
@@ -161,15 +177,17 @@ all. Every command below is the one CI runs, at the version CI pins, so a green
 run here is a green job there:
 
 ```bash
+export UV_EXCLUDE_NEWER=P2D
 markdownlint-cli2                                                    # layout and structure
 typos                                                                # authored spelling
 uv run --no-project --with yamllint==1.38.0 yamllint .
-uv run --no-project --with taplo==0.9.3 taplo fmt --check && taplo lint
-uv run --no-project --with editorconfig-checker==3.8.0 ec
-uv run --no-project --with ruff==0.16.1 ruff check  --config quality/ruff.toml .
-uv run --no-project --with ruff==0.16.1 ruff format --config quality/ruff.toml .
+uv run --no-project --with taplo==0.9.3 taplo fmt --check
+uv run --no-project --with taplo==0.9.3 taplo lint
+uv run --no-project --with editorconfig-checker==3.11.1 ec
+uv run --no-project --with ruff==0.16.10 ruff check  --config quality/ruff.toml .
+uv run --no-project --with ruff==0.16.10 ruff format --check --config quality/ruff.toml .
 git ls-files -z '*.sh' | xargs -0 shellcheck
-uv run --no-project --with zizmor==1.29.0 zizmor --no-online-audits --strict-collection .
+uv run --no-project --with zizmor==1.30.1 zizmor --no-online-audits --strict-collection .
 ```
 
 Two of those judge things worth knowing about before you hit them. `ruff` skips

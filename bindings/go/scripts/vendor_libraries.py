@@ -379,6 +379,7 @@ def build(
             [
                 zig,
                 "build",
+                "-j1",
                 "-Doptimize=ReleaseFast",
                 f"-Dtarget={target.zig}",
                 f"-Dcpu={target.cpu}",
