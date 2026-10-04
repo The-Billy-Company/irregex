@@ -27,6 +27,12 @@ name: windows
 on:
   workflow_call:
   workflow_dispatch:
+    inputs:
+      test_filter:
+        description: "Optional comma-separated test-name substrings; diagnostic only, not full CI"
+        type: string
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -40,7 +46,7 @@ env:
 
 jobs:
   native:
-    name: native (${{ matrix.arch }})
+    name: ${{ inputs.test_filter != '' && 'diagnostic' || 'native' }} (${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
     defaults:
       run:
@@ -75,7 +81,15 @@ jobs:
 
       - name: Unit suite
         if: ${{ matrix.suite }}
-        run: zig build test "-Dtarget=$($env:ZIG_TARGET)" -j1
+        env:
+          IRREGEX_TEST_FILTER: ${{ github.event_name == 'workflow_dispatch' && inputs.test_filter || '' }}
+        run: |
+          $zigArgs = @('build', 'test', "-Dtarget=$($env:ZIG_TARGET)", '-j1')
+          if ($env:IRREGEX_TEST_FILTER) {
+            $zigArgs += @("-Dtest-filter=$($env:IRREGEX_TEST_FILTER)", '-Dtest-shards=1')
+          }
+          & zig @zigArgs
+          if ($LASTEXITCODE -ne 0) { throw "Unit suite exited $LASTEXITCODE" }
 
       # Compile every test source for this triple and run none of them. Sema and
       # codegen over test-only code are the one thing `check-windows` does not
@@ -129,6 +143,7 @@ jobs:
   # is not untested, though: it is the same engine build, for the same Zig
   # triple, that the Go arm64 step below links and runs on this kernel.
   bindings:
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.test_filter == '' }}
     name: bindings (${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
@@ -209,7 +224,8 @@ jobs:
     # A newer draft push deliberately cancels this run. Preserve the aggregate for
     # real matrix failures, but do not turn an obsolete cancellation into a
     # second, misleading failed check.
-    if: ${{ !cancelled() }}
+    # A filtered manual run is a diagnostic, not an aggregate release verdict.
+    if: ${{ !cancelled() && (github.event_name != 'workflow_dispatch' || inputs.test_filter == '') }}
     needs: [native, bindings]
     runs-on: ubuntu-latest
     steps:

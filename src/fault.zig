@@ -299,9 +299,10 @@ pub fn spare(what: []const u8, result: anytype) void {
 /// through to `@errorName`, so a new member becomes a mystery string in a
 /// user's terminal instead of a compile error here.
 ///
-/// The phrases are ripgrep's own, byte for byte. The differential harness keys
-/// on the errno phrase and the exit class (never the `rg:`/`<binary>:` prefix),
-/// so these strings are contract, not prose.
+/// On POSIX the phrases are ripgrep's own, byte for byte. The differential
+/// harness keys on the errno phrase and exit class (never the binary prefix).
+/// Windows preserves the CRT errno domain; Win32 last-error parity is a separate
+/// contract. These strings are contract, not prose.
 pub fn pathNote(e: Corpus) []const u8 {
     return switch (e) {
         // ENOENT/EACCES/ENOTDIR carry the same number on every target we build.
@@ -309,7 +310,9 @@ pub fn pathNote(e: Corpus) []const u8 {
         error.AccessDenied => "Permission denied (os error 13)",
         error.NotDir => "Not a directory (os error 20)",
         // These two do NOT: ELOOP and ENAMETOOLONG are 62/63 on Darwin but
-        // 40/36 on Linux. ripgrep prints whatever number the OS gave it, so a
+        // 40/36 on Linux and 114/38 in the Windows CRT. POSIX ripgrep prints
+        // the errno; Windows here preserves the declared CRT domain rather
+        // than claiming parity with Win32 last-error codes. A
         // literal here is right on the machine it was written on and wrong on
         // the other — silently, and only in the differential harness's output.
         error.SymLinkLoop => errnoNote("Too many levels of symbolic links", .LOOP),
@@ -350,7 +353,7 @@ test "the five domains merge without collapsing a member" {
     try std.testing.expectEqual(@as(usize, 24), @typeInfo(Fault).error_set.?.len);
 }
 
-test "pathNote answers each corpus member with ripgrep's own phrasing" {
+test "pathNote answers each corpus member with the platform errno contract" {
     try std.testing.expectEqualStrings("No such file or directory (os error 2)", pathNote(error.FileNotFound));
     try std.testing.expectEqualStrings("Permission denied (os error 13)", pathNote(error.AccessDenied));
     try std.testing.expectEqualStrings("Not a directory (os error 20)", pathNote(error.NotDir));
@@ -360,6 +363,9 @@ test "pathNote answers each corpus member with ripgrep's own phrasing" {
     // test that re-derived it the same way could not.
     const loop, const long = switch (builtin.os.tag) {
         .linux => .{ "os error 40", "os error 36" },
+        // Microsoft CRT errno constants, independently confirmed in errno.h:
+        // https://learn.microsoft.com/en-us/cpp/c-runtime-library/errno-constants
+        .windows => .{ "os error 114", "os error 38" },
         else => .{ "os error 62", "os error 63" },
     };
     try std.testing.expectEqualStrings("Too many levels of symbolic links (" ++ loop ++ ")", pathNote(error.SymLinkLoop));

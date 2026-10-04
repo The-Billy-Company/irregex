@@ -140,3 +140,16 @@ test "Walker applies nested gitignore precedence to every corpus consumer" {
     }
     try t.expect(visible and kept);
 }
+
+test "joinPath and joinRoot normalize platform separators in both borrowed components" {
+    const t = std.testing;
+    const sep = std.fs.path.sep_str;
+    const root = "root" ++ sep ++ "tree";
+    const rel = "sub" ++ sep ++ "leaf.txt";
+    const joined = try haystack.joinPath(t.allocator, root, rel);
+    defer t.allocator.free(joined);
+    try t.expectEqualStrings("root/tree/sub/leaf.txt", joined);
+    const relative = try haystack.joinRoot(t.allocator, ".", rel);
+    defer t.allocator.free(relative);
+    try t.expectEqualStrings("sub/leaf.txt", relative);
+}

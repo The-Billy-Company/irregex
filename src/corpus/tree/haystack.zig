@@ -268,6 +268,7 @@ pub fn joinPath(a: std.mem.Allocator, root: []const u8, rel: []const u8) ![]u8 {
     @memcpy(buf[0..root.len], root);
     buf[root.len] = '/';
     @memcpy(buf[root.len + 1 ..], rel);
+    paths.slashInPlace(buf);
     return buf;
 }
 
@@ -276,7 +277,11 @@ pub fn joinPath(a: std.mem.Allocator, root: []const u8, rel: []const u8) ![]u8 {
 /// so indexed paths, walk output, and query root-scoping all compare
 /// byte-equal — the same shape a rootless bare-pattern walk emits.
 pub fn joinRoot(a: std.mem.Allocator, root: []const u8, rel: []const u8) ![]u8 {
-    if (std.mem.eql(u8, root, ".")) return a.dupe(u8, rel);
+    if (std.mem.eql(u8, root, ".")) {
+        const buf = try a.dupe(u8, rel);
+        paths.slashInPlace(buf);
+        return buf;
+    }
     return joinPath(a, root, rel);
 }
 
@@ -326,7 +331,6 @@ pub const Walker = struct {
             // the join's own buffer, so a platform that needs it pays no second
             // allocation.
             const path = try joinRoot(self.a, self.root_path, entry.path);
-            paths.slashInPlace(path);
             if (entry.kind == .directory) {
                 if (isSkipDir(entry.basename) or self.ig.shouldSkip(path, true, entry.basename, false, false)) continue;
                 try self.ig.loadDir(path, path);

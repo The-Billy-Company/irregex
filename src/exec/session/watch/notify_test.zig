@@ -66,7 +66,11 @@ test "notify: a recursive subscription costs one handle per root, not per direct
             try rig.advanceClock(r.tree.io);
             try r.tree.write("sub/a/b/c/d/e/deep.txt", "hushed at depth\n");
             try r.expectScopedOracle("needle");
-            try std.testing.expect(r.watcher.notify_roots[0].pending);
+            {
+                r.watcher.read_lock.lock();
+                defer r.watcher.read_lock.unlock();
+                try std.testing.expect(r.watcher.notify_roots[0].pending);
+            }
             // Exercise the real granted right, then stop with an outstanding request.
             try std.testing.expectEqual(w.NTSTATUS.SUCCESS, w.ntdll.NtSetEvent(r.watcher.notify_stop, null));
         }
@@ -232,6 +236,21 @@ test "notify: the plain record class arms and answers exactly like the extended 
     try tree.mkdir("sub/born");
     try tree.write("sub/born/x.txt", "needle newborn plain\n");
     try r.expectScopedOracle("needle");
+
+    // Removed/renamed entries have no reliable live metadata. The plain class
+    // still reports both membership ends and leaves the same disk-correct set.
+    try rig.advanceClock(io);
+    try tree.move("sub/born/x.txt", "two/moved.txt");
+    try r.expectScopedOracle("needle");
+    try rig.advanceClock(io);
+    try tree.remove("two/moved.txt");
+    try r.expectScopedOracle("needle");
+    try rig.advanceClock(io);
+    try tree.write("root_plain.txt", "needle born at root\n");
+    try r.expectFullOracle("needle");
+    try rig.advanceClock(io);
+    try tree.remove("root_plain.txt");
+    try r.expectFullOracle("needle");
 }
 
 test "notify: a foreign request context retires trust without stealing the real request" {
@@ -247,12 +266,45 @@ test "notify: a foreign request context retires trust without stealing the real 
                 0,
             ));
             try std.testing.expect(r.watcher.flushSync());
-            try std.testing.expect(!r.session.seqlock.armed());
-            try std.testing.expect(r.watcher.notify_roots[0].pending);
+            // Trust is permanently retired; the real subscription stays live.
+            try std.testing.expect(r.session.seqlock.armed());
+            try std.testing.expect(!r.session.seqlock.eligible());
+            try std.testing.expect(!r.session.seqlock.provenClean());
+            try std.testing.expect(r.session.annals.epoch() == null);
+            {
+                r.watcher.read_lock.lock();
+                defer r.watcher.read_lock.unlock();
+                try std.testing.expect(r.watcher.notify_roots[0].pending);
+            }
             try rig.advanceClock(r.tree.io);
             try r.tree.write("sub/b.txt", "hushed after the foreign packet\n");
             try r.expectOracle("needle");
+            try std.testing.expect(!r.session.seqlock.eligible());
             try std.testing.expect(!r.session.seqlock.provenClean());
+            try std.testing.expect(r.session.annals.epoch() == null);
+        }
+    }.run);
+}
+
+test "notify: excluded directory births stay clean but an equally named file stays admissible" {
+    if (comptime !is_windows) return;
+    try rig.withSeededRig("nt_skip_kind", struct {
+        fn seed(tree: *Tree) !void {
+            try rig.seedTree(tree);
+            try tree.write("sub/node_modules", "needle in a plain file\n");
+        }
+    }.seed, struct {
+        fn run(r: *Rig) !void {
+            try r.expectOracle("needle");
+            try rig.advanceClock(r.tree.io);
+            try r.tree.mkdir("node_modules/pkg");
+            try r.tree.writeIgnored("node_modules/pkg/index.js", "needle excluded\n");
+            try std.testing.expect(r.watcher.flushSync());
+            try std.testing.expect(r.session.seqlock.provenClean());
+            try r.expectOracle("needle");
+            try rig.advanceClock(r.tree.io);
+            try r.tree.write("sub/node_modules", "hushed plain file\n");
+            try r.expectScopedOracle("needle");
         }
     }.run);
 }

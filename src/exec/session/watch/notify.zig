@@ -131,6 +131,13 @@ const idle_ns: w.LARGE_INTEGER = -500 * std.time.ns_per_ms / 100;
 /// cannot silently turn every directory into a file.
 const directory_bit: u32 = @bitCast(w.FILE.ATTRIBUTE{ .DIRECTORY = true });
 
+/// `FILE_ACTION_*` from winnt.h (not named in std); both record layouts share it.
+const Action = enum(u32) { added = 1, removed = 2, modified = 3, renamed_old = 4, renamed_new = 5, _ };
+
+fn recordAction(rec: []const u8) Action {
+    return @enumFromInt(u32At(rec, @offsetOf(w.FILE.NOTIFY.INFORMATION, "Action")));
+}
+
 /// One root's recursive subscription. Pointer-stable for its whole life — the
 /// kernel is holding `&iosb` and writing into `buffer` — which is why `watch.zig`
 /// keeps these in a slice allocated once at arm time and never grows it.
@@ -388,10 +395,19 @@ fn noteRecord(self: anytype, root: *const Root, rec: []const u8, name: []const u
     // simply not watching them; a `WatchTree` subscription has no such choice, so
     // `.git`, `node_modules` and `zig-cache` churn is filtered here instead —
     // otherwise every object write in a `git` operation would dirty the session.
-    if (haystack.underSkippedDir(rel)) return false;
+    const directory = isDirectory(root, rec);
+    if (haystack.underSkippedDir(rel) or (directory and haystack.isSkipDir(std.fs.path.basename(rel)))) return false;
     const path = abs[0 .. root.abs.len + 1 + rel.len];
     self.session.dirty_log.note(path);
-    if (!isDirectory(root, rec)) noteAnnals(self, root, path, rec);
+    // A name birth/death moves the PARENT's membership, including a served root.
+    // Note it as well as the entry: Delta declines the root to a full walk, while
+    // an in-place edit keeps its exact file scope and its actual annals key.
+    switch (recordAction(rec)) {
+        .added, .removed, .renamed_old, .renamed_new => self.session.dirty_log.note(std.fs.path.dirname(path) orelse root.abs),
+        .modified => {},
+        else => self.noteUnattributable(),
+    }
+    if (!directory) noteAnnals(self, root, path, rec);
     return true;
 }
 
@@ -445,10 +461,9 @@ fn noteAnnals(self: anytype, root: *const Root, abs: []const u8, rec: []const u8
 
 fn recordNs(root: *const Root, rec: []const u8) ?i128 {
     const E = w.FILE.NOTIFY.EXTENDED_INFORMATION;
-    const gone = switch (u32At(rec, @offsetOf(E, "Action"))) {
-        // `FILE_ACTION_REMOVED` / `FILE_ACTION_RENAMED_OLD_NAME`. Not named in
-        // std, and only these two need telling apart from the rest.
-        2, 4 => true,
+    const gone = switch (recordAction(rec)) {
+        // Removed and renamed-away timestamps describe the entry before its death.
+        .removed, .renamed_old => true,
         else => false,
     };
     if (gone or !root.extended) return wallNowNs();
