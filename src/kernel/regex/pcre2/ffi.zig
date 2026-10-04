@@ -1,4 +1,4 @@
-//! irregex — the minimal C-ABI surface of the vendored PCRE2 10.47 8-bit
+//! irregex — the minimal C-ABI surface of the vendored PCRE2 10.49 8-bit
 //! library.
 //!
 //! We bind PCRE2 with explicit `extern` declarations rather than `@cImport`
@@ -23,6 +23,11 @@ pub const JitStack = opaque {};
 
 /// `PCRE2_SIZE` — every offset/length in the API; `size_t` at width 8.
 pub const Size = usize;
+
+/// Native PCRE2 configuration keys and errors from the pinned public header.
+pub const CONFIG_VERSION: u32 = 11;
+pub const ERROR_JIT_STACKLIMIT: c_int = -46;
+pub extern "c" fn pcre2_config_8(what: u32, where: ?*anyopaque) c_int;
 
 // ── compile / match option bits (subset; values from vendored pcre2.h) ──
 pub const CASELESS: u32 = 0x00000008;

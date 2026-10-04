@@ -46,7 +46,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-UNICODE_VERSION = "16.0.0"
+UNICODE_VERSION = "17.0.0"
 HERE = Path(__file__).resolve().parent
 UCD = HERE / "ucd"
 OUT = HERE.parent / "src" / "kernel" / "regex" / "unicode" / "names.gen.zig"

@@ -39,7 +39,7 @@ const fault = @import("../../../fault.zig");
 /// a sharded shelf, not a wider integer.
 pub const max_text_len: usize = std.math.maxInt(i32);
 
-/// libsais 2.10.2, bound with explicit `extern` rather than `@cImport` (the
+/// libsais 2.10.4, bound with explicit `extern` rather than `@cImport` (the
 /// house convention — see `kernel/regex/pcre2/ffi.zig`) so no module
 /// needs the vendored include path. `SA` must hold `n + fs` entries; `fs` is
 /// scratch libsais may borrow past the end, and upstream documents 0 as enough

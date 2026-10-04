@@ -5,7 +5,7 @@ The engine is a byte automaton; to match Unicode *codepoint* classes it needs
 compact, sorted scalar-range tables for the Perl classes (\\w \\d \\s), the simple
 case-fold orbits (-i / smart-case), and the \\p{...} general categories + scripts.
 This generator is the single source of those tables: it reads the vendored UCD
-16.0.0 text files (provenance in tools/ucd/README.md) and emits one generated Zig
+17.0.0 text files (provenance in tools/ucd/README.md) and emits one generated Zig
 module. It is stdlib-only and deterministic, so
 `python3 tools/build_unicode_tables.py --check` is a sound drift gate — the
 checked-in tables.gen.zig must be exactly what this script produces from the
@@ -20,10 +20,11 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-UNICODE_VERSION = "16.0.0"
+UNICODE_VERSION = "17.0.0"
 HERE = Path(__file__).resolve().parent
 UCD = HERE / "ucd"
 OUT = HERE.parent / "src" / "kernel" / "regex" / "unicode" / "tables.gen.zig"
+GO_UCD = HERE.parent / "bindings" / "go" / "testdata" / "ucd"
 
 Range = tuple[int, int]
 
@@ -308,20 +309,30 @@ def build() -> str:
 
 
 def main() -> int:
-    """CLI entry: write `tables.gen.zig` or `--check` drift against it."""
-    generated = build()
+    """Write the tables and exact standalone Go oracle inputs, or check their drift."""
+    generated = {OUT: build().encode()}
+    generated.update(
+        (GO_UCD / name, (UCD / name).read_bytes())
+        for name in ("Scripts.txt", "DerivedGeneralCategory.txt", "LICENSE.txt")
+    )
     if "--check" in sys.argv:
-        current = OUT.read_text() if OUT.exists() else ""
-        if current != generated:
+        stale = [
+            path
+            for path, data in generated.items()
+            if not path.exists() or path.read_bytes() != data
+        ]
+        if stale:
             print(
-                f"DRIFT: {OUT} is stale — run `python3 tools/build_unicode_tables.py`",
+                f"DRIFT: {', '.join(map(str, stale))} is stale — run `python3 tools/build_unicode_tables.py`",
                 file=sys.stderr,
             )
             return 1
         print(f"ok: {OUT} matches the pinned UCD {UNICODE_VERSION}")
         return 0
-    OUT.write_text(generated)
-    print(f"wrote {OUT} ({len(generated)} bytes) from UCD {UNICODE_VERSION}")
+    for path, data in generated.items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+        print(f"wrote {path} ({len(data)} bytes) from UCD {UNICODE_VERSION}")
     return 0
 
 

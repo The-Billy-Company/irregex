@@ -1,4 +1,13 @@
-# Vendored Unicode Character Database — Pinned 16.0.0
+---
+doc_radar:
+  sentinels:
+    - file: tools/build_unicode_tables.py
+      contains: [ "UNICODE_VERSION = \"17.0.0\"" ]
+    - file: tools/build_unicode_names.py
+      contains: [ "UNICODE_VERSION = \"17.0.0\"" ]
+---
+
+# Vendored Unicode Character Database - Pinned 17.0.0
 
 These are the exact upstream UCD text files the engine's Unicode tables are
 lowered from. They are pinned and vendored so table generation is hermetic (no
@@ -8,11 +17,11 @@ lives in [`../build_unicode_tables.py`](../build_unicode_tables.py) → emits
 
 ## Provenance
 
-- **Version:** Unicode 16.0.0 (matches the toolchain `unicodedata.unidata_version`).
-- **Source:** `https://www.unicode.org/Public/16.0.0/ucd/<file>.txt`
+- **Version:** Unicode 17.0.0.
+- **Source:** `https://www.unicode.org/Public/17.0.0/ucd/<file>.txt`
   (`DerivedGeneralCategory.txt` is under `.../ucd/extracted/`, `emoji-data.txt`
   under `.../ucd/emoji/`).
-- **License:** Unicode License v3 — [`LICENSE.txt`](LICENSE.txt) carries the
+- **License:** Unicode License v3 - [`LICENSE.txt`](LICENSE.txt) carries the
   copyright and permission notice these Data Files must be distributed with,
   and the package [`NOTICE`](../../NOTICE) lists them alongside the other
   bundled third-party components. Keep both in step when upgrading the pin.
@@ -20,40 +29,40 @@ lives in [`../build_unicode_tables.py`](../build_unicode_tables.py) → emits
 ## What's Used
 
 - **`CaseFolding.txt`** provides the simple case-fold orbits, its `C` and `S`
-  lines — sha256 `6f1f9c588eb4a5c718d9e8f93b782685e5c7fec872cf05e8e6878053599e09bb`.
-- **`DerivedCoreProperties.txt`** provides `Alphabetic`, which backs `\w` —
-  sha256 `39d35161f2954497f69e08bdb9e701493f476a3d30222de20028feda36c1dabd`.
-- **`DerivedGeneralCategory.txt`** provides the general categories — `Nd`
+  lines - sha256 `ff8d8fefbf123574205085d6714c36149eb946d717a0c585c27f0f4ef58c4183`.
+- **`DerivedCoreProperties.txt`** provides `Alphabetic`, which backs `\w` -
+  sha256 `24c7fed1195c482faaefd5c1e7eb821c5ee1fb6de07ecdbaa64b56a99da22c08`.
+- **`DerivedGeneralCategory.txt`** provides the general categories - `Nd`
   behind `\d`, the mark categories, `Pc`, and every `\p{…}` general-category
-  query — sha256 `7676ab755a41ef82108460238569e60ad65c191ddafe61b36c6765ec1353f293`.
+  query - sha256 `d62e5bab70ca74f099343f71224fa051cb1fdd61a1ab45c0488c44cfc0b6102e`.
 - **`PropList.txt`** provides `White_Space` (behind `\s`) and `Join_Control`
-  (behind `\w`) — sha256 `53d614508e2a0b2305a8aa21cd60d993de9326cdf65993660dfcce4503548583`.
-- **`Scripts.txt`** provides `\p{Script=…}` —
-  sha256 `9e88f0a677df47311106340be8ede2ecdacd9c1c931831218d2be6d5508e0039`.
+  (behind `\w`) - sha256 `130dcddcaadaf071008bdfce1e7743e04fdfbc910886f017d9f9ac931d8c64dd`.
+- **`Scripts.txt`** provides `\p{Script=…}` -
+  sha256 `9f5e50d3abaee7d6ce09480f325c706f485ae3240912527e651954d2d6b035bf`.
 - **`emoji-data.txt`** provides `Emoji`, `Emoji_Modifier`,
   `Emoji_Modifier_Base`, `Emoji_Component`, and `Extended_Pictographic`. Same
-  two-field shape as `PropList.txt`, which is why it joins the same loop —
-  sha256 `f1365a5173eee18e1f98b240cdc492e84a25f1ce7e0c9d1094eb29c41a22696a`.
+  two-field shape as `PropList.txt`, which is why it joins the same loop -
+  sha256 `2cb2bb9455cda83e8481541ecf5b6dfda66a3bb89efa3fa7c5297eccf607b72b`.
 - **`PropertyAliases.txt`** provides the short spellings every binary property
-  also answers to — `Alpha`, `WSpace`, `XIDS`, `EMod`, `ExtPict` and the rest.
+  also answers to - `Alpha`, `WSpace`, `XIDS`, `EMod`, `ExtPict` and the rest.
   Read from the standard's own alias table rather than hand-listed, because a
   hand-listed set is a set that silently stops matching the competitor the day
-  Unicode adds one — sha256
-  `33a9f2266ad6b8e8de05c0ea3dfac411ac62cf8839ff1c94057471e4c5f6a2b3`.
+  Unicode adds one - sha256
+  `4441f573caf952ffece1d7c892e7715bd7136dfc26f96eb6f268bf1e474715fb`.
 - **`UnicodeData.txt`** provides the character *names* behind `\N{NAME}`, from
-  its second field — plus, from its `<…, First>`/`<…, Last>` range markers, which
+  its second field - plus, from its `<…, First>`/`<…, Last>` range markers, which
   codepoints get their names from a derivation rule instead of a table (the CJK
   and Tangut ideographs, the Hangul syllables) and which have no name at all
   (surrogates, private use). Read from the markers rather than a hand-listed set
   of block bounds, for the same reason as `PropertyAliases.txt` above: Unicode
-  moves those bounds every release — sha256
-  `ff58e5823bd095166564a006e47d111130813dcf8bf234ef79fa51a870edb48f`.
+  moves those bounds every release - sha256
+  `2e1efc1dcb59c575eedf5ccae60f95229f706ee6d031835247d843c11d96470c`.
 - **`NameAliases.txt`** provides the additional spellings `\N{}` must also
   answer to. It is not optional garnish: a control character has *no* name in
   `UnicodeData.txt` (its field is the marker `<control>`), so `\N{NULL}` and
   `\N{LF}` resolve only through this file, and `re` resolves all five alias
-  types — sha256
-  `9953f0fcebf5ea8091c5c581e4df0e43f20d2533c84ccca7987a9bb819a896a8`.
+  types - sha256
+  `793f6f1e4d15fd90f05ae66460191dc4d75d1fea90136a25f30dd6a4cb950eac`.
 
 The last two feed a second generator,
 [`../build_unicode_names.py`](../build_unicode_names.py) →

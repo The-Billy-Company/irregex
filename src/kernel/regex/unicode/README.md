@@ -1,3 +1,10 @@
+---
+doc_radar:
+  sentinels:
+    - file: tools/build_unicode_tables.py
+      contains: [ "UNICODE_VERSION = \"17.0.0\"" ]
+---
+
 # regex/unicode — Unicode support for the byte engine
 
 This engine matches *bytes*, but ripgrep folds and classifies *codepoints* by default. This leaf holds the machinery that lets the byte automaton speak Unicode without leaving its O(1)/byte floor.
@@ -11,7 +18,7 @@ This engine matches *bytes*, but ripgrep folds and classifies *codepoints* by de
 
 ## Regenerating The Tables
 
-The tables are lowered from a pinned UCD 16.0.0 subset vendored under [`../../../../tools/ucd/`](../../../../tools/ucd/) by [`../../../../tools/build_unicode_tables.py`](../../../../tools/build_unicode_tables.py).
+The tables are lowered from a pinned UCD 17.0.0 subset vendored under [`../../../../tools/ucd/`](../../../../tools/ucd/) by [`../../../../tools/build_unicode_tables.py`](../../../../tools/build_unicode_tables.py).
 
 Regenerate `tables.gen.zig` or check it for drift with the same script:
 

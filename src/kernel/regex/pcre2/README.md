@@ -1,8 +1,15 @@
+---
+doc_radar:
+  sentinels:
+    - file: build.zig.zon
+      contains: [ "pcre2-10.49" ]
+---
+
 # kernel/regex/pcre2 — opt-in PCRE2 JIT backend
 
 The escape hatch for lookaround, backreferences, and named captures the linear Thompson/DFA tier cannot express. It is selected by `-P`/`--pcre2`, or by `--engine auto` only when the linear compiler returns unsupported.
 
-Its hermetic sources live at [`../../../../vendor/pcre2/`](../../../../vendor/pcre2/) (PCRE2 10.47). There is no dependency on a system `libpcre2`.
+Its hermetic sources live at [`../../../../vendor/pcre2/`](../../../../vendor/pcre2/) (PCRE2 10.49). There is no dependency on a system `libpcre2`.
 
 ## Files
 

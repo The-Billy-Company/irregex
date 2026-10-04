@@ -643,3 +643,40 @@ test "shadow gate: caseless folds into the gate" {
     try t.expect(re.lineMatch(&sim, "xFooBARfOox")); // gate must not reject the folded form
     try t.expect(!re.lineMatch(&sim, "foobarbaz"));
 }
+
+// PCRE2 GHSA-r9hj-j2rw-4q3m: a recursive frame with 1400 distinct
+// referenced captures exceeds the old fixed 8 KiB stack-growth increment.
+// Use the real scratch and a small growable stack, without rewriting SLJIT
+// internals; the fixed JIT must refuse before any out-of-range store.
+test "large recursive JIT frame stops at its growable stack boundary" {
+    const pattern = "((?(DEFINE)\\K" ++ "()\\g{-1}" ** 1400 ++ "(*SKIP:NEVER)).{1}(?R)|)";
+    var re = try engine.compileMode(t.allocator, pattern, .{ .unicode = false }, true, .{});
+    defer re.deinit();
+    try t.expect(re.jit);
+    var sim = try Pcre.Sim.init(t.allocator, &re);
+    defer sim.deinit();
+    if (sim.jit_stack) |stack| ffi.pcre2_jit_stack_free_8(stack);
+    sim.jit_stack = ffi.pcre2_jit_stack_create_8(32 * 1024, 192 * 1024, null) orelse return error.OutOfMemory;
+    ffi.pcre2_jit_stack_assign_8(sim.mc, null, sim.jit_stack);
+    engine.clearMatchError();
+    try t.expect(re.matchSpan(&sim, "abcdefghij", 0) == null);
+    try t.expectEqual(ffi.ERROR_JIT_STACKLIMIT, engine.matchError());
+    engine.clearMatchError();
+}
+
+test "Unicode 17 letters and digits agree between JIT and interpreter" {
+    // UCD 17 adds Beria Erfe letters and Tolong Siki digits. Neither was a
+    // letter/digit in UCD 16; the ordinary byte-span contract still holds.
+    const cases = [_]struct { pat: []const u8, hay: []const u8 }{
+        .{ .pat = "\\p{L}+", .hay = "\u{16EA0}" },
+        .{ .pat = "\\d+", .hay = "\u{11DE0}" },
+    };
+    for (cases) |c| {
+        for ([_]bool{ true, false }) |jit| {
+            var re = try engine.compileMode(t.allocator, c.pat, .{}, jit, .{});
+            defer re.deinit();
+            try t.expectEqual(jit, re.jit);
+            try expectSpan(&re, c.hay, 0, c.hay.len);
+        }
+    }
+}

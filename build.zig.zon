@@ -12,10 +12,10 @@
         // included — could not build this package at all. Not `.lazy`, because
         // unlike the vendored engines below this one really is fetched.
         .brigade = .{
-            .url = "https://github.com/The-Billy-Company/brigade/archive/refs/tags/v0.1.0.tar.gz",
-            .hash = "brigade-0.1.0-1n1fSXIlAQC4kvSlWxrMgJPZe61yl2IDWzes5LNPLvo4",
+            .url = "https://github.com/The-Billy-Company/brigade/archive/refs/tags/v0.2.0.tar.gz",
+            .hash = "brigade-0.2.0-1n1fSbc8AQAg_nOUnefJ5uEVkoUBSeba6M6TYjjIV3I-",
         },
-        // PCRE2 10.47 — the opt-in `-P` engine. The build compiles the pinned
+        // PCRE2 10.49 — the opt-in `-P` engine. The build compiles the pinned
         // mirror physically vendored under vendor/pcre2/ (hermetic, offline,
         // byte-reproducible), so this entry is `.lazy` and is NEVER fetched by
         // `zig build`. It exists to pin the exact upstream release by URL +
@@ -24,16 +24,16 @@
         // ledger.toml, zig/pcre2). To re-vendor, `zig fetch --save` the next
         // release and refresh vendor/pcre2/ + the ledger row together.
         .pcre2 = .{
-            .url = "https://github.com/PCRE2Project/pcre2/releases/download/pcre2-10.47/pcre2-10.47.tar.gz",
-            .hash = "N-V-__8AACsQywAxzz2irB4p1ssU5F43ChN0ztDcy_GRz_Hz",
+            .url = "https://github.com/PCRE2Project/pcre2/releases/download/pcre2-10.49/pcre2-10.49.tar.gz",
+            .hash = "pcre2-10.49.0-IZ6r68cregBKN199ndY6AaKNyKJpNmnQVSm8-h0gp4sj",
             .lazy = true,
         },
-        // libsais 2.10.2 — the suffix sort under the FM-index. The bytes that
+        // libsais 2.10.4 — the suffix sort under the FM-index. The bytes that
         // build live under vendor/libsais/; this `.lazy` entry only pins the
         // upstream release by URL + content hash.
         .libsais = .{
-            .url = "https://github.com/IlyaGrebnov/libsais/archive/refs/tags/v2.10.2.tar.gz",
-            .hash = "N-V-__8AAPB0GQBIBogUbM-MgZJ-IjjoKFw9PBg0zJ5IHbVV",
+            .url = "https://github.com/IlyaGrebnov/libsais/archive/refs/tags/v2.10.4.tar.gz",
+            .hash = "N-V-__8AAMp_GQAZXZSkM8FirhH5VFPH4NpLYN6AOMg2foBt",
             .lazy = true,
         },
     },

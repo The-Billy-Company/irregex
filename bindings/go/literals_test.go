@@ -3,10 +3,9 @@
 package irgx_test
 
 // The literal plane, against the strongest oracle available to it: Go's own
-// Unicode tables. `unicode.SimpleFold` walks the same simple-fold orbits this
-// engine folds with, and `unicode.Greek`/`unicode.Nd`/`unicode.L` are the same
-// properties by the same names, so the table verbs can be checked against a
-// second independent implementation rather than against themselves.
+// Unicode tables for stable fold orbits, and the authoritative Unicode data
+// for properties. Categories can change between editions, so the running Go
+// compiler's older tables cannot oracle the engine's newer declared edition.
 //
 // The promise verbs have no such oracle - no stdlib extracts a prefilter from a
 // pattern - so they are checked as the SOUNDNESS property they actually claim:
@@ -15,7 +14,12 @@ package irgx_test
 // one whose violation loses a match.
 
 import (
+	"bufio"
+	"os"
+	"path/filepath"
 	"slices"
+	"strconv"
+	"strings"
 	"testing"
 	"unicode"
 
@@ -94,17 +98,13 @@ func TestFoldOrbitPanicsOutsideTheCodepointRange(t *testing.T) {
 	}
 }
 
-// Same one-directional reading as the fold orbits, and for the same reason: a
-// codepoint the older stdlib places in a script or category must still be there
-// in the newer edition, while the newer edition assigns codepoints the stdlib
-// leaves out. So the assertion is containment - and it is the assertion with
-// teeth anyway, since a class the engine has NARROWED is a pattern that silently
-// stops matching text it used to.
-func TestPropertyRangesContainEveryCodepointTheStdlibAssigns(t *testing.T) {
-	for name, table := range map[string]*unicode.RangeTable{
-		"Greek": unicode.Greek, "Cyrillic": unicode.Cyrillic, "Han": unicode.Han,
-		"Nd": unicode.Nd, "Lu": unicode.Lu, "Ll": unicode.Ll, "Zs": unicode.Zs,
-	} {
+// Unlike folding, category membership is not frozen: Unicode 17 moved U+0295
+// from Ll to Lo. Check exact equality against independently published data,
+// including newly assigned characters and intentional removals, on every Go
+// version the sources support. Comparing only containment would miss both.
+func TestPropertyRangesEqualTheDeclaredUnicodeData(t *testing.T) {
+	tables := unicodeProperties(t)
+	for _, name := range []string{"Greek", "Cyrillic", "Han", "Nd", "Lu", "Ll", "Zs"} {
 		ranges, err := irgx.PropertyRanges(name)
 		if err != nil {
 			t.Errorf("PropertyRanges(%q): %v", name, err)
@@ -124,12 +124,8 @@ func TestPropertyRangesContainEveryCodepointTheStdlibAssigns(t *testing.T) {
 		holds := func(cp rune) bool {
 			return slices.ContainsFunc(ranges, func(q irgx.RuneRange) bool { return q.Lo <= cp && cp <= q.Hi })
 		}
-		// Every codepoint the stdlib assigns to this property, checked against the
-		// engine's ranges - free, since the ranges are already in Go memory.
-		for cp := rune(0); cp <= unicode.MaxRune; cp++ {
-			if unicode.Is(table, cp) && !holds(cp) {
-				t.Errorf("%s: the stdlib assigns %U, the engine's ranges do not", name, cp)
-			}
+		if !slices.Equal(ranges, tables[name]) {
+			t.Errorf("%s: ranges differ from the authoritative Unicode data", name)
 		}
 		// PropertyHas is a binary search over the same table, so it must answer
 		// exactly what the materialized ranges say - at both edges of every range
@@ -149,6 +145,66 @@ func TestPropertyRangesContainEveryCodepointTheStdlibAssigns(t *testing.T) {
 			}
 		}
 	}
+}
+
+// Read Unicode's range records, never the generated Zig tables under test.
+// Module-local testdata owns these inputs and their license; absence is a hard failure.
+func unicodeProperties(t *testing.T) map[string][]irgx.RuneRange {
+	t.Helper()
+	tables := make(map[string][]irgx.RuneRange)
+	for _, name := range []string{"Scripts.txt", "DerivedGeneralCategory.txt"} {
+		f, err := os.Open(filepath.Join("testdata", "ucd", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		scanner := bufio.NewScanner(f)
+		if !scanner.Scan() || scanner.Text() != "# "+strings.TrimSuffix(name, ".txt")+"-"+irgx.UnicodeVersion()+".txt" {
+			t.Fatalf("%s: data edition differs from the engine's declared Unicode version", name)
+		}
+		for scanner.Scan() {
+			line, _, _ := strings.Cut(scanner.Text(), "#")
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			span, property, ok := strings.Cut(line, ";")
+			if !ok {
+				t.Fatalf("%s: malformed range record %q", name, line)
+			}
+			lo, hi, paired := strings.Cut(strings.TrimSpace(span), "..")
+			if !paired {
+				hi = lo
+			}
+			parse := func(s string) rune {
+				n, err := strconv.ParseInt(s, 16, 32)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return rune(n)
+			}
+			property = strings.TrimSpace(property)
+			tables[property] = append(tables[property], irgx.RuneRange{Lo: parse(lo), Hi: parse(hi)})
+		}
+		if err := scanner.Err(); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for name, ranges := range tables {
+		slices.SortFunc(ranges, func(a, b irgx.RuneRange) int { return int(a.Lo - b.Lo) })
+		merged := ranges[:0]
+		for _, r := range ranges {
+			if len(merged) > 0 && r.Lo <= merged[len(merged)-1].Hi+1 {
+				merged[len(merged)-1].Hi = max(merged[len(merged)-1].Hi, r.Hi)
+			} else {
+				merged = append(merged, r)
+			}
+		}
+		tables[name] = merged
+	}
+	return tables
 }
 
 // Property names are matched the way UAX #44 says to match them - case, spaces,
@@ -222,7 +278,8 @@ func TestThePromiseNeverRejectsAByteAMatchCanStartWith(t *testing.T) {
 			if verdict.Eliminates() && len(set) > 0 {
 				matched := text[span[0]:span[1]]
 				found := slices.ContainsFunc(set, func(lit string) bool {
-					return substrings(matched, lit)
+					// Contains asks the literal question the REQUIRED claim makes.
+					return strings.Contains(matched, lit)
 				})
 				if !found {
 					t.Errorf("%q claims every match contains one of %q, but %q does not",
@@ -232,17 +289,6 @@ func TestThePromiseNeverRejectsAByteAMatchCanStartWith(t *testing.T) {
 		}
 		lits.Close()
 	}
-}
-
-// substrings is Contains without importing strings for one call - and it is the
-// literal question the REQUIRED claim makes.
-func substrings(hay, needle string) bool {
-	for i := 0; i+len(needle) <= len(hay); i++ {
-		if hay[i:i+len(needle)] == needle {
-			return true
-		}
-	}
-	return false
 }
 
 // A verdict that eliminates has to come with something to eliminate BY, and an

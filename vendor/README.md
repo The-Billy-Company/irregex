@@ -1,11 +1,18 @@
+---
+doc_radar:
+  sentinels:
+    - file: build.zig.zon
+      contains: [ "pcre2-10.49", "libsais/archive/refs/tags/v2.10.4" ]
+---
+
 # `vendor/` — Hermetic Third-Party Sources
 
 `vendor/` holds pinned upstream trees built directly into the kernel, so neither CI nor a developer machine depends on a system package for match semantics or index construction.
 
 irregex vendors exactly two libraries:
 
-- **[`pcre2/`](pcre2)** is PCRE2 10.47, an 8-bit build with JIT/sljit support, backing the opt-in `-P` / `--engine auto` escalation path so no system `libpcre2` is ever consulted.
-- **`libsais/`** is libsais 2.10.2, an 8-bit suffix-array construction library backing the codex FM-index's suffix sort, so no system `libsais` is consulted either.
+- **[`pcre2/`](pcre2)** is PCRE2 10.49, an 8-bit build with JIT/sljit support, backing the opt-in `-P` / `--engine auto` escalation path so no system `libpcre2` is ever consulted.
+- **`libsais/`** is libsais 2.10.4, an 8-bit suffix-array construction library backing the codex FM-index's suffix sort, so no system `libsais` is consulted either.
 
 Together these are the C floor. `build.zig` holds one declarative row per library — name, include path, sources, feature flags — and links the whole set onto any module that compiles the engine, with each archive built at that module's own optimize level. Adding a library means adding a row in `build.zig` plus a tree here, never a call-site sweep across the codebase.
 

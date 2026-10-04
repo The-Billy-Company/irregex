@@ -14,9 +14,8 @@ Maintainers
 The PCRE and PCRE2 libraries were authored and maintained by Philip Hazel.
 
 Since 2024, the contributors with administrator access to the project are now
-Nicholas Wilson and Zoltán Herczeg. See the upstream
-[SECURITY](https://github.com/PCRE2Project/pcre2/blob/master/SECURITY.md) file
-for GPG keys.
+Nicholas Wilson and Zoltán Herczeg. See the file [SECURITY](./SECURITY.md) for
+GPG keys.
 
 Both administrators are volunteers acting in a personal capacity.
 
@@ -78,9 +77,11 @@ All names listed alphabetically.
 
 ### Contributors to PCRE2
 
-This list includes names up until the PCRE2 10.47 release. New names will be
+This list includes names up until the PCRE2 10.48 release. New names will be
 added from the Git history on each release.
 
+    Ilia Alshanetsky
+    Bernard Assan
     Scott Bell
     Carlo Marcelo Arenas Belón
     Edward Betts
@@ -92,6 +93,7 @@ added from the Git history on each release.
     Alejandro Colomar
     Jeremie Courreges-Anglas
     Addison Crump
+    Weixie Cui
     Alex Dowad
     Daniel Engberg
     Marco Feuerstein
@@ -99,7 +101,9 @@ added from the Git history on each release.
     Isaac Oscar Gariano
     David Gaussmann
     Andrey Gorbachev
+    Nikolay Govorov
     Jordan Griege
+    Rudi Heitbaum
     Jason Hood
     Bumsu Hyeon
     Roy Ivy
@@ -107,21 +111,28 @@ added from the Git history on each release.
     Martin Joerg
     Guillem Jover
     Ralf Junker
+    Anton Karpov
     Ayesh Karunaratne
     Michael Kaufmann
+    Srijan Keshri
     Yunho Kim
     Joshua Kinard
     David Korczynski
     Uwe Korn
     Jonas Kvinge
     Kristian Larsson
+    Lin Runze
     Kai Lu
     Behzod Mansurov
+    Brian McKenna
     B. Scott Michel
     Greg Minshall
     Nathan Moinvaziri
+    Alexandre Moyer
     Mike Munday
     Marc Mutz
+    Kartik Naik
+    NaN
     Fabio Pagani
     Christian Persch
     Alex Reinking
@@ -139,6 +150,7 @@ added from the Git history on each release.
     Greg Thain
     Lucas Trzesniewski
     Theodore Tsirpanis
+    Matt Turner
     Aaron M. Ucko
     Matthew Vernon
     Rémi Verschelde

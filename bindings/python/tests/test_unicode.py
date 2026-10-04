@@ -102,3 +102,24 @@ def test_unicode_can_be_turned_off_and_it_changes_what_a_word_is():
     # that are not, so the run splits.
     assert irgx.findall(r"\w+", "naïve") == ["naïve"]
     assert irgx.findall(rb"\w+", "naïve".encode(), unicode=False) == [b"na", b"ve"]
+
+
+@pytest.mark.parametrize("pcre", [False, True])
+def test_unicode_17_new_letters_and_digits_keep_character_and_byte_spans(pcre):
+    # These UCD 17 additions were unassigned in UCD 16. Both engines must
+    # classify them together, while str and bytes retain their own offset units.
+    for pattern, char in [(r"\p{L}", "\U00016ea0"), (r"\d", "\U00011de0")]:
+        text = "! " + char
+        match = irgx.search(pattern, text, pcre=pcre)
+        assert match is not None
+        assert match.span() == (2, 3)
+        assert match.group() == char
+        raw = text.encode()
+        byte_match = irgx.search(pattern.encode(), raw, pcre=pcre)
+        assert byte_match is not None
+        assert byte_match.span() == (2, len(raw))
+        assert raw[byte_match.start() : byte_match.end()] == char.encode()
+
+
+def test_unicode_database_is_the_engines_publicly_reported_version():
+    assert irgx.unicode_version() == "17.0.0"

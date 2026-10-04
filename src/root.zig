@@ -425,7 +425,18 @@ pub fn abi() u32 {
 /// reported by a face's `--pcre2-version` in ripgrep's own phrasing. Declared
 /// beside the engine semver rather than inside the FFI shim so the answer a
 /// caller reads and the library actually linked have one name between them.
-pub const pcre2_version_string = "10.47";
+pub const pcre2_version_string = "10.49";
+
+test "reported PCRE2 version agrees with the native library actually linked" {
+    const pcre_ffi = @import("kernel/regex/pcre2/ffi.zig");
+    const size = pcre_ffi.pcre2_config_8(pcre_ffi.CONFIG_VERSION, null);
+    try std.testing.expect(size > 0);
+    const buffer = try std.testing.allocator.alloc(u8, @intCast(size));
+    defer std.testing.allocator.free(buffer);
+    try std.testing.expectEqual(size, pcre_ffi.pcre2_config_8(pcre_ffi.CONFIG_VERSION, buffer.ptr));
+    var fields = std.mem.splitScalar(u8, std.mem.sliceTo(buffer, 0), ' ');
+    try std.testing.expectEqualStrings(pcre2_version_string, fields.first());
+}
 
 // No retired spellings live here. Every name 1.0.0 exported that this file no
 // longer does is declared in `contract/exports.toml`'s `[removed]`, with the

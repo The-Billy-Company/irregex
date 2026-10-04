@@ -15,7 +15,7 @@
 //!
 //! This file is the STABLE module entry: it re-exports the exact
 //! `Pcre`/`Options`/`CompileError`/`Span` surface `matcher.zig` imports, while
-//! the implementation lives under `pcre2/` (`ffi.zig` — the vendored PCRE2 10.47
+//! the implementation lives under `pcre2/` (`ffi.zig` — the vendored PCRE2 10.49
 //! C ABI; `engine.zig` — the compiled-program + per-thread-scratch wrapper;
 //! `literal.zig` — sound required-literal extraction). See `pcre2/README.md`.
 

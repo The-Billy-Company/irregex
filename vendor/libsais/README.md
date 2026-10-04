@@ -1,4 +1,13 @@
-# Vendored libsais 2.10.2
+---
+doc_radar:
+  sentinels:
+    - file: build.zig.zon
+      contains: [ "libsais/archive/refs/tags/v2.10.4" ]
+    - file: src/kernel/math/succinct/sais.zig
+      contains: [ "extern fn libsais", "sa[0] = @intCast(text.len)" ]
+---
+
+# Vendored libsais 2.10.4
 
 The pinned, hermetically-built suffix-array constructor behind the codex
 FM-index. `src/kernel/math/succinct/sais.zig` is a thin sentinel adapter over
@@ -10,20 +19,20 @@ so the build is byte-reproducible on any machine.
 
 | Field    | Value                                                              |
 | -------- | ------------------------------------------------------------------ |
-| Version  | **2.10.2**                                                         |
+| Version  | **2.10.4**                                                         |
 | Upstream | https://github.com/IlyaGrebnov/libsais                             |
-| Release  | https://github.com/IlyaGrebnov/libsais/releases/tag/v2.10.2        |
-| Tarball  | `v2.10.2.tar.gz`                                                   |
-| sha256   | `e2fe778b69dcd9e4a1df57b8eefb577f803788336855b6a5f9fbf22683f3980e` |
-| License  | Apache-2.0 — Copyright (c) 2021-2025 Ilya Grebnov — see `LICENSE`  |
+| Release  | https://github.com/IlyaGrebnov/libsais/releases/tag/v2.10.4        |
+| Tarball  | `v2.10.4.tar.gz`                                                   |
+| sha256   | `94aa88f9e29f8812214ecfa6b55f5dca14c7d8a427409c062f734a61ca4c6931` |
+| License  | Apache-2.0 - Copyright (c) 2021-2025 Ilya Grebnov - see `LICENSE`  |
 
 Verify the pin:
 
 ```sh
-curl -fsSL -o v2.10.2.tar.gz \
-  https://github.com/IlyaGrebnov/libsais/archive/refs/tags/v2.10.2.tar.gz
-shasum -a 256 v2.10.2.tar.gz
-# → e2fe778b69dcd9e4a1df57b8eefb577f803788336855b6a5f9fbf22683f3980e
+curl -fsSL -o v2.10.4.tar.gz \
+  https://github.com/IlyaGrebnov/libsais/archive/refs/tags/v2.10.4.tar.gz
+shasum -a 256 v2.10.4.tar.gz
+# expected: 94aa88f9e29f8812214ecfa6b55f5dca14c7d8a427409c062f734a61ca4c6931
 ```
 
 ## What is vendored (and why this exact layout)
@@ -36,14 +45,14 @@ Two files, byte-identical to the tarball:
 | `include/libsais.h`  | `include/libsais.h`  | its declarations                       |
 
 `libsais.c` includes only `libsais.h` and five C99 headers (`stddef.h`,
-`stdint.h`, `stdlib.h`, `string.h`, `limits.h`) — no other upstream translation
+`stdint.h`, `stdlib.h`, `string.h`, `limits.h`) - no other upstream translation
 unit is reachable from the 8-bit entry points, so the wide-alphabet (`libsais16`,
 `libsais16x64`, `libsais64`) and BWT-auxiliary units are deliberately omitted.
 Codex feeds bytes, and `sais.build` caps at `i32` indices, so the 32-bit 8-bit
 unit is the whole reachable surface.
 
 The OpenMP entry points (`libsais_omp` and friends) sit behind
-`#if defined(LIBSAIS_OPENMP)` and stay compiled out — measured, not assumed, and
+`#if defined(LIBSAIS_OPENMP)` and stay compiled out - measured, not assumed, and
 the measurement is the reason. Compiled against Homebrew `libomp` and timed
 inside the real codex pipeline, the best parallel arm ran the sort in 5662 ms
 against serial libsais at 5949 ms: about **1.05×**, in exchange for a
@@ -56,8 +65,8 @@ the pin is the serial path: 5949 ms against 15304 ms for Zig's own `sais.build`,
 a 2.57× that costs no link-time dependency at all.
 
 Read the parallel arms as a decline and not as a scaling curve. They came off a
-box with other tenants on it, and they do not increase with threads — 4 at
-7647 ms, 8 at 10471 ms, 12 at 6512 ms, 16 at 5662 ms — which puts the 8-thread
+box with other tenants on it, and they do not increase with threads - 4 at
+7647 ms, 8 at 10471 ms, 12 at 6512 ms, 16 at 5662 ms - which puts the 8-thread
 arm slowest of the four and slower than serial. A table that shape is measuring
 the load. `omp-scale.sh` exists to retake it in a quiet window and never caught
 one, so there is no trustworthy thread-scaling table for this dependency; what
