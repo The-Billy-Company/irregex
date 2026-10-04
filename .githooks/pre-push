@@ -45,7 +45,12 @@ lint_ref() (
 
   snapshot=${work}/tree
   mkdir "${snapshot}"
-  archive=("${markdown[@]}" "${sources[@]}")
+  if ((${#markdown[@]})); then
+    archive+=("${markdown[@]}")
+  fi
+  if ((${#sources[@]})); then
+    archive+=("${sources[@]}")
+  fi
   if git cat-file -e "${local_sha}:.markdownlint-cli2.jsonc" 2>/dev/null; then
     archive+=(.markdownlint-cli2.jsonc)
   fi
