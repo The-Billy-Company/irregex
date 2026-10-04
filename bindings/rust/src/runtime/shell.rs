@@ -69,10 +69,10 @@ pub fn binary() -> Result<PathBuf> {
 pub fn binary_named(name: &'static str, env_var: &'static str) -> Result<PathBuf> {
     static CACHE: OnceLock<Mutex<HashMap<&'static str, PathBuf>>> = OnceLock::new();
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    if let Ok(map) = cache.lock()
-        && let Some(found) = map.get(name)
-    {
-        return Ok(found.clone());
+    if let Ok(map) = cache.lock() {
+        if let Some(found) = map.get(name) {
+            return Ok(found.clone());
+        }
     }
     let resolved = resolve(name, env_var)?;
     if let Ok(mut map) = cache.lock() {
@@ -169,10 +169,10 @@ fn candidates(name: &str) -> Vec<PathBuf> {
             {
                 continue;
             }
-            if let Some(sibling) = dir.parent().map(|up| up.join(name))
-                && sibling.join("build.zig").is_file()
-            {
-                siblings.push(built(&sibling));
+            if let Some(sibling) = dir.parent().map(|up| up.join(name)) {
+                if sibling.join("build.zig").is_file() {
+                    siblings.push(built(&sibling));
+                }
             }
         }
     }
