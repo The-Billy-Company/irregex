@@ -13,6 +13,11 @@ platform tag on the outside.
 Wheels land in ``dist/``. A target that fails is reported and does not stop the
 others, so one broken toolchain does not cost you the rest of the matrix.
 
+The pinned Rust toolchain's ``llvm-strip`` removes debug information after
+linking. Compiler-time stripping privatizes thread-local symbols, which older
+ARM64 COFF linkers relocate incorrectly; the archive and DLL both need the
+symbols until the consumer link is settled.
+
 Every target names an explicit minimum platform version in its Zig triple, and
 its wheel tag says the same number. Letting Zig inherit the host's macOS SDK
 would produce a library that refuses to load on an older machine than the one
@@ -160,26 +165,35 @@ def native_target() -> Target | None:
     return next((t for t in MATRIX if t.host == here), None)
 
 
-def build_library(target: Target, prefix: Path) -> Path:
+def build_library(target: Target, prefix: Path, *, strip: str) -> Path:
     # Stripped, because nobody `pip install`s a library to debug its internals.
     # On ELF the DWARF outweighs the code about four to one, so this is the
     # difference between an 11 MB wheel and a 2 MB one; Mach-O is already small
     # because its debug info lives in a separate `.dSYM` that never ships here.
+    # Keep symbols through codegen and link, then strip only debug sections:
+    # https://github.com/llvm/llvm-project/issues/199581 and its linker fix,
+    # https://github.com/llvm/llvm-project/pull/200060. Preserving COFF TLS
+    # symbols also keeps static archives usable with consumers' older linkers.
     command = [
         "zig",
         "build",
         "-j1",
         "-Doptimize=ReleaseFast",
-        "-Dstrip=true",
+        "-Dstrip=false",
         f"-Dtarget={target.zig}",
         f"-Dcpu={target.cpu}",
         "--prefix",
         str(prefix),
     ]
+    if target.artifact == _SO:
+        # Debug sections will be removed, so do not compress them first. Keep
+        # the build ID the stripped ELF producer has always promised.
+        command.extend(["-Ddebug-compress=none", "-Dbuild-id=sha1"])
     subprocess.run(command, cwd=ENGINE, check=True)
     built = prefix / target.artifact
     if not built.is_file():
         raise RuntimeError(f"zig build produced no {target.artifact}")
+    subprocess.run([strip, "--strip-debug", str(built), str(prefix / "lib/libirgx.a")], check=True)
     return built
 
 
@@ -248,24 +262,23 @@ def main() -> int:
     outdir = Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
     failures: list[tuple[str, str]] = []
-    strip = None
-    if args.native_archives:
-        vendor = runpy.run_path(str(ENGINE / "bindings/rust/scripts/vendor_libraries.py"))
-        strip = vendor["find_tool"]("llvm-strip", "LLVM_STRIP")
-        if not strip:
-            raise SystemExit("llvm-strip is required to retain native archives")
+    vendor = runpy.run_path(str(ENGINE / "bindings/rust/scripts/vendor_libraries.py"))
+    strip = vendor["find_tool"]("llvm-strip", "LLVM_STRIP")
+    if not strip:
+        raise SystemExit(
+            "llvm-strip is required to package native libraries; install the pinned Rust llvm-tools"
+        )
 
     for target in chosen_targets(args.only):
         print(f"\n=== {target.name} ({target.zig}) -> {target.tag} ===", flush=True)
         try:
             with tempfile.TemporaryDirectory(prefix=f"irregex-{target.name}-") as staging:
-                library = build_library(target, Path(staging))
+                library = build_library(target, Path(staging), strip=strip)
                 if args.native_archives:
                     archive = Path(staging) / "lib/libirgx.a"
                     destination = args.native_archives.resolve() / target.name / archive.name
                     destination.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(archive, destination)
-                    subprocess.run([strip, "--strip-debug", str(destination)], check=True)
                 build_wheel(target, library, outdir)
                 # One library, two wheels: the accelerator is a second file
                 # beside the same `.dylib`/`.so`, so the Zig build above is not

@@ -291,7 +291,16 @@ jobs:
           assert (m.group('k'), m.group('v')) == ('x', '42'), m
           it = list(irgx.compile(r'\d+').finditer('a1 b22 c333'))
           assert [x.group() for x in it] == ['1', '22', '333'], it
-          print('native import + match + finditer OK on this kernel')
+          canary = irgx.compile('a+')
+          for pcre in (False, True):
+              try:
+                  irgx.compile('(unclosed', pcre=pcre)
+              except irgx.error as fault:
+                  assert fault.pattern == '(unclosed' and fault.pos is not None, fault
+              else:
+                  raise AssertionError('invalid pattern compiled')
+              assert canary.search('aa b').group() == 'aa'
+          print('native import + match + finditer + invalid-pattern recovery OK on this kernel')
           "
 
   publish:

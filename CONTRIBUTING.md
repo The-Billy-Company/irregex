@@ -10,9 +10,13 @@ doc_radar:
     - file: .github/workflows/ci.yml
       contains: ['ruff==0.16.10', 'editorconfig-checker==3.11.1', 'zizmor==1.30.1']
     - file: .github/workflows/release.yml
-      contains: ['uv pip sync --require-hashes --only-binary :all: --strict', 'dist/pypi-attestations.txt']
+      contains: ['uv pip sync --require-hashes --only-binary :all: --strict', 'dist/pypi-attestations.txt', 'for pcre in (False, True):', 'invalid-pattern recovery OK on this kernel']
     - file: bindings/python/hatch_build.py
       contains: ['toolchain.check_macos_floor(source, platform_tag)', 'toolchain.check_macos_floor(accel, platform_tag)']
+    - file: bindings/python/scripts/build_wheels.py
+      contains: ['"-Dstrip=false"', '"-Ddebug-compress=none", "-Dbuild-id=sha1"', 'strip=strip', '"--strip-debug", str(built)']
+    - file: bindings/go/refusal_test.go
+      contains: ['func TestMalformedCompilesKeepEachThreadsFault(t *testing.T)', 'runtime.LockOSThread()', 'bad.At != tc.at']
 ---
 
 # Contributing
@@ -60,6 +64,7 @@ One toolchain is mandatory. The rest you need only for the binding you touch.
 | --- | --- | --- |
 | the engine | Zig **0.16.0** | `minimum_zig_version` in [`build.zig.zon`](build.zig.zon), `ZIG_VERSION` in CI |
 | the Python binding | [uv](https://docs.astral.sh/uv/) | `requires-python` floor 3.12 |
+| the native wheel matrix | Rust's `llvm-tools` (`rustup component add llvm-tools`) | `bindings/rust/rust-toolchain.toml`; strips debug sections after linking |
 | macOS wheel builds | Apple Command Line Tools (`xcode-select --install`) | `vtool` and `lipo` inspect the binaries against the wheel tag |
 | the Rust binding | rustup | `bindings/rust/rust-toolchain.toml` |
 | the Go binding | Go | `bindings/go/go.mod` |
@@ -346,6 +351,13 @@ stands itself down at `-ODebug` and an explicit flag there is refused.
 a stripped artifact is anonymous bytes, so it gets a `sha1` build ID note by
 default for `debuginfod` and the distro debug-file splitters to match on.
 `-Dbuild-id=` overrides in both directions.
+
+The wheel matrix keeps symbols through compilation and strips debug sections
+after linking with the pinned `llvm-strip`. That avoids the
+[ARM64 COFF thread-local relocation defect](https://github.com/llvm/llvm-project/issues/199581)
+in older linkers for both the wheel's shared library and its exported consumer
+archive. ELF builds still carry the SHA-1 build ID; we skip debug compression
+when those sections are about to be removed.
 
 Each of these refuses rather than degrading, because a link-time flag that
 does nothing still reports success: `-Dlto` and `-Ddebug-compress` off ELF

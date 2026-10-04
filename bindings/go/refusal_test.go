@@ -130,6 +130,39 @@ func TestMalformedPatternCarriesItsOffset(t *testing.T) {
 	}
 }
 
+// The C wrapper captures each fault before cgo can move the goroutine. Keep
+// distinct malformed patterns active on separate native threads so corrupted
+// TLS or another thread's diagnostic cannot masquerade as a usable error.
+func TestMalformedCompilesKeepEachThreadsFault(t *testing.T) {
+	canary := irgx.MustCompile(`a+`)
+	var wg sync.WaitGroup
+	wg.Add(len(malformed))
+	for _, tc := range malformed {
+		go func() {
+			defer wg.Done()
+			runtime.LockOSThread()
+			defer runtime.UnlockOSThread()
+			for round := range 32 {
+				re, err := irgx.CompileOpts{PCRE: round%2 == 0}.Compile(tc.pattern)
+				var bad *irgx.SyntaxError
+				if re != nil || !errors.As(err, &bad) {
+					t.Errorf("Compile(%q) = %v, %v; want a syntax error and no handle", tc.pattern, re, err)
+					return
+				}
+				if bad.Expr != tc.pattern || bad.At != tc.at || bad.Reason == "" {
+					t.Errorf("Compile(%q) fault = %+v; want its own pattern and byte %d", tc.pattern, bad, tc.at)
+					return
+				}
+				if got := canary.FindString("aa b"); got != "aa" {
+					t.Errorf("after %q failed, canary = %q", tc.pattern, got)
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+}
+
 // The engine measures its offset in one of two rulers and says which. Nothing
 // in this plane opens a file, so the only ruler it can name is the pattern, and
 // this is where that is load-bearing: a reader that got the space wrong either
