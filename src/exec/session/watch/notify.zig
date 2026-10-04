@@ -396,7 +396,7 @@ fn noteRecord(self: anytype, root: *const Root, rec: []const u8, name: []const u
     // search admits unignored baseline names, so generic index exclusions cannot
     // filter these events; other ignore rules are resolved by the reconcile walk.
     const directory = isDirectory(root, rec);
-    if (haystack.underSkippedDir(rel, haystack.isPolicySkip) or (directory and haystack.isPolicySkip(std.fs.path.basename(rel)))) return false;
+    if (haystack.underPolicySkippedDir(rel) or (directory and haystack.isPolicySkip(std.fs.path.basename(rel)))) return false;
     const path = abs[0 .. root.abs.len + 1 + rel.len];
     self.session.dirty_log.note(path);
     // A name birth/death moves the PARENT's membership, including a served root.

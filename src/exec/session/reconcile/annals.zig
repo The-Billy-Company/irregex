@@ -154,7 +154,7 @@ pub const Annals = struct {
     /// shaping matches `note`. Returns false on OOM (caller aborts the seed
     /// WITHOUT extending coverage — the ledger stays sound, just younger).
     pub fn seed(self: *Annals, rel: []const u8, ts_ns: i128) bool {
-        if (rel.len == 0 or haystack.underSkippedDir(rel, haystack.isPolicySkip)) return true;
+        if (rel.len == 0 or haystack.underPolicySkippedDir(rel)) return true;
         self.mu.lock();
         defer self.mu.unlock();
         self.stamp += 1;
@@ -183,7 +183,7 @@ pub const Annals = struct {
         defer self.mu.unlock();
         const pfx = self.prefix orelse return; // unarmed: unanswerable anyway
         const rel = relativize(pfx, abs) orelse return self.poison();
-        if (rel.len == 0 or haystack.underSkippedDir(rel, haystack.isPolicySkip)) return; // the root itself / never-walked subtree
+        if (rel.len == 0 or haystack.underPolicySkippedDir(rel)) return; // the root itself / never-walked subtree
         self.stamp += 1;
         // Past this line the ledger records WHICH file moved, and a poisoned
         // ledger has stopped doing that. The stamp above is the WHETHER, and it

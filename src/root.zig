@@ -225,6 +225,28 @@ pub const haystack = @import("corpus/tree/haystack.zig");
 pub const bulkstat = @import("corpus/tree/bulkstat.zig");
 pub const fresh = @import("corpus/fresh/fresh.zig");
 
+test "public haystack underSkippedDir keeps its published unary call and admission" {
+    const skipped: *const fn ([]const u8) bool = haystack.underSkippedDir;
+    const scope_guard = haystack.stateSkipOverlay(.none);
+    defer scope_guard.release();
+    const cases = .{
+        .{ "node_modules/pkg/source.txt", true },
+        .{ "sub/.git/config", true },
+        .{ "sub/target/source.txt", true },
+        .{ "sub/node_modules", false },
+        .{ "node_modules", false },
+        .{ "node_modules2/pkg/source.txt", false },
+        .{ "Node_modules/pkg/source.txt", false },
+        .{ "sub/source.txt", false },
+        .{ "", false },
+        .{ "/", false },
+    };
+    inline for (cases) |case| try std.testing.expectEqual(case[1], skipped(case[0]));
+    haystack.installSkipOverlay(.{ .names = &.{"generated"} });
+    try std.testing.expect(skipped("sub/generated/source.txt"));
+    try std.testing.expect(!skipped("sub/generated"));
+}
+
 /// Path eligibility: which files are in the corpus at all, and why. The
 /// committed `.irregex.toml` charter, gitignore precedence, the path filter,
 /// the type registry, and the `code`/`docs`/`data` partition behind
@@ -282,6 +304,19 @@ pub const session = struct {
     // conduit's UDS frame protocol lives with the daemon proper, one tier up.
     pub const watch = @import("exec/session/watch/watch.zig");
 };
+
+test "public watcher subscription accepts its published named-field initializer" {
+    const Watcher = session.watch.Watcher(session.resident.ResidentSession);
+    const Subscription = std.meta.Child(@TypeOf(@as(Watcher, undefined).notify_roots));
+    const subscription: Subscription = .{
+        .handle = portal.invalid_handle,
+        .abs = &.{},
+        .iosb = undefined,
+        .buffer = &.{},
+    };
+    try std.testing.expect(subscription.extended);
+    try std.testing.expect(!subscription.pending);
+}
 
 /// The curated Zig-native hosted API: a small vocabulary of owned
 /// handles — `Engine`, `SearchQuery`, `Cursor` (pull `next`/`nextBatch`),

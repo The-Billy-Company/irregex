@@ -242,12 +242,21 @@ pub fn isPolicySkip(name: []const u8) bool {
     return false;
 }
 
-/// Whether any directory component of `path` is excluded by the caller's walk.
-/// Persisted freshness uses `isSkipDir`; cold-backed resident sessions use
-/// `isPolicySkip`, leaving ordinary ignore admission to their existing `Ignore`.
+/// Whether any directory component of `path` is excluded from the persisted corpus.
 /// The basename is deliberately ignored: a file named like a skipped directory
 /// remains admissible, matching the walk.
-pub fn underSkippedDir(path: []const u8, comptime skipped: fn ([]const u8) bool) bool {
+pub fn underSkippedDir(path: []const u8) bool {
+    return underSkip(path, isSkipDir);
+}
+
+/// Whether a directory component is excluded by the declared policy alone.
+/// Cold-backed resident sessions use this; their existing `Ignore` handles
+/// ordinary ignore admission, while unignored baseline names remain admissible.
+pub fn underPolicySkippedDir(path: []const u8) bool {
+    return underSkip(path, isPolicySkip);
+}
+
+fn underSkip(path: []const u8, comptime skipped: fn ([]const u8) bool) bool {
     var rest = path;
     while (std.mem.indexOfScalar(u8, rest, '/')) |i| {
         if (skipped(rest[0..i])) return true;

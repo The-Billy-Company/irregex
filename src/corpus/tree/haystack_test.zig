@@ -154,12 +154,12 @@ test "joinPath and joinRoot normalize platform separators in both borrowed compo
     try t.expectEqualStrings("sub/leaf.txt", relative);
 }
 
-test "underSkippedDir follows the caller admission and never rejects a file basename" {
+test "underPolicySkippedDir follows cold admission and never rejects a file basename" {
     const scope = haystack.stateSkipOverlay(.none);
     defer scope.release();
-    try std.testing.expect(haystack.underSkippedDir("node_modules/pkg/source.txt", haystack.isSkipDir));
-    try std.testing.expect(!haystack.underSkippedDir("node_modules/pkg/source.txt", haystack.isPolicySkip));
+    try std.testing.expect(haystack.underSkippedDir("node_modules/pkg/source.txt"));
+    try std.testing.expect(!haystack.underPolicySkippedDir("node_modules/pkg/source.txt"));
     haystack.installSkipOverlay(.{ .names = &.{"node_modules"} });
-    try std.testing.expect(haystack.underSkippedDir("node_modules/pkg/source.txt", haystack.isPolicySkip));
-    try std.testing.expect(!haystack.underSkippedDir("sub/node_modules", haystack.isPolicySkip));
+    try std.testing.expect(haystack.underPolicySkippedDir("node_modules/pkg/source.txt"));
+    try std.testing.expect(!haystack.underPolicySkippedDir("sub/node_modules"));
 }

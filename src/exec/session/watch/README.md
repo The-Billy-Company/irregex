@@ -2,11 +2,11 @@
 doc_radar:
   sentinels:
     - file: src/exec/session/watch/notify.zig
-      contains: [ "extended: bool = true", "pending: bool = false", "root.pending = false", "haystack.underSkippedDir(rel, haystack.isPolicySkip)", "directory and haystack.isPolicySkip(std.fs.path.basename(rel))" ]
+      contains: [ "extended: bool = true", "pending: bool = false", "root.pending = false", "haystack.underPolicySkippedDir(rel)", "directory and haystack.isPolicySkip(std.fs.path.basename(rel))" ]
     - file: src/exec/session/watch/rig.zig
       contains: [ "if (comptime builtin.os.tag == .windows or builtin.os.tag == .linux)", "try std.testing.expect(session.seqlock.armed());", "try std.testing.expect(session.dirty_log.exact);" ]
     - file: src/corpus/fresh/fresh.zig
-      contains: [ "haystack.underSkippedDir(path, haystack.isSkipDir)" ]
+      contains: [ "haystack.underSkippedDir(path)" ]
     - file: src/exec/session/watch/coverage.zig
       contains: [ "haystack.isPolicySkip(name)", "!ig.shouldSkip(key, true, name, false, false)" ]
     - file: src/exec/session/watch/watch_test.zig

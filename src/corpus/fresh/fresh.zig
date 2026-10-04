@@ -543,7 +543,7 @@ fn confirmRaw(gpa: std.mem.Allocator, io: std.Io, since_ns: i128, raw: []const [
     var seen = std.StringHashMap(void).init(gpa);
     defer seen.deinit();
     for (raw) |path| {
-        if (haystack.underSkippedDir(path, haystack.isSkipDir)) continue;
+        if (haystack.underSkippedDir(path)) continue;
         if ((try seen.getOrPut(path)).found_existing) continue;
         const keep = if (Dir.cwd().statFile(io, path, .{ .follow_symlinks = false })) |st|
             st.kind == .file and bulkstat.needsLiveRead(since_ns, st.mtime.nanoseconds, st.ctime.nanoseconds)

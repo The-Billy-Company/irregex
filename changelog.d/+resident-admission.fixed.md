@@ -2,9 +2,9 @@
 doc_radar:
   sentinels:
     - file: src/exec/session/reconcile/annals.zig
-      contains: ['haystack.underSkippedDir(rel, haystack.isPolicySkip)']
+      contains: ['haystack.underPolicySkippedDir(rel)']
     - file: src/corpus/fresh/fresh.zig
-      contains: ['haystack.underSkippedDir(path, haystack.isSkipDir)']
+      contains: ['haystack.underSkippedDir(path)']
     - file: src/exec/session/watch/inotify.zig
       contains: ['haystack.isPolicySkip(e.name)', 'self.session.dirty_log.note(parent);']
     - file: src/exec/session/watch/rig.zig
