@@ -33,6 +33,16 @@ const ResidentSession = resident.ResidentSession;
 const Rig = rig.Rig;
 const Tree = rig.Tree;
 const is_windows = builtin.os.tag == .windows;
+const w = std.os.windows;
+
+/// Post an adverse packet through the actual kernel port, without fabricating records.
+extern "ntdll" fn NtSetIoCompletion(
+    w.HANDLE,
+    ?*anyopaque,
+    ?*anyopaque,
+    w.NTSTATUS,
+    w.ULONG_PTR,
+) callconv(.winapi) w.NTSTATUS;
 
 test "notify: a recursive subscription costs one handle per root, not per directory" {
     if (comptime !is_windows) return;
@@ -56,6 +66,9 @@ test "notify: a recursive subscription costs one handle per root, not per direct
             try rig.advanceClock(r.tree.io);
             try r.tree.write("sub/a/b/c/d/e/deep.txt", "hushed at depth\n");
             try r.expectScopedOracle("needle");
+            try std.testing.expect(r.watcher.notify_roots[0].pending);
+            // Exercise the real granted right, then stop with an outstanding request.
+            try std.testing.expectEqual(w.NTSTATUS.SUCCESS, w.ntdll.NtSetEvent(r.watcher.notify_stop, null));
         }
     }.run);
 }
@@ -67,6 +80,7 @@ test "notify: the annals epoch advances from a delivery, and a held answer retir
             // A single-root session arms the ledger (one unambiguous strip
             // prefix); null is unarmed-or-blind, and there is nothing to observe
             // in either state.
+            try std.testing.expect(r.session.annals.epoch() != null);
             const before = r.session.annals.epoch() orelse return;
 
             try rig.advanceClock(r.tree.io);
@@ -76,6 +90,7 @@ test "notify: the annals epoch advances from a delivery, and a held answer retir
             // The epoch is what a HELD answer is trusted on — it is never
             // re-derived — so a delivery that moved bytes and not the epoch is the
             // shape that outlives its own truth.
+            try std.testing.expect(r.session.annals.epoch() != null);
             const after = r.session.annals.epoch() orelse return;
             try std.testing.expect(after != before);
             try r.expectOracle("needle");
@@ -131,6 +146,7 @@ test "notify: an overflowed buffer retires the fast path for good, and still ans
     var watcher = watch.Watcher(ResidentSession).init(gpa, io, &session);
     defer watcher.stop();
     watcher.start();
+    try std.testing.expect(session.seqlock.armed());
     if (!session.seqlock.armed()) return;
 
     // Provoked rather than mocked: enough entries in one un-drained window that
@@ -192,8 +208,13 @@ test "notify: the plain record class arms and answers exactly like the extended 
     // parse would leave the other half of `records` unexecuted everywhere.
     watcher.notify_extended = false;
     watcher.start();
+    try std.testing.expect(session.seqlock.armed());
     if (!session.seqlock.armed()) return;
     try std.testing.expect(!watcher.notify_extended);
+    try std.testing.expect(!watcher.notify_roots[0].extended);
+    // A later root may prefer extended records; an already-issued plain request
+    // keeps its own layout, including every re-post after this delivery.
+    watcher.notify_extended = true;
     try std.testing.expect(session.dirty_log.exact); // exactness is not the class's to grant
 
     var r = Rig{ .session = &session, .watcher = &watcher, .tree = &tree, .gpa = gpa };
@@ -211,4 +232,27 @@ test "notify: the plain record class arms and answers exactly like the extended 
     try tree.mkdir("sub/born");
     try tree.write("sub/born/x.txt", "needle newborn plain\n");
     try r.expectScopedOracle("needle");
+}
+
+test "notify: a foreign request context retires trust without stealing the real request" {
+    if (comptime !is_windows) return;
+    try rig.withRig("nt_foreign_context", struct {
+        fn run(r: *Rig) !void {
+            // The key names a real root, but the context names no issued request.
+            try std.testing.expectEqual(w.NTSTATUS.SUCCESS, NtSetIoCompletion(
+                r.watcher.notify_port,
+                @ptrFromInt(1),
+                @ptrCast(r.session),
+                .SUCCESS,
+                0,
+            ));
+            try std.testing.expect(r.watcher.flushSync());
+            try std.testing.expect(!r.session.seqlock.armed());
+            try std.testing.expect(r.watcher.notify_roots[0].pending);
+            try rig.advanceClock(r.tree.io);
+            try r.tree.write("sub/b.txt", "hushed after the foreign packet\n");
+            try r.expectOracle("needle");
+            try std.testing.expect(!r.session.seqlock.provenClean());
+        }
+    }.run);
 }

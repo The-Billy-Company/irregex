@@ -186,9 +186,9 @@ pub fn Watcher(comptime Session: type) type {
         /// Windows: how the loop is retired without waiting out its idle
         /// interval. Set by `stop`, never cleared while a loop is running.
         notify_stop: portal.Handle = portal.invalid_handle,
-        /// Windows: false once a volume has refused the extended record class,
-        /// which is also what keeps the drain's parser in step with the layout
-        /// the kernel is actually writing.
+        /// Windows: the initial record-class preference. Each root negotiates and
+        /// retains its own layout, so a refusing volume cannot change another
+        /// root's outstanding request or parser.
         notify_extended: bool = true,
 
         /// Does this session carry the annals ledger (the never-drained changed-path

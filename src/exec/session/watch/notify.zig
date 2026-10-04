@@ -143,6 +143,10 @@ pub const Root = struct {
     /// polled — see the module note on why polling it would not be a barrier.
     iosb: w.IO_STATUS_BLOCK = undefined,
     buffer: []align(4) u8 = &.{},
+    /// The layout this root negotiated, fixed until its next request completes.
+    extended: bool = true,
+    /// An accepted request owns the buffer/status block until its packet is removed.
+    pending: bool = false,
 };
 
 pub fn startNotify(self: anytype) void {
@@ -160,7 +164,10 @@ pub fn startNotify(self: anytype) void {
     var stop: w.HANDLE = undefined;
     // Notification (manual-reset): once `stop` is set the loop must see it no
     // matter how many times it loops, so a wait may not consume the signal.
-    if (w.ntdll.NtCreateEvent(&stop, .{ .STANDARD = .{ .SYNCHRONIZE = true } }, null, .Notification, .FALSE) != .SUCCESS)
+    if (w.ntdll.NtCreateEvent(&stop, .{
+        .STANDARD = .{ .SYNCHRONIZE = true },
+        .SPECIFIC = .{ .EVENT = .{ .MODIFY_STATE = true } },
+    }, null, .Notification, .FALSE) != .SUCCESS)
         return closeNotify(self);
     self.notify_stop = stop;
 
@@ -200,6 +207,7 @@ fn subscribe(self: anytype, root: *Root, path: []const u8, slot: usize) bool {
     const abs = portal.realpath(&pathz, &buf) orelse return false;
     root.abs = self.gpa.dupe(u8, abs) catch return false;
     root.buffer = self.gpa.alignedAlloc(u8, .@"4", buffer_bytes) catch return false;
+    root.extended = self.notify_extended;
 
     const wide = std.Io.Threaded.sliceToPrefixedFileW(portal.cwd(), path, .{}) catch return false;
     var iosb: w.IO_STATUS_BLOCK = undefined;
@@ -229,21 +237,21 @@ fn subscribe(self: anytype, root: *Root, path: []const u8, slot: usize) bool {
     var binding: Completion = .{ .Port = self.notify_port, .Key = @ptrFromInt(slot + 1) };
     if (w.ntdll.NtSetInformationFile(root.handle, &iosb, &binding, @sizeOf(Completion), .Completion) != .SUCCESS)
         return false;
-    return listen(self, root);
+    return listen(root);
 }
 
 /// Post one notify request. The status block is stamped `PENDING` first: a request
 /// that completes synchronously overwrites it, and one that does not has left it
 /// meaning what it says.
-fn listen(self: anytype, root: *Root) bool {
+fn listen(root: *Root) bool {
     if (comptime !windows) return false;
     root.iosb.u.Status = .PENDING;
-    const class: w.DIRECTORY.NOTIFY_INFORMATION_CLASS = if (self.notify_extended) .NotifyExtended else .Notify;
+    const class: w.DIRECTORY.NOTIFY_INFORMATION_CLASS = if (root.extended) .NotifyExtended else .Notify;
     switch (w.ntdll.NtNotifyChangeDirectoryFileEx(
         root.handle,
         null, // no event and no APC: the port is the only reporter (module note)
         null,
-        null,
+        &root.iosb, // the stable request identity; a null context suppresses IOCP delivery
         &root.iosb,
         root.buffer.ptr,
         @intCast(root.buffer.len),
@@ -251,13 +259,16 @@ fn listen(self: anytype, root: *Root) bool {
         .TRUE, // the whole subtree, new directories included — the Linux arm's `coverNewDir`, for free
         class,
     )) {
-        .SUCCESS, .PENDING => return true,
+        .SUCCESS, .PENDING => {
+            root.pending = true;
+            return true;
+        },
         // The volume does not implement the extended record. Drop to the plain
-        // one once and re-post; `notify_extended` keeps the drain's parser in step.
+        // one once and re-post; only this root's parser follows its negotiation.
         .INVALID_PARAMETER, .INVALID_INFO_CLASS, .NOT_SUPPORTED => {
-            if (!self.notify_extended) return false;
-            self.notify_extended = false;
-            return listen(self, root);
+            if (!root.extended) return false;
+            root.extended = false;
+            return listen(root);
         },
         else => return false,
     }
@@ -292,52 +303,74 @@ pub fn drainNotifyLocked(self: anytype) void {
         var key: ?*anyopaque = null;
         var context: ?*anyopaque = null;
         var iosb: w.IO_STATUS_BLOCK = undefined;
-        if (NtRemoveIoCompletion(self.notify_port, &key, &context, &iosb, &immediately) != .SUCCESS) break;
-        noted = true;
+        const status = NtRemoveIoCompletion(self.notify_port, &key, &context, &iosb, &immediately);
+        if (status == .TIMEOUT) break;
+        if (status != .SUCCESS) {
+            self.noteUnattributable();
+            self.session.markDoubtForever();
+            noted = true;
+            break;
+        }
         const slot = @intFromPtr(key);
         if (slot == 0 or slot > self.notify_roots.len) {
             // A packet naming no subscription: nothing to re-post and nothing to
             // attribute, but a change was still observed.
             self.noteUnattributable();
+            self.session.markDoubtForever();
+            noted = true;
             continue;
         }
         const root = &self.notify_roots[slot - 1];
+        if (!root.pending or context != @as(?*anyopaque, @ptrCast(&root.iosb))) {
+            self.noteUnattributable();
+            self.session.markDoubtForever();
+            noted = true;
+            continue;
+        }
+        root.pending = false;
         // Zero bytes is how the system says "your buffer overflowed and I threw
         // the batch away" — events were LOST, so quiescence can never be proven
         // again on this subscription. Any non-success status (`NOTIFY_ENUM_DIR`
         // among them) means the same thing.
-        if (iosb.u.Status != .SUCCESS or iosb.Information == 0) {
+        if (iosb.u.Status != .SUCCESS or iosb.Information == 0 or iosb.Information > root.buffer.len) {
             self.session.markDoubtForever();
+            noted = true;
         } else {
-            records(self, root, root.buffer[0..iosb.Information]);
+            noted = records(self, root, root.buffer[0..iosb.Information]) or noted;
         }
-        if (!listen(self, root)) self.session.markDoubtForever();
+        if (!listen(root)) {
+            self.session.markDoubtForever();
+            noted = true;
+        }
     }
     if (noted) self.session.markDirty();
 }
 
 /// Walk one completed buffer's variable-length records. A malformed chain stops
 /// the walk as doubt rather than being trusted for as far as it parsed.
-fn records(self: anytype, root: *const Root, buf: []const u8) void {
+fn records(self: anytype, root: *const Root, buf: []const u8) bool {
     // The two layouts share their first two fields and differ only in where the
     // name and its length sit, so one walk serves both — `@offsetOf` rather than
     // literals so a std field reordering cannot desynchronise the parse.
     const Plain = w.FILE.NOTIFY.INFORMATION;
     const Extended = w.FILE.NOTIFY.EXTENDED_INFORMATION;
-    const name_at: usize = if (self.notify_extended) @offsetOf(Extended, "FileName") else @offsetOf(Plain, "FileName");
-    const len_at: usize = if (self.notify_extended) @offsetOf(Extended, "FileNameLength") else @offsetOf(Plain, "FileNameLength");
+    const name_at: usize = if (root.extended) @offsetOf(Extended, "FileName") else @offsetOf(Plain, "FileName");
+    const len_at: usize = if (root.extended) @offsetOf(Extended, "FileNameLength") else @offsetOf(Plain, "FileNameLength");
 
     var off: usize = 0;
+    var noted = false;
     while (off + name_at <= buf.len) {
         const rec = buf[off..];
         const next = u32At(rec, @offsetOf(Plain, "NextEntryOffset"));
         const name_len = u32At(rec, len_at);
-        if (name_at + name_len > rec.len) return self.noteUnattributable();
-        noteRecord(self, root, rec, rec[name_at..][0..name_len]);
-        if (next == 0) return;
-        if (next < name_at or off + next > buf.len) return self.noteUnattributable();
+        if (name_at + name_len > rec.len) break;
+        noted = noteRecord(self, root, rec, rec[name_at..][0..name_len]) or noted;
+        if (next == 0) return noted;
+        if (next < name_at or off + next > buf.len) break;
         off += next;
     }
+    self.noteUnattributable();
+    return true;
 }
 
 /// Note one record's path into the session's `DirtyLog` — and, for a FILE, the
@@ -345,17 +378,21 @@ fn records(self: anytype, root: *const Root, buf: []const u8) void {
 /// read. The absolute path is assembled straight into a stack buffer: this runs
 /// once per changed path, and the two notes copy what they keep, so nothing here
 /// needs to outlive the call.
-fn noteRecord(self: anytype, root: *const Root, rec: []const u8, name: []const u8) void {
+fn noteRecord(self: anytype, root: *const Root, rec: []const u8, name: []const u8) bool {
     var abs: [portal.max_path]u8 = undefined;
-    const rel = render(root, name, &abs) orelse return self.noteUnattributable();
+    const rel = render(root, name, &abs) orelse {
+        self.noteUnattributable();
+        return true;
+    };
     // The subtrees the walk never enters, dropped whole. inotify gets this by
     // simply not watching them; a `WatchTree` subscription has no such choice, so
     // `.git`, `node_modules` and `zig-cache` churn is filtered here instead —
     // otherwise every object write in a `git` operation would dirty the session.
-    if (haystack.underSkippedDir(rel)) return;
+    if (haystack.underSkippedDir(rel)) return false;
     const path = abs[0 .. root.abs.len + 1 + rel.len];
     self.session.dirty_log.note(path);
-    if (!isDirectory(self, rec)) noteAnnals(self, path, rec);
+    if (!isDirectory(root, rec)) noteAnnals(self, root, path, rec);
+    return true;
 }
 
 /// `root.abs ++ "/" ++ name`, written into `out` with the record's `\` separators
@@ -382,8 +419,8 @@ fn render(root: *const Root, name: []const u8, out: []u8) ?[]const u8 {
 /// Is this record's entry a directory? The extended class says so in the record;
 /// the plain one does not say at all, and an unknown kind is treated as a file —
 /// at worst one ledger entry its reader stats away (see the module note).
-fn isDirectory(self: anytype, rec: []const u8) bool {
-    if (!self.notify_extended) return false;
+fn isDirectory(root: *const Root, rec: []const u8) bool {
+    if (!root.extended) return false;
     const attrs = u32At(rec, @offsetOf(w.FILE.NOTIFY.EXTENDED_INFORMATION, "FileAttributes"));
     return attrs & directory_bit != 0;
 }
@@ -401,12 +438,12 @@ fn isDirectory(self: anytype, rec: []const u8) bool {
 /// POSIX backends can only bound it from above with a drain-time clock. A REMOVED
 /// or renamed-away entry is the exception: its timestamps describe the file as it
 /// was, which would place the deletion before itself, so those take the clock.
-fn noteAnnals(self: anytype, abs: []const u8, rec: []const u8) void {
+fn noteAnnals(self: anytype, root: *const Root, abs: []const u8, rec: []const u8) void {
     if (comptime !@TypeOf(self.*).has_annals) return;
-    if (recordNs(self, rec)) |ns| self.session.annals.note(abs, ns) else self.session.annals.noteDoubt();
+    if (recordNs(root, rec)) |ns| self.session.annals.note(abs, ns) else self.session.annals.noteDoubt();
 }
 
-fn recordNs(self: anytype, rec: []const u8) ?i128 {
+fn recordNs(root: *const Root, rec: []const u8) ?i128 {
     const E = w.FILE.NOTIFY.EXTENDED_INFORMATION;
     const gone = switch (u32At(rec, @offsetOf(E, "Action"))) {
         // `FILE_ACTION_REMOVED` / `FILE_ACTION_RENAMED_OLD_NAME`. Not named in
@@ -414,7 +451,7 @@ fn recordNs(self: anytype, rec: []const u8) ?i128 {
         2, 4 => true,
         else => false,
     };
-    if (gone or !self.notify_extended) return wallNowNs();
+    if (gone or !root.extended) return wallNowNs();
     const modified = i64At(rec, @offsetOf(E, "LastModificationTime"));
     const changed = i64At(rec, @offsetOf(E, "LastChangeTime"));
     // A volume that keeps neither leaves both zero, which `filetimeNs` reads as
@@ -451,22 +488,43 @@ fn armAnnals(self: anytype, lone_root: ?[]const u8) void {
 
 /// Hand back every handle, buffer and path this backend holds. Safe to call on a
 /// half-built subscription set (the `startNotify` bail-out) and on a fully armed
-/// one; `watch.zig` calls it only after the loop thread is joined, so nothing can
-/// be writing into a buffer as it is freed.
+/// one. Joining the loop retires user-space consumers, not kernel requests: cancel
+/// them all, then acknowledge each completion before freeing its storage.
 pub fn closeNotify(self: anytype) void {
     if (comptime !windows) return;
     if (self.notify_stop != portal.invalid_handle) {
         _ = w.ntdll.NtClose(self.notify_stop);
         self.notify_stop = portal.invalid_handle;
     }
+    var pending: usize = 0;
     for (self.notify_roots) |*root| {
-        if (root.handle != portal.invalid_handle) {
-            // Cancel before closing: a close alone would race the pending request
-            // against the buffer being freed underneath it.
-            var cancel: w.IO_STATUS_BLOCK = undefined;
-            _ = w.ntdll.NtCancelIoFileEx(root.handle, &root.iosb, &cancel);
-            _ = w.ntdll.NtClose(root.handle);
+        if (!root.pending) continue;
+        var cancel: w.IO_STATUS_BLOCK = undefined;
+        switch (w.ntdll.NtCancelIoFileEx(root.handle, &root.iosb, &cancel)) {
+            // NOT_FOUND may mean the request completed and its packet is already queued.
+            .SUCCESS, .NOT_FOUND => pending += 1,
+            // stop cannot return while the kernel owns caller-allocator storage:
+            // the caller may destroy that allocator immediately afterwards.
+            else => |status| std.debug.panic("Windows notify cancellation failed: {t}", .{status}),
         }
+    }
+    while (pending != 0) {
+        var key: ?*anyopaque = null;
+        var context: ?*anyopaque = null;
+        var iosb: w.IO_STATUS_BLOCK = undefined;
+        const status = NtRemoveIoCompletion(self.notify_port, &key, &context, &iosb, null);
+        if (status != .SUCCESS)
+            std.debug.panic("Windows notify retirement failed: {t}", .{status});
+        const slot = @intFromPtr(key);
+        if (slot == 0 or slot > self.notify_roots.len) continue;
+        const root = &self.notify_roots[slot - 1];
+        if (!root.pending or context != @as(?*anyopaque, @ptrCast(&root.iosb))) continue;
+        root.pending = false;
+        pending -= 1;
+        // Any completion status retires the request. Shutdown never parses or re-posts.
+    }
+    for (self.notify_roots) |*root| {
+        if (root.handle != portal.invalid_handle) _ = w.ntdll.NtClose(root.handle);
         if (root.buffer.len != 0) self.gpa.free(root.buffer);
         if (root.abs.len != 0) self.gpa.free(root.abs);
     }

@@ -69,7 +69,9 @@ const Fixture = struct {
     /// Rewind one clock below the anchor — `touch -r old new`, which is the only
     /// half of the pair a portable call can move.
     fn rewindMtime(fx: *Fixture, p: []const u8) !void {
-        try Dir.cwd().setTimestamps(fx.io, p, .{
+        const file = try Dir.cwd().openFile(fx.io, p, .{ .mode = .write_only });
+        defer file.close(fx.io);
+        try file.setTimestamps(fx.io, .{
             .modify_timestamp = .{ .new = .{ .nanoseconds = @intCast(fx.anchor_ns - 10 * std.time.ns_per_s) } },
         });
     }

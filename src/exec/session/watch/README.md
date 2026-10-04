@@ -1,3 +1,14 @@
+---
+doc_radar:
+  sentinels:
+    - file: src/exec/session/watch/notify.zig
+      contains: [ "extended: bool = true", "pending: bool = false", "root.pending = false", "if (haystack.underSkippedDir(rel)) return false;" ]
+    - file: src/exec/session/watch/rig.zig
+      contains: [ "if (comptime builtin.os.tag == .windows)", "try std.testing.expect(session.seqlock.armed());", "try std.testing.expect(session.dirty_log.exact);" ]
+    - file: src/exec/session/watch/notify_test.zig
+      contains: [ "notify: a foreign request context retires trust without stealing the real request" ]
+---
+
 # `watch/` — The Freshness Watcher Backends
 
 The freshness watcher is a pure accelerator for the reconcile barrier: it
@@ -58,7 +69,8 @@ generic `Watcher`.
   to test.
 
 Suites: `kqueue_test.zig`, `notify_test.zig`, and `watch_test.zig` sit
-beside their subjects.
+beside their subjects. Windows fixtures require the subscription to arm
+before a case proceeds; an unavailable native backend fails the runtime proof.
 
 `kqueue.zig` and `coverage.zig` are two halves of one macOS backend, the
 event engine and the admission walk, split so each reads as a single
@@ -99,3 +111,15 @@ an overflowed completion buffer on Windows, and a vnode that could not be
 re-watched on macOS all mark doubt permanently rather than retrying,
 because a watcher that has already missed an unknown set of events cannot
 bound what it missed.
+
+We keep each Windows request's identity and record class with its root. The
+completion port returns that identity before we read or reuse the buffer; a
+foreign packet retires trust without consuming the real request. A batch that
+only touches skipped subtrees leaves the session clean.
+
+Stopping cancels every outstanding request and drains its completion without
+re-posting. Only then do we free the buffers and status blocks. Joining the
+watcher thread alone does not retire the kernel's writes. A driver that never
+acknowledges cancellation can block `stop`; an unexpected cancellation or
+port-dequeue failure terminates the process. Returning with a live request
+would let the caller destroy its allocator while the kernel still owns it.

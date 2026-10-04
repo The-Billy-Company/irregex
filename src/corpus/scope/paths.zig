@@ -88,6 +88,7 @@ pub fn rootDepth(prefix: []const u8) usize {
 pub fn cwdRelative(a: std.mem.Allocator, io: std.Io, path: []const u8) []const u8 {
     if (!std.fs.path.isAbsolute(path)) return path;
     const cwd = std.Io.Dir.cwd().realPathFileAlloc(io, ".", a) catch return path;
+    slashInPlace(cwd);
     if (std.mem.eql(u8, path, cwd)) return "";
     if (path.len > cwd.len and std.mem.startsWith(u8, path, cwd) and path[cwd.len] == '/')
         return path[cwd.len + 1 ..];
@@ -119,8 +120,9 @@ pub fn cwdRelative(a: std.mem.Allocator, io: std.Io, path: []const u8) []const u
 /// matching and `replaceSep` only under `--path-separator`, neither of which
 /// the C seam can select, so both remain command-plane-only.
 pub fn join(a: std.mem.Allocator, dir: []const u8, name: []const u8) error{OutOfMemory}![]const u8 {
-    if (dir.len == 0 or std.mem.eql(u8, dir, ".")) return a.dupe(u8, name);
-    return std.fmt.allocPrint(a, "{s}/{s}", .{ dir, name });
+    const out = if (dir.len == 0 or std.mem.eql(u8, dir, ".")) try a.dupe(u8, name) else try std.fmt.allocPrint(a, "{s}/{s}", .{ dir, name });
+    slashInPlace(out);
+    return out;
 }
 
 /// ASCII-lowered copy of `s` — the one case fold shared by the `--iglob`

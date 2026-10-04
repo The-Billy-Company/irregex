@@ -168,6 +168,12 @@ pub const Rig = struct {
         tree: *Tree,
     ) !?Rig {
         watcher.start();
+        // Native Windows fixtures must exercise the actual subscription. Unlike
+        // per-vnode backends, this arm has no descriptor-budget refusal to cover.
+        if (comptime builtin.os.tag == .windows) {
+            try std.testing.expect(session.seqlock.armed());
+            try std.testing.expect(session.dirty_log.exact);
+        }
         if (!session.seqlock.armed() or !session.dirty_log.exact) return null;
         var rig = Rig{ .session = session, .watcher = watcher, .tree = tree, .gpa = gpa };
         // The covering first pass: full by construction (`full_pass_done` is

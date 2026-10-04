@@ -1,0 +1,1 @@
+Windows freshness now receives directory notifications through the completion port, keeps each root’s record layout independent, and waits for canceled requests before freeing their buffers. Skipped-subtree churn stays clean, native paths use consistent separators, and timestamp fixtures use the supported file-handle API.

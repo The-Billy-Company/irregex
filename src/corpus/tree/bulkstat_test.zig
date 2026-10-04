@@ -104,7 +104,9 @@ test "bulkstat.visitFresh ≡ the stat-based walk over a real tree (old/new meta
 
     const new_ts = std.Io.Timestamp.now(io, .real);
     for ([_][]const u8{ "new.txt", "sub/new2.txt", "node_modules/fresh_but_skipped.txt" }) |f| {
-        try Dir.cwd().setTimestamps(io, try std.fmt.allocPrint(a, "{s}/{s}", .{ root, f }), .{
+        const file = try Dir.cwd().openFile(io, try std.fmt.allocPrint(a, "{s}/{s}", .{ root, f }), .{ .mode = .write_only });
+        defer file.close(io);
+        try file.setTimestamps(io, .{
             .modify_timestamp = .init(new_ts),
         });
     }

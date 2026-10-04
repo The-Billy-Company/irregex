@@ -478,6 +478,7 @@ pub const Ignore = struct {
         const r = stripDot(std.mem.trimEnd(u8, root, "/"));
         var i: usize = if (std.fs.path.isAbsolute(r)) blk: {
             const cwd = Dir.cwd().realPathFileAlloc(self.io, ".", self.a) catch return;
+            paths.slashInPlace(cwd);
             if (std.mem.eql(u8, r, cwd)) return;
             if (r.len <= cwd.len or !std.mem.startsWith(u8, r, cwd) or r[cwd.len] != '/') return;
             break :blk cwd.len + 1;
@@ -494,6 +495,7 @@ pub const Ignore = struct {
     /// from CWD up to the git root, null = not in a repo) bounds the VCS climb.
     fn loadParents(self: *Ignore, git_depth: ?usize) Oom!void {
         const cwd = Dir.cwd().realPathFileAlloc(self.io, ".", self.a) catch return;
+        paths.slashInPlace(cwd);
         var comps: std.ArrayList([]const u8) = .empty;
         var it = std.mem.splitScalar(u8, cwd, '/');
         while (it.next()) |c| if (c.len != 0) try comps.append(self.a, c);
