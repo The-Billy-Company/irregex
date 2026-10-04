@@ -61,13 +61,15 @@ jobs:
           version: ${{ env.ZIG_VERSION }}
       # Compile-only first: when this fails, the test log below is noise, and
       # the failure is one line rather than a suite's worth of scrollback.
-      - run: zig build check
-      - run: zig build test
+      # One compiler or shard process at a time bounds their combined memory.
+      # The full suite and C-ABI gates still execute.
+      - run: zig build check -j1
+      - run: zig build test -j1
       # The header this package installs, read as the standards it claims to
       # speak rather than as whatever cgo's default forgives. Two objects, both
       # thrown away, on both operating systems.
       - name: header parses as C99 and C++17
-        run: zig build header
+        run: zig build header -j1
 
   hermetic:
     # The same suite, run by an operator whose environment disagrees with it.
@@ -101,7 +103,7 @@ jobs:
         with:
           version: ${{ env.ZIG_VERSION }}
       - name: suite under a hostile GIST_SKIP
-        run: GIST_SKIP="${HOSTILE_SKIPS}" zig build test
+        run: GIST_SKIP="${HOSTILE_SKIPS}" zig build test -j1
       - name: suite under a hostile skips.list
         # The third leak vector into the same overlay, and the one that reaches
         # the engine without any variable naming a skip — so it has to be
@@ -109,7 +111,7 @@ jobs:
         run: |
           d="$(mktemp -d)"
           tr ' ' '\n' <<<"${HOSTILE_SKIPS}" > "$d/skips.list"
-          GIST_DIR="$d" zig build test
+          GIST_DIR="$d" zig build test -j1
 
   python:
     # 3.12 is the declared floor and is load-bearing (PEP 695 syntax in the

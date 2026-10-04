@@ -328,7 +328,9 @@ def main() -> int:
     )
     parser.add_argument(
         "--cache-root",
-        default=str(Path(tempfile.gettempdir()) / "irregex-rust-vendor-cache"),
+        # Both bindings compile identical target/CPU floors; reuse the engine,
+        # then independently strip, prove the consumer link, and probe each copy.
+        default=str(Path(tempfile.gettempdir()) / "irregex-vendor-cache"),
         help="where the per-target Zig build caches live",
     )
     args = parser.parse_args()
