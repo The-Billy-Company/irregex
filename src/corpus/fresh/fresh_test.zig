@@ -16,6 +16,7 @@ const std = @import("std");
 const fresh = @import("fresh.zig");
 const sweep = @import("sweep.zig");
 const bulkstat = @import("../tree/bulkstat.zig");
+const paths = @import("../scope/paths.zig");
 const fault = @import("../../fault.zig");
 const portal = @import("../../portal.zig");
 const Dir = std.Io.Dir;
@@ -36,7 +37,9 @@ const Fixture = struct {
     fn init(gpa: std.mem.Allocator, io: std.Io, tag: []const u8, salt: usize) !Fixture {
         var fx: Fixture = .{ .gpa = gpa, .io = io, .arena = std.heap.ArenaAllocator.init(gpa), .root = "" };
         var scratch: [portal.max_path]u8 = undefined;
-        fx.root = try std.fmt.allocPrint(fx.arena.allocator(), "{s}/gist_fresh_model_{s}_{x}", .{ portal.scratchDir(&scratch), tag, salt });
+        // Expected paths use the corpus spelling, including a native scratch prefix.
+        const scratch_root = try paths.slashed(fx.arena.allocator(), portal.scratchDir(&scratch));
+        fx.root = try std.fmt.allocPrint(fx.arena.allocator(), "{s}/gist_fresh_model_{s}_{x}", .{ scratch_root, tag, salt });
         fault.spare("clear leftover fixture", Dir.cwd().deleteTree(io, fx.root));
         try Dir.cwd().createDirPath(io, fx.root);
         return fx;
