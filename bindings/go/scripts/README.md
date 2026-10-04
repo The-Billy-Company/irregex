@@ -1,3 +1,12 @@
+---
+doc_radar:
+  sentinels:
+    - file: bindings/go/scripts/vendor_libraries.py
+      contains: ['"--native-archives"', 'reuse(native_archives, target.zig, target.cpu, archive)', 'if native_archives is not None:']
+    - file: tools/archives.py
+      contains: ['version not in parity["stamped"](blob)', 'destination.write_bytes(blob)']
+---
+
 # Maintenance Scripts
 
 Neither script runs at install time or at test time. They produce two things
@@ -16,6 +25,7 @@ cross-compiles, so the whole set comes off a single host.
 python3 scripts/vendor_libraries.py               # every target
 python3 scripts/vendor_libraries.py --only linux/amd64
 python3 scripts/vendor_libraries.py --list        # what the matrix covers
+python3 scripts/vendor_libraries.py --native-archives /path/to/native-archives
 ```
 
 - **darwin/arm64** cross-compiles via the Zig triple `aarch64-macos.11.0` into
@@ -39,7 +49,7 @@ every vendored consumer.
 The triples carry an explicit minimum platform version. Inheriting the host SDK
 would produce an archive that refuses to link or load on a machine older than
 the one that built it. Each target also pins a `-Dcpu` floor - `x86_64_v2` for
-both amd64 targets, Zig's `baseline` for both arm64 ones - so a vendored
+all amd64 targets, Zig's `baseline` for all arm64 ones - so a vendored
 archive never assumes an instruction the target's oldest supported CPU lacks.
 
 **Rerun this whenever the engine changes.** The archives are committed build
@@ -52,8 +62,8 @@ Four things happen per target beyond `zig build`:
   the `#cgo LDFLAGS` line in `link_<goos>_<goarch>.go`, not by anything in this
   script, so that line is checked against the libraries the matrix declares
   before a byte is compiled - as is `link_unsupported.go`'s build constraint,
-  which has to exclude every target the matrix now serves. It matters on
-  exactly one platform: Windows needs `-lntdll`, and Zig's driver adds ntdll on
+  which has to exclude every target the matrix now serves. On
+  Windows this needs `-lntdll`, and Zig's driver adds ntdll on
   its own while the gcc cgo actually uses does not, so a probe linked here
   would close for a reason a consumer's link would not have.
 
@@ -67,12 +77,19 @@ Four things happen per target beyond `zig build`:
   somebody's `go build` a week later.
 - **Debug info is stripped.** DWARF dominates an unstripped archive and nothing
   links against it, so stripping is most of the difference between a reasonable
-  module and a rude one; the four vendored archives currently total about
-  9 MB stripped. `llvm-strip` does the work; `--keep-debug` skips it.
+  module and a rude one. `llvm-strip` does the work; `--keep-debug` skips it.
 - **Every archive is proved to link before it is committed.** A probe program
   that compiles a pattern, searches, reads captures and frees the handle is
   linked against the fresh archive. A missing symbol becomes a failure here
   rather than in somebody's `go build` a week later.
+
+We can reuse the unpublished release workflow's `native-archives` export with
+`--native-archives`. We select its directory from the existing wheel matrix's
+exact target and CPU floor, require the current engine version, and copy into
+private staging before the same floor, strip and consumer-link checks run. A
+missing, stale or un-linkable input fails; only the default path builds locally.
+Artifact provenance is checked against the workflow's exact source revision
+before reuse; the version stamp alone cannot establish it.
 
 ## `python_oracle.py`
 

@@ -1,7 +1,16 @@
-# `tools/` — Table Generators
+---
+doc_radar:
+  sentinels:
+    - file: tools/archives.py
+      contains: ['target.zig, target.cpu', 'version not in parity["stamped"](blob)', 'destination.write_bytes(blob)']
+    - file: bindings/python/scripts/build_wheels.py
+      contains: ['destination = args.native_archives.resolve() / target.name / archive.name']
+---
 
-The Python builders that lower fixed data into Zig tables. None of them touches
-the network; regenerating is always an explicit, reviewed step.
+# `tools/` — Table and Artifact Maintenance
+
+We lower fixed data into Zig tables and keep committed artifacts aligned with
+their source. Regenerating is always an explicit, reviewed step.
 
 Three of them are hermetic — the input is vendored bytes, so the output is a
 generated file and regenerating after a pin bump is mechanical.
@@ -67,6 +76,13 @@ python3 tools/sync_contract.py --check   # the gate (the author's `contract` job
 python3 tools/registry_readme.py --check # the gate (CI's `version` job)
 python3 tools/registry_readme.py         # mint bindings/rust/PROJECT_README.md
 ```
+
+`archives.py` lets the owning Go and Rust vendor scripts reuse a downloaded
+release export. We derive its directory from the wheel producer's actual target
+and CPU matrix, check the current version with the existing parity reader, and
+copy those bytes into private staging. The owning scripts still verify the C
+floor, strip and link against the consumer's declared libraries. The downloaded
+producer is kept intact; its workflow and source identity are separate evidence.
 
 ## Making the README Work on Package Indexes
 

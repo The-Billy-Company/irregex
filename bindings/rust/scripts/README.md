@@ -1,3 +1,12 @@
+---
+doc_radar:
+  sentinels:
+    - file: bindings/rust/scripts/vendor_libraries.py
+      contains: ['"--native-archives"', 'reuse(native_archives, target.zig, target.cpu, archive)', 'if native_archives is not None:']
+    - file: tools/archives.py
+      contains: ['version not in parity["stamped"](blob)', 'destination.write_bytes(blob)']
+---
+
 # scripts
 
 Two maintainer tools. Neither runs during a build or a test; both produce
@@ -13,6 +22,7 @@ the whole set.
 python3 scripts/vendor_libraries.py                          # all targets
 python3 scripts/vendor_libraries.py --only x86_64-apple-darwin
 python3 scripts/vendor_libraries.py --list
+python3 scripts/vendor_libraries.py --native-archives /path/to/native-archives
 ```
 
 Needs `zig` on PATH and an engine checkout above this directory. For each target
@@ -39,6 +49,14 @@ there is nothing to compile the PCRE2 floor against without Visual Studio on the
 machine. An archive that could only be produced on one operating system is not
 one this script can promise, so `build.rs` carries the MSVC triples for its
 source rung instead - which is where a machine that can build them already is.
+
+We can reuse the unpublished release workflow's `native-archives` export with
+`--native-archives`. We select its directory from the existing wheel matrix's
+exact target and CPU floor, require the current engine version, and copy into
+private staging before the same floor, strip and consumer-link checks run. A
+missing, stale or un-linkable input fails; only the default path builds locally.
+Artifact provenance is checked against the workflow's exact source revision
+before reuse; the version stamp alone cannot establish it.
 
 ## `python_oracle.py`
 

@@ -53,6 +53,7 @@ import functools
 import os
 import platform
 import re
+import runpy
 import shutil
 import subprocess
 import sys
@@ -368,29 +369,38 @@ def probe_link(zig: str, target: Target, archive: Path, header: Path, workdir: P
 
 
 def build(
-    target: Target, cache_root: Path, zig: str, strip: str | None, nm: str
+    target: Target,
+    cache_root: Path,
+    zig: str,
+    strip: str | None,
+    nm: str,
+    native_archives: Path | None = None,
 ) -> tuple[int, str]:
-    cache = cache_root / target.zig
-    cache.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="irregex-go-") as scratch:
         work = Path(scratch)
         staging = work / "stage"
-        run(
-            [
-                zig,
-                "build",
-                "-j1",
-                "-Doptimize=ReleaseFast",
-                f"-Dtarget={target.zig}",
-                f"-Dcpu={target.cpu}",
-                "--prefix",
-                str(staging),
-                "--cache-dir",
-                str(cache),
-            ],
-            cwd=ENGINE,
-        )
         archive = staging / "lib" / "libirgx.a"
+        if native_archives is not None:
+            reuse = runpy.run_path(str(ENGINE / "tools/archives.py"))["reuse_archive"]
+            reuse(native_archives, target.zig, target.cpu, archive)
+        else:
+            cache = cache_root / target.zig
+            cache.mkdir(parents=True, exist_ok=True)
+            run(
+                [
+                    zig,
+                    "build",
+                    "-j1",
+                    "-Doptimize=ReleaseFast",
+                    f"-Dtarget={target.zig}",
+                    f"-Dcpu={target.cpu}",
+                    "--prefix",
+                    str(staging),
+                    "--cache-dir",
+                    str(cache),
+                ],
+                cwd=ENGINE,
+            )
         if not archive.is_file():
             raise RuntimeError(f"zig build produced no {archive}")
 
@@ -431,6 +441,11 @@ def main() -> int:
         default=str(Path(tempfile.gettempdir()) / "irregex-vendor-cache"),
         help="where the per-target Zig build caches live",
     )
+    parser.add_argument(
+        "--native-archives",
+        type=Path,
+        help="reuse the release workflow's downloaded native-archives export; never rebuild missing inputs",
+    )
     args = parser.parse_args()
 
     if args.list:
@@ -470,7 +485,7 @@ def main() -> int:
     total = 0
     for target in chosen:
         print(f"\n=== {target.name} ({target.zig}) ===", flush=True)
-        size, note = build(target, Path(args.cache_root), zig, strip, nm)
+        size, note = build(target, Path(args.cache_root), zig, strip, nm, args.native_archives)
         total += size
         print(f"    {size / 1e6:.2f} MB  probe: {note}")
 
