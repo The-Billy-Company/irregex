@@ -32,7 +32,11 @@ doc_radar:
     - file: src/exec/session/watch/rig.zig
       contains: [".macos, .linux, .windows => true"]
     - file: .github/workflows/windows.yml
-      contains: ["test_optimize:", "default: ReleaseSafe", "-Dtest-optimize=$($env:IRREGEX_TEST_OPTIMIZE)", "test_filter:", "github.event_name == 'workflow_dispatch' && inputs.test_filter || ''", "archive_diagnostic:", "python tools/archive_diagnostic.py --out"]
+      contains: ["test_optimize:", "default: ReleaseSafe", "-Dtest-optimize=$($env:IRREGEX_TEST_OPTIMIZE)", "test_filter:", "github.event_name == 'workflow_dispatch' && inputs.test_filter || ''", "archive_diagnostic:", "python tools/archive_diagnostic.py --out", "cache-dependency-path:", "bindings/go/libirgx_*.a", "cache: false"]
+    - file: .github/workflows/ci.yml
+      contains: ["cache-dependency-path:", "bindings/go/libirgx_*.a", 'CGO_ENABLED: "1"']
+    - file: bindings/go/bridge.go
+      contains: ["//go:build cgo"]
     - file: tools/archive_diagnostic.py
       contains: ["for compiler_strip in (True, False):", "probe(\"committed\", target.archive, required=False)", "corrected-go-suite", "DLL_PROBE"]
     - file: build.zig

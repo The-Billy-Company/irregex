@@ -194,9 +194,9 @@ jobs:
     #
     # The module carries a prebuilt archive per supported platform precisely so
     # `go get` needs no toolchain, and this job deliberately does not rebuild it
-    # — the committed archive is the rung a consumer actually links. The default
-    # build does not even reach it: the cgo path is behind `irgx_ffi`, so a plain
-    # `go test` exercises the pure-Go ladder.
+    # — the committed archive is the rung a consumer actually links. With cgo
+    # enabled, the root package tests link it; the runtime and analytic packages
+    # also exercise their own reasoning in ordinary Go.
     #
     # And the ladder's tests no longer drive a producer. They pin this package's
     # own reasoning — tier introspection, the FFI escape hatch, seam refusals,
@@ -207,6 +207,8 @@ jobs:
     # one here was asking for a consumer's, which is a public suite the public
     # cannot run.
     runs-on: ubuntu-latest
+    env:
+      CGO_ENABLED: "1"
     defaults:
       run:
         working-directory: bindings/go
@@ -217,6 +219,9 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: bindings/go/go.mod
+          cache-dependency-path: |
+            bindings/go/go.mod
+            bindings/go/libirgx_*.a
       - run: go vet ./...
       - run: go test ./...
       # `go vet` judges correctness; this judges the rest of what the binding

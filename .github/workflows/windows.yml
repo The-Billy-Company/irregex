@@ -219,6 +219,9 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: bindings/go/go.mod
+          cache-dependency-path: |
+            bindings/go/go.mod
+            bindings/go/libirgx_*.a
 
       - name: Go binding
         working-directory: bindings/go
@@ -253,6 +256,7 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: bindings/go/go.mod
+          cache: false
       - name: Prepare the pinned native inspection tools
         shell: pwsh
         working-directory: bindings/rust
