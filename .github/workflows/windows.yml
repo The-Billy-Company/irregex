@@ -46,6 +46,11 @@ on:
         type: boolean
         required: false
         default: false
+      archive_ref:
+        description: "Optional commit/ref for the original ARM64 archive; diagnostics only"
+        type: string
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -246,6 +251,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
       - uses: $/.github/actions/setup-zig-windows
         with:
           version: ${{ env.ZIG_VERSION }}
@@ -273,9 +279,13 @@ jobs:
           linker-diagnostic: "true"
       - name: Compare the actual archive and both compiler strip postures
         shell: pwsh
+        env:
+          IRREGEX_ARCHIVE_REF: ${{ inputs.archive_ref }}
         run: |
-          python tools/archive_diagnostic.py --out "$env:RUNNER_TEMP\archive-diagnostic" `
-            --alternate-zig "$env:RUNNER_TEMP\zig-alternate\zig.exe"
+          $diagnosticArgs = @('tools/archive_diagnostic.py', '--out', "$env:RUNNER_TEMP\archive-diagnostic", `
+            '--alternate-zig', "$env:RUNNER_TEMP\zig-alternate\zig.exe")
+          if ($env:IRREGEX_ARCHIVE_REF) { $diagnosticArgs += @('--archive-ref', $env:IRREGEX_ARCHIVE_REF) }
+          python @diagnosticArgs
           if ($LASTEXITCODE -ne 0) { throw "archive diagnostic exited $LASTEXITCODE" }
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: ${{ !cancelled() }}

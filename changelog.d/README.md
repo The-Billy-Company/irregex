@@ -32,13 +32,13 @@ doc_radar:
     - file: src/exec/session/watch/rig.zig
       contains: [".macos, .linux, .windows => true"]
     - file: .github/workflows/windows.yml
-      contains: ["test_optimize:", "default: ReleaseSafe", "-Dtest-optimize=$($env:IRREGEX_TEST_OPTIMIZE)", "test_filter:", "github.event_name == 'workflow_dispatch' && inputs.test_filter || ''", "archive_diagnostic:", "python tools/archive_diagnostic.py --out", "cache-dependency-path:", "bindings/go/libirgx_*.a", "cache: false"]
+      contains: ["test_optimize:", "default: ReleaseSafe", "-Dtest-optimize=$($env:IRREGEX_TEST_OPTIMIZE)", "test_filter:", "github.event_name == 'workflow_dispatch' && inputs.test_filter || ''", "archive_diagnostic:", "archive_ref:", "python @diagnosticArgs", "cache-dependency-path:", "bindings/go/libirgx_*.a", "cache: false"]
     - file: .github/workflows/ci.yml
       contains: ["cache-dependency-path:", "bindings/go/libirgx_*.a", 'CGO_ENABLED: "1"']
     - file: bindings/go/bridge.go
       contains: ["//go:build cgo"]
     - file: tools/archive_diagnostic.py
-      contains: ["for compiler_strip in (True, False):", "probe(\"committed\", target.archive, required=False)", "corrected-go-suite", "DLL_PROBE", "probe(\"alternate-linker\", committed, required=True, compiler=compiler)", "irregex-go-cache-alternate"]
+      contains: ["for compiler_strip in (True, False):", "probe(\"committed\", baseline, required=False)", "corrected-go-suite", "DLL_PROBE", "probe(\"alternate-linker\", committed, required=True, compiler=compiler)", "irregex-go-cache-alternate", "INCONCLUSIVE_TIMEOUT", "SEM_NOGPFAULTERRORBOX", "--end-of-options", "baseline-source", '"status": "RUNNING"']
     - file: .github/actions/setup-zig-windows/action.yml
       contains: ["linker-diagnostic:", 'default: "false"', "if (-not $diagnostic -and $declared -ne $ver)", "$target = 'aarch64-windows'", "sha256 mismatch"]
     - file: build.zig
