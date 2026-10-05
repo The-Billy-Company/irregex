@@ -5,6 +5,65 @@ All notable changes to the `irregex` kernel (formerly `gist`; the gist CLI is it
 
 <!-- towncrier release notes start -->
 
+## [2.7.0] - 2026-10-05
+
+### Added
+
+- We support Unicode 17 properties, names, and simple case folding in both engines. Newly assigned letters and digits now match their Unicode classes, and existing characters follow upstream category revisions, including U+0295 moving from lowercase letter to other letter. This deliberately differs from interpreters with older Unicode databases. String offsets still count characters and byte offsets still count bytes. Go property tests use exact licensed upstream data shipped in the module, with native copy and edition drift checks.
+
+### Changed
+
+- We can refresh the Go and Rust archives from the existing hosted release export. The owning scripts select the producer's exact target and CPU, require this tree's version, and run their usual floor, strip and consumer-link checks on a private copy. Missing or stale inputs fail without a local rebuild. Local native builds remain the default; artifact provenance still requires the workflow's exact source identity.
+- We update Brigade, libsais, binding dependencies, and contributor toolchains, and publish the explicit `irgx` import name in wheel metadata. CI pins uv and applies the two-day release floor with narrow first-party exemptions; native mise locks now freeze the contributor tools and their dependency graphs. uv uses mise's native GitHub backend, and Go analysis follows the public 1.24 language floor.
+- We validate both consumer archive sets on the release runner and export their checked bytes. The Go and Rust scripts reuse each producer target, then apply their existing floor, strip and link checks. The separate artifact carries those twelve outputs; the six producer archives retain their existing layout. Manual release builds run the same checks without publishing.
+
+### Fixed
+
+- Go and Rust archive minting share the existing per-target Zig build cache. Each binding still checks its own native floor, consumer link, and ABI probe; release minting no longer compiles the same engine twice. Native CI serializes compiler and test-shard processes to bound their combined memory.
+- Keep the published Rust 1.85 compiler floor usable by expressing runtime cache and sibling lookup without newer let-chain syntax.
+- The push hook resolves Markdown discipline and its Node interpreter from the pushed commit's native mise lock and integrity-checked dependency sidecar. Its temporary snapshot still checks the committed Markdown; missing or damaged tool locks fail before an unpinned npm install can run. NUL-delimited filenames also work with macOS's bundled Bash, including spaces and newlines.
+- We bound native archive probes, preserve crash exit codes and record a timeout
+  as inconclusive. The diagnostic can load an archive from an immutable Git commit
+  while testing the current source.
+- We build the macOS accelerator at the wheel's declared deployment floor instead of inheriting the build host's newer OS. Bare source builds bind the engine to their tag too, and the Zig C-compiler fallback uses the engine's target and CPU policy. Apple's tools check both binaries before packaging; a mismatched architecture or newer minimum OS fails the build. Building macOS wheels now requires Apple's Command Line Tools. Installed consumers keep the same API and need no compiler.
+- We can select Debug for a filtered Windows diagnostic run and get the test runner's existing assertion traces. Full and reusable Windows runs keep their ReleaseSafe default.
+- We check changed Zig files before pushing, using the native AST checker and the pushed commit's locked toolchain. It catches declaration errors without compiling the engine and checks committed bytes even when the working tree has other edits. Markdown-only and Zig-only pushes work with macOS's bundled Bash. Full native CI still proves compilation and behavior.
+- We check retired instructions for equal work when the native counter supports them, and keep the existing cycle bound on cycles-only platforms. A busy sibling also stays active during a separate sleep-versus-work cycle check, so mixed counter attribution still fails. On macOS the old test observed identical 41,944,997 instructions with 2.39465 times the cycles; cycle cost alone did not prove sibling work leaked into the measurement.
+- We compare the real-tree freshness proof against canonical corpus paths on Windows. Ordinary writes, preserved-mtime writes and path replacement keep their existing timestamp and membership assertions; the fixture now gives its expected paths the same slash spelling as the walk.
+- We compile and import the accelerator with the pinned Zig C compiler during release builds. It uses the wheel matrix's target and CPU policy, and its binary must pass the same platform check as the packaged accelerator. This keeps the compiler fallback checked when the runner's ordinary C compiler succeeds first.
+- We keep corpus paths slash-separated on Windows, discard notifications for excluded directory entries, and track parent membership changes without widening in-place file edits. The adverse-packet proof checks permanent distrust while the real subscription stays live. Windows diagnostics can filter the existing suite; normal CI still runs it whole.
+
+  The diagnostic errno fixture now follows the [Microsoft CRT contract](https://learn.microsoft.com/en-us/cpp/c-runtime-library/errno-constants), rather than assuming Darwin's numbers on Windows.
+- We keep machine metadata out of the published release notes. Source assertions live in the fragment-writing guide, so they stay checked after the fragments fold into the changelog.
+- We keep native symbols through compilation and remove debug sections after
+  linking. This avoids a Windows ARM64 thread-local relocation defect in older
+  linkers, including consumers linking the exported Go and Rust archives. Wheels
+  still omit debug sections, and Linux libraries keep their build IDs. Every
+  release platform now checks malformed patterns and recovery in the installed
+  wheel too.
+- We keep resident watch admission aligned with cold search. Unignored baseline directories stay covered, their edits advance the annals and retire held answers, and declared policy subtrees stay excluded. Persisted index freshness keeps its baseline skips. Linux joins the shared real-tree barrier suite and records parent membership for entry changes; the Windows freshness fixture now expects our canonical slash spelling throughout.
+- We keep the published `haystack.underSkippedDir(path)` call and its persisted-corpus admission. Resident watchers use the declared-policy helper, so unignored baseline directories still retire stale answers.
+- We key the Go CI cache on the native archives as well as the module, so changing
+  an archive rebuilds the binding before its tests run. The ARM64 archive diagnostic
+  uses a fresh Go cache for each compiler posture.
+- We lock the full metadata checker graph and report its installed versions before checking the wheels. Release validation now uses the dependencies we reviewed, with every package hash checked.
+- We now check invalid patterns and fault recovery when validating native binding
+  archives. Those paths exercise thread-local error storage that a successful
+  match never reaches. Windows ARM64 has a hosted diagnostic that compares the
+  committed archive, compiler stripping and stripping after linking through the
+  actual C and Go consumers and the shared library.
+- We prove stdin memoization with real files and the platform's native stdin handle. The same proof now compiles on Windows, checks that a changed source stays cached, and verifies that explicit invalidation observes the new file.
+- We use Rust's pinned LLVM tools when exporting archives on Windows, including
+  executable suffixes. Both Windows binding jobs check the actual tool paths and
+  versions before testing the bindings.
+- We use one Ruff policy for package checks and CI. The Python binding inherits the repository configuration and source root, so its import groups agree with hosted checks without rewriting tests or suppressing lint rules. Generated tables retain their generator-owned formatting in both entry points.
+- We use the shared native release validator and reproducible Towncrier dates, and resolve the Windows setup action from the workflow commit. The existing native Windows matrix now feeds the publication gate. Native archive rebuilds use one build job and the binding's pinned LLVM tools, and the dependency audit installs its pinned binary without falling back to a source build. The wheel metadata check pins Twine with support for metadata 2.5. We ship the signer's reviewed dependency hashes with the wheels and install only that binary graph before signing. PyPI's native signer preserves publish attestations, and uv publishes through Trusted Publishing, checks each existing artifact's hash, and revokes its temporary credential. Retries finish partially uploaded wheel matrices and reject different bytes under an existing filename. The release keeps its ABI and registry gates.
+- Windows freshness now receives directory notifications through the completion port, keeps each root’s record layout independent, and waits for canceled requests before freeing their buffers. Skipped-subtree churn stays clean, native paths use consistent separators, and timestamp fixtures use the supported file-handle API.
+
+### Security
+
+- We upgrade PCRE2 to 10.49, fixing CVE-2026-103111 in the growable JIT stack used by the opt-in PCRE backend. PCRE remains opt-in and the public ABI stays unchanged. The reported backend version is checked against the native library we actually linked.
+
 ## [2.6.0] - 2026-09-27
 
 ### Added

@@ -1,1 +1,0 @@
-We validate both consumer archive sets on the release runner and export their checked bytes. The Go and Rust scripts reuse each producer target, then apply their existing floor, strip and link checks. The separate artifact carries those twelve outputs; the six producer archives retain their existing layout. Manual release builds run the same checks without publishing.
