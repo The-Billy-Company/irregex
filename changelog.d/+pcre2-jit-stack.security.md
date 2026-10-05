@@ -1,1 +1,0 @@
-We upgrade PCRE2 to 10.49, fixing CVE-2026-103111 in the growable JIT stack used by the opt-in PCRE backend. PCRE remains opt-in and the public ABI stays unchanged. The reported backend version is checked against the native library we actually linked.

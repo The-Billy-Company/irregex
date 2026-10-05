@@ -1,1 +1,0 @@
-We keep the published `haystack.underSkippedDir(path)` call and its persisted-corpus admission. Resident watchers use the declared-policy helper, so unignored baseline directories still retire stale answers.
