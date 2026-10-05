@@ -210,7 +210,19 @@ jobs:
           "
 
       - name: Check the metadata the index will read
-        run: uv run --no-project --with twine==7.0.0 twine check dist/*.whl
+        run: |
+          set -euo pipefail
+          uv venv --python 3.12.15 "$RUNNER_TEMP/irregex-metadata"
+          uv pip sync --require-hashes --only-binary :all: --strict \
+            --python "$RUNNER_TEMP/irregex-metadata/bin/python" ../../.github/twine.txt
+          "$RUNNER_TEMP/irregex-metadata/bin/python" - <<'PY'
+          import json
+          from importlib.metadata import distributions
+
+          graph = {dist.metadata["Name"]: dist.version for dist in distributions()}
+          print("metadata checker graph: " + json.dumps(graph, sort_keys=True))
+          PY
+          "$RUNNER_TEMP/irregex-metadata/bin/python" -m twine check dist/*.whl
 
       - name: Carry the reviewed signing tool graph with the wheels
         run: cp ../../.github/pypi-attestations.txt dist/pypi-attestations.txt

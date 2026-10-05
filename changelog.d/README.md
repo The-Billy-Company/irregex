@@ -6,7 +6,11 @@ doc_radar:
     - file: src/corpus/fresh/fresh_test.zig
       contains: ["const slashed = @import(\"../scope/paths.zig\").slashed;", "slashed(fx.arena.allocator(), portal.scratchDir(&scratch))", "try std.testing.expect(c.ctime >= fx.anchor_ns);", "try std.testing.expect(!Fixture.surfaced(&out, quiet));"]
     - file: .github/workflows/release.yml
-      contains: ["name: Validate both consumer archive sets", "name: consumer-archives", "bindings/go/libirgx_*.a", "bindings/rust/vendor/**/libirgx.a", "Check the accelerator's Zig compiler fallback", "toolchain.compilers = lambda: [['zig', 'cc']]", "toolchain.compile(out, zig_target=target.zig, zig_cpu=target.cpu)", "toolchain.check_macos_floor(out, target.tag)", "spec.loader.exec_module(module)"]
+      contains: ["name: Validate both consumer archive sets", "name: consumer-archives", "bindings/go/libirgx_*.a", "bindings/rust/vendor/**/libirgx.a", "Check the accelerator's Zig compiler fallback", "toolchain.compilers = lambda: [['zig', 'cc']]", "toolchain.compile(out, zig_target=target.zig, zig_cpu=target.cpu)", "toolchain.check_macos_floor(out, target.tag)", "spec.loader.exec_module(module)", "--python \"$RUNNER_TEMP/irregex-metadata/bin/python\" ../../.github/twine.txt", 'print("metadata checker graph: " + json.dumps(graph, sort_keys=True))', '"$RUNNER_TEMP/irregex-metadata/bin/python" -m twine check dist/*.whl']
+    - file: .github/twine.in
+      contains: ["twine==7.0.0"]
+    - file: .github/twine.txt
+      contains: ["twine==7.0.0", "--hash=sha256:"]
     - file: bindings/go/scripts/vendor_libraries.py
       contains: ["reuse(native_archives, target.zig, target.cpu, archive)", "\"--native-archives\"", "fault.at_space != IRGX_AT_PATTERN", "irgx_last_fault(&fault) != IRGX_OK", "shutil.which(str(pinned / name))"]
     - file: bindings/rust/scripts/vendor_libraries.py
