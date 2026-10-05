@@ -8,9 +8,9 @@ doc_radar:
     - file: .github/workflows/release.yml
       contains: ["name: Validate both consumer archive sets", "name: consumer-archives", "bindings/go/libirgx_*.a", "bindings/rust/vendor/**/libirgx.a", "Check the accelerator's Zig compiler fallback", "toolchain.compilers = lambda: [['zig', 'cc']]", "toolchain.compile(out, zig_target=target.zig, zig_cpu=target.cpu)", "toolchain.check_macos_floor(out, target.tag)", "spec.loader.exec_module(module)"]
     - file: bindings/go/scripts/vendor_libraries.py
-      contains: ["reuse(native_archives, target.zig, target.cpu, archive)", "\"--native-archives\"", "fault.at_space != IRGX_AT_PATTERN", "irgx_last_fault(&fault) != IRGX_OK"]
+      contains: ["reuse(native_archives, target.zig, target.cpu, archive)", "\"--native-archives\"", "fault.at_space != IRGX_AT_PATTERN", "irgx_last_fault(&fault) != IRGX_OK", "shutil.which(str(pinned / name))"]
     - file: bindings/rust/scripts/vendor_libraries.py
-      contains: ["reuse(native_archives, target.zig, target.cpu, archive)", "\"--native-archives\"", "fault.at_space != IRGX_AT_PATTERN", "irgx_last_fault(&fault) != IRGX_OK"]
+      contains: ["reuse(native_archives, target.zig, target.cpu, archive)", "\"--native-archives\"", "fault.at_space != IRGX_AT_PATTERN", "irgx_last_fault(&fault) != IRGX_OK", "shutil.which(str(pinned / name))"]
     - file: bindings/python/hatch_build.py
       contains: ["out, zig_target=zig_target, zig_cpu=_zig_cpu(zig_target) if zig_target else None", "toolchain.check_macos_floor(source, platform_tag)", "toolchain.check_macos_floor(accel, platform_tag)"]
     - file: bindings/python/accel/toolchain.py
@@ -32,7 +32,7 @@ doc_radar:
     - file: src/exec/session/watch/rig.zig
       contains: [".macos, .linux, .windows => true"]
     - file: .github/workflows/windows.yml
-      contains: ["test_optimize:", "default: ReleaseSafe", "-Dtest-optimize=$($env:IRREGEX_TEST_OPTIMIZE)", "test_filter:", "github.event_name == 'workflow_dispatch' && inputs.test_filter || ''", "archive_diagnostic:", "archive_ref:", "python @diagnosticArgs", "cache-dependency-path:", "bindings/go/libirgx_*.a", "cache: false"]
+      contains: ["test_optimize:", "default: ReleaseSafe", "-Dtest-optimize=$($env:IRREGEX_TEST_OPTIMIZE)", "test_filter:", "github.event_name == 'workflow_dispatch' && inputs.test_filter || ''", "archive_diagnostic:", "archive_ref:", "python @diagnosticArgs", "cache-dependency-path:", "bindings/go/libirgx_*.a", "cache: false", "Verify the pinned LLVM tool lookup", "assert Path(selected).resolve().parent == pinned"]
     - file: .github/workflows/ci.yml
       contains: ["cache-dependency-path:", "bindings/go/libirgx_*.a", 'CGO_ENABLED: "1"']
     - file: bindings/go/bridge.go

@@ -201,8 +201,8 @@ def find_tool(name: str, env_var: str) -> str | None:
     if override:
         return override
     pinned = rustup_llvm_bin()
-    if pinned and (candidate := pinned / name).is_file():
-        return str(candidate)
+    if pinned and (candidate := shutil.which(str(pinned / name))):
+        return candidate
     found = shutil.which(name)
     if found:
         return found

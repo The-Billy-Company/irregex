@@ -228,6 +228,39 @@ jobs:
             bindings/go/go.mod
             bindings/go/libirgx_*.a
 
+      - name: Verify the pinned LLVM tool lookup
+        shell: pwsh
+        working-directory: bindings/rust
+        run: |
+          rustup component add llvm-tools
+          if ($LASTEXITCODE -ne 0) { throw "rustup component add exited $LASTEXITCODE" }
+          @'
+          import os
+          import runpy
+          import subprocess
+          from pathlib import Path
+
+          root = Path("../..").resolve()
+          sysroot = subprocess.check_output(["rustc", "--print", "sysroot"], text=True).strip()
+          version = subprocess.check_output(["rustc", "-vV"], text=True)
+          host = next(line.removeprefix("host: ") for line in version.splitlines() if line.startswith("host: "))
+          pinned = Path(sysroot, "lib", "rustlib", host, "bin").resolve()
+          os.environ["PATH"] = os.pathsep.join(
+              directory for directory in os.get_exec_path() if Path(directory).resolve() != pinned
+          )
+          for binding in ("go", "rust"):
+              module = runpy.run_path(str(root / "bindings" / binding / "scripts/vendor_libraries.py"))
+              for name in ("llvm-nm", "llvm-strip", "llvm-objdump"):
+                  env = name.upper().replace("-", "_")
+                  os.environ.pop(env, None)
+                  selected = module["find_tool"](name, env)
+                  assert selected, (binding, name, "tool not found")
+                  assert Path(selected).resolve().parent == pinned, (binding, name, selected, pinned)
+                  print(f"{binding}: {name} = {selected}", flush=True)
+                  subprocess.run([selected, "--version"], check=True)
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw "LLVM tool lookup check exited $LASTEXITCODE" }
+
       - name: Go binding
         working-directory: bindings/go
         env:
