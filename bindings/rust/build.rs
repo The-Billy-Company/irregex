@@ -17,6 +17,9 @@
 //!    host is the target. What a source checkout already has.
 //! 4. `zig build` in that checkout, when `zig` is on `PATH`.
 //!
+//! With `source-engine`, rungs 2 and 3 are skipped: the matching checkout is
+//! always built into Cargo's private output directory, or the build fails.
+//!
 //! Every rung prefers the archive and only falls back to the shared library,
 //! which is a recent luxury: the engine's ELF `libirgx.a` used to carry the Zig
 //! objects alone, so a static link died on `pcre2_compile_8` and rungs 3 and 4
@@ -134,6 +137,14 @@ fn main() {
     let host = env("HOST");
     let crate_dir = PathBuf::from(env("CARGO_MANIFEST_DIR"));
 
+    if std::env::var_os("CARGO_FEATURE_MUNCH_IMAGE").is_some() {
+        let dir = std::env::var_os("IRGX_LIB_DIR").map(PathBuf::from).unwrap_or_else(|| {
+            fail("munch-image requires an explicit checked108 static IRGX_LIB_DIR; use the private helper with --irgx-abi-family=irgx-abi2-108-munch-image1. Bundled archives and raw source builds are not a fallback.")
+        });
+        image_selection(&dir, &target);
+        return link(&dir, Kind::Static, &target);
+    }
+
     if let Some(dir) = std::env::var_os("IRGX_LIB_DIR") {
         let dir = PathBuf::from(dir);
         let Some(kind) = library_in(&dir) else {
@@ -147,6 +158,24 @@ fn main() {
             ));
         };
         return link(&dir, kind, &target);
+    }
+
+    if std::env::var_os("CARGO_FEATURE_SOURCE_ENGINE").is_some() {
+        let Some(checkout) = engine_checkout(&crate_dir) else {
+            fail(
+                "the source-engine feature requires the matching irregex source checkout \
+                 or an explicit IRGX_LIB_DIR; bundled archives do not carry these APIs",
+            );
+        };
+        for path in ["src", "vendor", "build.zig", "build.zig.zon"] {
+            println!("cargo:rerun-if-changed={}", checkout.join(path).display());
+        }
+        return match zig_build(&checkout, &target) {
+            Ok((dir, kind)) => link(&dir, kind, &target),
+            Err(why) => fail(&format!(
+                "source-engine could not build a matching native library: {why}"
+            )),
+        };
     }
 
     let vendored_as = VENDOR_ALIASES
@@ -174,6 +203,71 @@ fn main() {
     match zig_build(&checkout, &target) {
         Ok((dir, kind)) => link(&dir, kind, &target),
         Err(why) => fail(&format!("{}\n\n{why}", unserved(&target, &crate_dir))),
+    }
+}
+
+/// Validate the selected declaration, not its object-byte proof. The producer
+/// helper verifies current archives/header/source/tools before and after Cargo.
+fn image_selection(dir: &Path, target: &str) {
+    const FAMILY: &str = "irgx-abi2-108-munch-image1";
+    let archive = dir.join("libirgx.a");
+    if !archive.is_file() || archive.is_symlink() {
+        fail(
+            "munch-image requires a regular checked static libirgx.a; shared/raw fallback is disabled",
+        );
+    }
+    let home = dir
+        .parent()
+        .unwrap_or_else(|| fail("checked108 library directory has no selection parent"));
+    let read = |name: &str| -> serde_json::Value {
+        let path = home.join(name);
+        println!("cargo:rerun-if-changed={}", path.display());
+        if path.is_symlink() || !path.is_file() {
+            fail(&format!(
+                "checked108 selection requires regular {}",
+                path.display()
+            ));
+        }
+        let bytes = std::fs::read(&path)
+            .unwrap_or_else(|why| fail(&format!("cannot read {}: {why}", path.display())));
+        serde_json::from_slice(&bytes).unwrap_or_else(|why| {
+            fail(&format!(
+                "invalid checked108 declaration {}: {why}",
+                path.display()
+            ))
+        })
+    };
+    let selection = read("selection.json");
+    let proof = read("proof.json");
+    let proof_target = match target {
+        "aarch64-apple-darwin" => "macos-arm64",
+        "x86_64-unknown-linux-gnu" => "linux-x86_64",
+        _ => fail("munch-image has no checked static-boundary target for this Rust target"),
+    };
+    let hash = |value: &serde_json::Value| {
+        value.as_str().is_some_and(|v| {
+            v.len() == 64
+                && v.bytes()
+                    .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+        })
+    };
+    if selection["schema"] != 1
+        || proof["schema"] != 1
+        || selection["identity"]["abi_family"] != FAMILY
+        || proof["abi_family"] != FAMILY
+        || proof["kind"] != "opaque-native-only-C-static-boundary"
+        || proof["machine_code_only"] != true
+        || !hash(&selection["archive_sha256"])
+        || !hash(&selection["proof_sha256"])
+        || !hash(&selection["identity"]["raw_sha256"])
+        || selection["archive_sha256"] != proof["after_sha256"]
+        || selection["identity"]["raw_sha256"] != proof["before_sha256"]
+        || selection["identity"]["target"] != proof["target"]
+        || proof["target"] != proof_target
+    {
+        fail(
+            "munch-image requires a consistent explicit checked108 selection/proof pair; declarations do not replace the producer's current-byte verification",
+        );
     }
 }
 
@@ -246,7 +340,7 @@ fn link(dir: &Path, kind: Kind, target: &str) {
                 });
             println!("cargo:rustc-link-search=native={}", staged.display());
             println!("cargo:rustc-link-lib=static=irgx");
-        },
+        }
         Kind::Shared => {
             println!("cargo:rustc-link-search=native={}", dir.display());
             println!("cargo:rustc-link-lib=dylib=irgx");
@@ -258,7 +352,7 @@ fn link(dir: &Path, kind: Kind, target: &str) {
             if !target.contains("-windows") {
                 println!("cargo:rustc-link-arg=-Wl,-rpath,{}", dir.display());
             }
-        },
+        }
     }
 }
 
@@ -312,13 +406,13 @@ fn zig_build(checkout: &Path, target: &str) -> Result<(PathBuf, Kind), String> {
         .arg(&prefix)
         .status();
     match run {
-        Ok(status) if status.success() => {},
+        Ok(status) if status.success() => {}
         Ok(status) => {
             return Err(format!(
                 "and `zig build -Dtarget={zig_target}` in {} exited with {status}.",
                 checkout.display()
             ));
-        },
+        }
         Err(why) => {
             return Err(format!(
                 "and `zig` could not be run ({why}), so the engine cannot be built from \
@@ -326,7 +420,7 @@ fn zig_build(checkout: &Path, target: &str) -> Result<(PathBuf, Kind), String> {
                  IRGX_LIB_DIR at the directory holding the library.",
                 checkout.display()
             ));
-        },
+        }
     }
     let dir = prefix.join("lib");
     match library_in(&dir) {

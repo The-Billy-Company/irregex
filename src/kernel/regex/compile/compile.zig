@@ -40,51 +40,71 @@ pub const Compiler = struct {
 
     /// Compile `node` so all its exits flow to state `next`; return its entry.
     pub fn compileNode(self: *Compiler, node: *Node, next: u32) ParseError!u32 {
-        switch (node.*) {
-            .empty => return next,
-            .anchor_start => return self.push(.{ .assert_start = next }),
-            .anchor_end => return self.push(.{ .assert_end = next }),
-            .anchor_buf_start => return self.push(.{ .assert_buf_start = next }),
-            .anchor_buf_end => return self.push(.{ .assert_buf_end = next }),
-            .word => |mask| return self.push(.{ .assert_word = .{ .mask = mask, .out = next } }),
-            .class => |set| return self.push(.{ .consume = .{ .set = set, .out = next } }),
-            // A Unicode codepoint class lowers to a compact UTF-8 byte
-            // sub-automaton (shared with the capture compiler).
-            .uclass => |ranges| return lowerUtf8(self.gpa, &self.loom, ranges, next, self),
-            // A capture group is transparent to the boolean engine — lower its child
-            // (the index is only meaningful to the separate capture VM).
-            .capture => |g| return self.compileNode(g.child, next),
-            .concat => |ab| {
-                const s2 = try self.compileNode(ab[1], next);
-                return self.compileNode(ab[0], s2);
+        // Parser spines can be as deep as the pattern is long. Keep the exact
+        // recursive emission order, including split priorities, in heap-backed
+        // continuations rather than spending a host stack frame per AST node.
+        const Task = union(enum) {
+            visit: struct { node: *Node, next: u32 },
+            left: *Node,
+            right: struct { node: *Node, next: u32 },
+            join: u32,
+            optional: struct { next: u32, lazy: bool },
+            repeat: struct { split: u32, next: u32, lazy: bool, plus: bool },
+        };
+        var todo: std.ArrayList(Task) = .empty;
+        defer todo.deinit(self.gpa);
+        var unions: ByteUnions = .empty;
+        defer unions.deinit(self.gpa);
+        var proof: std.ArrayList(UnionTask) = .empty;
+        defer proof.deinit(self.gpa);
+        try todo.append(self.gpa, .{ .visit = .{ .node = node, .next = next } });
+        var entry = next;
+        while (todo.pop()) |task| switch (task) {
+            .visit => |v| switch (v.node.*) {
+                .empty => entry = v.next,
+                .anchor_start => entry = try self.push(.{ .assert_start = v.next }),
+                .anchor_end => entry = try self.push(.{ .assert_end = v.next }),
+                .anchor_buf_start => entry = try self.push(.{ .assert_buf_start = v.next }),
+                .anchor_buf_end => entry = try self.push(.{ .assert_buf_end = v.next }),
+                .word => |mask| entry = try self.push(.{ .assert_word = .{ .mask = mask, .out = v.next } }),
+                .class => |set| entry = try self.push(.{ .consume = .{ .set = set, .out = v.next } }),
+                .uclass => |ranges| entry = try lowerUtf8(self.gpa, &self.loom, ranges, v.next, self),
+                .capture => |g| try todo.append(self.gpa, .{ .visit = .{ .node = g.child, .next = v.next } }),
+                .concat => |ab| {
+                    try todo.append(self.gpa, .{ .left = ab[0] });
+                    try todo.append(self.gpa, .{ .visit = .{ .node = ab[1], .next = v.next } });
+                },
+                .alt => |ab| {
+                    if (try oneByteUnion(self.gpa, v.node, &unions, &proof)) |set| {
+                        entry = try self.push(.{ .consume = .{ .set = set, .out = v.next } });
+                    } else {
+                        try todo.append(self.gpa, .{ .right = .{ .node = ab[1], .next = v.next } });
+                        try todo.append(self.gpa, .{ .visit = .{ .node = ab[0], .next = v.next } });
+                    }
+                },
+                .quest => |r| {
+                    try todo.append(self.gpa, .{ .optional = .{ .next = v.next, .lazy = r.lazy } });
+                    try todo.append(self.gpa, .{ .visit = .{ .node = r.node, .next = v.next } });
+                },
+                .star, .plus => |r, tag| {
+                    const sp = try self.push(.{ .split = .{ .a = 0, .b = 0 } });
+                    try todo.append(self.gpa, .{ .repeat = .{ .split = sp, .next = v.next, .lazy = r.lazy, .plus = tag == .plus } });
+                    try todo.append(self.gpa, .{ .visit = .{ .node = r.node, .next = sp } });
+                },
             },
-            .alt => |ab| {
-                // An alternation whose every branch consumes exactly one byte is not a
-                // choice at all — it is a byte CLASS, and `(a|b|…|h)` should reach the
-                // determinizer as one consume over `[a-h]` rather than as 8 consumes
-                // behind 7 splits. See `oneByteUnion` for why this is span-safe.
-                if (oneByteUnion(node)) |set| return self.push(.{ .consume = .{ .set = set, .out = next } });
-                const sa = try self.compileNode(ab[0], next);
-                const sb = try self.compileNode(ab[1], next);
-                return self.push(.{ .split = .{ .a = sa, .b = sb } });
+            .left => |n| try todo.append(self.gpa, .{ .visit = .{ .node = n, .next = entry } }),
+            .right => |r| {
+                try todo.append(self.gpa, .{ .join = entry });
+                try todo.append(self.gpa, .{ .visit = .{ .node = r.node, .next = r.next } });
             },
-            .quest => |r| {
-                const sx = try self.compileNode(r.node, next);
-                // Priority order: greedy prefers the body (`sx`), lazy prefers the
-                // exit (`next`). The Pike VM adds `split.a` before `split.b`, so the
-                // high-priority branch is `.a`.
-                return self.push(if (r.lazy) .{ .split = .{ .a = next, .b = sx } } else .{ .split = .{ .a = sx, .b = next } });
+            .join => |left| entry = try self.push(.{ .split = .{ .a = left, .b = entry } }),
+            .optional => |r| entry = try self.push(if (r.lazy) .{ .split = .{ .a = r.next, .b = entry } } else .{ .split = .{ .a = entry, .b = r.next } }),
+            .repeat => |r| {
+                self.states.items[r.split].split = if (r.lazy) .{ .a = r.next, .b = entry } else .{ .a = entry, .b = r.next };
+                if (!r.plus) entry = r.split;
             },
-            .star, .plus => |r, tag| {
-                const sp = try self.push(.{ .split = .{ .a = 0, .b = 0 } });
-                const sx = try self.compileNode(r.node, sp);
-                // Greedy: loop back (`sx`) is high priority, exit (`next`) low. Lazy
-                // swaps them (prefer to stop). Set both arms explicitly per laziness.
-                self.states.items[sp].split = if (r.lazy) .{ .a = next, .b = sx } else .{ .a = sx, .b = next };
-                // star enters at the split (zero iters OK); plus enters at x (run once, then loop back via the split).
-                return if (tag == .star) sp else sx;
-            },
-        }
+        };
+        return entry;
     }
 };
 
@@ -105,16 +125,139 @@ pub const Compiler = struct {
 /// every quantifier (a variable count). `.capture` descends because this compiler
 /// already lowers a group transparently — and the *capture* VM has its own
 /// alternation lowering (`captures.zig`), so no slot boundary is reachable from here.
-fn oneByteUnion(node: *const Node) ?ByteSet {
-    switch (node.*) {
-        .class => |set| return set,
-        .capture => |g| return oneByteUnion(g.child),
-        .alt => |ab| {
-            var set = oneByteUnion(ab[0]) orelse return null;
-            set.unionWith(oneByteUnion(ab[1]) orelse return null);
-            return set;
-        },
-        else => return null,
+const ByteUnions = std.AutoHashMapUnmanaged(*const Node, ?ByteSet);
+const UnionTask = struct { node: *const Node, finish: bool = false };
+
+fn oneByteUnion(gpa: std.mem.Allocator, node: *const Node, known: *ByteUnions, todo: *std.ArrayList(UnionTask)) ParseError!?ByteSet {
+    try todo.append(gpa, .{ .node = node });
+    while (todo.pop()) |task| {
+        if (known.contains(task.node)) continue;
+        const set: ?ByteSet = switch (task.node.*) {
+            .class => |set| set,
+            .capture => |g| if (task.finish) known.get(g.child).? else {
+                try todo.append(gpa, .{ .node = task.node, .finish = true });
+                try todo.append(gpa, .{ .node = g.child });
+                continue;
+            },
+            .alt => |ab| if (task.finish) blk: {
+                var set = known.get(ab[0]).? orelse break :blk null;
+                set.unionWith(known.get(ab[1]).? orelse break :blk null);
+                break :blk set;
+            } else {
+                try todo.append(gpa, .{ .node = task.node, .finish = true });
+                try todo.append(gpa, .{ .node = ab[1] });
+                try todo.append(gpa, .{ .node = ab[0] });
+                continue;
+            },
+            else => null,
+        };
+        try known.put(gpa, task.node, set);
+    }
+    return known.get(node).?;
+}
+
+test "Thompson lowering handles deep mixed and single-byte alternations without host recursion" {
+    const t = std.testing;
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const gpa = arena.allocator();
+    const a = try gpa.create(Node);
+    const b = try gpa.create(Node);
+    var aset: ByteSet = .{};
+    var bset: ByteSet = .{};
+    aset.set('a');
+    bset.set('b');
+    a.* = .{ .class = aset };
+    b.* = .{ .class = bset };
+    const pair = try gpa.create(Node);
+    pair.* = .{ .concat = .{ a, b } };
+    var mixed = pair;
+    var bytes = a;
+    const depth = 32_768;
+    for (0..depth) |_| {
+        const m = try gpa.create(Node);
+        m.* = .{ .alt = .{ mixed, b } };
+        mixed = m;
+        const u = try gpa.create(Node);
+        u.* = .{ .alt = .{ bytes, b } };
+        bytes = u;
+    }
+    var c: Compiler = .{ .gpa = t.allocator };
+    defer c.loom.deinit(t.allocator);
+    defer c.states.deinit(t.allocator);
+    const end = try c.push(.match);
+    _ = try c.compileNode(mixed, end);
+    try t.expectEqual(@as(usize, 2 * depth + 3), c.states.items.len);
+    c.states.clearRetainingCapacity();
+    _ = try c.push(.match);
+    const entry = try c.compileNode(bytes, 0);
+    try t.expectEqual(@as(usize, 2), c.states.items.len);
+    try t.expect(c.states.items[entry].consume.set.has('a'));
+    try t.expect(c.states.items[entry].consume.set.has('b'));
+}
+
+test "Thompson lowering handles deep concatenation without host recursion" {
+    const t = std.testing;
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const gpa = arena.allocator();
+    const atom = try gpa.create(Node);
+    var set: ByteSet = .{};
+    set.set('x');
+    atom.* = .{ .class = set };
+    var node = atom;
+    const depth = 32_768;
+    for (0..depth) |_| {
+        const cat = try gpa.create(Node);
+        cat.* = .{ .concat = .{ node, atom } };
+        node = cat;
+    }
+    var c: Compiler = .{ .gpa = t.allocator };
+    defer c.loom.deinit(t.allocator);
+    defer c.states.deinit(t.allocator);
+    _ = try c.push(.match);
+    var entry = try c.compileNode(node, 0);
+    var walked: usize = 0;
+    while (entry != 0) {
+        try t.expect(c.states.items[entry].consume.set.has('x'));
+        entry = c.states.items[entry].consume.out;
+        walked += 1;
+    }
+    try t.expectEqual(@as(usize, depth + 1), walked);
+}
+
+test "Thompson lowering preserves alternation emission order and greedy split priority" {
+    const t = std.testing;
+    var a: Node = .{ .class = .{} };
+    var b: Node = .{ .class = .{} };
+    a.class.set('a');
+    b.class.set('b');
+    var ab: Node = .{ .concat = .{ &a, &b } };
+    var choice: Node = .{ .alt = .{ &a, &ab } };
+    var c: Compiler = .{ .gpa = t.allocator };
+    defer c.loom.deinit(t.allocator);
+    defer c.states.deinit(t.allocator);
+    _ = try c.push(.match);
+    const entry = try c.compileNode(&choice, 0);
+    try t.expectEqual(@as(u32, 4), entry);
+    try t.expectEqual(@as(u32, 1), c.states.items[entry].split.a);
+    try t.expectEqual(@as(u32, 3), c.states.items[entry].split.b);
+    try t.expect(c.states.items[1].consume.set.has('a'));
+    try t.expect(c.states.items[2].consume.set.has('b'));
+    try t.expectEqual(@as(u32, 2), c.states.items[3].consume.out);
+    for ([_]bool{ false, true }) |lazy| {
+        c.states.clearRetainingCapacity();
+        _ = try c.push(.match);
+        var optional: Node = .{ .quest = .{ .node = &a, .lazy = lazy } };
+        const q = try c.compileNode(&optional, 0);
+        try t.expectEqual(if (lazy) @as(u32, 0) else 1, c.states.items[q].split.a);
+        try t.expectEqual(if (lazy) @as(u32, 1) else 0, c.states.items[q].split.b);
+        c.states.clearRetainingCapacity();
+        _ = try c.push(.match);
+        var star: Node = .{ .star = .{ .node = &a, .lazy = lazy } };
+        const s = try c.compileNode(&star, 0);
+        try t.expectEqual(if (lazy) @as(u32, 0) else 2, c.states.items[s].split.a);
+        try t.expectEqual(if (lazy) @as(u32, 2) else 0, c.states.items[s].split.b);
     }
 }
 

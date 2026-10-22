@@ -182,6 +182,24 @@ pub const Regex = struct {
 /// more specific statement is the one the author wrote next to the pattern.
 pub fn compile(pattern: ?[*]const u8, len: usize, flags: u32, out: ?**Regex) Status {
     contract.beginCall();
+    return compileWithLimits(pattern, len, flags, .{}, out);
+}
+
+/// Compile with explicit PCRE2 match ceilings. MAX means unspecified; zero is
+/// an actual ceiling. Depth and heap values outside their native width refuse.
+pub fn compileLimited(pattern: ?[*]const u8, len: usize, flags: u32, steps: u64, depth: u64, heap_bytes: u64, out: ?**Regex) Status {
+    contract.beginCall();
+    const absent = std.math.maxInt(u64);
+    if (depth != absent and depth > std.math.maxInt(u32)) return .invalid;
+    if (heap_bytes != absent and heap_bytes > std.math.maxInt(usize)) return .invalid;
+    return compileWithLimits(pattern, len, flags, .{
+        .steps = if (steps == absent) null else steps,
+        .depth = if (depth == absent) null else @intCast(depth),
+        .heap_bytes = if (heap_bytes == absent) null else @intCast(heap_bytes),
+    }, out);
+}
+
+fn compileWithLimits(pattern: ?[*]const u8, len: usize, flags: u32, limits: mark.Limits, out: ?**Regex) Status {
     const slot = out orelse return .invalid;
     const bytes = contract.view(pattern, len) orelse return .invalid;
     if (flags & ~contract.pattern_flags != 0) return .invalid;
@@ -235,6 +253,7 @@ pub fn compile(pattern: ?[*]const u8, len: usize, flags: u32, out: ?**Regex) Sta
     const source = if (fixed) escaped else asked.rest;
 
     const inner = rx.Pattern.compileOpts(gpa, source, .{
+        .limits = limits,
         .caseless = caseless,
         .unicode = unicode,
         .word = flags & contract.flag_word != 0,
@@ -1725,6 +1744,38 @@ test "the PCRE2 arm captures too, through the same door" {
     try t.expectEqual(Span{ .start = 1, .end = 7 }, got[1]);
     // And the boolean plane answers the same pattern.
     try t.expectEqual(Status.match, isMatch(re, " walrus", 7));
+}
+
+test "captures: match ceilings surface as faults and the next call clears them" {
+    const sc = fault.scope();
+    defer sc.end();
+    const re = try open("(*LIMIT_MATCH=10)\\G(?:a+)+$", contract.flag_pcre | contract.flag_no_unicode);
+    defer free(re);
+    const bad = "a" ** 100 ++ "b";
+    var got: [1]Span = undefined;
+    var n: usize = 99;
+    try t.expectEqual(Status.out_of_memory, captures(re, bad.ptr, bad.len, 0, &got, 1, &n));
+    try t.expectEqual(@as(usize, 0), n);
+    try t.expectEqual(error.BudgetExceeded, fault.last().?.code);
+    try t.expectEqual(Status.match, captures(re, "a", 1, 0, &got, 1, &n));
+    try t.expect(fault.last() == null);
+}
+
+test "captures: explicit depth and heap limits reach the lazy interpreter arm" {
+    const sc = fault.scope();
+    defer sc.end();
+    const absent = std.math.maxInt(u64);
+    const text = "a" ** 100 ++ "b";
+    for ([_]struct { depth: u64, heap: u64 }{ .{ .depth = 1, .heap = absent }, .{ .depth = absent, .heap = 0 } }) |limits| {
+        var re: *Regex = undefined;
+        const pat = "\\G(?:a+)+$";
+        try t.expectEqual(Status.ok, compileLimited(pat.ptr, pat.len, contract.flag_pcre | contract.flag_no_unicode, absent, limits.depth, limits.heap, &re));
+        defer free(re);
+        var got: [1]Span = undefined;
+        var n: usize = 0;
+        try t.expectEqual(Status.out_of_memory, captures(re, text.ptr, text.len, 0, &got, 1, &n));
+        try t.expectEqual(error.BudgetExceeded, fault.last().?.code);
+    }
 }
 
 // ── adversarial additions: termination + a toxic-pattern soak ──────────────

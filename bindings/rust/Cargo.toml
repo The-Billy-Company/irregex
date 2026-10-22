@@ -62,6 +62,19 @@ exclude = [ "/target", "/.cargo", "/rust-toolchain.toml" ]
 # is already `irgx` and callers already type `use irgx::…`. It used to be here
 # only because the package was spelled `irregex`.
 
+[features]
+default = []
+# Unreleased native additions. Requires a matching engine source checkout or
+# an explicitly selected IRGX_LIB_DIR; never uses older bundled archives.
+source-engine = []
+# Checked native Image1 persistence and shared immutable Program workers.
+munch-image = [ "source-engine" ]
+
+[build-dependencies]
+# Same package as the existing runtime dependency; selection declarations are
+# parsed as JSON, while the producer helper owns actual archive-byte proof.
+serde_json = "1"
+
 [dependencies]
 # The substrate's subprocess tier speaks ripgrep `--json` and analytic NDJSON;
 # serde is the idiomatic parser. The regex face itself needs no runtime deps.

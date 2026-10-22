@@ -569,6 +569,7 @@ pub fn build(b: *std.Build) void {
         .root_module = abi,
         .test_runner = bg.runner(),
     });
+    b.step("check-abi", "Compile the C-ABI artifact's unit tests without running").dependOn(&abi_tests.step);
     const abi_step = b.step("test-abi", "Run the C-ABI artifact's unit tests (folded into `test`)");
     bg.shard(abi_step, abi_tests, .{ .count = 1 });
     if (!bg.narrowed()) test_step.dependOn(abi_step);

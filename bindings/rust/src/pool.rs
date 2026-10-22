@@ -55,17 +55,30 @@ pub(crate) trait Recipe {
 }
 
 /// One handle, released when this value drops.
-struct Handle<R: Recipe>(NonNull<R::Raw>, PhantomData<fn() -> R>);
+pub(crate) struct Handle<R: Recipe>(NonNull<R::Raw>, PhantomData<fn() -> R>);
+
+#[cfg(feature = "munch-image")]
+impl<R: Recipe> Handle<R> {
+    /// Adopt one already owned, unpublished native handle.
+    pub(crate) fn owned(raw: NonNull<R::Raw>) -> Self {
+        Self(raw, PhantomData)
+    }
+
+    pub(crate) fn raw(&self) -> *mut R::Raw {
+        self.0.as_ptr()
+    }
+}
 
 // SAFETY: the handle is single-threaded, which is not the same as thread-bound.
 // Everything it owns lives in the C allocator, whose free is callable from any
 // thread, and the engine keeps no thread-local state tied to a handle (the fault
 // slot is per-thread and read on the thread that filled it). Moving one across
 // threads is therefore sound as long as only one thread uses it at a time, and
-// `Pool` is the thing that guarantees that: a handle is only ever reachable
-// through a `Lease`, and the mutex that hands the lease out also supplies the
-// happens-before edge between the previous holder's last write and this one's
-// first read.
+// `Pool` hands scan workers out only through an exclusive `Lease`, and its mutex
+// supplies the happens-before edge between successive holders. With munch-image,
+// an unpublished owned handle may also be surveyed exclusively during loading,
+// then retained as a never-scanned prototype behind Anchored's mutex. That mutex
+// serializes clone creation; no path exposes a worker to concurrent mutation.
 unsafe impl<R: Recipe> Send for Handle<R> {}
 
 impl<R: Recipe> Drop for Handle<R> {
@@ -85,6 +98,15 @@ pub(crate) struct Pool<R: Recipe> {
 }
 
 impl<R: Recipe> Pool<R> {
+    /// Image construction already owns its prototype. Do not compile or clone
+    /// another handle until a caller actually requests a lease.
+    #[cfg(feature = "munch-image")]
+    pub(crate) fn empty(recipe: R) -> Self {
+        Self {
+            recipe,
+            idle: Mutex::new(Vec::new()),
+        }
+    }
     /// Run `recipe` once, keeping the first handle idle.
     ///
     /// Compiling here rather than on first search means a bad pattern is an
@@ -103,6 +125,11 @@ impl<R: Recipe> Pool<R> {
         &self.recipe
     }
 
+    #[cfg(all(test, feature = "munch-image"))]
+    pub(crate) fn idle_count(&self) -> usize {
+        self.idle().len()
+    }
+
     /// A handle this thread may use until the lease drops.
     pub(crate) fn lease(&self) -> Result<Lease<'_, R>, Error> {
         let taken = self.idle().pop();
@@ -113,6 +140,8 @@ impl<R: Recipe> Pool<R> {
         Ok(Lease {
             pool: self,
             handle: ManuallyDrop::new(handle),
+            #[cfg(feature = "munch-image")]
+            discard: false,
         })
     }
 
@@ -130,12 +159,20 @@ pub(crate) struct Lease<'p, R: Recipe> {
     /// `ManuallyDrop` because the handle is *moved back* into the pool rather
     /// than freed: dropping it here would free a handle the pool still wants.
     handle: ManuallyDrop<Handle<R>>,
+    #[cfg(feature = "munch-image")]
+    discard: bool,
 }
 
 impl<R: Recipe> Lease<'_, R> {
     /// The raw handle, for the one call each verb makes with it.
     pub(crate) fn raw(&self) -> *mut R::Raw {
         self.handle.0.as_ptr()
+    }
+
+    /// Consume a failed save lease so pending native bytes cannot return idle.
+    #[cfg(feature = "munch-image")]
+    pub(crate) fn discard(mut self) {
+        self.discard = true;
     }
 }
 
@@ -144,6 +181,11 @@ impl<R: Recipe> Drop for Lease<'_, R> {
         // SAFETY: `self.handle` has not been taken before - `Drop` runs once and
         // nothing else moves out of the `ManuallyDrop`.
         let handle = unsafe { ManuallyDrop::take(&mut self.handle) };
+        #[cfg(feature = "munch-image")]
+        if self.discard {
+            drop(handle);
+            return;
+        }
         self.pool.idle().push(handle);
     }
 }

@@ -124,12 +124,19 @@
 //! library you built yourself instead. A target with no vendored archive falls
 //! back to building the engine from source, and fails at build time with a
 //! sentence if it cannot.
+//!
+//! The opt-in `source-engine` feature exposes new capture limits and metered
+//! tokenizer scans. It builds the matching source checkout instead of using
+//! bundled or `zig-out` archives, unless `IRGX_LIB_DIR` explicitly selects a
+//! matching native library. The default feature set keeps the released ABI.
 
 #![forbid(unsafe_op_in_unsafe_fn)]
 
 mod error;
 mod matches;
 mod munch;
+#[cfg(feature = "munch-image")]
+mod munch_image;
 mod pattern;
 mod pool;
 mod replace;
@@ -168,6 +175,8 @@ pub mod runtime;
 pub use crate::error::{Answer, Error, Status};
 pub use crate::matches::{CaptureMatches, Captures, Match, Matches, Split};
 pub use crate::munch::{Munch, MunchBuilder, Pick, Refusal, Token, Why};
+#[cfg(feature = "munch-image")]
+pub use crate::munch_image::{ImageBudget, ImageError, ImageLimits, MunchImage};
 pub use crate::pattern::{Regex, RegexBuilder};
 pub use crate::replace::{NoExpand, Replacer};
 pub use crate::set::{RegexSet, RegexSetBuilder, SetMatches};

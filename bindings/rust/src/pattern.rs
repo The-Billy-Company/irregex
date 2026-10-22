@@ -65,10 +65,11 @@ impl Regex {
         RegexBuilder::new(pattern).build()
     }
 
-    fn compile(pattern: &str, flags: u32) -> Result<Self, Error> {
+    fn compile(pattern: &str, flags: u32, limits: [Option<u64>; 3]) -> Result<Self, Error> {
         let pool = Pool::new(Spell {
             pattern: pattern.into(),
             flags,
+            limits,
         })?;
         let lease = pool.lease()?;
 
@@ -458,6 +459,91 @@ impl Regex {
         Ok(Some(Captures::new(self, text, spans)))
     }
 
+    /// Capture ranges for the leftmost match starting at or after `start` in raw bytes.
+    ///
+    /// The full input remains visible to anchors and lookbehind. Group zero is
+    /// the whole match, and a group that did not participate is `None`. Returned
+    /// ranges are checked against `text`; arbitrary bytes and offsets inside a
+    /// UTF-8 codepoint are accepted. Prefix a PCRE pattern with `\G` when the
+    /// match must begin exactly at `start`.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::BadWindow`] when `start` exceeds the input length,
+    /// [`Error::Groups`] for a capture-arm refusal, [`Error::OutOfMemory`]
+    /// for a resource fault (whose detail names `BudgetExceeded` for an explicit
+    /// ceiling), and [`Error::Inconsistent`] for an invalid engine range.
+    #[cfg(feature = "source-engine")]
+    pub fn try_capture_ranges_at(
+        &self,
+        text: &[u8],
+        start: usize,
+    ) -> Result<Option<Vec<Option<std::ops::Range<usize>>>>, Error> {
+        if start > text.len() {
+            return Err(Error::BadWindow {
+                start,
+                end: text.len(),
+            });
+        }
+        let window = self
+            .groups
+            .clone()?
+            .checked_add(1)
+            .ok_or_else(|| Error::Inconsistent {
+                message: "capture group count overflow".into(),
+            })?;
+        let lease = self.pool.lease()?;
+        let mut out = vec![sys::Span::default(); window];
+        let mut written = 0usize;
+        // SAFETY: the lease is exclusive; text and out are live slices passed
+        // with their own lengths, start <= text.len() is checked above, and
+        // written points to a live usize. The ABI writes at most out.len() slots.
+        let status = unsafe {
+            sys::irgx_captures(
+                lease.raw(),
+                text.as_ptr(),
+                text.len(),
+                start,
+                out.as_mut_ptr(),
+                out.len(),
+                &raw mut written,
+            )
+        };
+        if status < 0 {
+            return Err(fault(status, |status, detail| Error::Groups {
+                pattern: self.as_str().to_owned(),
+                status,
+                detail,
+            }));
+        }
+        if status != sys::MATCH {
+            return Ok(None);
+        }
+        if written != window {
+            return Err(Error::Inconsistent {
+                message: format!(
+                    "capture arm reported {written} groups for a {window}-group pattern"
+                ),
+            });
+        }
+        let ranges = out
+            .into_iter()
+            .map(|span| match span.range() {
+                None => Ok(None),
+                Some((lo, hi)) if lo <= hi && hi <= text.len() => Ok(Some(lo..hi)),
+                Some(span) => Err(Error::Inconsistent {
+                    message: format!("capture range {span:?} exceeds {} input bytes", text.len()),
+                }),
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if !ranges.first().is_some_and(Option::is_some) {
+            return Err(Error::Inconsistent {
+                message: "capture arm omitted the whole match".into(),
+            });
+        }
+        Ok(Some(ranges))
+    }
+
     /// The capture groups of every match in `text`.
     ///
     /// The spans come from one `find_all`, and each match's group detail is
@@ -817,6 +903,7 @@ impl Regex {
 pub(crate) struct Spell {
     pattern: Box<str>,
     flags: u32,
+    limits: [Option<u64>; 3],
 }
 
 impl Recipe for Spell {
@@ -829,6 +916,28 @@ impl Recipe for Spell {
         // plain integer, and `out` is a live pointer slot the library only writes
         // on success. The call cannot unwind: every entry in this ABI returns a
         // status.
+        #[cfg(feature = "source-engine")]
+        let status = if self.limits == [None; 3] {
+            // SAFETY: body and out satisfy the compile contract stated above.
+            unsafe { sys::irgx_compile(body.as_ptr(), body.len(), self.flags, &raw mut out) }
+        } else {
+            // SAFETY: identical pointer contract; limits are plain integers,
+            // where u64::MAX leaves the native engine's existing ceiling selected.
+            unsafe {
+                sys::irgx_compile_limited(
+                    body.as_ptr(),
+                    body.len(),
+                    self.flags,
+                    self.limits[0].unwrap_or(u64::MAX),
+                    self.limits[1].unwrap_or(u64::MAX),
+                    self.limits[2].unwrap_or(u64::MAX),
+                    &raw mut out,
+                )
+            }
+        };
+        #[cfg(not(feature = "source-engine"))]
+        // SAFETY: body is a live slice, flags are validated by the library, and
+        // out is a live output slot. Feature-off builds use only the old ABI.
         let status =
             unsafe { sys::irgx_compile(body.as_ptr(), body.len(), self.flags, &raw mut out) };
         if status < 0 {
@@ -905,7 +1014,7 @@ impl Clone for Regex {
     /// way that happens is an allocation failure.
     fn clone(&self) -> Self {
         let spell = self.pool.recipe();
-        expect(Self::compile(&spell.pattern, spell.flags))
+        expect(Self::compile(&spell.pattern, spell.flags, spell.limits))
     }
 }
 
@@ -942,6 +1051,7 @@ impl std::str::FromStr for Regex {
 pub struct RegexBuilder {
     pattern: String,
     flags: u32,
+    limits: [Option<u64>; 3],
 }
 
 impl RegexBuilder {
@@ -953,6 +1063,7 @@ impl RegexBuilder {
         Self {
             pattern: pattern.to_owned(),
             flags: 0,
+            limits: [None; 3],
         }
     }
 
@@ -1019,6 +1130,37 @@ impl RegexBuilder {
         self.set(sys::PCRE, yes)
     }
 
+    /// Bound PCRE2 matching work. Zero is an explicit zero-work budget.
+    /// `u64::MAX` restores the native default ceiling.
+    ///
+    /// This ceiling also applies to capture extraction and survives cloning or
+    /// creation of additional worker handles. Linear matching is unaffected.
+    #[cfg(feature = "source-engine")]
+    pub fn match_limit(&mut self, steps: u64) -> &mut Self {
+        self.limits[0] = (steps != u64::MAX).then_some(steps);
+        self
+    }
+
+    /// Bound PCRE2 interpreter depth. Zero is an explicit zero-work budget.
+    /// `u64::MAX` restores the native default ceiling.
+    ///
+    /// An explicit depth ceiling disables PCRE2 JIT, which does not honor it.
+    #[cfg(feature = "source-engine")]
+    pub fn depth_limit(&mut self, frames: u64) -> &mut Self {
+        self.limits[1] = (frames != u64::MAX).then_some(frames);
+        self
+    }
+
+    /// Bound PCRE2 matching heap bytes. Zero is an explicit zero-work budget.
+    /// `u64::MAX` restores the native default ceiling.
+    ///
+    /// An explicit heap ceiling disables PCRE2 JIT, which does not honor it.
+    #[cfg(feature = "source-engine")]
+    pub fn heap_limit_bytes(&mut self, bytes: u64) -> &mut Self {
+        self.limits[2] = (bytes != u64::MAX).then_some(bytes);
+        self
+    }
+
     /// Compile it.
     ///
     /// # Errors
@@ -1027,7 +1169,7 @@ impl RegexBuilder {
     /// [`Error::Syntax`] when it is malformed, or [`Error::Abi`] when the linked
     /// library speaks a different C ABI than this crate.
     pub fn build(&self) -> Result<Regex, Error> {
-        Regex::compile(&self.pattern, self.flags)
+        Regex::compile(&self.pattern, self.flags, self.limits)
     }
 
     fn set(&mut self, bit: u32, yes: bool) -> &mut Self {

@@ -16,6 +16,51 @@ fn build(pats: []const []const u8) !munch.Munch {
     return (try munch.Munch.compile(t.allocator, pats, .{})) orelse error.Declined;
 }
 
+test "munch: metered scans stop before the transition they cannot pay for" {
+    var m = try build(&.{"a+"});
+    defer m.deinit();
+    var allow = try m.allowNone(t.allocator);
+    defer allow.deinit(t.allocator);
+    allow.admitAll();
+
+    var left: usize = 2;
+    munch.steps = 0;
+    try t.expectError(error.BudgetExceeded, m.longestAmongMetered("aaaa", 0, &allow, &left));
+    try t.expectEqual(@as(usize, 0), left);
+    try t.expectEqual(@as(usize, 2), munch.steps);
+    left = 4;
+    const hit = (try m.longestAmongMetered("aaaa", 0, &allow, &left)).?;
+    try t.expectEqual(@as(usize, 4), hit.len);
+    try t.expectEqual(@as(usize, 0), left);
+    left = 1;
+    try t.expectEqual(@as(usize, 1), (try m.shortestAmongMetered("aaaa", 0, &allow, &left)).?.len);
+    try t.expectEqual(@as(usize, 0), left);
+    try t.expectError(error.BudgetExceeded, m.longestAmongMetered("aaaa", 0, &allow, &left));
+    allow.forbidAll();
+    try t.expectEqual(@as(?munch.Match, null), try m.longestAmongMetered("aaaa", 0, &allow, &left));
+}
+
+test "munch: one metered allowance covers every automaton" {
+    var pats: [65][]const u8 = undefined;
+    @memset(&pats, "a+");
+    var m = try build(&pats);
+    defer m.deinit();
+    try t.expect(m.voices.len > 1);
+    var allow = try m.allowNone(t.allocator);
+    defer allow.deinit(t.allocator);
+    allow.admitAll();
+    var left: usize = 4 * m.voices.len - 1;
+    munch.steps = 0;
+    const initial = left;
+    try t.expectError(error.BudgetExceeded, m.longestAmongMetered("aaaa", 0, &allow, &left));
+    try t.expectEqual(initial, munch.steps);
+    try t.expectEqual(@as(usize, 0), left);
+    left = 4 * m.voices.len;
+    const hit = (try m.longestAmongMetered("aaaa", 0, &allow, &left)).?;
+    try t.expectEqual(@as(usize, 65), hit.patterns.len);
+    try t.expectEqual(@as(usize, 0), left);
+}
+
 test "munch: longest wins, and the loser is not reported" {
     var m = try build(&.{ ">", ">>", ">>=" });
     defer m.deinit();

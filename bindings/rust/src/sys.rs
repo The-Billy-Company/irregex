@@ -87,6 +87,38 @@ pub struct MunchPattern {
     pub len: usize,
 }
 
+/// Image1 policy record, transcribed from the additive checked108 header.
+#[cfg(feature = "munch-image")]
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+pub struct MunchImageLimits {
+    pub struct_size: u32,
+    pub version: u32,
+    pub reserved0: u32,
+    pub reserved1: u32,
+    pub encoded_bytes: u64,
+    pub decoded_bytes: u64,
+    pub patterns: u64,
+    pub voices: u64,
+    pub states: u64,
+    pub transition_entries: u64,
+    pub auxiliary_entries: u64,
+    pub live_owned_bytes: u64,
+}
+
+/// Mutable Image1 counters; native calls debit this same borrowed record.
+#[cfg(feature = "munch-image")]
+#[derive(Debug)]
+#[repr(C)]
+pub struct MunchImageBudget {
+    pub struct_size: u32,
+    pub version: u32,
+    pub reserved0: u32,
+    pub reserved1: u32,
+    pub allocation_left: u64,
+    pub work_left: u64,
+}
+
 /// `irgx_munch_refusal`: one pattern the slate could not take, and why.
 #[derive(Clone, Copy, Debug, Default)]
 #[repr(C)]
@@ -228,6 +260,16 @@ unsafe extern "C" {
     pub fn irgx_last_fault(out: *mut Fault) -> i32;
 
     pub fn irgx_compile(pattern: *const u8, len: usize, flags: u32, out: *mut *mut Regex) -> i32;
+    #[cfg(feature = "source-engine")]
+    pub fn irgx_compile_limited(
+        pattern: *const u8,
+        len: usize,
+        flags: u32,
+        steps: u64,
+        depth: u64,
+        heap_bytes: u64,
+        out: *mut *mut Regex,
+    ) -> i32;
     pub fn irgx_free(re: *mut Regex);
     pub fn irgx_is_match(re: *mut Regex, text: *const u8, len: usize) -> i32;
     // `irgx_find_all` is deliberately not declared: it is the windowed verb below
@@ -337,6 +379,28 @@ unsafe extern "C" {
         out: *mut *mut Munch,
     ) -> i32;
     pub fn irgx_munch_free(munch: *mut Munch);
+    #[cfg(feature = "munch-image")]
+    pub fn irgx_munch_clone_worker(munch: *const Munch, out: *mut *mut Munch) -> i32;
+    #[cfg(feature = "munch-image")]
+    pub fn irgx_munch_save(
+        munch: *mut Munch,
+        limits: *const MunchImageLimits,
+        budget: *mut MunchImageBudget,
+        out: *mut u8,
+        cap: usize,
+        written: *mut usize,
+    ) -> i32;
+    #[cfg(feature = "munch-image")]
+    pub fn irgx_munch_load(
+        patterns: *const MunchPattern,
+        count: usize,
+        flags: u32,
+        image: *const u8,
+        image_len: usize,
+        limits: *const MunchImageLimits,
+        budget: *mut MunchImageBudget,
+        out: *mut *mut Munch,
+    ) -> i32;
     // Declared, where the slate's equivalent above is not, because it is a
     // different number: the slate's length is the pattern count the crate already
     // holds, and a munch's is how many patterns it SEATED, which only the engine
@@ -359,6 +423,20 @@ unsafe extern "C" {
         tok: *mut MunchToken,
         out: *mut u32,
         cap: usize,
+    ) -> i32;
+    #[cfg(feature = "source-engine")]
+    pub fn irgx_munch_scan_metered(
+        munch: *mut Munch,
+        text: *const u8,
+        len: usize,
+        at: usize,
+        allow: *const u32,
+        nallow: usize,
+        pick: u32,
+        tok: *mut MunchToken,
+        out: *mut u32,
+        cap: usize,
+        remaining: *mut usize,
     ) -> i32;
 
     pub fn irgx_group_count(re: *mut Regex, out: *mut u32) -> i32;

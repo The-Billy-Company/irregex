@@ -441,6 +441,12 @@ answers wins:
    you are building for the host.
 4. **`zig build`** in that checkout, when `zig` is on PATH.
 
+The opt-in `source-engine` feature exposes raw byte captures, explicit PCRE2
+limits, and metered tokenizer scans. It skips the bundled archive and existing `zig-out`
+library, building the matching source checkout into Cargo's private output
+directory. An explicit `IRGX_LIB_DIR` still wins and must contain those new
+exports. The default feature set keeps the released ABI and bundled archives.
+
 Vendored targets, and the size of the archive each one links:
 
 - **`aarch64-apple-darwin`** — 2.06 MiB.

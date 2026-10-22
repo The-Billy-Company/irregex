@@ -112,6 +112,10 @@ export fn irgx_compile(pat: ?[*]const u8, len: usize, flags: u32, out: ?**patter
     return @intFromEnum(pattern.compile(pat, len, flags, out));
 }
 
+export fn irgx_compile_limited(pat: ?[*]const u8, len: usize, flags: u32, steps: u64, depth: u64, heap_bytes: u64, out: ?**pattern.Regex) i32 {
+    return @intFromEnum(pattern.compileLimited(pat, len, flags, steps, depth, heap_bytes, out));
+}
+
 /// Release a handle from `irgx_compile`.
 export fn irgx_free(re: *pattern.Regex) void {
     pattern.free(re);
@@ -320,6 +324,25 @@ export fn irgx_munch_scan(
     cap: usize,
 ) i32 {
     return @intFromEnum(munch.scan(handle, text, len, at, allow, nallow, pick, tok, out, cap));
+}
+
+export fn irgx_munch_scan_metered(handle: *munch.Munch, text: ?[*]const u8, len: usize, at: usize, allow: ?[*]const u32, nallow: usize, pick: u32, tok: ?*munch.Token, out: ?[*]u32, cap: usize, remaining: ?*usize) i32 {
+    return @intFromEnum(munch.scanMetered(handle, text, len, at, allow, nallow, pick, tok, out, cap, remaining));
+}
+
+/// Share a program, allocating only independent worker scratch.
+export fn irgx_munch_clone_worker(source: ?*const munch.Munch, out: ?**munch.Munch) i32 {
+    return @intFromEnum(munch.cloneWorker(source, out));
+}
+
+/// Size or copy one complete bounded Image1 frame.
+export fn irgx_munch_save(worker: ?*munch.Munch, limits: ?*const munch.ImageLimits, budget: ?*munch.ImageBudget, out: ?[*]u8, cap: usize, written: ?*usize) i32 {
+    return @intFromEnum(munch.save(worker, limits, budget, out, cap, written));
+}
+
+/// Validate expected source identity and publish an owned Image1 worker.
+export fn irgx_munch_load(expected: ?[*]const munch.Pattern, count: usize, flags: u32, image: ?[*]const u8, len: usize, limits: ?*const munch.ImageLimits, budget: ?*munch.ImageBudget, out: ?**munch.Munch) i32 {
+    return @intFromEnum(munch.load(expected, count, flags, image, len, limits, budget, out));
 }
 
 // ── the shared warm corpus ───────────────────────────────────────────────────

@@ -330,6 +330,16 @@ typedef struct {
 int32_t irgx_compile(const uint8_t *pattern, size_t len, uint32_t flags,
                         irgx_regex **out);
 
+/* Additive compile under PCRE2 match-step, recursion-depth and heap-byte
+ * ceilings. UINT64_MAX leaves a ceiling unspecified; zero is a real limit.
+ * Depth above UINT32_MAX and heap above SIZE_MAX are invalid (except the
+ * unspecified sentinel). These ceilings reach both search and lazy captures;
+ * depth or heap limits select the interpreter because PCRE2 JIT ignores them.
+ * Inert for the linear engine. Existing compile retains its original defaults. */
+int32_t irgx_compile_limited(const uint8_t *pattern, size_t len, uint32_t flags,
+                        uint64_t steps, uint64_t depth, uint64_t heap_bytes,
+                        irgx_regex **out);
+
 /* Release a handle from irgx_compile. Leaves the fault slot alone, so you
  * can still read the detail that made you clean up. */
 void irgx_free(irgx_regex *re);
@@ -791,6 +801,72 @@ int32_t irgx_munch_scan(irgx_munch *munch, const uint8_t *text, size_t len,
                         size_t at, const uint32_t *allow, size_t nallow,
                         uint32_t pick, irgx_munch_token *tok, uint32_t *out,
                         size_t cap);
+
+/* The same query under a shared DFA byte-transition allowance. Each transition
+ * decrements *remaining BEFORE reading its byte, across every internal voice.
+ * On BudgetExceeded (IRGX_OOM), tok is empty and no partial hit is reported;
+ * the remaining count still records work actually performed. Zero refuses any
+ * required transition. A query needing none (including no allowed patterns) is
+ * free. Existing scan has no allowance and keeps its original ABI. */
+int32_t irgx_munch_scan_metered(irgx_munch *munch, const uint8_t *text, size_t len,
+                        size_t at, const uint32_t *allow, size_t nallow,
+                        uint32_t pick, irgx_munch_token *tok, uint32_t *out,
+                        size_t cap, size_t *remaining);
+
+/* Image1 records use native C scalar layout, with size/version and zero
+ * reserved fields checked on every call. The image itself is little-endian.
+ * Zero is an actual zero ceiling; no value means unlimited. */
+typedef struct {
+  uint32_t struct_size; /* 80 */
+  uint32_t version;     /* 1 */
+  uint32_t reserved0;
+  uint32_t reserved1;
+  uint64_t encoded_bytes;
+  uint64_t decoded_bytes; /* canonical expanded values, not allocator overhead */
+  uint64_t patterns;
+  uint64_t voices;
+  uint64_t states;
+  uint64_t transition_entries;
+  uint64_t auxiliary_entries;
+  uint64_t live_owned_bytes;
+} irgx_munch_image_limits;
+
+typedef struct {
+  uint32_t struct_size; /* 32 */
+  uint32_t version;     /* 1 */
+  uint32_t reserved0;
+  uint32_t reserved1;
+  uint64_t allocation_left;
+  uint64_t work_left;
+} irgx_munch_image_budget;
+
+/* Share the immutable program and allocate independent permission/winner
+ * scratch. No compilation, image decoding or pending-image copy. The source
+ * must remain live throughout this call; distinct workers may scan concurrently.
+ * IRGX_OK publishes *out. Failure leaves *out unchanged. */
+int32_t irgx_munch_clone_worker(const irgx_munch *source, irgx_munch **out);
+
+/* Save under mandatory limits and a cumulative, nonrefundable budget. A sizing
+ * call (out NULL, cap 0) or short buffer returns IRGX_MATCH, writes the complete
+ * required size, and retains one complete bounded pending image. It writes no
+ * output bytes. Full copy returns IRGX_MATCH and releases pending storage.
+ * Copy work is charged before any output byte is written. Every negative
+ * result clears pending storage for a valid worker, including bad arguments.
+ * Image work and allocation are separate from the scan-transition allowance. */
+int32_t irgx_munch_save(irgx_munch *worker,
+                       const irgx_munch_image_limits *limits,
+                       irgx_munch_image_budget *budget,
+                       uint8_t *out, size_t cap, size_t *written);
+
+/* Validate and own an Image1 machine against the exact ordered expected
+ * patterns and flags. No compilation fallback. Input bytes/descriptors are
+ * borrowed only for this call; IRGX_OK publishes *out after all checks succeed.
+ * Failure leaves *out unchanged and retains consumed budget debits. Limits and
+ * budget records are mandatory; invalid records return IRGX_INVALID. */
+int32_t irgx_munch_load(const irgx_munch_pattern *expected, size_t count,
+                       uint32_t flags, const uint8_t *image, size_t len,
+                       const irgx_munch_image_limits *limits,
+                       irgx_munch_image_budget *budget, irgx_munch **out);
 
 /* ── the row protocol ────────────────────────────────────────────── */
 

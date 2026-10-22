@@ -60,6 +60,7 @@ const powerset = @import("../dfa/powerset.zig");
 const subset = @import("../dfa/subset.zig");
 const lower = @import("lower.zig");
 const split = @import("split.zig");
+const image_types = @import("munch_image_types.zig");
 
 /// Patterns one automaton can name — the width of its attribution mask.
 const per_automaton: usize = subset.max_patterns;
@@ -71,7 +72,7 @@ pub const Match = struct {
     /// refusing that is the caller's job and not a thing to hide here.
     len: usize,
     /// Every pattern ordinal reaching exactly `len`, ascending. Borrowed from
-    /// the `Munch`, valid until the next call.
+    /// the `Munch` (or scanWithScratch caller), valid until that scratch is reused.
     patterns: []const u32,
 };
 
@@ -148,6 +149,36 @@ pub const Munch = struct {
         /// False for an ordinal in `declined`, which has no seat anywhere.
         live: bool,
     };
+
+    /// Checked metadata layout for the FFI-owned source constructor. Direct
+    /// Zig compile keeps its existing ParseError contract; this is not a new
+    /// source policy or an image-count ceiling.
+    pub fn sourceLayout(count: usize) error{Oversized}!usize {
+        if (count > std.math.maxInt(u32)) return error.Oversized;
+        var total: usize = 0;
+        // Temporary ordinals, retained ordinals/refusals, original winners,
+        // seats, reasons and the largest possible voice directory. Actual
+        // admitted and voice counts cannot exceed the offered count.
+        inline for (.{ u32, u32, u32, Seat, Because, Voice }) |T| {
+            total = std.math.add(usize, total, try checkedLayout(count, @sizeOf(T), @alignOf(T))) catch return error.Oversized;
+        }
+        _ = std.math.cast(u64, total) orelse return error.Oversized;
+        return total;
+    }
+
+    pub fn checkedLayout(count: usize, size: usize, alignment: usize) error{Oversized}!usize {
+        std.debug.assert(alignment > 0 and std.math.isPowerOfTwo(alignment));
+        const n = std.math.cast(u64, count) orelse return error.Oversized;
+        const width = std.math.cast(u64, size) orelse return error.Oversized;
+        const alignment64 = std.math.cast(u64, alignment) orelse return error.Oversized;
+        const bytes64 = std.math.mul(u64, n, width) catch return error.Oversized;
+        const bytes = std.math.mul(usize, count, size) catch return error.Oversized;
+        if (count != 0) {
+            _ = std.math.add(u64, bytes64, alignment64 - 1) catch return error.Oversized;
+            _ = std.math.add(usize, bytes, alignment - 1) catch return error.Oversized;
+        }
+        return bytes;
+    }
 
     /// Which patterns a scan may end on. Built once per slate and refilled per
     /// call, so a lexer asking a different question at every token allocates
@@ -292,6 +323,33 @@ pub const Munch = struct {
         };
     }
 
+    /// Image-only assembly after the codec has validated the exact ordinal
+    /// partition. Ownership of the supplied arrays transfers only on success.
+    /// All persisted allocator fields use the stable base, never Context.
+    pub fn adoptImage(ctx: *image_types.Context, count: usize, voices: []Voice, declined: []const u32, because: []const Because) image_types.Error!Munch {
+        if (count > std.math.maxInt(u32) or declined.len != because.len) return error.NonCanonical;
+        var taken: usize = 0;
+        for (voices) |v| {
+            try ctx.work(1);
+            taken = std.math.add(usize, taken, v.ordinals.len) catch return error.Oversized;
+        }
+        const offered = std.math.add(usize, taken, declined.len) catch return error.Oversized;
+        if (taken > count or offered != count) return error.NonCanonical;
+        const seats = try ctx.alloc(Seat, count, .seats);
+        errdefer ctx.free(seats);
+        try ctx.work(try image_types.mul(count, @sizeOf(Seat)));
+        @memset(seats, .{ .voice = 0, .bit = 0, .live = false });
+        for (voices, 0..) |v, vi| {
+            try ctx.work(v.ordinals.len);
+            for (v.ordinals, 0..) |o, bit| {
+                if (o >= count or bit >= per_automaton) return error.NonCanonical;
+                seats[o] = .{ .voice = @intCast(vi), .bit = @intCast(bit), .live = true };
+            }
+        }
+        const winners = try ctx.alloc(u32, taken, .winners);
+        return .{ .gpa = ctx.base, .voices = voices, .declined = declined, .because = because, .winners = winners, .seats = seats };
+    }
+
     pub fn deinit(m: *Munch) void {
         for (m.voices) |*v| release(m.gpa, v);
         m.gpa.free(m.voices);
@@ -339,10 +397,34 @@ pub const Munch = struct {
         return m.scan(haystack, at, allow, .shortest);
     }
 
-    const Pick = enum { longest, shortest };
+    pub const Pick = enum { longest, shortest };
 
     fn scan(m: *Munch, haystack: []const u8, at: usize, allow: ?*const Allow, pick: Pick) ?Match {
+        return m.scanMetered(haystack, at, allow, pick, null) catch unreachable;
+    }
+
+    /// The same longest query with a shared allowance of DFA byte transitions.
+    /// Each transition spends one before reading its byte, across every voice.
+    /// A refusal leaves the unspent allowance intact and returns no partial hit.
+    pub fn longestAmongMetered(m: *Munch, haystack: []const u8, at: usize, allow: *const Allow, remaining: *usize) error{BudgetExceeded}!?Match {
+        return m.scanMetered(haystack, at, allow, .longest, remaining);
+    }
+
+    /// `shortestAmong` under the same transition allowance.
+    pub fn shortestAmongMetered(m: *Munch, haystack: []const u8, at: usize, allow: *const Allow, remaining: *usize) error{BudgetExceeded}!?Match {
+        return m.scanMetered(haystack, at, allow, .shortest, remaining);
+    }
+
+    fn scanMetered(m: *Munch, haystack: []const u8, at: usize, allow: ?*const Allow, pick: Pick, remaining: ?*usize) error{BudgetExceeded}!?Match {
+        return m.scanWithScratch(haystack, at, allow, pick, remaining, m.winners);
+    }
+
+    /// The sole scan body. The caller owns at least admitted() winner slots;
+    /// returned ordinals borrow that scratch until its next use. The machine
+    /// and every DFA table are read-only, so distinct scratch may run together.
+    pub fn scanWithScratch(m: *const Munch, haystack: []const u8, at: usize, allow: ?*const Allow, pick: Pick, remaining: ?*usize, winners: []u32) error{BudgetExceeded}!?Match {
         std.debug.assert(at <= haystack.len);
+        std.debug.assert(winners.len >= m.admitted());
         var best: usize = 0;
         var found = false;
         var n: usize = 0;
@@ -351,8 +433,8 @@ pub const Munch = struct {
             const permitted = if (allow) |a| a.words[vi] else ~@as(u64, 0);
             if (permitted == 0) continue;
             const end = switch (pick) {
-                .longest => reach(v.dfa, haystack, at, permitted),
-                .shortest => first(v.dfa, haystack, at, permitted),
+                .longest => try reach(v.dfa, haystack, at, permitted, remaining),
+                .shortest => try first(v.dfa, haystack, at, permitted, remaining),
             } orelse continue;
             const better = switch (pick) {
                 .longest => end.at > best,
@@ -365,7 +447,7 @@ pub const Munch = struct {
             } else if (end.at != best) continue;
             var mask = end.pats;
             while (mask != 0) : (mask &= mask - 1) {
-                m.winners[n] = v.ordinals[@ctz(mask)];
+                winners[n] = v.ordinals[@ctz(mask)];
                 n += 1;
             }
         }
@@ -375,8 +457,8 @@ pub const Munch = struct {
         // one, so the union is not ordered by construction. Saying "ascending"
         // is worth more to a caller applying a first-declared-wins tie-break
         // than "some order that depends on how bisection grouped the slate".
-        std.mem.sort(u32, m.winners[0..n], {}, std.sort.asc(u32));
-        return .{ .len = best - at, .patterns = m.winners[0..n] };
+        std.mem.sort(u32, winners[0..n], {}, std.sort.asc(u32));
+        return .{ .len = best - at, .patterns = winners[0..n] };
     }
 
     /// How many patterns this slate actually lexes with.
@@ -400,7 +482,10 @@ const End = struct { at: usize, pats: u64 };
 /// distance, and a test with no way to measure distance passes whether the exit
 /// is there or not. `builtin.is_test` is comptime, so outside a test build the
 /// increment is not compiled and this is a global nobody writes.
-pub var steps: usize = 0;
+pub threadlocal var steps: usize = 0;
+
+/// Observational only, and thread-local for concurrent worker controls.
+pub threadlocal var determinizations: usize = 0;
 
 /// Walk one automaton forward from `at`, keeping the last position it accepted
 /// **with a permitted pattern**.
@@ -437,7 +522,7 @@ pub var steps: usize = 0;
 /// Admitting every terminal, java walks 29% fewer bytes and json 25% fewer for
 /// the same tokens. An unattributed automaton carries no table and answers
 /// all-ones, so it never reaches the compare at all.
-fn reach(d: *const Munch.Dfa, haystack: []const u8, at: usize, permitted: u64) ?End {
+fn reach(d: *const Munch.Dfa, haystack: []const u8, at: usize, permitted: u64, remaining: ?*usize) error{BudgetExceeded}!?End {
     if (at >= haystack.len) {
         const pats = d.empty_pats & permitted;
         return if (d.empty_match and pats != 0) .{ .at = at, .pats = pats } else null;
@@ -450,6 +535,7 @@ fn reach(d: *const Munch.Dfa, haystack: []const u8, at: usize, permitted: u64) ?
     const last = haystack.len - 1;
     var i = at;
     while (i < last) : (i += 1) {
+        try spend(remaining);
         s = d.trans_in[s + d.class[haystack[i]]];
         if (@import("builtin").is_test) steps += 1;
         if (s == d.dead) return best;
@@ -462,6 +548,7 @@ fn reach(d: *const Munch.Dfa, haystack: []const u8, at: usize, permitted: u64) ?
     // of the text — the caller's slice, exactly as for every other walk in
     // this package. Peeled out of the loop so the interior pays no per-byte
     // table select on a branch it takes exactly once.
+    try spend(remaining);
     s = d.trans_fin[s + d.class[haystack[last]]];
     if (@import("builtin").is_test) steps += 1;
     if (s != d.dead) {
@@ -478,7 +565,7 @@ fn reach(d: *const Munch.Dfa, haystack: []const u8, at: usize, permitted: u64) ?
 /// to find out whether a longer one exists. The `reachableFrom` exit is kept
 /// for the case where no permitted pattern ever accepts, which is the only way
 /// this walk can still run to the end of the haystack.
-fn first(d: *const Munch.Dfa, haystack: []const u8, at: usize, permitted: u64) ?End {
+fn first(d: *const Munch.Dfa, haystack: []const u8, at: usize, permitted: u64, remaining: ?*usize) error{BudgetExceeded}!?End {
     if (at >= haystack.len) return null;
     var s = d.start;
     if (d.reachableFrom(s) & permitted == 0) return null;
@@ -486,16 +573,25 @@ fn first(d: *const Munch.Dfa, haystack: []const u8, at: usize, permitted: u64) ?
     const last = haystack.len - 1;
     var i = at;
     while (i < last) : (i += 1) {
+        try spend(remaining);
         s = d.trans_in[s + d.class[haystack[i]]];
         if (@import("builtin").is_test) steps += 1;
         if (s == d.dead) return null;
         if (accepted(d, s, permitted, i + 1)) |end| return end;
         if (d.reachableFrom(s) & permitted == 0) return null;
     }
+    try spend(remaining);
     s = d.trans_fin[s + d.class[haystack[last]]];
     if (@import("builtin").is_test) steps += 1;
     if (s == d.dead) return null;
     return accepted(d, s, permitted, last + 1);
+}
+
+inline fn spend(remaining: ?*usize) error{BudgetExceeded}!void {
+    if (remaining) |left| {
+        if (left.* == 0) return error.BudgetExceeded;
+        left.* -= 1;
+    }
 }
 
 inline fn accepted(d: *const Munch.Dfa, s: u32, permitted: u64, at: usize) ?End {
@@ -589,6 +685,7 @@ fn voice(
     // (see there for the arithmetic). Raised, not waived — the automaton is still
     // bounded, the build still terminates, and a group too large to hold declines
     // exactly as before and `admit` bisects it to name the pattern responsible.
+    if (@import("builtin").is_test) determinizations += 1;
     const outcome = try powerset.build(gpa, c.states.items, start, true, opts.unicode, .slate);
     return switch (outcome) {
         // `.slate` waives the visit cap, so `too_costly` cannot arrive here; it

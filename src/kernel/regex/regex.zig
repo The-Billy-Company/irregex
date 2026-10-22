@@ -50,6 +50,7 @@ pub const Chorus = chorus.Chorus;
 // really does belong to a grammar — so a match names every pattern that tied.
 pub const munch = @import("linear/program/munch.zig");
 pub const Munch = munch.Munch;
+pub const munch_image = @import("linear/program/munch_image.zig");
 
 // ── The parsed shape + its lowering — what an INDEX PLANNER reasons over ──────
 // A prefilter planner (`kernel/query/cover.zig`) chooses which trigrams an

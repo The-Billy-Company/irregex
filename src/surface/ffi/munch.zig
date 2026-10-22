@@ -57,6 +57,10 @@ const contract = @import("contract.zig");
 const fault = @import("../../fault.zig");
 const rx = @import("../../kernel/regex/regex.zig");
 const request = @import("request.zig");
+const owner = @import("munch_owner.zig");
+const image_codec = rx.munch_image;
+pub const ImageLimits = image_codec.Limits;
+pub const ImageBudget = image_codec.Budget;
 
 const Status = contract.Status;
 const gpa = std.heap.c_allocator;
@@ -75,10 +79,7 @@ const Ask = request.Ask;
 /// are the slate's, passed once to `compile`.
 ///
 /// Extern and append-only, so a later field is a forward-compatible extension.
-pub const Pattern = extern struct {
-    pattern: ?[*]const u8,
-    len: usize,
-};
+pub const Pattern = image_codec.types.Pattern;
 
 /// One pattern the slate could not take, and why.
 ///
@@ -182,19 +183,7 @@ pub const munch_flags = contract.flag_ignore_case | contract.flag_no_unicode |
 /// space they answer in. Opaque to C — a host only ever holds the pointer — so
 /// it is a plain struct rather than an `extern` one, as `pattern.Regex` and
 /// `slate.Slate` are for the same reason.
-pub const Munch = struct {
-    inner: rx.Munch,
-    /// Refilled by every scan that restricts the slate, sized once to the
-    /// slate. Held here rather than allocated per call because a lexer asks a
-    /// different question at every token, and a per-token allocation is the one
-    /// cost this plane exists to avoid.
-    allow: rx.Munch.Allow,
-    /// The caller's ordinal space — the number of patterns handed to `compile`,
-    /// which stays wider than the seated ordinals exactly when something
-    /// declined. Kept because `declined` is read in these terms and the inner
-    /// `Munch` records seats rather than the count it was given.
-    count: usize,
-};
+pub const Munch = owner.Worker;
 
 /// Compile `patterns[0..count]` as one anchored slate under `flags`.
 ///
@@ -217,6 +206,12 @@ pub fn compile(list: ?[*]const Pattern, count: usize, flags: u32, out: ?**Munch)
     contract.beginCall();
     const slot = out orelse return .invalid;
     if (flags & ~munch_flags != 0) return .invalid;
+    if (list == null and count != 0) return .invalid;
+    // Reject an unrepresentable source before forming any count-controlled
+    // view, descriptor/body array, kernel ordinal or owner allocation.
+    owner.checkSourceCount(count) catch |e| return contract.report(.{ .code = e });
+    _ = rx.Munch.checkedLayout(count, @sizeOf(Pattern), @alignOf(Pattern)) catch |e|
+        return contract.report(.{ .code = e });
 
     // Null-with-zero is the empty slate said in the only spelling some hosts
     // can produce: Go's `&slice[0]` does not exist for an empty slice, and C's
@@ -242,53 +237,8 @@ pub fn compile(list: ?[*]const Pattern, count: usize, flags: u32, out: ?**Munch)
     // automata it produces hold none of it, so there is nothing left aliasing
     // the host's buffer once this returns. The test at the bottom is what keeps
     // that true.
-    var inner = (rx.Munch.compile(gpa, bodies, options(flags)) catch |e|
-        return contract.report(.{ .code = faultOf(e) })) orelse
-        // Every pattern refused, or none was offered under a slate the kernel
-        // declines wholesale. The empty slate is not one of these — it is
-        // handled below by adopting a slate with no voices — so reaching here
-        // with `count == 0` is impossible and reaching it otherwise means the
-        // kernel took nothing.
-        return if (items.len == 0) empty(slot) else .stale;
-    errdefer inner.deinit();
-
-    var allow = inner.allowNone(gpa) catch {
-        inner.deinit();
-        return contract.report(.{ .code = error.OutOfMemory });
-    };
-    errdefer allow.deinit(gpa);
-
-    // Assembled by hand rather than with a plain `errdefer`, which a
-    // Status-returning entry never fires on its own: each step unwinds exactly
-    // what the steps before it took, so a failed compile leaks nothing into a
-    // host that keeps running.
-    const handle = gpa.create(Munch) catch {
-        allow.deinit(gpa);
-        inner.deinit();
-        return contract.report(.{ .code = error.OutOfMemory });
-    };
-    handle.* = .{ .inner = inner, .allow = allow, .count = items.len };
-    slot.* = handle;
-    return .ok;
-}
-
-/// The handle for a slate with no patterns — assembled rather than compiled,
-/// because `Munch.compile` reports "nothing to determinize" and "nothing could
-/// be determinized" as the same null and only the second is a declinature.
-fn empty(slot: **Munch) Status {
-    var none: [0]rx.Munch.Voice = .{};
-    var inner = rx.Munch.adopt(gpa, 0, &none, &.{}) catch
-        return contract.report(.{ .code = error.OutOfMemory });
-    var allow = inner.allowNone(gpa) catch {
-        inner.deinit();
-        return contract.report(.{ .code = error.OutOfMemory });
-    };
-    const handle = gpa.create(Munch) catch {
-        allow.deinit(gpa);
-        inner.deinit();
-        return contract.report(.{ .code = error.OutOfMemory });
-    };
-    handle.* = .{ .inner = inner, .allow = allow, .count = 0 };
+    const handle = (owner.build(gpa, bodies, options(flags), flags) catch |e|
+        return contract.report(.{ .code = faultOf(e) })) orelse return .stale;
     slot.* = handle;
     return .ok;
 }
@@ -296,9 +246,7 @@ fn empty(slot: **Munch) Status {
 /// Release a handle from `compile`. Teardown leaves the fault slot alone, so a
 /// host can still read the detail that made it clean up.
 pub fn free(handle: *Munch) void {
-    handle.allow.deinit(gpa);
-    handle.inner.deinit();
-    gpa.destroy(handle);
+    handle.deinit();
 }
 
 /// How many patterns the slate can name at once — the exact `cap` at which a
@@ -308,7 +256,7 @@ pub fn free(handle: *Munch) void {
 /// already knows: a declined pattern can never win, so it can never be
 /// written, and sizing a buffer for it would be sizing for an impossibility.
 pub fn len(handle: *const Munch) usize {
-    return handle.inner.admitted();
+    return handle.machine().admitted();
 }
 
 /// Every pattern the slate could not take, ascending, into `out[0..cap]`.
@@ -322,7 +270,7 @@ pub fn declined(handle: *const Munch, out: ?[*]Refusal, cap: usize, written: ?*u
     count.* = 0;
     if (cap != 0 and out == null) return .invalid;
 
-    const list = handle.inner.declined;
+    const list = handle.machine().declined;
     for (list, 0..) |ordinal, i| {
         if (i < cap) out.?[i] = .{
             .pattern = ordinal,
@@ -331,7 +279,7 @@ pub fn declined(handle: *const Munch, out: ?[*]Refusal, cap: usize, written: ?*u
             // automata it did not build and so has no reasons to give. A
             // slate assembled that way reports no refusals at all, making this
             // arm unreachable rather than merely unlikely.
-            .why = if (i < handle.inner.because.len) why(handle.inner.because[i]) else why_syntax,
+            .why = if (i < handle.machine().because.len) why(handle.machine().because[i]) else why_syntax,
         };
     }
     count.* = list.len;
@@ -366,7 +314,17 @@ pub fn scan(
     // `at` is the request's `from`, and the whole text is its ceiling: this
     // spelling has never had a bound, so it must not acquire one here.
     const want = request.askOf(text, text_len, at, text_len, if (pick == pick_shortest) request.mode_earliest else 0, null);
-    return take(handle, want, allow, nallow, tok, out, cap);
+    return take(handle, want, allow, nallow, tok, out, cap, null);
+}
+
+/// Additive metered scan. `remaining` is shared across calls and voices and is
+/// decremented before each DFA byte transition, including a refusing call.
+pub fn scanMetered(handle: *Munch, text: ?[*]const u8, text_len: usize, at: usize, allow: ?[*]const u32, nallow: usize, pick: u32, tok: ?*Token, out: ?[*]u32, cap: usize, remaining: ?*usize) Status {
+    contract.beginCall();
+    if (pick != pick_longest and pick != pick_shortest) return .invalid;
+    const left = remaining orelse return .invalid;
+    const want = request.askOf(text, text_len, at, text_len, if (pick == pick_shortest) request.mode_earliest else 0, null);
+    return take(handle, want, allow, nallow, tok, out, cap, left);
 }
 
 /// `scan` asked with the full request.
@@ -390,7 +348,7 @@ pub fn scanAsk(
     cap: usize,
 ) Status {
     contract.beginCall();
-    return take(handle, request.ask(in), allow, nallow, tok, out, cap);
+    return take(handle, request.ask(in), allow, nallow, tok, out, cap, null);
 }
 
 /// The one scan. `.stale` for a request the host stopped, and a live ceiling is
@@ -408,6 +366,7 @@ fn take(
     tok: ?*Token,
     out: ?[*]u32,
     cap: usize,
+    remaining: ?*usize,
 ) Status {
     const found = tok orelse return .invalid;
     found.* = .{ .len = 0, .count = 0 };
@@ -425,22 +384,90 @@ fn take(
     // report the error against the bytes rather than against its own tables.
     if (allow) |ordinals| {
         handle.allow.forbidAll();
-        for (ordinals[0..nallow]) |ordinal| handle.allow.admit(&handle.inner, ordinal);
+        for (ordinals[0..nallow]) |ordinal| handle.allow.admit(handle.machine(), ordinal);
     } else {
         handle.allow.admitAll();
     }
 
     const body = req.win.hay;
     const at = req.win.from;
-    const match = if (req.earliest)
-        handle.inner.shortestAmong(body, at, &handle.allow)
-    else
-        handle.inner.longestAmong(body, at, &handle.allow);
+    const match = handle.machine().scanWithScratch(body, at, &handle.allow, if (req.earliest) .shortest else .longest, remaining, handle.winners) catch |e|
+        return contract.report(.{ .code = e });
     const got = match orelse return .ok;
 
     found.len = got.len;
     for (got.patterns) |ordinal| sink.push(ordinal);
     _ = sink.close();
+    return .match;
+}
+
+/// A new worker shares immutable Program data, not permissions, winners or a
+/// pending save. The source handle must remain live for this call.
+pub fn cloneWorker(source: ?*const Munch, out: ?**Munch) Status {
+    contract.beginCall();
+    const original = source orelse return .invalid;
+    const slot = out orelse return .invalid;
+    const clone = owner.cloneWorker(original) catch |err| return imageStatus(err);
+    slot.* = clone;
+    return .ok;
+}
+
+fn imageStatus(err: anyerror) Status {
+    if (err == error.InvalidArgument) return .invalid;
+    return contract.report(.{ .code = @errorCast(err) });
+}
+
+pub fn load(expected: ?[*]const Pattern, count: usize, flags: u32, image: ?[*]const u8, image_len: usize, limits: ?*const ImageLimits, budget: ?*ImageBudget, out: ?**Munch) Status {
+    contract.beginCall();
+    const slot = out orelse return .invalid;
+    const policy = limits orelse return .invalid;
+    const allowance = budget orelse return .invalid;
+    if (!policy.valid() or !allowance.valid() or flags & ~munch_flags != 0 or
+        (expected == null and count != 0) or (image == null and image_len != 0)) return .invalid;
+    owner.checkSourceCount(count) catch |err| return imageStatus(err);
+    _ = rx.Munch.checkedLayout(count, @sizeOf(Pattern), @alignOf(Pattern)) catch |err| return imageStatus(err);
+    // These are only borrowed views. No count-driven descriptor iteration or
+    // bodies allocation precedes the codec's seal/header-count checks.
+    const items: []const Pattern = if (expected) |p| p[0..count] else &.{};
+    const bytes: []const u8 = if (image) |p| p[0..image_len] else &.{};
+    var ctx = image_codec.Context.init(gpa, policy.*, allowance, 0) catch |err| return imageStatus(err);
+    const decoded = image_codec.load(&ctx, .{ .descriptors = items }, flags, bytes) catch |err| return imageStatus(err);
+    // fromDecoded consumes every decoded allocation even when publication fails.
+    const handle = owner.fromDecoded(&ctx, decoded) catch |err| return imageStatus(err);
+    slot.* = handle;
+    return .ok;
+}
+
+pub fn save(worker: ?*Munch, limits: ?*const ImageLimits, budget: ?*ImageBudget, out: ?[*]u8, cap: usize, written: ?*usize) Status {
+    contract.beginCall();
+    const held = worker orelse return .invalid;
+    return saveChecked(held, limits, budget, out, cap, written) catch |err| {
+        held.clearPending();
+        if (written) |slot| slot.* = 0;
+        return imageStatus(err);
+    };
+}
+fn saveChecked(worker: *Munch, limits: ?*const ImageLimits, budget: ?*ImageBudget, out: ?[*]u8, cap: usize, written: ?*usize) image_codec.Error!Status {
+    const total = written orelse return error.InvalidArgument;
+    total.* = 0;
+    const policy = limits orelse return error.InvalidArgument;
+    const allowance = budget orelse return error.InvalidArgument;
+    if (!policy.valid() or !allowance.valid() or (out == null and cap != 0)) return error.InvalidArgument;
+    const pending_bytes: u64 = if (worker.pending) |p| p.bytes.len else 0;
+    var ctx = try image_codec.Context.init(worker.program.allocator, policy.*, allowance, pending_bytes);
+    if (worker.pending == null) {
+        worker.pending = try image_codec.save(&ctx, worker.machine(), worker.program.identity);
+    }
+    const pending = worker.pending.?;
+    try ctx.checkStats(pending.stats);
+    total.* = pending.bytes.len;
+    if (cap < pending.bytes.len) return .match;
+    // Whole-copy precharge precedes every caller write. Existing pending bytes
+    // were seeded as live, never allocated/debited a second time.
+    try ctx.work(pending.bytes.len);
+    @memcpy(out.?[0..pending.bytes.len], pending.bytes);
+    ctx.free(pending.bytes);
+    worker.pending = null;
     return .match;
 }
 
@@ -794,4 +821,36 @@ test "argument guards answer instead of dying" {
     var list = [_]Pattern{.{ .pattern = null, .len = 3 }};
     try t.expectEqual(Status.invalid, compile(&list, list.len, 0, &out));
     try t.expectEqual(Status.invalid, compile(&list, list.len, 0, null));
+}
+
+test "munch-owner: FFI count refusal precedes source views and preserves fault guards" {
+    const handle = open(&.{"a"}, 0);
+    defer free(handle);
+    var slot = handle;
+    var item = Pattern{ .pattern = "a", .len = 1 };
+    if (@bitSizeOf(usize) > 32) {
+        const oversized = @as(usize, std.math.maxInt(u32)) + 1;
+        try t.expectEqual(Status.open_failed, compile(@ptrCast(&item), oversized, 0, &slot));
+        try t.expect(slot == handle);
+        try t.expectEqual(error.Oversized, fault.last().?.code);
+        try t.expectEqual(@as(i32, -3), @intFromEnum(Status.open_failed));
+        // Fixed argument guards retain their old precedence and fault window.
+        try t.expectEqual(Status.invalid, compile(null, oversized, 0, &slot));
+        try t.expect(fault.last() == null);
+        try t.expectEqual(Status.invalid, compile(@ptrCast(&item), oversized, ~munch_flags, &slot));
+        try t.expect(fault.last() == null);
+        try t.expectEqual(Status.invalid, compile(@ptrCast(&item), oversized, 0, null));
+        try t.expect(fault.last() == null);
+    }
+    // Cleanup is passive: a fault remains readable after the last worker dies.
+    var empty_handle: *Munch = undefined;
+    try t.expectEqual(Status.ok, compile(null, 0, 0, &empty_handle));
+    _ = contract.report(.{ .code = error.Oversized });
+    free(empty_handle);
+    try t.expectEqual(error.Oversized, fault.last().?.code);
+}
+
+test {
+    _ = @import("munch_image_test.zig");
+    _ = @import("munch_image_save_test.zig");
 }

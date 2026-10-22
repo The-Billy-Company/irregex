@@ -69,6 +69,8 @@ pub const EarliestError = error{Unsupported};
 /// `force_dfa`, `symbolic`) are cost and semantics dials for the walk planner
 /// and stay behind the `regex` door with it.
 pub const Options = struct {
+    /// Per-search PCRE2 ceilings, also used by the lazy capture arm.
+    limits: mark.Limits = .{},
     caseless: bool = false,
     unicode: bool = true,
     dotall: bool = false,
@@ -145,6 +147,7 @@ pub const Options = struct {
 
     fn selection(self: Options) Caps.Selection {
         return .{
+            .limits = self.limits,
             .caseless = self.caseless,
             .unicode = self.unicode,
             .pcre = self.pcre,
@@ -178,7 +181,7 @@ pub const Pattern = struct {
         const src = try gpa.dupe(u8, pattern);
         errdefer gpa.free(src);
         var engine: Matcher = if (opts.pcre)
-            .{ .pcre = try Pcre.compileOpts(gpa, pattern, opts.pcreOpts()) }
+            .{ .pcre = try Pcre.compileLimited(gpa, pattern, opts.pcreOpts(), opts.limits) }
         else
             .{ .linear = try Regex.compileOpts(gpa, pattern, opts.linear()) };
         errdefer engine.deinit();
@@ -388,7 +391,17 @@ pub const Pattern = struct {
     /// The capture groups of the leftmost match at or after `from`.
     pub fn groupsFrom(self: *Pattern, hay: []const u8, from: usize) !?Groups {
         const caps = try self.capsArm();
-        if (!caps.find(hay, from, self.slots)) return null;
+        pcre2.clearMatchError();
+        if (!caps.find(hay, from, self.slots)) {
+            try pcre2.budgetVerdict();
+            // Inline PCRE2 limits are authored ceilings too, but are stored in
+            // the compiled code rather than Selection.limits. Never turn their
+            // refusal, or another match-time engine failure, into clean absence.
+            const code = pcre2.matchError();
+            if (pcre2.Ceiling.of(code) != null) return error.BudgetExceeded;
+            if (code != 0) return error.Exhausted;
+            return null;
+        }
         return Groups{ .caps = caps, .hay = hay, .slots = self.slots };
     }
 

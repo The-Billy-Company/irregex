@@ -63,8 +63,12 @@ use std::ptr::NonNull;
 
 use crate::error::{Error, fault};
 use crate::pattern::expect;
+#[cfg(feature = "munch-image")]
+use crate::pool::Handle;
 use crate::pool::{Pool, Recipe};
 use crate::sys;
+#[cfg(feature = "munch-image")]
+use std::sync::{Mutex, PoisonError};
 
 /// Which reading of an offset a scan takes.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -113,7 +117,7 @@ pub enum Why {
 }
 
 impl Why {
-    fn of(raw: u32) -> Self {
+    pub(crate) fn of(raw: u32) -> Self {
         match raw {
             sys::MUNCH_SYNTAX => Self::Syntax,
             sys::MUNCH_STATES => Self::States,
@@ -186,22 +190,31 @@ impl Token {
     }
 }
 
+#[cfg(feature = "munch-image")]
+type PatternStorage = Vec<String>;
+#[cfg(not(feature = "munch-image"))]
+type PatternStorage = Box<[String]>;
+#[cfg(feature = "munch-image")]
+type RefusalStorage = Vec<Refusal>;
+#[cfg(not(feature = "munch-image"))]
+type RefusalStorage = Box<[Refusal]>;
+
 /// Many patterns, matched anchored at one offset, longest wins.
 ///
 /// Immutable, and `Send + Sync` on the same terms as [`crate::Regex`]: the C
 /// handle owns the buffers its scans rewrite, so the type keeps a pool of
 /// handles and leases one per scan.
 pub struct Munch {
-    pool: Pool<Anchored>,
+    pub(crate) pool: Pool<Anchored>,
     /// Read once at build, both of them. Pure functions of the patterns and
     /// flags, so every handle in the pool answers identically and asking again
     /// per scan would be a lease for a constant.
-    declined: Box<[Refusal]>,
+    pub(crate) declined: RefusalStorage,
     /// How many patterns can win at once, as the *engine* counts them rather
     /// than as `len() - declined.len()`. Derivable, and deliberately not
     /// derived: a slate's seats are a consequence of which patterns refused, and
     /// arithmetic here would be a second opinion about the engine's own bookkeeping.
-    admitted: usize,
+    pub(crate) admitted: usize,
 }
 
 impl Munch {
@@ -406,8 +419,63 @@ impl Munch {
         pick: Pick,
         winners: &mut Vec<u32>,
     ) -> Result<Option<usize>, Error> {
+        self.scan_bytes_into(text.as_bytes(), at, allow, pick, winners)
+    }
+
+    /// [`Munch::scan_into`] over arbitrary bytes, including invalid UTF-8.
+    ///
+    /// Patterns retain the builder's Unicode policy. Offsets and match lengths
+    /// are bytes, and `at` need not be a UTF-8 character boundary. No decoding or
+    /// replacement changes the source supplied to the engine.
+    ///
+    /// # Errors
+    ///
+    /// As [`Munch::try_token`].
+    pub fn scan_bytes_into(
+        &self,
+        body: &[u8],
+        at: usize,
+        allow: Option<&[u32]>,
+        pick: Pick,
+        winners: &mut Vec<u32>,
+    ) -> Result<Option<usize>, Error> {
+        self.scan_bytes_inner(body, at, allow, pick, None, winners)
+    }
+
+    /// Scan arbitrary bytes under a shared DFA byte-transition allowance.
+    ///
+    /// Each native transition decrements `remaining` before reading its byte,
+    /// across all internal automata. On success or error the count records the
+    /// work actually performed; errors clear `winners` and never return a partial
+    /// token. A zero allowance permits only queries requiring no transition.
+    ///
+    /// # Errors
+    ///
+    /// As [`Munch::try_token`], including `BudgetExceeded` when the allowance
+    /// cannot cover the next transition.
+    #[cfg(feature = "source-engine")]
+    pub fn scan_bytes_metered_into(
+        &self,
+        body: &[u8],
+        at: usize,
+        allow: Option<&[u32]>,
+        pick: Pick,
+        remaining: &mut usize,
+        winners: &mut Vec<u32>,
+    ) -> Result<Option<usize>, Error> {
+        self.scan_bytes_inner(body, at, allow, pick, Some(remaining), winners)
+    }
+
+    fn scan_bytes_inner(
+        &self,
+        body: &[u8],
+        at: usize,
+        allow: Option<&[u32]>,
+        pick: Pick,
+        remaining: Option<&mut usize>,
+        winners: &mut Vec<u32>,
+    ) -> Result<Option<usize>, Error> {
         winners.clear();
-        let body = text.as_bytes();
         if at > body.len() {
             return Err(Error::Inconsistent {
                 message: format!("scanned at {at} in a text of {} bytes", body.len()),
@@ -422,24 +490,62 @@ impl Munch {
         let lease = self.pool.lease()?;
         // SAFETY: the lease is exclusive to this thread; `body`, `allow` and
         // `winners` are live slices passed with their own lengths; `tok` is a
-        // live slot. A `&str`'s pointer is never null and the header accepts a
+        // live slot. A slice's pointer is never null and the header accepts a
         // zero length regardless, and `at <= body.len()` was checked above.
         let status = unsafe {
-            sys::irgx_munch_scan(
-                lease.raw(),
-                body.as_ptr(),
-                body.len(),
-                at,
-                allow.map_or(std::ptr::null(), <[u32]>::as_ptr),
-                allow.map_or(0, <[u32]>::len),
-                match pick {
-                    Pick::Longest => sys::MUNCH_LONGEST,
-                    Pick::Shortest => sys::MUNCH_SHORTEST,
-                },
-                &raw mut tok,
-                winners.as_mut_ptr(),
-                room,
-            )
+            let allowed = allow.map_or(std::ptr::null(), <[u32]>::as_ptr);
+            let nallow = allow.map_or(0, <[u32]>::len);
+            let pick = match pick {
+                Pick::Longest => sys::MUNCH_LONGEST,
+                Pick::Shortest => sys::MUNCH_SHORTEST,
+            };
+            #[cfg(feature = "source-engine")]
+            {
+                if let Some(left) = remaining {
+                    sys::irgx_munch_scan_metered(
+                        lease.raw(),
+                        body.as_ptr(),
+                        body.len(),
+                        at,
+                        allowed,
+                        nallow,
+                        pick,
+                        &raw mut tok,
+                        winners.as_mut_ptr(),
+                        room,
+                        left,
+                    )
+                } else {
+                    sys::irgx_munch_scan(
+                        lease.raw(),
+                        body.as_ptr(),
+                        body.len(),
+                        at,
+                        allowed,
+                        nallow,
+                        pick,
+                        &raw mut tok,
+                        winners.as_mut_ptr(),
+                        room,
+                    )
+                }
+            }
+            #[cfg(not(feature = "source-engine"))]
+            {
+                let _ = remaining;
+                sys::irgx_munch_scan(
+                    lease.raw(),
+                    body.as_ptr(),
+                    body.len(),
+                    at,
+                    allowed,
+                    nallow,
+                    pick,
+                    &raw mut tok,
+                    winners.as_mut_ptr(),
+                    room,
+                )
+            }
         };
         drop(lease);
         if status < 0 {
@@ -504,8 +610,8 @@ impl Munch {
 /// ```
 #[derive(Clone, Debug)]
 pub struct MunchBuilder {
-    patterns: Vec<String>,
-    flags: u32,
+    pub(crate) patterns: Vec<String>,
+    pub(crate) flags: u32,
 }
 
 impl MunchBuilder {
@@ -523,6 +629,16 @@ impl MunchBuilder {
                 .collect(),
             flags: 0,
         }
+    }
+
+    /// Take already-owned patterns with the same defaults as [`Self::new`].
+    ///
+    /// Moves the vector and its strings without allocation, copying or compiling.
+    /// This lets callers transfer pattern storage they have already accounted for.
+    #[cfg(feature = "munch-image")]
+    #[must_use]
+    pub fn from_owned(patterns: Vec<String>) -> Self {
+        Self { patterns, flags: 0 }
     }
 
     /// Match without regard to case.
@@ -571,16 +687,36 @@ impl MunchBuilder {
     ///
     /// As [`Munch::new`].
     pub fn build(&self) -> Result<Munch, Error> {
-        let pool = Pool::new(Anchored {
-            patterns: self.patterns.clone().into(),
-            flags: self.flags,
-        })?;
-        let (declined, admitted) = survey(&pool)?;
-        Ok(Munch {
-            pool,
-            declined,
-            admitted,
-        })
+        #[cfg(feature = "munch-image")]
+        {
+            sys::abi_ok()?;
+            let patterns = self.patterns.clone();
+            let prototype = Handle::owned(compile_patterns(&patterns, self.flags)?);
+            let (declined, admitted) = survey_raw(prototype.raw(), patterns.len())?;
+            let pool = Pool::new(Anchored {
+                patterns,
+                flags: self.flags,
+                prototype: Mutex::new(prototype),
+            })?;
+            Ok(Munch {
+                pool,
+                declined,
+                admitted,
+            })
+        }
+        #[cfg(not(feature = "munch-image"))]
+        {
+            let pool = Pool::new(Anchored {
+                patterns: self.patterns.clone().into(),
+                flags: self.flags,
+            })?;
+            let (declined, admitted) = survey(&pool)?;
+            Ok(Munch {
+                pool,
+                declined,
+                admitted,
+            })
+        }
     }
 
     fn set(&mut self, bit: u32, yes: bool) -> &mut Self {
@@ -598,21 +734,24 @@ impl MunchBuilder {
 ///
 /// One lease for both, because they are one description of one compile and a
 /// second lease could in principle describe a different handle.
-fn survey(pool: &Pool<Anchored>) -> Result<(Box<[Refusal]>, usize), Error> {
-    let total = pool.recipe().patterns.len();
+#[cfg(not(feature = "munch-image"))]
+fn survey(pool: &Pool<Anchored>) -> Result<(RefusalStorage, usize), Error> {
+    let lease = pool.lease()?;
+    survey_raw(lease.raw(), pool.recipe().patterns.len())
+}
+
+fn survey_raw(raw_handle: *mut sys::Munch, total: usize) -> Result<(RefusalStorage, usize), Error> {
     // Sized at the pattern count, which the refusal list can never exceed, so
     // there is no short-buffer retry to write.
     let mut raw = vec![sys::MunchRefusal::default(); total];
-    let lease = pool.lease()?;
     let mut written: usize = 0;
-    // SAFETY: the lease is exclusive to this thread; `raw` is a live slice
+    // SAFETY: the handle is exclusively owned by this caller; `raw` is a live slice
     // passed with its own length; `written` is a live slot.
     let status = unsafe {
-        sys::irgx_munch_declined(lease.raw(), raw.as_mut_ptr(), raw.len(), &raw mut written)
+        sys::irgx_munch_declined(raw_handle, raw.as_mut_ptr(), raw.len(), &raw mut written)
     };
-    // SAFETY: as above — the lease is still live and exclusive.
-    let admitted = unsafe { sys::irgx_munch_len(lease.raw()) };
-    drop(lease);
+    // SAFETY: as above — the handle is still live and exclusive.
+    let admitted = unsafe { sys::irgx_munch_len(raw_handle) };
     if status < 0 {
         return Err(fault(status, |status, detail| Error::Search {
             status,
@@ -641,48 +780,88 @@ fn survey(pool: &Pool<Anchored>) -> Result<(Box<[Refusal]>, usize), Error> {
 
 /// What a [`Munch`]'s pool recompiles from: the patterns, and the one flag word
 /// the whole slate shares.
-struct Anchored {
-    patterns: Box<[String]>,
-    flags: u32,
+pub(crate) struct Anchored {
+    pub(crate) patterns: PatternStorage,
+    pub(crate) flags: u32,
+    #[cfg(feature = "munch-image")]
+    pub(crate) prototype: Mutex<Handle<Self>>,
+}
+
+#[cfg(feature = "munch-image")]
+impl Anchored {
+    pub(crate) fn clone_native(&self) -> Result<NonNull<sys::Munch>, Error> {
+        let prototype = self
+            .prototype
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let mut out = std::ptr::null_mut();
+        // SAFETY: the retained prototype is live and locked, and out is a live
+        // publication slot. The native clone owns independent mutable scratch.
+        let status = unsafe { sys::irgx_munch_clone_worker(prototype.raw(), &raw mut out) };
+        if status < 0 {
+            return Err(crate::error::static_fault(status));
+        }
+        let owned = NonNull::new(out).ok_or(Error::NativeInvariant {
+            message: "irgx_munch_clone_worker reported success without an owned handle",
+        })?;
+        if status != 0 {
+            // SAFETY: a nonnull published handle is ours even if the status
+            // violates the fixed clone contract; do not leak it on refusal.
+            unsafe { sys::irgx_munch_free(owned.as_ptr()) };
+            return Err(Error::NativeInvariant {
+                message: "clone_worker returned an unexpected publication status",
+            });
+        }
+        Ok(owned)
+    }
+}
+
+fn compile_patterns(patterns: &[String], flags: u32) -> Result<NonNull<sys::Munch>, Error> {
+    // Borrowed, not copied: the engine reads the pattern bytes during
+    // determinization and retains none of them, so this list only has to
+    // outlive the call.
+    let list: Vec<sys::MunchPattern> = patterns
+        .iter()
+        .map(|one| sys::MunchPattern {
+            pattern: one.as_ptr(),
+            len: one.len(),
+        })
+        .collect();
+    let mut out: *mut sys::Munch = std::ptr::null_mut();
+    // SAFETY: `list` is a live slice passed with its own length, whose
+    // elements borrow live `String`s; `out` is a live slot the library writes
+    // at most once.
+    let status = unsafe { sys::irgx_munch_compile(list.as_ptr(), list.len(), flags, &raw mut out) };
+    // `IRGX_STALE` here is not "needs PCRE2", which is what it means to
+    // `irgx_compile`; it is the engine saying it could determinize nothing at
+    // all. Mapping it onto `NeedsPcre` would send a caller to retry on an arm
+    // that has no anchored plane to retry with.
+    if status == sys::STALE {
+        return Err(Error::NothingLexable {
+            offered: patterns.len(),
+        });
+    }
+    if status < 0 {
+        return Err(fault(status, |status, detail| Error::Search {
+            status,
+            detail,
+        }));
+    }
+    crate::pool::wrote(out, "irgx_munch_compile")
 }
 
 impl Recipe for Anchored {
     type Raw = sys::Munch;
 
     fn compile(&self) -> Result<NonNull<sys::Munch>, Error> {
-        // Borrowed, not copied: the engine reads the pattern bytes during
-        // determinization and retains none of them, so this list only has to
-        // outlive the call.
-        let list: Vec<sys::MunchPattern> = self
-            .patterns
-            .iter()
-            .map(|one| sys::MunchPattern {
-                pattern: one.as_ptr(),
-                len: one.len(),
-            })
-            .collect();
-        let mut out: *mut sys::Munch = std::ptr::null_mut();
-        // SAFETY: `list` is a live slice passed with its own length, whose
-        // elements borrow live `String`s; `out` is a live slot the library writes
-        // at most once.
-        let status =
-            unsafe { sys::irgx_munch_compile(list.as_ptr(), list.len(), self.flags, &raw mut out) };
-        // `IRGX_STALE` here is not "needs PCRE2", which is what it means to
-        // `irgx_compile`; it is the engine saying it could determinize nothing at
-        // all. Mapping it onto `NeedsPcre` would send a caller to retry on an arm
-        // that has no anchored plane to retry with.
-        if status == sys::STALE {
-            return Err(Error::NothingLexable {
-                offered: self.patterns.len(),
-            });
+        #[cfg(feature = "munch-image")]
+        {
+            self.clone_native()
         }
-        if status < 0 {
-            return Err(fault(status, |status, detail| Error::Search {
-                status,
-                detail,
-            }));
+        #[cfg(not(feature = "munch-image"))]
+        {
+            compile_patterns(&self.patterns, self.flags)
         }
-        crate::pool::wrote(out, "irgx_munch_compile")
     }
 
     unsafe fn release(raw: NonNull<sys::Munch>) {
@@ -693,22 +872,53 @@ impl Recipe for Anchored {
 }
 
 impl Clone for Munch {
-    /// Recompiles the patterns, because a compiled slate cannot be duplicated
-    /// through the C ABI. The compile is pure, so the clone behaves identically.
+    /// With `munch-image`, shares the immutable native Program through a new
+    /// prototype. Otherwise recompiles, preserving the released105 behavior.
     ///
     /// # Panics
     ///
     /// If the recompile fails. The patterns already compiled once, so the only
     /// way that happens is an allocation failure.
     fn clone(&self) -> Self {
-        let slate = self.pool.recipe();
-        expect(
-            MunchBuilder {
-                patterns: slate.patterns.to_vec(),
-                flags: slate.flags,
-            }
-            .build(),
-        )
+        #[cfg(feature = "munch-image")]
+        {
+            expect(self.try_clone())
+        }
+        #[cfg(not(feature = "munch-image"))]
+        {
+            let slate = self.pool.recipe();
+            expect(
+                MunchBuilder {
+                    patterns: slate.patterns.to_vec(),
+                    flags: slate.flags,
+                }
+                .build(),
+            )
+        }
+    }
+}
+
+#[cfg(feature = "munch-image")]
+impl Munch {
+    /// Clone the immutable native Program without recompiling its source.
+    /// Later workers own independent scratch; this is outside a completed load budget.
+    /// Pattern and refusal metadata use ordinary Rust cloning; this method's
+    /// Result covers native clone failures, not fallible metadata allocation.
+    ///
+    /// # Errors
+    /// Native allocation or reference-count exhaustion is returned unchanged.
+    pub fn try_clone(&self) -> Result<Self, Error> {
+        let recipe = self.pool.recipe();
+        let prototype = Handle::owned(recipe.clone_native()?);
+        Ok(Self {
+            pool: Pool::empty(Anchored {
+                patterns: recipe.patterns.clone(),
+                flags: recipe.flags,
+                prototype: Mutex::new(prototype),
+            }),
+            declined: self.declined.clone(),
+            admitted: self.admitted,
+        })
     }
 }
 
@@ -718,5 +928,124 @@ impl std::fmt::Debug for Munch {
             .field("patterns", &self.patterns())
             .field("declined", &self.declined)
             .finish()
+    }
+}
+
+#[cfg(all(test, feature = "munch-image"))]
+mod owned_builder_tests {
+    use super::*;
+    use crate::{ImageBudget, ImageLimits};
+
+    #[test]
+    fn owned_pattern_transfer_preserves_all_buffers_capacity_and_order() {
+        let mut patterns = Vec::with_capacity(9);
+        for (text, capacity) in [("a+", 17), ("", 11), ("a+", 23), ("é+", 29)] {
+            let mut pattern = String::with_capacity(capacity);
+            pattern.push_str(text);
+            patterns.push(pattern);
+        }
+        let vector = (patterns.as_ptr(), patterns.len(), patterns.capacity());
+        let strings: Vec<_> = patterns
+            .iter()
+            .map(|pattern| (pattern.as_ptr(), pattern.len(), pattern.capacity()))
+            .collect();
+        let builder = MunchBuilder::from_owned(patterns);
+        assert_eq!(
+            (
+                builder.patterns.as_ptr(),
+                builder.patterns.len(),
+                builder.patterns.capacity()
+            ),
+            vector
+        );
+        assert_eq!(builder.flags, 0);
+        assert_eq!(builder.patterns, ["a+", "", "a+", "é+"]);
+        for (pattern, expected) in builder.patterns.iter().zip(strings) {
+            assert_eq!(
+                (pattern.as_ptr(), pattern.len(), pattern.capacity()),
+                expected
+            );
+        }
+        let empty = Vec::<String>::with_capacity(5);
+        let vector = (empty.as_ptr(), empty.len(), empty.capacity());
+        let builder = MunchBuilder::from_owned(empty);
+        assert_eq!(
+            (
+                builder.patterns.as_ptr(),
+                builder.patterns.len(),
+                builder.patterns.capacity()
+            ),
+            vector
+        );
+        assert_eq!(builder.flags, 0);
+    }
+
+    #[test]
+    fn owned_pattern_defaults_match_copied_source_and_image_behavior() {
+        let patterns: Vec<_> = ["a+", "ab", "a+", "b*"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        let copied = MunchBuilder::new(&patterns);
+        let owned = MunchBuilder::from_owned(patterns);
+        assert_eq!(owned.patterns, copied.patterns);
+        assert_eq!(owned.flags, copied.flags);
+        let a = owned.build().unwrap();
+        let b = copied.build().unwrap();
+        assert_eq!(a.patterns(), b.patterns());
+        assert_eq!(a.declined(), b.declined());
+        assert_eq!(a.admitted(), b.admitted());
+        let limits = ImageLimits::default();
+        let mut left = ImageBudget::new(256 << 20, 128_000_000, &limits);
+        let mut right = ImageBudget::new(256 << 20, 128_000_000, &limits);
+        let image_a = a.save_image(&limits, &mut left).unwrap();
+        let image_b = b.save_image(&limits, &mut right).unwrap();
+        assert_eq!(image_a.as_bytes(), image_b.as_bytes());
+        let mut load = ImageBudget::new(256 << 20, 128_000_000, &limits);
+        let loaded = owned
+            .load_image(image_b.as_bytes(), &limits, &mut load)
+            .unwrap();
+        assert_eq!(loaded.patterns(), a.patterns());
+        assert_eq!(loaded.declined(), a.declined());
+        assert_eq!(loaded.admitted(), a.admitted());
+
+        let questions = [
+            (b"aaa".as_slice(), 0, None, Pick::Longest, 64),
+            (b"ab".as_slice(), 0, None, Pick::Shortest, 64),
+            (b"".as_slice(), 0, Some([3].as_slice()), Pick::Longest, 0),
+            (b"ab".as_slice(), 0, Some([].as_slice()), Pick::Longest, 64),
+            (
+                b"aaa".as_slice(),
+                0,
+                Some([0, 2].as_slice()),
+                Pick::Longest,
+                1,
+            ),
+            (
+                b"ab".as_slice(),
+                2,
+                Some([3].as_slice()),
+                Pick::Shortest,
+                64,
+            ),
+        ];
+        for (text, at, allow, pick, initial) in questions {
+            let observe = |munch: &Munch| {
+                let mut remaining = initial;
+                let mut winners = Vec::new();
+                let answer = munch.scan_bytes_metered_into(
+                    text,
+                    at,
+                    allow,
+                    pick,
+                    &mut remaining,
+                    &mut winners,
+                );
+                (format!("{answer:?}"), winners, remaining)
+            };
+            let expected = observe(&a);
+            assert_eq!(expected, observe(&b));
+            assert_eq!(expected, observe(&loaded));
+        }
     }
 }

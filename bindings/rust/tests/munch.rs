@@ -212,6 +212,42 @@ fn an_offset_past_the_end_is_an_error_rather_than_a_panic_or_an_answer() {
 }
 
 #[test]
+fn byte_scans_preserve_invalid_input_and_restrict_before_selecting() {
+    let munch = MunchBuilder::new([r"[\x80-\xff]+", "a", "a+"])
+        .unicode(false)
+        .build()
+        .unwrap();
+    let source = b"\xff\xfeaaa";
+    let mut winners = vec![99];
+    assert_eq!(
+        munch
+            .scan_bytes_into(source, 0, None, Pick::Longest, &mut winners)
+            .unwrap(),
+        Some(2)
+    );
+    assert_eq!(winners, [0]);
+    assert_eq!(
+        munch
+            .scan_bytes_into(source, 2, Some(&[1]), Pick::Longest, &mut winners)
+            .unwrap(),
+        Some(1)
+    );
+    assert_eq!(winners, [1]);
+    assert_eq!(
+        munch
+            .scan_bytes_into(source, 2, Some(&[]), Pick::Longest, &mut winners)
+            .unwrap(),
+        None
+    );
+    assert!(winners.is_empty());
+    assert!(matches!(
+        munch.scan_bytes_into(source, 6, None, Pick::Longest, &mut winners),
+        Err(Error::Inconsistent { .. })
+    ));
+    assert!(winners.is_empty());
+}
+
+#[test]
 fn a_zero_length_token_is_a_result_and_not_an_absence() {
     // A lexer advancing on one would not terminate, so the two have to be
     // distinguishable from the outside.
@@ -640,4 +676,108 @@ fn debug_names_the_patterns_and_what_was_lost() {
     // it: a terminal whose body is a backslash reads unambiguously.
     assert!(rendered.contains(r#""(a)\\1""#), "{rendered}");
     assert!(rendered.contains("Syntax"), "{rendered}");
+}
+
+#[cfg(feature = "source-engine")]
+#[test]
+fn metered_byte_scans_preserve_work_even_on_refusal() {
+    let munch = Munch::new(["a+"]).unwrap();
+    let mut winners = vec![99];
+    let mut remaining = 2;
+    let error = munch
+        .scan_bytes_metered_into(
+            b"aaaa",
+            0,
+            None,
+            irgx::Pick::Longest,
+            &mut remaining,
+            &mut winners,
+        )
+        .unwrap_err();
+    assert_eq!(remaining, 0);
+    assert!(winners.is_empty());
+    assert!(error.to_string().contains("BudgetExceeded"), "{error}");
+    remaining = 4;
+    assert_eq!(
+        munch
+            .scan_bytes_metered_into(
+                b"aaaa",
+                0,
+                None,
+                irgx::Pick::Longest,
+                &mut remaining,
+                &mut winners
+            )
+            .unwrap(),
+        Some(4)
+    );
+    assert_eq!(remaining, 0);
+    assert_eq!(winners, [0]);
+    assert_eq!(
+        munch
+            .scan_bytes_metered_into(
+                b"aaaa",
+                0,
+                Some(&[]),
+                irgx::Pick::Longest,
+                &mut remaining,
+                &mut winners
+            )
+            .unwrap(),
+        None
+    );
+    assert!(winners.is_empty());
+    remaining = 1;
+    assert_eq!(
+        munch
+            .scan_bytes_metered_into(
+                b"aaaa",
+                0,
+                None,
+                irgx::Pick::Shortest,
+                &mut remaining,
+                &mut winners
+            )
+            .unwrap(),
+        Some(1)
+    );
+    assert_eq!(remaining, 0);
+}
+
+#[cfg(feature = "source-engine")]
+#[test]
+fn metered_allowance_covers_multiple_native_automata() {
+    let munch = Munch::new(["a+"; 65]).unwrap();
+    let mut winners = vec![];
+    let mut remaining = 7;
+    assert!(
+        munch
+            .scan_bytes_metered_into(
+                b"aaaa",
+                0,
+                None,
+                irgx::Pick::Longest,
+                &mut remaining,
+                &mut winners
+            )
+            .is_err()
+    );
+    assert_eq!(remaining, 0);
+    assert!(winners.is_empty());
+    remaining = 8;
+    assert_eq!(
+        munch
+            .scan_bytes_metered_into(
+                b"aaaa",
+                0,
+                None,
+                irgx::Pick::Longest,
+                &mut remaining,
+                &mut winners
+            )
+            .unwrap(),
+        Some(4)
+    );
+    assert_eq!(remaining, 0);
+    assert_eq!(winners.len(), 65);
 }

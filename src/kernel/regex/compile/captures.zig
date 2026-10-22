@@ -95,6 +95,7 @@ pub const Caps = union(enum) {
     /// arms owe them — a capture program that skipped any of these would report
     /// a different span than the search that asked for it (`-w -r`, `--crlf -r`).
     pub const Selection = struct {
+        limits: @import("../../../mark.zig").Limits = .{},
         caseless: bool = false,
         unicode: bool = true,
         pcre: bool = false,
@@ -159,14 +160,14 @@ pub const Caps = union(enum) {
     /// disagreeing with the same pattern's `--json` submatches.
     pub fn compile(gpa: std.mem.Allocator, pattern: []const u8, sel: Selection) error{ BadPattern, OutOfMemory }!Caps {
         if (sel.pcre) return .{
-            .pcre = PcreCaptures.compile(gpa, pattern, .{
+            .pcre = PcreCaptures.compileLimited(gpa, pattern, .{
                 .caseless = sel.caseless,
                 .multiline = sel.multiline,
                 .dotall = sel.dotall,
                 .unicode = sel.unicode,
                 .word = sel.word,
                 .verbose = sel.verbose,
-            }) catch |e| switch (e) {
+            }, sel.limits) catch |e| switch (e) {
                 error.OutOfMemory => |oom| return oom,
                 // `Unsupported` joins `BadPattern`: to a caller holding one
                 // pattern, "PCRE2 refused this" is one answer, and the reason is

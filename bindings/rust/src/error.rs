@@ -321,12 +321,31 @@ pub enum Error {
         /// The size it asked for after that.
         wanted: usize,
     },
+    /// An additive Image1/worker operation failed. The C header gives the
+    /// name static lifetime, so even OOM reporting needs no String allocation.
+    #[cfg(feature = "munch-image")]
+    NativeStatic {
+        /// The actual native status, including unknown future codes.
+        status: Status,
+        /// The exact static NUL-terminated fault name, without lossy decoding.
+        name: Option<&'static std::ffi::CStr>,
+    },
+    /// A new native worker/image publication violated its fixed contract.
+    #[cfg(feature = "munch-image")]
+    NativeInvariant {
+        /// A fixed diagnostic, never allocated while handling a resource error.
+        message: &'static str,
+    },
 }
 
 impl Error {
     /// Whether this is an allocation failure.
     #[must_use]
     pub fn is_out_of_memory(&self) -> bool {
+        #[cfg(feature = "munch-image")]
+        if let Self::NativeStatic { status, .. } = self {
+            return *status == Status::OUT_OF_MEMORY;
+        }
         matches!(self, Self::OutOfMemory { .. })
     }
 
@@ -334,6 +353,8 @@ impl Error {
     #[must_use]
     pub fn status(&self) -> Option<Status> {
         match self {
+            #[cfg(feature = "munch-image")]
+            Self::NativeStatic { status, .. } => Some(*status),
             Self::Pattern { status, .. }
             | Self::Syntax { status, .. }
             | Self::Search { status, .. }
@@ -349,6 +370,14 @@ impl Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            #[cfg(feature = "munch-image")]
+            Self::NativeStatic { status, name } => {
+                write!(f, "native operation failed: {name:?}; {status}")
+            }
+            #[cfg(feature = "munch-image")]
+            Self::NativeInvariant { message } => {
+                write!(f, "internal native disagreement: {message}")
+            }
             Self::NeedsPcre { pattern } => write!(
                 f,
                 "the linear grammar cannot express `{pattern}`, but the PCRE2 arm can: \
@@ -363,7 +392,7 @@ impl fmt::Display for Error {
             } => {
                 write!(f, "cannot compile pattern `{pattern}`: at byte {at}, ")?;
                 write_reason(f, *status, detail.as_deref())
-            },
+            }
             Self::Pattern {
                 pattern,
                 status,
@@ -371,11 +400,11 @@ impl fmt::Display for Error {
             } => {
                 write!(f, "cannot compile pattern `{pattern}`: ")?;
                 write_reason(f, *status, detail.as_deref())
-            },
+            }
             Self::Search { status, detail } => {
                 write!(f, "search failed: ")?;
                 write_reason(f, *status, detail.as_deref())
-            },
+            }
             Self::Groups {
                 pattern,
                 status,
@@ -387,11 +416,11 @@ impl fmt::Display for Error {
                      unavailable for its matches (searching still works): "
                 )?;
                 write_reason(f, *status, detail.as_deref())
-            },
+            }
             Self::OutOfMemory { detail } => {
                 write!(f, "the engine ran out of memory: ")?;
                 write_reason(f, Status::OUT_OF_MEMORY, detail.as_deref())
-            },
+            }
             Self::Abi { expected, found } => write!(
                 f,
                 "irregex ABI mismatch: this crate speaks ABI {expected}, but the linked \
@@ -406,7 +435,7 @@ impl fmt::Display for Error {
             ),
             Self::Inconsistent { message } => {
                 write!(f, "internal disagreement in the engine: {message}")
-            },
+            }
             Self::NothingLexable { offered } => write!(
                 f,
                 "none of the {offered} patterns offered could be determinized as an anchored \
@@ -425,7 +454,7 @@ impl fmt::Display for Error {
             } => {
                 write!(f, "the {plane} plane could not answer: ")?;
                 write_reason(f, *status, detail.as_deref())
-            },
+            }
             Self::Unsettled {
                 plane,
                 offered,
@@ -448,6 +477,26 @@ fn write_reason(f: &mut fmt::Formatter<'_>, status: Status, detail: Option<&str>
 }
 
 impl std::error::Error for Error {}
+
+/// The Image1/clone fault carrier cannot allocate, including on real OOM.
+/// Unlike a borrowed fault path, the header promises name has static lifetime.
+#[cfg(feature = "munch-image")]
+pub(crate) fn static_fault(status: i32) -> Error {
+    let mut slot = sys::Fault::default();
+    // SAFETY: this correctly sized live slot is the header's exact fault shape.
+    let found = unsafe { sys::irgx_last_fault(&raw mut slot) } == sys::MATCH;
+    let name = if found && !slot.name.is_null() {
+        // SAFETY: irgx.h promises a static NUL-terminated name. This is not the
+        // transient path pointer, and survives later work calls on this thread.
+        Some(unsafe { std::ffi::CStr::from_ptr(slot.name) })
+    } else {
+        None
+    };
+    Error::NativeStatic {
+        status: Status(status),
+        name,
+    }
+}
 
 /// The typed error for a negative `status` from this thread's last call.
 ///
