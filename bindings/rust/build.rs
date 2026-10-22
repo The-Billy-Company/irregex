@@ -398,6 +398,7 @@ fn zig_build(checkout: &Path, target: &str) -> Result<(PathBuf, Kind), String> {
         .current_dir(checkout)
         .args([
             "build",
+            "-j1",
             "-Doptimize=ReleaseFast",
             &format!("-Dtarget={zig_target}"),
             &format!("-Dcpu={zig_cpu}"),

@@ -273,7 +273,7 @@ jobs:
         working-directory: bindings/rust
         run: |
           rustup target add ${{ matrix.rust_target }}
-          cargo test --target ${{ matrix.rust_target }}
+          cargo test -vv --target ${{ matrix.rust_target }}
 
   archive-diagnostic:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.archive_diagnostic }}

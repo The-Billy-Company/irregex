@@ -50,7 +50,7 @@ rust = { version = "1.99.0", components = [ "llvm-tools" ] }
 # The npm tool's native shim executes Node. Its interpreter is part of the
 # locked contributor and push-hook closure, rather than a machine-global shim.
 node = "26.10.0"
-typos = "1.50.3"
+typos = "1.51.1"
 golangci-lint = "2.14.0"
 # CI uses the runner's preinstalled shellcheck, so this pin is about presence
 # rather than exactness: a shell gate a contributor cannot run locally is a
