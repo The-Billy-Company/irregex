@@ -103,15 +103,6 @@ irgx_rows_next = { why = "Go pulls analytic rows through `irgx_rows_next_batch` 
 # coincide.
 irgx_slate_len = { why = "`Set.Len()` is `len(s.exprs)` — the Set keeps the patterns it was built from, so its length is a field. The ABI's use for the number is sizing the `which` buffer, which is sized from that field. Contrast `irgx_munch_len`, which IS bound: a munch's length is how many terminals it SEATED, which only the engine knows once a refusal has happened." }
 irgx_group_index = { why = "`Regexp.SubexpIndex` reads a `map[string]int` built from the name table at compile time, so name-to-number is a lookup in memory the Regexp already holds. `irgx_group_name` — the direction nothing else can answer — is bound." }
-# These additive native services are opt-in in Rust (`source-engine` for limits
-# and metering, `munch-image` for checked Image1 persistence and shared workers).
-# Go keeps its existing API; each omission below names the path it actually uses
-# and the capability that path does not provide.
-irgx_compile_limited = { why = "Go's `CompileOpts.Compile` calls `irgx_compile` with the engine's existing PCRE2 defaults. Per-regex match-step, depth and heap ceilings are not exposed by CompileOpts; callers requiring those explicit ceilings must use the native API or Rust's source-engine feature." }
-irgx_munch_scan_metered = { why = "Go's `Munch.Scan` and `ScanBytes` use `irgx_munch_scan` and retain its unmetered behavior. Go exposes no cumulative DFA transition allowance; callers requiring an exact work budget must use the native API or Rust's source-engine feature." }
-irgx_munch_clone_worker = { why = "Go's concurrent `Munch` lends independent handles from a sync.Pool. On a pool miss, `Munch.acquire` recompiles the retained patterns and flags with `compileLexer`; it does not share the native immutable Program. This keeps the current ownership path without promising the clone API's no-recompilation behavior." }
-irgx_munch_save = { why = "Go retains the ordered source patterns through `Munch.Patterns`; applications persist those patterns and their CompileOpts, then compile a new Munch. Go does not expose checked Image1 bytes or their limits and cumulative budgets; callers requiring that format must use the native API or Rust's munch-image feature." }
-irgx_munch_load = { why = "Go reconstructs a Munch from ordered source patterns and CompileOpts through `CompileMunch`, which compiles rather than decoding a native image. Go does not accept Image1 input; callers requiring checked loading without compilation must use the native API or Rust's munch-image feature." }
 
 [waived.python]
 
