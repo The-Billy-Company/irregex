@@ -1,1 +1,0 @@
-We prove stdin memoization with real files and the platform's native stdin handle. The same proof now compiles on Windows, checks that a changed source stays cached, and verifies that explicit invalidation observes the new file.

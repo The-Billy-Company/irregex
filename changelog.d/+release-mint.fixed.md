@@ -1,1 +1,0 @@
-Go and Rust archive minting share the existing per-target Zig build cache. Each binding still checks its own native floor, consumer link, and ABI probe; release minting no longer compiles the same engine twice. Native CI serializes compiler and test-shard processes to bound their combined memory.
