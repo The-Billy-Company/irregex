@@ -151,6 +151,17 @@ const Reader = struct {
         if (bytes > r.bytes.len - r.pos) return error.Truncated;
         const result = try r.ctx.alloc(T, n, site);
         errdefer r.ctx.free(result);
+        // Allocation and the complete wire-range check keep their old order.
+        // Only coalesce the legacy debits when the entire loop can finish;
+        // otherwise its elementwise path preserves partial debit/refusal.
+        const work: ?u64 = std.math.add(u64, n, bytes) catch null;
+        if (work) |cost| {
+            if (builtin.cpu.arch.endian() == .little and cost <= r.ctx.budget.work_left) {
+                try r.ctx.work(cost);
+                @memcpy(std.mem.sliceAsBytes(result), try r.take(try types.size(bytes)));
+                return result;
+            }
+        }
         for (result) |*slot| {
             const value = try r.int(T);
             try r.ctx.work(@sizeOf(T));
@@ -480,14 +491,22 @@ fn validateGraph(ctx: *Context, d: *const Dfa, k: usize) Error!void {
             }
         }
     }
-    if (k > 1) try validateReach(ctx, d, populated);
+    if (k > 1) try validateReach(ctx, d, populated, queue);
 }
 
 /// The source's least fixpoint over BOTH tables, including final edges to
 /// unfilled rows. Checked CSR/worklist replaces the unchecked freeze entry.
-fn validateReach(ctx: *Context, d: *const Dfa, populated: []const bool) Error!void {
+/// Repeated columns and the second table add no new relation: store each
+/// (source, target) pair once while checking and charging every wire edge.
+fn validateReach(ctx: *Context, d: *const Dfa, populated: []const bool, scratch: []u32) Error!void {
     const n: usize = d.nstates;
     const c: usize = d.ncls;
+    if (scratch.len != n) return error.Corrupt;
+    // The graph BFS has finished. Its owned queue can now mark destinations
+    // already visited by each source, then hold the least-fixpoint worklist.
+    // State IDs are below 8192, so absent cannot alias a source stamp.
+    try ctx.work(try types.mul(n, 4));
+    @memset(scratch, absent);
     const degree = try ctx.alloc(usize, n, .validation);
     defer ctx.free(degree);
     try ctx.work(try types.mul(n, @sizeOf(usize)));
@@ -498,8 +517,12 @@ fn validateReach(ctx: *Context, d: *const Dfa, populated: []const bool) Error!vo
         if (!populated[state]) continue;
         for ([_][]const u32{ d.trans_in, d.trans_fin }) |table| {
             for (table[state * c ..][0..c]) |target| {
-                try ctx.work(1);
+                // One wire target visit and one destination-marker read.
+                try ctx.work(2);
                 const to = target / d.ncls;
+                if (scratch[to] == state) continue;
+                try ctx.work(4);
+                scratch[to] = @intCast(state);
                 degree[to] = std.math.add(usize, degree[to], 1) catch return error.Oversized;
                 edges = std.math.add(usize, edges, 1) catch return error.Oversized;
             }
@@ -520,15 +543,20 @@ fn validateReach(ctx: *Context, d: *const Dfa, populated: []const bool) Error!vo
     @memcpy(cursor, offsets[0..n]);
     const predecessors = try ctx.alloc(u32, edges, .validation);
     defer ctx.free(predecessors);
+    try ctx.work(try types.mul(n, 4));
+    @memset(scratch, absent);
     for (0..n) |state| {
         try ctx.work(1);
         if (!populated[state]) continue;
         for ([_][]const u32{ d.trans_in, d.trans_fin }) |table| {
             for (table[state * c ..][0..c]) |target| {
-                try ctx.work(1);
+                // One wire target visit and one destination-marker read.
+                try ctx.work(2);
                 const to = target / d.ncls;
+                if (scratch[to] == state) continue;
                 if (cursor[to] >= offsets[to + 1]) return error.Corrupt;
-                try ctx.work(4 + @sizeOf(usize));
+                try ctx.work(8 + @sizeOf(usize));
+                scratch[to] = @intCast(state);
                 predecessors[cursor[to]] = @intCast(state);
                 cursor[to] += 1;
             }
@@ -540,8 +568,7 @@ fn validateReach(ctx: *Context, d: *const Dfa, populated: []const bool) Error!vo
     @memset(masks, 0);
     try ctx.work(try types.mul(d.pats.len, 8));
     @memcpy(masks[0..d.pats.len], d.pats);
-    const queue = try ctx.alloc(u32, n, .validation);
-    defer ctx.free(queue);
+    const queue = scratch;
     const queued = try ctx.alloc(bool, n, .validation);
     defer ctx.free(queued);
     try ctx.work(n);
@@ -831,5 +858,163 @@ test "munch-image: every decoder allocation failure unwinds without refund" {
         try t.expectEqual(@as(u64, 0), ctx.live);
         try t.expect(budget.allocation_left < Budget.trial().allocation_left);
         try t.expect(budget.work_left < Budget.trial().work_left);
+    }
+}
+
+fn trialReach(ctx: *Context, d: *const Dfa, populated: []const bool) Error!void {
+    const scratch = try ctx.alloc(u32, d.nstates, .validation);
+    defer ctx.free(scratch);
+    try validateReach(ctx, d, populated, scratch);
+}
+
+test "munch-image: deduplicated relation matches independent least fixpoint and unwinds at every allocation" {
+    var interior: [64]u32 = undefined;
+    var final: [64]u32 = undefined;
+    var populated: [8]bool = undefined;
+    var expected: [8]u64 = undefined;
+    const pats = [_]u64{ 1, 2 };
+    for (0..256) |seed| {
+        const n = 2 + seed % 7;
+        const c = 1 + seed / 7 % 8;
+        const entries = n * c;
+        for (0..n) |state| {
+            populated[state] = (state + seed) % 4 != 0;
+            expected[state] = if (state < pats.len) pats[state] else 0;
+            for (0..c) |column| {
+                interior[state * c + column] = if (populated[state]) @intCast(((state + column % 2 + seed) % n) * c) else absent;
+                final[state * c + column] = if (populated[state]) @intCast(((state * 3 + column % 3 + seed / 3) % n) * c) else absent;
+            }
+        }
+        // Independent full-table iteration begins only from local matches;
+        // unsupported cyclic masks cannot become their own evidence.
+        var changed = true;
+        while (changed) {
+            changed = false;
+            for (0..n) |state| {
+                if (!populated[state]) continue;
+                var mask = expected[state];
+                for ([_][]const u32{ interior[0..entries], final[0..entries] }) |table| {
+                    for (table[state * c ..][0..c]) |target| mask |= expected[target / c];
+                }
+                if (mask != expected[state]) {
+                    expected[state] = mask;
+                    changed = true;
+                }
+            }
+        }
+        var d: Dfa = undefined;
+        d.nstates = @intCast(n);
+        d.ncls = @intCast(c);
+        d.trans_in = interior[0..entries];
+        d.trans_fin = final[0..entries];
+        d.pats = &pats;
+        d.reach = expected[0..n];
+        var measured = Budget.trial();
+        var successful = t.FailingAllocator.init(t.allocator, .{});
+        var ctx = try Context.init(successful.allocator(), Limits.trial(), &measured, 0);
+        try trialReach(&ctx, &d, populated[0..n]);
+        try t.expectEqual(@as(u64, 0), ctx.live);
+        try t.expectEqual(successful.allocated_bytes, successful.freed_bytes);
+        const allocation = Budget.trial().allocation_left - measured.allocation_left;
+        const work = Budget.trial().work_left - measured.work_left;
+        var exact = Budget.trial();
+        exact.allocation_left = allocation;
+        exact.work_left = work;
+        var exact_ctx = try Context.init(t.allocator, Limits.trial(), &exact, 0);
+        try trialReach(&exact_ctx, &d, populated[0..n]);
+        try t.expectEqual(@as(u64, 0), exact.allocation_left);
+        try t.expectEqual(@as(u64, 0), exact.work_left);
+        try t.expectEqual(@as(u64, 0), exact_ctx.live);
+        for ([_]bool{ false, true }) |allocation_short| {
+            var short = Budget.trial();
+            if (allocation_short) short.allocation_left = allocation - 1 else short.work_left = work - 1;
+            var short_ctx = try Context.init(t.allocator, Limits.trial(), &short, 0);
+            try t.expectError(error.BudgetExceeded, trialReach(&short_ctx, &d, populated[0..n]));
+            try t.expectEqual(@as(u64, 0), short_ctx.live);
+        }
+        if (seed % 31 == 0) {
+            for (0..successful.alloc_index) |failure| {
+                var failing = t.FailingAllocator.init(t.allocator, .{ .fail_index = failure });
+                var budget = Budget.trial();
+                var failed_ctx = try Context.init(failing.allocator(), Limits.trial(), &budget, 0);
+                try t.expectError(error.OutOfMemory, trialReach(&failed_ctx, &d, populated[0..n]));
+                try t.expect(failing.has_induced_failure);
+                try t.expectEqual(failing.allocated_bytes, failing.freed_bytes);
+                try t.expectEqual(@as(u64, 0), failed_ctx.live);
+            }
+        }
+        // A bit with no local match must be refused even in cyclic graphs.
+        expected[n - 1] |= 4;
+        var bad_budget = Budget.trial();
+        var bad_ctx = try Context.init(t.allocator, Limits.trial(), &bad_budget, 0);
+        try t.expectError(error.NonCanonical, trialReach(&bad_ctx, &d, populated[0..n]));
+        try t.expectEqual(@as(u64, 0), bad_ctx.live);
+    }
+}
+
+// Independent copy of the original elementwise kernel for budget/refusal parity.
+fn legacyWords(r: *Reader, comptime T: type, n: usize, site: types.Site) Error![]T {
+    const bytes = try types.mul(n, @sizeOf(T));
+    if (bytes > r.bytes.len - r.pos) return error.Truncated;
+    const result = try r.ctx.alloc(T, n, site);
+    errdefer r.ctx.free(result);
+    for (result) |*slot| {
+        const value = try r.int(T);
+        try r.ctx.work(@sizeOf(T));
+        slot.* = value;
+    }
+    return result;
+}
+
+test "munch-image: words bulk path preserves legacy bytes partial budgets and refusal order" {
+    var bytes: [65]u8 = undefined;
+    for (&bytes, 0..) |*byte, i| byte.* = @intCast(i * 3);
+    inline for (.{ u32, u64 }) |T| {
+        for (0..9) |n| {
+            for (0..100) |work| {
+                for ([_]usize{ n * @sizeOf(T), n * @sizeOf(T) -| 1 }) |allocation| {
+                    for ([_]usize{ 1 + n * @sizeOf(T), n * @sizeOf(T) }) |length| {
+                        var old_budget = Budget.trial();
+                        old_budget.allocation_left = allocation;
+                        old_budget.work_left = work;
+                        var new_budget = old_budget;
+                        var old_ctx = try Context.init(t.allocator, Limits.trial(), &old_budget, 0);
+                        var new_ctx = try Context.init(t.allocator, Limits.trial(), &new_budget, 0);
+                        // One byte misalignment must never produce a borrowed T view.
+                        var old_reader = Reader{ .ctx = &old_ctx, .bytes = bytes[0..@max(1, length)], .pos = 1 };
+                        var new_reader = Reader{ .ctx = &new_ctx, .bytes = bytes[0..@max(1, length)], .pos = 1 };
+                        const old_result = legacyWords(&old_reader, T, n, .transitions);
+                        const new_result = new_reader.words(T, n, .transitions);
+                        if (old_result) |old| {
+                            defer old_ctx.free(old);
+                            const new = try new_result;
+                            defer new_ctx.free(new);
+                            try t.expectEqualSlices(T, old, new);
+                        } else |old_error| {
+                            try t.expectError(old_error, new_result);
+                        }
+                        try t.expect(std.meta.eql(old_budget, new_budget));
+                        try t.expectEqual(old_reader.pos, new_reader.pos);
+                        try t.expectEqual(@as(u64, 0), old_ctx.live);
+                        try t.expectEqual(@as(u64, 0), new_ctx.live);
+                    }
+                }
+            }
+        }
+        var old_failing = t.FailingAllocator.init(t.allocator, .{ .fail_index = 0 });
+        var new_failing = t.FailingAllocator.init(t.allocator, .{ .fail_index = 0 });
+        var old_budget = Budget.trial();
+        var new_budget = Budget.trial();
+        var old_ctx = try Context.init(old_failing.allocator(), Limits.trial(), &old_budget, 0);
+        var new_ctx = try Context.init(new_failing.allocator(), Limits.trial(), &new_budget, 0);
+        var old_reader = Reader{ .ctx = &old_ctx, .bytes = &bytes, .pos = 1 };
+        var new_reader = Reader{ .ctx = &new_ctx, .bytes = &bytes, .pos = 1 };
+        try t.expectError(error.OutOfMemory, legacyWords(&old_reader, T, 8, .transitions));
+        try t.expectError(error.OutOfMemory, new_reader.words(T, 8, .transitions));
+        try t.expect(std.meta.eql(old_budget, new_budget));
+        try t.expectEqual(old_reader.pos, new_reader.pos);
+        try t.expect(old_failing.has_induced_failure and new_failing.has_induced_failure);
+        try t.expectEqual(old_failing.allocated_bytes, old_failing.freed_bytes);
+        try t.expectEqual(new_failing.allocated_bytes, new_failing.freed_bytes);
     }
 }
