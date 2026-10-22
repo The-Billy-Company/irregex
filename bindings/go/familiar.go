@@ -147,12 +147,16 @@ func (re *Regexp) UnmarshalText(text []byte) error {
 	for re.pool.Get() != nil {
 	}
 	re.expr, re.flags, re.ngroup = next.expr, next.flags, next.ngroup
+	re.limits = next.limits
 	re.names, re.index, re.nullable = next.names, next.index, next.nullable
 	return nil
 }
 
 // inlineFlags spells the compile options as a leading group, or refuses.
 func (re *Regexp) inlineFlags() (string, error) {
+	if re.limits != nil {
+		return "", refuse("write execution ceilings as inline pattern flags")
+	}
 	if bad := re.flags &^ (flagIgnoreCase | flagMultiLine | flagDotAll | flagNoUnicode); bad != 0 {
 		return "", refuse("write a pattern compiled with flags 0x" +
 			strconv.FormatUint(uint64(bad), 16) + " as text: no inline spelling carries them")
