@@ -24,6 +24,14 @@ static int32_t go_compile(const uint8_t *pat, size_t len, uint32_t flags,
   return st;
 }
 
+static int32_t go_compile_limited(const uint8_t *pat, size_t len, uint32_t flags,
+                                  uint64_t steps, uint64_t depth, uint64_t heap,
+                                  irgx_regex **out, irgx_fault *f) {
+  int32_t st = irgx_compile_limited(pat, len, flags, steps, depth, heap, out);
+  capture(st, f);
+  return st;
+}
+
 static int32_t go_is_match(irgx_regex *re, const uint8_t *text, size_t len,
                            irgx_fault *f) {
   int32_t st = irgx_is_match(re, text, len);
@@ -315,12 +323,18 @@ func compileError(status C.int32_t, fault *C.irgx_fault, expr string) error {
 // in [Regexp], which keeps a pool of these and lends one out per call.
 type handle struct{ ptr *C.irgx_regex }
 
-func compileHandle(expr string, flags uint32) (*handle, error) {
+func compileHandleWithLimits(expr string, flags uint32, limits *CompileLimits) (*handle, error) {
 	var (
 		ptr   *C.irgx_regex
 		fault C.irgx_fault
 	)
-	st := C.go_compile(bytePtr(expr), C.size_t(len(expr)), C.uint32_t(flags), &ptr, &fault)
+	var st C.int32_t
+	if limits == nil {
+		st = C.go_compile(bytePtr(expr), C.size_t(len(expr)), C.uint32_t(flags), &ptr, &fault)
+	} else {
+		st = C.go_compile_limited(bytePtr(expr), C.size_t(len(expr)), C.uint32_t(flags),
+			C.uint64_t(limits.MatchSteps), C.uint64_t(limits.Depth), C.uint64_t(limits.HeapBytes), &ptr, &fault)
+	}
 	runtime.KeepAlive(expr)
 	if st != C.IRGX_OK {
 		return nil, compileError(st, &fault, expr)
@@ -374,13 +388,31 @@ func (re *Regexp) isMatch(text string) bool {
 // matchOn is isMatch on a handle the caller already holds, which is how Compile
 // can settle nullability before the handle ever reaches the pool.
 func (re *Regexp) matchOn(h *handle, text string) bool {
-	var fault C.irgx_fault
-	st := C.go_is_match(h.ptr, bytePtr(text), C.size_t(len(text)), &fault)
-	runtime.KeepAlive(text)
-	if st < 0 {
-		panic(newError(st, &fault, "search with "+strconv.Quote(re.expr)))
+	matched, err := re.matchOnError(h, text)
+	if err != nil {
+		panic(err)
 	}
-	return st == C.IRGX_MATCH
+	return matched
+}
+
+func (re *Regexp) matchOnError(h *handle, text string) (bool, error) {
+	var fault C.irgx_fault
+	var st C.int32_t
+	if re.limits != nil && re.flags&flagPCRE != 0 && re.flags&flagFixed == 0 {
+		// The capture query reports PCRE execution ceilings as errors; its
+		// ordinary boolean fast path can only answer false on exhaustion.
+		// No output buffer is needed to ask whether a capture exists.
+		var written C.size_t
+		st = C.go_captures(h.ptr, bytePtr(text), C.size_t(len(text)), 0, nil, 0, &written, &fault)
+	} else {
+		st = C.go_is_match(h.ptr, bytePtr(text), C.size_t(len(text)), &fault)
+	}
+	runtime.KeepAlive(text)
+	runtime.KeepAlive(h)
+	if st < 0 {
+		return false, newError(st, &fault, "search with "+strconv.Quote(re.expr))
+	}
+	return st == C.IRGX_MATCH, nil
 }
 
 // firstWindow is how many spans the first irgx_find_all asks for. The header

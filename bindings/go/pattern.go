@@ -115,6 +115,7 @@ type Regexp struct {
 	expr   string
 	flags  uint32
 	ngroup int
+	limits *CompileLimits
 	// names is indexed by group number; names[0] is always empty, and so is any
 	// group the pattern did not name.
 	names []string
@@ -149,22 +150,31 @@ func MustCompile(expr string) *Regexp { return CompileOpts{}.MustCompile(expr) }
 // nothing here accepts is a [*SyntaxError] carrying the offset it went wrong
 // at, and no flag rescues it.
 func (o CompileOpts) Compile(expr string) (*Regexp, error) {
+	return o.compile(expr, nil)
+}
+
+func (o CompileOpts) compile(expr string, limits *CompileLimits) (*Regexp, error) {
 	if abiMismatch != nil {
 		return nil, abiMismatch
 	}
 	flags := o.bits()
-	h, err := compileHandle(expr, flags)
+	h, err := compileHandleWithLimits(expr, flags, limits)
 	if err != nil {
 		return nil, err
 	}
-	re := &Regexp{expr: expr, flags: flags}
+	re := &Regexp{expr: expr, flags: flags, limits: limits}
 	// Group metadata is resolved now, not lazily, because the Find family has no
 	// error channel: a Regexp whose capture half could still fail would have to
 	// answer a submatch question with a panic or a wrong answer.
 	if err := re.resolve(h); err != nil {
+		h.release()
 		return nil, err
 	}
-	re.nullable = re.matchOn(h, "")
+	re.nullable, err = re.matchOnError(h, "")
+	if err != nil {
+		h.release()
+		return nil, err
+	}
 	re.pool.Put(h)
 	return re, nil
 }
@@ -243,14 +253,18 @@ func (re *Regexp) Earliest() bool { return re.earliest() }
 // go. The Find family follows stdlib [regexp] in returning no error, so there is
 // no honest alternative to failing loudly.
 func (re *Regexp) acquire() *handle {
-	if pooled := re.pool.Get(); pooled != nil {
-		return pooled.(*handle)
-	}
-	h, err := compileHandle(re.expr, re.flags)
+	h, err := re.acquireError()
 	if err != nil {
 		panic(err)
 	}
 	return h
+}
+
+func (re *Regexp) acquireError() (*handle, error) {
+	if pooled := re.pool.Get(); pooled != nil {
+		return pooled.(*handle), nil
+	}
+	return compileHandleWithLimits(re.expr, re.flags, re.limits)
 }
 
 func (re *Regexp) release(h *handle) { re.pool.Put(h) }

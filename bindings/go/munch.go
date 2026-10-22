@@ -116,6 +116,9 @@ type Munch struct {
 	seated   int
 	declined []Refusal
 	pool     sync.Pool
+	// Retain an idle source worker. Pool misses clone its program rather than
+	// recompiling the expected pattern strings, including after a GC.
+	seed *lexer
 }
 
 // Which reading of the cursor a scan asks for. Not exported: they are the
@@ -162,12 +165,11 @@ func (o CompileOpts) CompileMunch(exprs ...string) (*Munch, error) {
 	if err != nil {
 		return nil, err
 	}
-	m := &Munch{exprs: append([]string(nil), exprs...), flags: flags}
+	m := &Munch{exprs: append([]string(nil), exprs...), flags: flags, seed: l}
 	// Both facts a caller needs about the build - what got in, and what did not
 	// - are read once here rather than per scan, on the handle that just
 	// answered them.
 	m.seated, m.declined = l.seated(), l.refusals(len(exprs))
-	m.pool.Put(l)
 	return m, nil
 }
 
@@ -274,14 +276,21 @@ func (m *Munch) scan(text string, at int, allow []int, pick uint32) (Token, bool
 }
 
 func (m *Munch) acquire() *lexer {
-	if pooled := m.pool.Get(); pooled != nil {
-		return pooled.(*lexer)
-	}
-	l, err := compileLexer(m.exprs, m.flags)
+	l, err := m.acquireError()
 	if err != nil {
 		panic(err)
 	}
 	return l
+}
+
+func (m *Munch) acquireError() (*lexer, error) {
+	if pooled := m.pool.Get(); pooled != nil {
+		return pooled.(*lexer), nil
+	}
+	if m.seed == nil {
+		return nil, refuse("use an uninitialized munch")
+	}
+	return m.seed.clone()
 }
 
 func (m *Munch) release(l *lexer) { m.pool.Put(l) }
