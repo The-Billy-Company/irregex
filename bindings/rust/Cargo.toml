@@ -63,10 +63,10 @@ exclude = [ "/target", "/.cargo", "/rust-toolchain.toml" ]
 # only because the package was spelled `irregex`.
 
 [features]
-default = []
+default = [  ]
 # Unreleased native additions. Requires a matching engine source checkout or
 # an explicitly selected IRGX_LIB_DIR; never uses older bundled archives.
-source-engine = []
+source-engine = [  ]
 # Checked native Image1 persistence and shared immutable Program workers.
 munch-image = [ "source-engine" ]
 

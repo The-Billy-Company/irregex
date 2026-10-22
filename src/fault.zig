@@ -64,7 +64,7 @@ pub const Corpus = error{ FileNotFound, AccessDenied, NotDir, SymLinkLoop, NameT
 /// told them apart.
 pub const Persist = error{ Corrupt, Truncated, NonCanonical, VersionMismatch, GenerationMismatch, Oversized };
 
-/// The query itself has no answer under the selected engine. `Unsupported` is
+/// The query request has no answer under the selected engine. `Unsupported` is
 /// the member that also lives in the declinature vocabulary (`Decline.refused`);
 /// `BadPattern` is deliberately NOT that — a pattern the grammar rejects
 /// (`(unterminated`) has no answer under ANY engine, so escalating to PCRE2
@@ -80,7 +80,11 @@ pub const Persist = error{ Corrupt, Truncated, NonCanonical, VersionMismatch, Ge
 /// that every member names one), and the remedy is a different engine, not a
 /// bigger one. Distinct from `Unsupported` because a host that conflated them
 /// would retry under PCRE2 — the one arm guaranteed to refuse again.
-pub const Pattern = error{ BadPattern, Unsupported, BoundUnsupported, TooManyPatterns, PowersetCapHit, NeedleTooShort };
+///
+/// `InvalidArgument` is a malformed caller record or descriptor, before any
+/// pattern can be interpreted. The C seam returns `invalid` without installing
+/// a diagnostic for these precondition failures; it is still one vocabulary.
+pub const Pattern = error{ InvalidArgument, BadPattern, Unsupported, BoundUnsupported, TooManyPatterns, PowersetCapHit, NeedleTooShort };
 
 /// The machine or the budget ran out. `OutOfMemory` is the one the `zig-oom`
 /// ratchet already keeps to a single canonical exit in the command plane;
@@ -346,11 +350,11 @@ fn errnoNote(comptime phrase: []const u8, comptime e: std.posix.E) []const u8 {
 test "the five domains merge without collapsing a member" {
     // The load-bearing row: Zig unifies error names globally, so two domains
     // that reached for the same spelling would merge SILENTLY and become
-    // indistinguishable at every handler. 5 + 6 + 6 + 4 + 3 = 24 is the proof
-    // that no two did. The fourth term is `Resource`, which grew a member when
-    // caller-supplied ceilings arrived: this count is a census, so widening the
-    // taxonomy is meant to land here in the same change that widens it.
-    try std.testing.expectEqual(@as(usize, 24), @typeInfo(Fault).error_set.?.len);
+    // indistinguishable at every handler. 5 + 6 + 7 + 4 + 3 = 25 is the proof
+    // that no two did. The third term is `Pattern`, including malformed caller
+    // records: this count is a census, so widening the taxonomy is meant to
+    // land here in the same change that widens it.
+    try std.testing.expectEqual(@as(usize, 25), @typeInfo(Fault).error_set.?.len);
 }
 
 test "pathNote answers each corpus member with the platform errno contract" {

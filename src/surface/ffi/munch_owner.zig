@@ -430,7 +430,7 @@ test "munch-owner: concurrent clones have independent scratch and no determiniza
     for (jobs) |job| try t.expect(job.ok);
 }
 
-const image_data = @import("../../kernel/regex/linear/program/munch_image_vectors.zig");
+const image_data = rx.testing.munch_image_vectors;
 
 fn imageFixture(name: []const u8) *const image_data.Fixture {
     for (&image_data.fixtures) |*f| if (std.mem.eql(u8, f.name, name)) return f;

@@ -52,6 +52,12 @@ pub const munch = @import("linear/program/munch.zig");
 pub const Munch = munch.Munch;
 pub const munch_image = @import("linear/program/munch_image.zig");
 
+/// Independent authored Image1 fixtures for tests across the kernel/FFI seam.
+/// The production interface does not expose these bytes or their expectations.
+pub const testing = if (@import("builtin").is_test) struct {
+    pub const munch_image_vectors = @import("linear/program/munch_image_vectors.zig");
+} else struct {};
+
 // ── The parsed shape + its lowering — what an INDEX PLANNER reasons over ──────
 // A prefilter planner (`kernel/query/cover.zig`) chooses which trigrams an
 // index may require by reading the pattern's parsed structure, and it must do so

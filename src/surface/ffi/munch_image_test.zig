@@ -4,8 +4,9 @@ const std = @import("std");
 const ffi = @import("munch.zig");
 const contract = @import("contract.zig");
 const fault = @import("../../fault.zig");
-const kernel = @import("../../kernel/regex/linear/program/munch.zig");
-const data = @import("../../kernel/regex/linear/program/munch_image_vectors.zig");
+const rx = @import("../../kernel/regex/regex.zig");
+const kernel = rx.munch;
+const data = rx.testing.munch_image_vectors;
 
 const t = std.testing;
 const Status = contract.Status;

@@ -340,7 +340,7 @@ fn link(dir: &Path, kind: Kind, target: &str) {
                 });
             println!("cargo:rustc-link-search=native={}", staged.display());
             println!("cargo:rustc-link-lib=static=irgx");
-        }
+        },
         Kind::Shared => {
             println!("cargo:rustc-link-search=native={}", dir.display());
             println!("cargo:rustc-link-lib=dylib=irgx");
@@ -352,7 +352,7 @@ fn link(dir: &Path, kind: Kind, target: &str) {
             if !target.contains("-windows") {
                 println!("cargo:rustc-link-arg=-Wl,-rpath,{}", dir.display());
             }
-        }
+        },
     }
 }
 
@@ -406,13 +406,13 @@ fn zig_build(checkout: &Path, target: &str) -> Result<(PathBuf, Kind), String> {
         .arg(&prefix)
         .status();
     match run {
-        Ok(status) if status.success() => {}
+        Ok(status) if status.success() => {},
         Ok(status) => {
             return Err(format!(
                 "and `zig build -Dtarget={zig_target}` in {} exited with {status}.",
                 checkout.display()
             ));
-        }
+        },
         Err(why) => {
             return Err(format!(
                 "and `zig` could not be run ({why}), so the engine cannot be built from \
@@ -420,7 +420,7 @@ fn zig_build(checkout: &Path, target: &str) -> Result<(PathBuf, Kind), String> {
                  IRGX_LIB_DIR at the directory holding the library.",
                 checkout.display()
             ));
-        }
+        },
     }
     let dir = prefix.join("lib");
     match library_in(&dir) {

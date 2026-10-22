@@ -833,7 +833,7 @@ impl Munch {
             Err(error) => {
                 lease.discard();
                 Err(error)
-            }
+            },
         }
     }
 }

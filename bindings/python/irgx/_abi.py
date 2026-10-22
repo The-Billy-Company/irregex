@@ -235,6 +235,38 @@ class MunchToken(ctypes.Structure):
     _fields_ = (("len", ctypes.c_size_t), ("count", ctypes.c_size_t))
 
 
+class MunchImageLimits(ctypes.Structure):
+    """``irgx_munch_image_limits``: mandatory Image1 resource ceilings."""
+
+    _fields_ = (
+        ("struct_size", ctypes.c_uint32),
+        ("version", ctypes.c_uint32),
+        ("reserved0", ctypes.c_uint32),
+        ("reserved1", ctypes.c_uint32),
+        ("encoded_bytes", ctypes.c_uint64),
+        ("decoded_bytes", ctypes.c_uint64),
+        ("patterns", ctypes.c_uint64),
+        ("voices", ctypes.c_uint64),
+        ("states", ctypes.c_uint64),
+        ("transition_entries", ctypes.c_uint64),
+        ("auxiliary_entries", ctypes.c_uint64),
+        ("live_owned_bytes", ctypes.c_uint64),
+    )
+
+
+class MunchImageBudget(ctypes.Structure):
+    """``irgx_munch_image_budget``: cumulative allocation and work allowances."""
+
+    _fields_ = (
+        ("struct_size", ctypes.c_uint32),
+        ("version", ctypes.c_uint32),
+        ("reserved0", ctypes.c_uint32),
+        ("reserved1", ctypes.c_uint32),
+        ("allocation_left", ctypes.c_uint64),
+        ("work_left", ctypes.c_uint64),
+    )
+
+
 class Occurrence(ctypes.Structure):
     """``irgx_occurrence``: one literal hit, attributed to the needle behind it.
 
@@ -326,6 +358,19 @@ _SIGNATURES = (
     ("irgx_status_message", ctypes.c_char_p, (ctypes.c_int32,)),
     ("irgx_last_fault", ctypes.c_int32, (ctypes.POINTER(Fault),)),
     ("irgx_compile", ctypes.c_int32, (_U8P, _SIZE, ctypes.c_uint32, ctypes.POINTER(_VOID))),
+    (
+        "irgx_compile_limited",
+        ctypes.c_int32,
+        (
+            _U8P,
+            _SIZE,
+            ctypes.c_uint32,
+            ctypes.c_uint64,
+            ctypes.c_uint64,
+            ctypes.c_uint64,
+            ctypes.POINTER(_VOID),
+        ),
+    ),
     ("irgx_free", None, (_VOID,)),
     ("irgx_is_match", ctypes.c_int32, (_VOID, _U8P, _SIZE)),
     (
@@ -402,6 +447,50 @@ _SIGNATURES = (
             ctypes.POINTER(MunchToken),
             ctypes.POINTER(ctypes.c_uint32),
             _SIZE,
+        ),
+    ),
+    (
+        "irgx_munch_scan_metered",
+        ctypes.c_int32,
+        (
+            _VOID,
+            _U8P,
+            _SIZE,
+            _SIZE,
+            ctypes.POINTER(ctypes.c_uint32),
+            _SIZE,
+            ctypes.c_uint32,
+            ctypes.POINTER(MunchToken),
+            ctypes.POINTER(ctypes.c_uint32),
+            _SIZE,
+            ctypes.POINTER(_SIZE),
+        ),
+    ),
+    ("irgx_munch_clone_worker", ctypes.c_int32, (_VOID, ctypes.POINTER(_VOID))),
+    (
+        "irgx_munch_save",
+        ctypes.c_int32,
+        (
+            _VOID,
+            ctypes.POINTER(MunchImageLimits),
+            ctypes.POINTER(MunchImageBudget),
+            ctypes.POINTER(ctypes.c_uint8),
+            _SIZE,
+            ctypes.POINTER(_SIZE),
+        ),
+    ),
+    (
+        "irgx_munch_load",
+        ctypes.c_int32,
+        (
+            ctypes.POINTER(MunchPattern),
+            _SIZE,
+            ctypes.c_uint32,
+            _U8P,
+            _SIZE,
+            ctypes.POINTER(MunchImageLimits),
+            ctypes.POINTER(MunchImageBudget),
+            ctypes.POINTER(_VOID),
         ),
     ),
     ("irgx_pattern_earliest", ctypes.c_int32, (_VOID,)),

@@ -373,11 +373,11 @@ impl fmt::Display for Error {
             #[cfg(feature = "munch-image")]
             Self::NativeStatic { status, name } => {
                 write!(f, "native operation failed: {name:?}; {status}")
-            }
+            },
             #[cfg(feature = "munch-image")]
             Self::NativeInvariant { message } => {
                 write!(f, "internal native disagreement: {message}")
-            }
+            },
             Self::NeedsPcre { pattern } => write!(
                 f,
                 "the linear grammar cannot express `{pattern}`, but the PCRE2 arm can: \
@@ -392,7 +392,7 @@ impl fmt::Display for Error {
             } => {
                 write!(f, "cannot compile pattern `{pattern}`: at byte {at}, ")?;
                 write_reason(f, *status, detail.as_deref())
-            }
+            },
             Self::Pattern {
                 pattern,
                 status,
@@ -400,11 +400,11 @@ impl fmt::Display for Error {
             } => {
                 write!(f, "cannot compile pattern `{pattern}`: ")?;
                 write_reason(f, *status, detail.as_deref())
-            }
+            },
             Self::Search { status, detail } => {
                 write!(f, "search failed: ")?;
                 write_reason(f, *status, detail.as_deref())
-            }
+            },
             Self::Groups {
                 pattern,
                 status,
@@ -416,11 +416,11 @@ impl fmt::Display for Error {
                      unavailable for its matches (searching still works): "
                 )?;
                 write_reason(f, *status, detail.as_deref())
-            }
+            },
             Self::OutOfMemory { detail } => {
                 write!(f, "the engine ran out of memory: ")?;
                 write_reason(f, Status::OUT_OF_MEMORY, detail.as_deref())
-            }
+            },
             Self::Abi { expected, found } => write!(
                 f,
                 "irregex ABI mismatch: this crate speaks ABI {expected}, but the linked \
@@ -435,7 +435,7 @@ impl fmt::Display for Error {
             ),
             Self::Inconsistent { message } => {
                 write!(f, "internal disagreement in the engine: {message}")
-            }
+            },
             Self::NothingLexable { offered } => write!(
                 f,
                 "none of the {offered} patterns offered could be determinized as an anchored \
@@ -454,7 +454,7 @@ impl fmt::Display for Error {
             } => {
                 write!(f, "the {plane} plane could not answer: ")?;
                 write_reason(f, *status, detail.as_deref())
-            }
+            },
             Self::Unsettled {
                 plane,
                 offered,

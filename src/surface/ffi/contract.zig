@@ -73,6 +73,7 @@ pub const Status = enum(i32) {
             error.Exhausted,
             error.BudgetExceeded,
             => .out_of_memory,
+            error.InvalidArgument,
             error.BadPattern,
             error.Unsupported,
             error.BoundUnsupported,
@@ -453,6 +454,7 @@ test "every fault crosses the seam as a fault — never a result, never a declin
         error.Unsupported,     error.TooManyPatterns,    error.PowersetCapHit,   error.NeedleTooShort,
         error.OutOfMemory,     error.TimedOut,           error.Exhausted,        error.ConnClosed,
         error.UnexpectedFrame, error.StreamTooLong,      error.BoundUnsupported, error.BudgetExceeded,
+        error.InvalidArgument,
     };
     // Pinned to the taxonomy's own size, so a new member cannot slip past this
     // loop by simply not being listed (the switch in `ofFault` catches it too).
@@ -462,6 +464,7 @@ test "every fault crosses the seam as a fault — never a result, never a declin
     // The domain bindings themselves, one witness each.
     try std.testing.expectEqual(Status.out_of_memory, Status.ofFault(error.OutOfMemory));
     try std.testing.expectEqual(Status.invalid, Status.ofFault(error.TooManyPatterns));
+    try std.testing.expectEqual(Status.invalid, Status.ofFault(error.InvalidArgument));
     try std.testing.expectEqual(Status.open_failed, Status.ofFault(error.AccessDenied));
     try std.testing.expectEqual(Status.open_failed, Status.ofFault(error.Corrupt));
 }
