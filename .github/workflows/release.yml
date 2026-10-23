@@ -33,6 +33,10 @@ on:
         description: "Publish without CI or test gates (operator-authorized release)"
         type: boolean
         default: false
+      crates_recovery_tag:
+        description: "Recover an oversized crate from an existing qualified tag (gzip encoding only)"
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -48,6 +52,7 @@ env:
 
 jobs:
   preflight:
+    if: ${{ !inputs.crates_recovery_tag }}
     # The shared release contract (`release.toml` + the org's `package-release`
     # action), run once before anything is built: is the tag the version
     # `build.zig.zon` and every mirror declare, is the changelog folded with
@@ -91,7 +96,7 @@ jobs:
       # race it loses every time: v2.1.0 gave up fifteen minutes into a slate
       # that needed thirty-one. Windows now feeds the same aggregate and its
       # native jobs have a sixty-minute ceiling. The observed slowest Windows
-      # run needed 140 minutes including queueing and retries; three hours gives
+      # run needed 140 minutes including queuing and retries; three hours gives
       # that observed bound room while a stuck slate still blocks publication.
       - if: startsWith(github.ref, 'refs/tags/v') && !inputs.expedite
         uses: The-Billy-Company/.github/actions/package-release@b19a03c66361d004a7270bba50e386f449d0f9bf # main
@@ -474,6 +479,156 @@ jobs:
         run: cargo publish --locked ${{ inputs.expedite && '--no-verify' || '' }}
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+  # Cargo's best flate2 gzip can exceed crates.io's 10 MiB limit even though a
+  # stronger gzip encoder fits the identical tar stream. Recovery checks out the
+  # immutable tag, repeats every release gate and Cargo's package verification,
+  # then changes only the gzip encoding. Keep this in release.yml: crates.io
+  # Trusted Publishing binds the token to this workflow and environment.
+  crates-recovery:
+    name: crates recovery
+    if: github.event_name == 'workflow_dispatch' && inputs.crates_recovery_tag != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 195
+    environment: crates-io
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: release-tools
+          persist-credentials: false
+      - name: Validate the requested immutable tag
+        id: tag
+        env:
+          RECOVERY_TAG: ${{ inputs.crates_recovery_tag }}
+        run: |
+          python3 - <<'PY'
+          import os, re
+          tag = os.environ['RECOVERY_TAG']
+          if re.fullmatch(r'v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)', tag) is None:
+              raise SystemExit('recovery requires an exact vMAJOR.MINOR.PATCH tag')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'tag={tag}\nversion={tag[1:]}\n')
+          PY
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ steps.tag.outputs.tag }}
+          path: release-source
+          persist-credentials: false
+      - id: source
+        name: Record the tagged source commit
+        working-directory: release-source
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - uses: The-Billy-Company/.github/actions/package-release@b19a03c66361d004a7270bba50e386f449d0f9bf # main
+        with:
+          command: version
+          args: --root release-source --tag ${{ steps.tag.outputs.tag }}
+      - uses: The-Billy-Company/.github/actions/package-release@b19a03c66361d004a7270bba50e386f449d0f9bf # main
+        with:
+          command: changelog
+          args: --root release-source --require-fragments-empty --version ${{ steps.tag.outputs.version }}
+      - uses: The-Billy-Company/.github/actions/package-release@b19a03c66361d004a7270bba50e386f449d0f9bf # main
+        with:
+          command: tag-ancestor
+          args: ${{ github.repository }} ${{ steps.source.outputs.sha }} --branch main
+      - uses: The-Billy-Company/.github/actions/package-release@b19a03c66361d004a7270bba50e386f449d0f9bf # main
+        with:
+          command: ci-status
+          args: >-
+            ${{ github.repository }} ${{ steps.source.outputs.sha }}
+            --timeout-seconds 10800 --interval-seconds 30
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version: "0.12.22"
+          enable-cache: false
+      - name: Install the hash-locked gzip encoder before minting credentials
+        run: |
+          uv venv --python 3.12.15 "$RUNNER_TEMP/crates-compression"
+          uv pip sync --require-hashes --only-binary :all: --strict \
+            --python "$RUNNER_TEMP/crates-compression/bin/python" release-tools/.github/crates-compression.txt
+      - name: Mint the tagged registry landing page
+        working-directory: release-source
+        run: python3 tools/registry_readme.py
+      - name: Build and verify the original Cargo package
+        working-directory: release-source/bindings/rust
+        run: cargo package --locked
+      - name: Prove byte-preserving recompression below the registry limit
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+        run: |
+          "$RUNNER_TEMP/crates-compression/bin/python" release-tools/tools/recover_crate.py \
+            "release-source/bindings/rust/target/package/irgx-$VERSION.crate" \
+            --version "$VERSION" --vcs-sha "$SOURCE_SHA" --out-dir "$RUNNER_TEMP/crate-recovery"
+      - id: state
+        uses: The-Billy-Company/.github/actions/package-release@b19a03c66361d004a7270bba50e386f449d0f9bf # main
+        with:
+          command: registry-probe
+          args: crates irgx ${{ steps.tag.outputs.version }}
+      - name: Require a definite registry answer
+        env:
+          STATE: ${{ steps.state.outputs.result }}
+        run: |
+          case "$STATE" in
+            absent|present) echo "irgx registry state: $STATE" ;;
+            *) echo '::error::Registry state is uncertain; publication is blocked.' >&2; exit 1 ;;
+          esac
+      - uses: rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18 # v1.0.5
+        if: steps.state.outputs.result == 'absent'
+        id: recovery-auth
+      - name: Upload the verified bytes with the short-lived publisher token
+        if: steps.state.outputs.result == 'absent'
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.recovery-auth.outputs.token }}
+          VERSION: ${{ steps.tag.outputs.version }}
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+        run: |
+          python3 - <<'PY'
+          import json, os, sys
+          from pathlib import Path
+          sys.path.insert(0, str(Path('release-tools/tools').resolve()))
+          from recover_crate import prepare, upload_verified
+          version = os.environ['VERSION']
+          staged = Path(os.environ['RUNNER_TEMP']) / 'crate-recovery'
+          original = Path(f'release-source/bindings/rust/target/package/irgx-{version}.crate')
+          verified = prepare(original.read_bytes(), name='irgx', version=version,
+                             vcs_sha=os.environ['SOURCE_SHA'],
+                             recompressed=(staged / f'irgx-{version}.crate').read_bytes())
+          if verified.report() != json.loads((staged / 'report.json').read_text()):
+              raise SystemExit('prepared package changed after verification')
+          upload_verified(verified, os.environ['CARGO_REGISTRY_TOKEN'])
+          print(f'Uploaded irgx {version}: sha256={verified.report()["recompressed_sha256"]}')
+          PY
+      - name: Verify the public sparse-index checksum
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          python3 - <<'PY'
+          import json, os, time, urllib.error, urllib.request
+          from pathlib import Path
+          expected = json.loads((Path(os.environ['RUNNER_TEMP']) / 'crate-recovery/report.json').read_text())
+          version = os.environ['VERSION']
+          for attempt in range(60):
+              try:
+                  request = urllib.request.Request('https://index.crates.io/ir/gx/irgx',
+                                                   headers={'Cache-Control': 'no-cache'})
+                  with urllib.request.urlopen(request, timeout=20) as response:
+                      entries = [json.loads(line) for line in response.read().splitlines()]
+                  found = next((row for row in entries if row['vers'] == version), None)
+                  if found is not None:
+                      if found['cksum'] != expected['recompressed_sha256'] or found.get('yanked'):
+                          raise SystemExit('published crate differs from the verified package')
+                      print(f'Public irgx {version} checksum verified: {found["cksum"]}')
+                      break
+              except (urllib.error.URLError, TimeoutError):
+                  pass
+              time.sleep(5)
+          else:
+              raise SystemExit('registry propagation timed out; inspect state before retrying')
+          PY
+
   # ── Go module
   #
   # There is no registry to upload to: the proxy reads tags straight from the

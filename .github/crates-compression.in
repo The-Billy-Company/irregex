@@ -1,0 +1,2 @@
+# Recompress verified Cargo tar bytes without changing package contents.
+zopfli==0.4.3

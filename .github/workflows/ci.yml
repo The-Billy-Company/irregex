@@ -364,6 +364,8 @@ jobs:
         run: |
           uv run --no-project --with ruff==0.16.10 ruff check --config quality/ruff.toml .
           uv run --no-project --with ruff==0.16.10 ruff format --check --config quality/ruff.toml .
+      - name: Crate recovery byte preservation and upload protocol
+        run: uv run --no-project --python 3.12 python -m unittest discover -s tools -p test_recover_crate.py -v
       - name: Shell correctness
         run: git ls-files -z '*.sh' | xargs -0 uv run --no-project --with shellcheck-py==0.11.0.1 shellcheck
       # Last, so it audits the exact file CI just interpreted — including every
