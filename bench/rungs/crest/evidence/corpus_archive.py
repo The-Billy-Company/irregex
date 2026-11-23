@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 The Billy Company
 """Run the CREST corpus proof against a safely staged ZIP archive."""
 
 from __future__ import annotations

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 The Billy Company
 """irregex lowerbound — Layer D certificate splicer (algorithmic / information-theoretic floor).
 
 The Zig audit (`bench/bounds/lowerbound/audit.zig`) writes `lowerbound.csv`: for

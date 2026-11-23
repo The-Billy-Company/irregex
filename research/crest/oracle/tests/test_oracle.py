@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """Adversarial and finite-language differentials for the exact CREST oracle."""
 
 from __future__ import annotations

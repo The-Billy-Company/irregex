@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — the PCRE2-backed `Pcre` engine behind the frozen `matcher.zig`
 //! seam.
 //!

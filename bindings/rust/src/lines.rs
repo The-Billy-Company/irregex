@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! The line grid: rows, bands, and the off-by-one that lives here instead of in
 //! your host.
 //!

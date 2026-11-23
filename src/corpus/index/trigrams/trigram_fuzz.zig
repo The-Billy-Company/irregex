@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex T0 index-loader LONG fuzz target — the nightly companion to the
 //! CI-safe fuzz-lite in `trigram_load_test.zig`. It drives many more iterations
 //! over a seed corpus (valid + malformed blobs + real built indexes) plus

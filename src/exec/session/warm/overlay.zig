@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! The resident session's mutation store — how a live tree edit becomes an
 //! answerable substitution without rebuilding the base mirror.
 //!

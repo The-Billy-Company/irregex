@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Layer L's **planner-stress slate**, an extension of the shared probe registry
 //! (`bench/apparatus/harness/probes.zig`) used by `indexq.zig` alone.
 //!

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 The Billy Company
 """irregex portcert — Layer B certificate splicer (static port-optimality bound).
 
 Reads the `portcert.json` emitted by `mca.sh` (per probe x reference

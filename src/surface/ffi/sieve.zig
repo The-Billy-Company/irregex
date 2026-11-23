@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Narrowing a corpus before reading it: the trigram index and the crest sieve.
 //!
 //! The difference between a grep and a search engine is that a search engine

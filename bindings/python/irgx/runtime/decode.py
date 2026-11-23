@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """One decoder for every analytic row the kernel can emit.
 
 The engine no longer hands Python a verb-shaped JSON object; it hands back a

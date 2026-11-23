@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex bench — the single, shared probe registry for the Certificate of
 //! Optimality. Layer A (`certify.zig`, microscopic cycles/byte) and Layer D
 //! (`../lowerbound/lowerbound.zig`, the algorithmic floor) must speak about

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 The Billy Company
 """irregex certify — Layer J report (index tiers at scale, vs zoekt and csearch).
 
 Layer D measures the information-theoretic floor a **trigram** directory can reach,

@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """Five parameter families, not seventeen argument lists.
 
 `[analytic.params]` in the contract declares one struct per *kind* of question, so

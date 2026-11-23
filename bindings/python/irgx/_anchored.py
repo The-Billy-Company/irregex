@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """``fullmatch`` and :class:`Scanner`, built on the one ABI verb that is actually anchored.
 
 :func:`re.match` and :func:`re.fullmatch` look like the same question asked with

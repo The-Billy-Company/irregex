@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! [`RegexSet`] — which of many patterns match, in one pass over the text.
 //!
 //! The shape is `regex`'s [`RegexSet`], and so is the reason for it: asking N

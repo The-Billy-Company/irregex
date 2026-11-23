@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Evidence mechanics for the CREST production proof harness.
 
 const std = @import("std");

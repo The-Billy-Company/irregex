@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """Compare the shipped Windows ARM64 archive with both compiler strip postures."""
 
 from __future__ import annotations

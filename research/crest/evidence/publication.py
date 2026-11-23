@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """Seal and verify corpus-independent CREST publication evidence manifests."""
 
 from __future__ import annotations

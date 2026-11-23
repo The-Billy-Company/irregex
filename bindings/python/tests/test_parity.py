@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """Side-by-side with the standard library, in both directions.
 
 Where the two engines are specified to agree, the assertion compares against

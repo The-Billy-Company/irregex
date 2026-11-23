@@ -1,5 +1,7 @@
 //go:build cgo
 
+// Copyright (c) 2026 The Billy Company
+
 package irgx_test
 
 // What a lexer slate must answer: the longest reading at the cursor, and whose.

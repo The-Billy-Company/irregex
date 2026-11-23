@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! What the engine means, pinned case by case.
 //!
 //! The oracle test proves the Rust binding agrees with the Python one. This file

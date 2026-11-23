@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Resident session — the warm `lines` renderer correctness suite
 //!
 //! The one invariant the renderer must never break is byte-parity with the

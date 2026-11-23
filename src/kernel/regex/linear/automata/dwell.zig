@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — dwell: the states a scan sits still in, and the bytes that get it
 //! out.
 //!

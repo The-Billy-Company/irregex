@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! The tree's charter — `.irregex.toml`, committed, shared, and read alike by
 //! every face, the daemon, and both bindings.
 //!

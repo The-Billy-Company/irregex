@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! The flag directive at the head of a pattern — `(?i)`, `(?-u)`, `(?ms)`.
 //!
 //! A pattern can say what it means twice: once in the options its caller passes

@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! bits — differential proof of the two's-complement identities.
 //!
 //! Every operation is checked against a naive bit-at-a-time oracle over

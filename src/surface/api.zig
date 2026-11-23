@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — the curated Zig-native hosted API (exact search, set-shaped primitives, and exact-before-statistical compose).
 //!
 //! `root.zig` re-exports the engine's internal tiers for the CLI, the tests,

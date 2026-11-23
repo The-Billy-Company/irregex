@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 /*
  * irregex-pmu-bless — hand this machine's hardware performance counters to ONE
  * unprivileged process, then get out of the way.

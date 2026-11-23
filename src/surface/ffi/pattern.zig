@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! The regex-over-text plane — `libirgx`'s own C ABI.
 //!
 //! What a host reaches for when it has a pattern and a buffer, and no corpus:

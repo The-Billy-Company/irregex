@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """One module-level Pattern, many threads.
 
 The C handle owns the scratch its finds run in, so two threads sharing one

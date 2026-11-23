@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — the Pike VM's boolean walks: does the pattern match *anywhere* in
 //! this haystack? A generation-stamped thread list steps one byte at a time, so
 //! the cost is O(states)/byte with no backtracking and no catastrophic blowup —

@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — unsigned LEB128 varint codec (csearch's own posting-list encoding:
 //! see google/codesearch `index/write.go` `WriteVarint` / `read.go` `uvarint`).
 //!

@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! `--rank` — the definition-first ranked view, our one output shape
 //! ripgrep can't express.
 //!

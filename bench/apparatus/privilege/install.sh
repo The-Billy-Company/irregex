@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 The Billy Company
 #
 # install.sh — stage kperf's configurable events behind the smallest privilege
 # grant that can deliver them.

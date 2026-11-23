@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — the anchor decision for the two-probe literal block filter.
 //!
 //! `simd.zig::indexOfPos` filters 64-byte blocks on the conjunction of two byte

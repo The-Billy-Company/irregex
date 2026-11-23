@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! The request every search verb takes, and the one lowering that judges it.
 //!
 //! `Input` is the Zig side of `irgx_input`: one struct a host fills instead of

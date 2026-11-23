@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 The Billy Company
 """Shared measurement statistics — bootstrap CIs and a fail-closed dominance verdict.
 
 VENDORED, BYTE-IDENTICAL. This file is the one statistical story the whole

@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Cost-gated application of a validated CREST sidecar.
 const std = @import("std");
 const crest = @import("../../../kernel/math/crest.zig");

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 The Billy Company
 """The slate — what Layer L asks, and whether a corpus can answer it.
 
 Two things that have to agree, so they live together: the probe rows as the Zig

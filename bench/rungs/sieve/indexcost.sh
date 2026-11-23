@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 The Billy Company
 # irregex bench — Layer L's **index cost** arm: what each of the two trigram
 # indexes charges for the selectivity it delivers.
 #

@@ -1,5 +1,7 @@
 //go:build cgo
 
+// Copyright (c) 2026 The Billy Company
+
 package irgx
 
 // The two ways a compile can be refused, which the ABI reports as two different

@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 // MONOLITHIC: PCRE2 shadow — the sound linear-time over-approximation matcher; literal/class extraction and the confirm-only automaton share one no-false-negative construction
 //! irregex — the PCRE2 shadow: a sound linear-time over-approximation of a PCRE
 //! pattern, so the backtracking engine only ever CONFIRMS candidates.

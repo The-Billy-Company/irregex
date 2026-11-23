@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """The analytic plane: one dispatch, one row cursor, one ladder.
 
 Seventeen verbs used to mean seventeen subprocess spawns and seventeen NDJSON

@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """Maximal munch: the longest match *beginning* at an offset, among many patterns.
 
 This is the lexer primitive, and it is a different question from every other verb

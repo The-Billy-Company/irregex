@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! rrr — `Plain`, `Rrr`, and the `Bits` seam between them, proved three ways:
 //!
 //!   1. Every encoding's `rank1`/`get` differential-tested against a naive

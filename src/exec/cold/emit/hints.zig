@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Hints — the one structured stderr guidance channel.
 //!
 //! The results contract is sacred: stdout carries rg-shaped bytes and

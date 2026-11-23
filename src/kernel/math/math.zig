@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — the product-free floor: arithmetic and structure with no opinion.
 //!
 //! The door to this package, and the tier with the least to do with regular

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 The Billy Company
 """One version, many manifests — prove they still agree.
 
 `build.zig.zon`'s `.version` is this package's single authority. Zig reads it

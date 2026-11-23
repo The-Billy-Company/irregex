@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 The Billy Company
 """What **irregex** certifies — the one file in `guard/` that is not vendored.
 
 Every other module here is byte-identical across the four packages and holds the

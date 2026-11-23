@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — what a backslash escape denotes, plus the POSIX class tables it is
 //! defined in terms of.
 //!

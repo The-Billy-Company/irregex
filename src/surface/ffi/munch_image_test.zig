@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Independent Image1 FFI controls. The data module contains frozen authored
 //! bytes and expectations; no expected value is derived from the codec.
 const std = @import("std");

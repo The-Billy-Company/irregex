@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! The fused walk as a CALLABLE file-set enumerator.
 //!
 //! Everything `swarm.run` does up to the fan-out and join, without the per-file

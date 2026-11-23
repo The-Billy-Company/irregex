@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! `Munch`, asked of a second engine and of its own contract.
 //!
 //! This is the one type in the crate with no `regex`-crate counterpart to be a

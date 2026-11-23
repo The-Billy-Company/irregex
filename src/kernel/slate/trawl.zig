@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — the trawl: one automaton for a slate too wide to net.
 //!
 //! The dragnet (`muster.zig`) is a bucketed SIMD sieve, and it wins decisively

@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex bench — `lowerbound`: Layer D of the optimality certificate (the
 //! *algorithmic* floor). It empirically audits the two claims of the
 //! information-theoretic lower bound for the search operation:

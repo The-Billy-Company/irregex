@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! The crew: run-wide immutable `Cfg`, per-worker mutable state, the
 //! pool topology, and the ordered `--sort` replay over what the crew held back.
 //!

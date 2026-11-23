@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex T3 — the freshness SWEEP: a self-balancing, work-stealing metadata
 //! walk that answers exactly one question for the freshness overlay in
 //! `fresh.zig`: which files under `roots` report a change at/after a build

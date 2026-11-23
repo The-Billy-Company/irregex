@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Haystack unit tests — split from `haystack.zig` (shape cap). No filesystem
 //! touched: `Walker` itself is exercised indirectly by every corpus caller's
 //! own tests plus the CLI (`index`/`search`/`--live`) against the real

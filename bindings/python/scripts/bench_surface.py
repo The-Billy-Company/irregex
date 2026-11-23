@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 The Billy Company
 """What a caller of the public surface pays, measured against ``re``.
 
 :mod:`scripts.bench_transport` measures the seam - the accelerated verb against

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 The Billy Company
 """Does the engine's persisted index survive a tree reproduction?
 
     ./reproduce.py <source-tree> [workdir]

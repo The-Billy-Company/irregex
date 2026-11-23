@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — collapsing a finished determinization down to the automaton it
 //! means.
 //!

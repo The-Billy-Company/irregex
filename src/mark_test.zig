@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Tests for the answer vocabulary — the half-open convention and the
 //! zero-width case, which are the two things every consumer of a `Span` has to
 //! get right and the two the four separate declarations used to each restate.

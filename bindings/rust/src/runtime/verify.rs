@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! The one pass that makes every accessor on a [`Row`] infallible.
 //!
 //! A wire row is checked once, recursively, at construction: the schema id must

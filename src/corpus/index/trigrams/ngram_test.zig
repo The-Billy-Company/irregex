@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex n-gram extraction tests — split from `ngram.zig` to keep the strategy
 //! file under the shape cap. Pulled into `zig build test` via `root.zig`'s test
 //! block. Covers `extractSortedUnique`'s distinct/ascending contract and the

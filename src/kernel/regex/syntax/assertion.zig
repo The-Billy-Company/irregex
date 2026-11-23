@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — the word-assertion family, as the truth table it actually is.
 //!
 //! Three declarations, no dependencies: `Word` names the six spellings a pattern

@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """The line grid: the translation from a byte offset to the row a person reads.
 
 Every engine here answers in byte offsets and every user reads rows, and the

@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — `-o` leftmost-first spans.
 //!
 //! `lineMatch`/`docMatch` answer *whether* a line matches; `-o`/--only-matching

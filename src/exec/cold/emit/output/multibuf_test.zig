@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Whole-buffer (`-U`) emit — byte-identical vs ripgrep.
 //!
 //! Every expected string below was captured from `upstream/ripgrep` (`rg -U …`) on

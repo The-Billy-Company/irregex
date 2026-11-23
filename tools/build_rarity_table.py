@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 The Billy Company
 """Byte census of a large source tree -> `src/kernel/scan/rarity.zig`'s `density`.
 
 The table is the anchor-selection prior for the SIMD substring kernel: the

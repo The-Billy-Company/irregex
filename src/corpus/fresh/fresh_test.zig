@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex T3 freshness-overlay test — split from `fresh.zig`. Pulled into
 //! `zig build test` via `bench.zig`'s test block. Exercises `widen`'s set
 //! algebra in isolation (no filesystem): an existing-but-trigram-skipped file is

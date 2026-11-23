@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Sweep rung — per-consumer proof that the fused fabric beats the recursion it
 //! would replace, question by question, before any of it is transferred.
 //!

@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """Exercise the additive limited-compile and Image1 ctypes declarations."""
 
 from __future__ import annotations

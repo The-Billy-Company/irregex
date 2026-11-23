@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — where a match landed, which pattern landed it, and how much that
 //! settles.
 //!

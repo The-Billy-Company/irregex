@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! CREST v6 persisted columns.
 //!
 //! Predicate-major, rank-minor dense u8 columns carry the common case; sorted

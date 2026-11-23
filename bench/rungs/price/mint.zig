@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! MINTING: every coefficient the ladder bids with, each timed by itself.
 //!
 //! The rule this file exists to obey is that a coefficient must be a quantity

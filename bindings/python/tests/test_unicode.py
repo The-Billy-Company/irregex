@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """str in, str out; bytes in, bytes out - and the offsets that go with each.
 
 The engine searches UTF-8 bytes. A caller who passed a ``str`` must never see a

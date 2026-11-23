@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! What a pattern promises about the bytes it can match — the plane that lets a
 //! host build its own prefilter instead of asking this one to be fast enough.
 //!

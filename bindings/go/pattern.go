@@ -1,5 +1,7 @@
 //go:build cgo
 
+// Copyright (c) 2026 The Billy Company
+
 // Package irregex is a Go binding for the irregex engine: a linear-time regex
 // over a buffer you already hold.
 //

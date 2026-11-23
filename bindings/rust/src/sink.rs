@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! The one place a `cap`/`written` call becomes a `Vec`.
 //!
 //! Fourteen verbs across five planes share one shape: hand the library a buffer

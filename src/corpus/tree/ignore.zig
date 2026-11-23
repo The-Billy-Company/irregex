@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 // MONOLITHIC: one ignore protocol owns parsing, precedence, root scoping, compiled matching, and hidden-file folding so serial and parallel walkers cannot drift
 //! irregex — the shared gitignore / .ignore / .rgignore corpus boundary.
 //!

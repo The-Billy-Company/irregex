@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! semiring adversarial suite — the laws, then the algorithms against oracles.
 //!
 //! Two halves. The first asserts the axioms directly over randomized elements

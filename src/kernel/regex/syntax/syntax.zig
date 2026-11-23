@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — regex *syntax*: byte classes, the AST, the compiled NFA instruction,
 //! and a recursive-descent parser for the supported subset. The sound AST
 //! analyses that feed the prefilter (required-literal extraction, anchored-start

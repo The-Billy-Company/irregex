@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Arm selection: which engine compiles this pattern.
 //!
 //! Two engines sit behind the `Matcher` seam: the linear-time RE2-style matcher

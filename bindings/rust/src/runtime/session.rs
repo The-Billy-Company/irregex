@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Persistent resident-session client — Unix only.
 //!
 //! Long-lived Unix-socket connection to a face's resident daemon. Same wire

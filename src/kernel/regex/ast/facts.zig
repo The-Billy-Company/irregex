@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! The fused sweep — every synthesized attribute of a pattern's shape, computed
 //! in one forward pass over the interned AST.
 //!

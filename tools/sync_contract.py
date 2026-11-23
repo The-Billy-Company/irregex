@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 The Billy Company
 """Vendor the sibling-authored contract this package's bindings mirror.
 
 irregex owns the row protocol — the analytic row enums, the grade bands, the

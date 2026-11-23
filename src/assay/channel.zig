@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! assay/debug — one diagnostic channel: knob vocabulary, lens gate, sink.
 //!
 //! Diagnostics (timing summaries, `*_TRACE` phase lines, the warm-routing

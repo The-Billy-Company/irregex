@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! The many-patterns-over-one-text plane — `libirgx`'s slate C ABI.
 //!
 //! The pattern plane next door answers about one pattern. This one answers about

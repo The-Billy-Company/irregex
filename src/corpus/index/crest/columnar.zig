@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Sparse-gather and dense-SIMD execution over a decoded CREST sidecar view.
 const std = @import("std");
 const crest = @import("../../../kernel/math/crest.zig");

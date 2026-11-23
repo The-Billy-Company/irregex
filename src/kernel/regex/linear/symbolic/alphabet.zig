@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — the predicate alphabet: this engine's reading of the minterm
 //! partition, plus the one adapter that reads a byte class as a scalar set.
 //!

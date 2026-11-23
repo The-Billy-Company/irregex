@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """The contract mirror in `irgx.contract` must not drift from the canonical
 contracts, nor from the driven binary.
 

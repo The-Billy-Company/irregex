@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 The Billy Company
 """Earn a pull request's labels from facts, and keep the label set honest.
 
 One declaration, and a row that says how it is earned. `.github/labels.json` is

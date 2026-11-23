@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! codex — the compressed self-index: the book that IS its own index.
 //!
 //! One structure holding a corpus at entropy-bound size while answering exact

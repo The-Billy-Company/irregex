@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """The subprocess tier, rebuilt as rows.
 
 The CLI is the fallback rung, and it will stay one: it is the only transport that

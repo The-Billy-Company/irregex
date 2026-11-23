@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 The Billy Company
 """Re-mint the committed artifacts a version bump invalidates.
 
 `tools/version_parity.py` governs the mirrors a person types: a line carrying an

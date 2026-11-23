@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """Machine evidence and source-provenance contract for CREST mutation reports."""
 
 from __future__ import annotations

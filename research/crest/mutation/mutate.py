@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 The Billy Company
 """Classify corpus-independent CREST mutants in an isolated irregex copy."""
 
 from __future__ import annotations

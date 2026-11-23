@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — the shared data-parallel sharding floor: work division and the
 //! partial-spawn-safe fan-out every engine rides. Pure `std.Thread` plumbing
 //! with no search, index, or corpus knowledge — the candidate verify

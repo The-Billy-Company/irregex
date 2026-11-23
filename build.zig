@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex build graph — THE library of the irregex ecosystem.
 //!
 //! This package is the engine: syntax → automata ladder → scan/verify → the

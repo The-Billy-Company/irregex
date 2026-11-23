@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — maximal munch: the longest of N patterns, starting exactly here.
 //!
 //! A `Chorus` answers *which patterns appear somewhere in this haystack*. A

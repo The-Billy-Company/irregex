@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! What KIND of file this is — the corpus partition behind `--docs` / `--code`.
 //!
 //! `types.zig` answers "which language is this?" (223 rows, one per language).

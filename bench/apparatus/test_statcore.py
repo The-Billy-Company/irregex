@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 The Billy Company
 """Known-answer tests for the shared bench statistics.
 
 Every expectation here is derived from the *definition* — the Type-7 quantile

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 The Billy Company
 """Rebuild the prebuilt static archives this crate links.
 
 A `build.rs` runs on the installing machine, so this crate *could* just shell

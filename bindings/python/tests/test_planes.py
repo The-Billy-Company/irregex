@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """The planes beyond the buffer: lifetime, declinature, and answers checked against Python.
 
 Three properties get most of the attention here, because they are the three a

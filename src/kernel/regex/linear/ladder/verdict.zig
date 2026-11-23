@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — the engine ladder: every boolean "does this match?" entry point, and
 //! the dispatch that picks the cheapest sound machine to answer it. Rungs, in
 //! order of cost: a zero-width end-of-line certainty (no scan at all), the SIMD

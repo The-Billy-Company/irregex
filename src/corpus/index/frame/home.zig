@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! home — where the persisted irregex artifacts live.
 //!
 //! One resolution of the artifact directory (`outDir`) and one per-artifact

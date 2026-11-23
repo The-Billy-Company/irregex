@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! The shape the answer takes — decided once, before anything prints.
 //!
 //! `intent.zig` holds what was asked; this holds what comes back. The two are

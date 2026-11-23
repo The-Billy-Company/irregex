@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — the scratch pool: who owns the memory a search reuses.
 //!
 //! The linear engine allocates nothing per line, and it buys that by making the

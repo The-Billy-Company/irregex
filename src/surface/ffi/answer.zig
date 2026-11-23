@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! A materialized analytic answer, and your position in it.
 //!
 //! Substrate, because the *walking* is the same question no matter who

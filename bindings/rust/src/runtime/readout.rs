@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Reading back the two streams the CLI prints rather than emits.
 //!
 //! Everything else the crate decodes is schema-driven (`decode`, `lower`).

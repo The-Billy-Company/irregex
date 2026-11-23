@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! [`Regex`], [`RegexBuilder`], and the two engine calls everything is built on.
 //!
 //! One rule shapes the whole file: **the match sequence comes from

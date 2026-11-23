@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Signet unit tests — the four properties every persisted seal leans on:
 //! that the digest really is BLAKE3, that domains cannot bleed into each other,
 //! that a sealed blob detects the corruption shapes a torn write actually makes,

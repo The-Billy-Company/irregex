@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 The Billy Company
 """Hermetic tests for the vendored provenance emitter (provenance.py).
 
 VENDORED, BYTE-IDENTICAL across all four ecosystem packages

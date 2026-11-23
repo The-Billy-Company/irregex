@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """Semantic verification for the corpus-dependent CREST publication artifacts."""
 
 from __future__ import annotations

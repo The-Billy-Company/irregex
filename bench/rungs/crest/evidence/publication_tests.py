@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 The Billy Company
 """Run every corpus-independent CREST publication gate."""
 
 from __future__ import annotations

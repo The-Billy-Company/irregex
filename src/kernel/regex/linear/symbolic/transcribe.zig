@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — transcribing a codepoint automaton back into a byte one.
 //!
 //! Determinizing over minterms buys the compile-time collapse, but the scan

@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — SIMD class-run kernel tests: a byte-at-a-time scalar oracle, edge
 //! geometry (block seams, tails, carries), and the two-backend parity fuzz.
 //!

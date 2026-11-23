@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — positional-trigram candidate index (the proven baseline tier).
 //!
 //! A document that *contains a literal* must contain every trigram of that

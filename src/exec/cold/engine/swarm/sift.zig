@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Sifting ONE file: read, decode, gate, triage, match, render.
 //!
 //! The parallel twin of the serial engine's per-file loop body, built from the

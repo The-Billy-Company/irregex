@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Resident session — the annals (the never-drained changed-path ledger).
 //!
 //! `DirtyLog` (dirty.zig) hands the watcher's changed set to the session's own

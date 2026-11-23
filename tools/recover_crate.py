@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 The Billy Company
 """Preserve a verified Cargo tar stream while changing only its gzip encoding.
 
 Cargo 1.99 schema authority (5f94df4789f005f9a352888e8355ffc645b7ed0e):

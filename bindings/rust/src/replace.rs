@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Replacement: the [`Replacer`] trait, `$name` expansion, and the three verbs.
 //!
 //! The trait is the `regex` crate's shape, so `re.replace_all(text, "$1")`, a

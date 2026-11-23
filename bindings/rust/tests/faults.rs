@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Errors: what a refusal says, and that a negative status never becomes an
 //! answer.
 //!

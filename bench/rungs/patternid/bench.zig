@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! PatternID — does attribution-in-the-key cost states?
 //!
 //! The one number that gates the PatternID design; attribution, overlapping

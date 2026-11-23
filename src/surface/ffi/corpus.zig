@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! The warm corpus every analytic producer is handed, and the cancel handle any
 //! thread may trip.
 //!

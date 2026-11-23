@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Resident session — the freshness-barrier hardening suite.
 //!
 //! `resident_test.zig` pins correctness against hand-authored oracles; this file

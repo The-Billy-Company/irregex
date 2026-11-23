@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """Fail-closed proofs for the zig-oom detector (`count_oom` / `_scan_one`)."""
 
 import sys

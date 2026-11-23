@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! wavelet — a Huffman-shaped wavelet tree with entropy-compressed levels.
 //!
 //! The rank oracle of the codex self-index (Grossi, Gupta & Vitter, SODA

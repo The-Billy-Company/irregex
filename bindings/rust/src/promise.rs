@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! What a pattern PROMISES about every byte sequence it can match.
 //!
 //! This is the input an indexer needs and cannot derive: to build a prefilter you

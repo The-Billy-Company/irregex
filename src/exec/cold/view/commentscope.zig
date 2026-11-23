@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! `--in-comments` / `--in-code` — the native comment/code match view.
 //!
 //! A contained, early-branching view (the same discipline as `--rank`): it runs

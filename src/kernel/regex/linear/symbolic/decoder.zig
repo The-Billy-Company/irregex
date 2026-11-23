@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — the UTF-8 → minterm decoder.
 //!
 //! One deterministic byte automaton for the WHOLE alphabet, built once per

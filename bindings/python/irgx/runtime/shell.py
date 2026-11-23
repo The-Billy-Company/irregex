@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """The subprocess engine adapter. Locates the certified exact-search binary, lowers a `SearchRequest` into its rg-parity argv, runs it, and parses the result. All faces of the unified API funnel through here, so results are produced by the *same* engine the CLI uses — never a second matcher. Subprocess is the authoritative transport today: a bad pattern exits the child (code 2), surfaced as a typed error, and never terminates the host the way an in-process `die()`/exit would."""
 
 from __future__ import annotations

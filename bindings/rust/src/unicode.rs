@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! The Unicode tables this engine folds and classifies with.
 //!
 //! A host that builds its own index has to fold case and classify codepoints to

@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """Many patterns over one text, keeping which of them matched.
 
 :mod:`re` has no type for this, so nothing here is mirroring an API. The

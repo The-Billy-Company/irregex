@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! parens adversarial suite — every operation against a naive stack walk.
 //!
 //! Nothing here asserts a value the implementation produced for itself. The

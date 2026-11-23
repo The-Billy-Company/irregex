@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! The consumer face, held to the cases a hand-rolled loop gets wrong.
 //!
 //! Every assertion here is derived from what the pattern *means*, not from what

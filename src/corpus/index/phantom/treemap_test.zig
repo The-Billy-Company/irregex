@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Adversarial unit suite for the phantom `tree.map` layout (`treemap.zig`):
 //! a hand-framed blob round-trips through `decode`, `resolve` places explicit
 //! roots by name, and every torn/dangling variant fails CLOSED so the walk

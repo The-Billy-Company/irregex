@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 The Billy Company
 """Create, verify, and render revision-bound CREST evidence packages."""
 
 from __future__ import annotations

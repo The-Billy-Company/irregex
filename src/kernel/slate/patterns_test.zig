@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex patterns — adversarial tests for the multi-pattern set.
 //!
 //! The one contract that matters: a `PatternSet` answer must be EXACTLY the

@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Resident session — the warm-engine correctness suite.
 //!
 //! The one invariant the resident path must never break is

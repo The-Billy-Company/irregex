@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 The Billy Company
 """Release readiness gate — the Dominance-and-Fit Certificate on *every* machine.
 
 A single-machine certificate proves this package is dominant on the box that

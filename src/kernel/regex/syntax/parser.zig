@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — the recursive descent itself: a cursor over the pattern, and the
 //! four mutually-recursive grammar levels (`alt → concat → repeat → atom`).
 //!

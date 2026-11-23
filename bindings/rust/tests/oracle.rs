@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Cross-check every answer against the Python binding.
 //!
 //! The Python binding was written against this same C ABI first, is

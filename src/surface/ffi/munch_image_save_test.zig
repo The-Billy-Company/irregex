@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 const std = @import("std");
 const ffi = @import("munch.zig");
 const contract = @import("contract.zig");

@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 /* Does the same header parse as C++17, and does its `extern "C"` guard hold?
  *
  * A C++ host is the ordinary case for this ABI — a game, an editor, a plugin —

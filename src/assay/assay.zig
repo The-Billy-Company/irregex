@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! assay — the package's instrumentation floor: timing, counters, diagnostics.
 //!
 //! An *assay* is a precise measurement of composition. This module is the single

@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! The rendered faces — the answers that come back as finished BYTES rather
 //! than a set, a count, or a record stream.
 //!

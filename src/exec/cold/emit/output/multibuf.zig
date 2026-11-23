@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! The `rg` face — the whole-buffer (`-U`/`--multiline`) emit path.
 //!
 //! Split from `output.zig`: the multiline twin of `grid.zig`. A `-U` match may

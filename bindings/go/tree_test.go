@@ -1,5 +1,7 @@
 //go:build cgo
 
+// Copyright (c) 2026 The Billy Company
+
 package irgx_test
 
 // The tree plane, against an oracle assembled in Go from the same files on disk:

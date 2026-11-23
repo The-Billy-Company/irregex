@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """Runtime mirror of the contracts this engine is answerable for. The package embeds their load-bearing constants so it has no runtime dependency on a repo file (a wheel ships without them); the package's parity test reads the canonical TOML and asserts this mirror matches it — the standard mirror-plus-parity-test shape, so the two cannot silently drift.
 
 A product's own contract is mirrored in that product's own package (the exact

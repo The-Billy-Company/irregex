@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 The Billy Company
 """Walk cost — what a live tree walk costs in memory, this engine vs ripgrep.
 
 THE CLAIM THIS LANE EXISTS TO SETTLE

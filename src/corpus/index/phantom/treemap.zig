@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! phantom — the persisted directory-membership snapshot (`tree.map`).
 //!
 //! The parallel walk's floor is syscalls: `openat` + `getattrlistbulk` +

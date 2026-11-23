@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Disjoint-set forest — union-find with path-halving finds and min-index
 //! roots, so a component's identity is stable regardless of join order.
 //! Pure graph math with zero kinship semantics; `kinship/cluster/families`

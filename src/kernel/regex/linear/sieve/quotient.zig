@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — the SP-partition lattice harvest: where a sieve's over-approximating
 //! automata come from.
 //!

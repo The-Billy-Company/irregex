@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! The writ: everything the argv patterns decide, decided once.
 //!
 //! A `Writ` is what an invocation's patterns COMPILE TO. Handed the effective

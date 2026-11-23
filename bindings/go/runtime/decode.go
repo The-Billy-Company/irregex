@@ -1,3 +1,5 @@
+// Copyright (c) 2026 The Billy Company
+
 // The cold tier's raising half: a child's NDJSON back into rows of the verb's
 // declared schema. It is the mirror of plan.go — that file spells a query as argv,
 // this one reads the answer — and the two are kept apart because a CLI's row

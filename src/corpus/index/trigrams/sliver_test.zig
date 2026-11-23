@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! The Sliver Theorem, and the premise it stands on.
 //!
 //! `sliver.candidates` is only ever allowed to be WIDE. The theorem asserted

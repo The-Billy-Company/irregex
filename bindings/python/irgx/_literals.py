@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """What a pattern promises about its matches, and the tables the engine decides with.
 
 An indexer needs to know, before it opens a file, which bytes any match MUST

@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Which files a search is even ALLOWED to read.
 //!
 //! gitignore precedence, the type registry, hidden and binary policy — the half of

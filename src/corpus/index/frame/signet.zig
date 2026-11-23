@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! signet — the mark that proves which bytes these are.
 //!
 //! One digest (BLAKE3) and one attachment protocol behind every place irregex

@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex bench SIMD `contains` test — split from `simd.zig` so the kernel file
 //! holds only the hot routine. Pulled into `zig build test` via `bench.zig`'s
 //! test block. A differential check that the SIMD substring-presence scan is

@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex T0 index-loader ADVERSARIAL suite — split out per the shape cap, wired
 //! via `root.zig`'s test block.
 //!

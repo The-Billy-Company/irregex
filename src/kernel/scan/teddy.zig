@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — Teddy SIMD multi-literal prefilter (Hyperscan's algorithm, as in
 //! ripgrep's `aho-corasick`).
 //!

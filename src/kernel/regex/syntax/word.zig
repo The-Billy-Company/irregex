@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — the `\w` word-character test shared by every regex engine arm.
 //!
 //! `\b` / `\B` / `\<` / `\>` (and `-w`) all reduce to one question: is the

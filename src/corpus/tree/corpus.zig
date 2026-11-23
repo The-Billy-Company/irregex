@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — corpus loading, shared by the CLI drivers in the sibling face
 //! repos, the unified search engine (`exec/cold/`) and their bench/verify
 //! harness. The corpus is every non-binary, non-gitignored file under the roots

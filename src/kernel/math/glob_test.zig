@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Adversarial tests for the glob matcher — the risky surface: a wrong
 //! `*`/`**`/class boundary silently drops or admits files, which an agent
 //! reads as "no matches" and trusts. Pins the segment/`/` rules, the

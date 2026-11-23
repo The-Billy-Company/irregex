@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! One search over a warm corpus, and the records it borrows out.
 //!
 //! `Corpus::open` → [`Corpus::search`] → iterate → drop. A [`Search`] comes back

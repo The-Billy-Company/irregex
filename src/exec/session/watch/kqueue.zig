@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Resident session — the macOS `kqueue` event backend.
 //!
 //! Raw syscalls, no frameworks: the watcher costs the cold one-shot search

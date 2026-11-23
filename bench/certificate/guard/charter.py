@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 The Billy Company
 """What a certificate IS — the vocabulary every package's gates are written in.
 
 VENDORED, BYTE-IDENTICAL across all four ecosystem packages

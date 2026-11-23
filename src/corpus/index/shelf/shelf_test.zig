@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! The codex shelf, held to its persisted contract: corpus-wide counts and
 //! per-document tallies must match a per-document oracle straight through a
 //! save/load round-trip, every corpus position must map back to its document,

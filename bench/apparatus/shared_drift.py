@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 The Billy Company
 """The vendored-apparatus gate — shared instruments must be byte-identical everywhere.
 
 VENDORED, BYTE-IDENTICAL (this file is in its own manifest).

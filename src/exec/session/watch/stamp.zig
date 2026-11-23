@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Resident session — the instant a watcher delivery is stamped with.
 //!
 //! The POSIX backends must read the wall clock at DELIVERY, not at drain: the

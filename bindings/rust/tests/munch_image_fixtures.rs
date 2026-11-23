@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Accepted authored Image1 bytes and expected scans; no expected value comes from the loader.
 //! The two structural-only graphs deliberately need not match compiled .* source.
 #![cfg(feature = "munch-image")]

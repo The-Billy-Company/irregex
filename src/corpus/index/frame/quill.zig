@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! quill — a sealed artifact written in PIECES.
 //!
 //! `frame.writeAtomic` needs the finished bytes in one slice, which is right for

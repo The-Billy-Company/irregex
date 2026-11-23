@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! The closed vocabularies an analytic row field can hold (`[row_enums]`) and
 //! the calibration that gives their scores meaning (`[channels]`,
 //! `[grades]` in the kinship package's `contract/kinship.toml`).

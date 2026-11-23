@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — Ward: the shared reader/writer discipline both engines and the warm
 //! session ride, instead of hand-rolling `std.Io.RwLock` lock/unlock pairs at
 //! each call site. Pure `std.Io` plumbing with no search, index, or corpus

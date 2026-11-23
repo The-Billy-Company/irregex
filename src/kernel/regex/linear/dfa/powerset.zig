@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — the EAGER driver of the subset construction: determinizes the
 //! Thompson NFA in `syntax.zig` to fixpoint at compile time and freezes the
 //! result into the immutable byte-class `Dfa` (`dfa.zig`), which is

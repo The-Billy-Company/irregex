@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex `rg` — one candidate's bytes, off disk.
 //!
 //! The read strategy every walk engine shares: a two-stage open (the first

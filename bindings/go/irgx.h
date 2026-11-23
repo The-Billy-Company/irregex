@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 /* irregex — a regex over a buffer you already hold, and the corpus planes built
  * on top of it.
  *

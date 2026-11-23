@@ -1,5 +1,7 @@
 //go:build cgo
 
+// Copyright (c) 2026 The Billy Company
+
 package irgx_test
 
 // The line plane, against an oracle written from the CONTRACT rather than from

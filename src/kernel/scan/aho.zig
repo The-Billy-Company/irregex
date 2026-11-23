@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Sparse Aho–Corasick for large literal sets.
 //!
 //! Construction follows Aho and Corasick (1975): trie edges plus failure links.

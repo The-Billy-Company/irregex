@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """What a match SEQUENCE is - the one thing this binding must not decide itself.
 
 Zero-width and nullable patterns are where a regex binding goes wrong, because

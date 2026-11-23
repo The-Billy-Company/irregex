@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Forced-crest calculus tests — hand-computed ĝ for every construct the AST
 //! can present, plus the SIEVE THEOREM itself checked against the real matcher:
 //! for every (pattern, document) pair, `matched ⇒ !pruned`. That differential is

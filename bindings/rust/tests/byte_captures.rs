@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Raw byte capture offsets, context, and native resource refusals.
 
 #![cfg(feature = "source-engine")]

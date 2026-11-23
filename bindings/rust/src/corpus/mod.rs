@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Searching a TREE, not a buffer you already hold.
 //!
 //! Everything else in this crate takes bytes you have. These three planes are

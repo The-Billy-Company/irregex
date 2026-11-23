@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — data-parallel candidate verify (the half of the head-to-head that
 //! has to out-throughput ripgrep's multi-core scan). The trigram filter is
 //! cheap and single-threaded; the *bytes* are in the candidate verify (and the

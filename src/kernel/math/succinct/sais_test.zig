@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! sais — the seam around libsais, not the sort itself (libsais has its own
 //! upstream proof; the shifted-alphabet + sentinel identity this module adds
 //! is what needs checking here, and gets its most exhaustive treatment as a

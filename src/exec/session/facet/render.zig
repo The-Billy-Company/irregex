@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Resident session — the warm `lines` renderer.
 //!
 //! Renders the default bare-pattern presentation (`path:text`, `-n` for

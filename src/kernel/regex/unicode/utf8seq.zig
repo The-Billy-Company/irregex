@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — Unicode scalar-range → UTF-8 byte-range lowering. The primitive
 //! that lets a *byte* automaton match *codepoint* classes: a contiguous run of
 //! Unicode scalar values (`[00E9-00EF]`, `\w`, `\p{L}`, a case-fold orbit) is

@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Resident session — the faithful in-RAM mirror of the walked tree
 //!
 //! `load` reads a pre-selected path list (the certified rg-default walk,

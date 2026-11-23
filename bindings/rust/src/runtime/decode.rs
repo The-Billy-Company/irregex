@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! The one analytic row decoder, driven by the generated schema table.
 //!
 //! Seventeen verbs return the same self-describing row, so there is exactly one

@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Compose — production proof harness (does it work, and is it actually faster).
 //!
 //! Links this package's REAL engine (`@import("irregex")`) and the REAL rung

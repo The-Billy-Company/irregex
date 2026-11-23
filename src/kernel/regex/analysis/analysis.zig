@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — regex *literal analysis*: sound, read-only AST visitors over
 //! `syntax.zig` that feed the scanner's accelerators. Every one is conservative
 //! (a wrong "don't know" only costs a full scan, never a missed match):

@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — Unicode scalar ranges: the parse-time accumulator, and the three
 //! rewrites a FINISHED tree can still owe its flags.
 //!

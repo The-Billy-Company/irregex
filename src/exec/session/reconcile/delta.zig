@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Resident session — the O(changed) reconcile resolver.
 //!
 //! `Delta` turns one drained batch of watcher paths (absolute, as the OS

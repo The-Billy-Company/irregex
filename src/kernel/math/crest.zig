@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Crest — the forced-class-run necessary condition (research/crest/PROOF.md).
 //!
 //! The contiguity bound the trigram index concedes: a literal-free

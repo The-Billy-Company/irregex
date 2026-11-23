@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """How to compile ``irgx_accel.c``, written once and asked twice.
 
 The wheel hook needs this to put an accelerator in a release, and

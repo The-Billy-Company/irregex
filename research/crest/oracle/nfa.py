@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """Thompson epsilon-NFA and exact NFA x ranked-run-monitor reachability."""
 
 from __future__ import annotations

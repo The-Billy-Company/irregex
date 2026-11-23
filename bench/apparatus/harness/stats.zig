@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex bench — the statistics that make a speed claim *beyond reproach* instead
 //! of a point estimate. A single mean is uninterpretable (criterion.rs's whole
 //! thesis): you need a confidence interval to know the estimate's precision and

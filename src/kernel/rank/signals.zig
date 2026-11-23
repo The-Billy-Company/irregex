@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex ranking signals — the language-agnostic, byte-level heuristics the
 //! T4 ranker (sibling `rank.zig`) consumes as `Doc` features. Three questions,
 //! answered from raw bytes with no parser:

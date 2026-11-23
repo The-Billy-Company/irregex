@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! One file's result, rendered: the per-file core both emit paths share.
 //!
 //! `renderFile` is the whole of it — binary decision, line collection, match

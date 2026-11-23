@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Parabix — production proof harness: does the bit-parallel rung agree with
 //! the shipped engine, and is it actually faster.
 //!

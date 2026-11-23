@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """Independent parser for irregex's consuming byte-regex subset."""
 
 from __future__ import annotations

@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! The raw C-ABI surface, mirroring `include/irgx.h` symbol-for-symbol.
 //!
 //! Two halves with deliberately different compilation rules:

@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — the symbolic (predicate-alphabet) determinizer, entered here.
 //!
 //! The shipped path lowers a Unicode class to a UTF-8 byte trie and then

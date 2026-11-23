@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 The Billy Company
 """Rebuild the prebuilt static archives this Go module links.
 
 Go has no build.rs, so a consumer cannot compile Zig at install time. What

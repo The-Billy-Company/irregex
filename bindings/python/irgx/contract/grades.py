@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """The kinship calibration, importable — a Python mirror of `src/kernel/kinship/metric/channel.zig`.
 
 A distance is not an answer. `similar` returning 0.7813 *looks* like a result,

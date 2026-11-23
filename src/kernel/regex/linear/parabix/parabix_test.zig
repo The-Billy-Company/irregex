@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — the Parabix rung held to three oracles, weakest first.
 //!
 //! 1. `plane.transposeScalar` — the transposition's definition, so the shuffle

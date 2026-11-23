@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 The Billy Company
 """Exact ranked CREST automata oracle and deterministic JSON CLI."""
 
 from __future__ import annotations

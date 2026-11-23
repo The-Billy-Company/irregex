@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Resident session — the freshness-watcher barrier suite.
 //!
 //! The watcher is a pure *accelerator*: when it proves quiescence the session

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 The Billy Company
 """Revision-bound CREST monograph rendering and verification."""
 
 from __future__ import annotations

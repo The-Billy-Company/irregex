@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! The warm session's answer vocabulary — what a query can come back as, and
 //! what bounds it while it runs.
 //!

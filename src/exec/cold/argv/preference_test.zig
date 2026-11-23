@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Preferences grammar — the quoting bugs ripgrep's version has, proven absent.
 //!
 //! Every adverse case here is a real ripgrep issue report against `.ripgreprc`

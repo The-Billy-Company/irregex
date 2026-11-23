@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 // MONOLITHIC: SIMD class-run scan — the dense-class boolean match kernel; the SIMD lane state, run detection, and the DFA-fallback boundary co-maintain one loop-carried match invariant
 //! irregex — SIMD class-run scan: the dense-class boolean match kernel.
 //!

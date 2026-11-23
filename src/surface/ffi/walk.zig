@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Which files a search is even allowed to read, and in what order.
 //!
 //! Every host that has ever wrapped a grep has rewritten this badly: gitignore

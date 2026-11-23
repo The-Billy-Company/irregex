@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex `rg` — raw bytes made legible to the matcher.
 //!
 //! Two steps, one answer to "what is actually being searched": the bytes are

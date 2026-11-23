@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — the Parabix rung's admission gate: who this kernel is allowed to
 //! serve, decided entirely at compile time.
 //!

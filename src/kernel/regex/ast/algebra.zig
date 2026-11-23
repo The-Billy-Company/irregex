@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! The identities. What is true of the operators regardless of what they are
 //! applied to, spent to make the graph smaller before anything reads it.
 //!

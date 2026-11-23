@@ -1,5 +1,7 @@
 //go:build cgo
 
+// Copyright (c) 2026 The Billy Company
+
 package irgx
 
 // Maximal munch: the longest match BEGINNING at an offset, among many patterns.

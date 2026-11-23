@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — first-byte scan acceleration: given the set of bytes that can
 //! BEGIN a match (computed by `analysis.analyzeFirst`), find the next candidate
 //! position in a line so the Pike scanner skips dead spans instead of

@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! refine — the coarsest partition a transition table cannot tell apart.
 //!
 //! Given `n` states, a labeled transition function `δ(state, symbol)`, and an

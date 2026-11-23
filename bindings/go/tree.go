@@ -1,5 +1,7 @@
 //go:build cgo
 
+// Copyright (c) 2026 The Billy Company
+
 package irgx
 
 // The tree plane: searching a corpus rather than a buffer you already hold.

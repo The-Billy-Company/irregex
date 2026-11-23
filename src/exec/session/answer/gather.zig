@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! The candidate walk every warm answer face shares — compile, prune, visit.
 //!
 //! No face here decides what an answer looks like; each one only decides which

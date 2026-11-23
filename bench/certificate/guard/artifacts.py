@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 The Billy Company
 """Certificate reproducibility gate.
 
 VENDORED, BYTE-IDENTICAL across all four ecosystem packages

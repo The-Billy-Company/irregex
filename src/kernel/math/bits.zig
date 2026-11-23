@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! bits — the shared two's-complement identity floor.
 //!
 //! Hardware encodes negatives in two's complement (flip all bits, add one),

@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """Every function the cffi mirror declares must be spelled as its header spells it.
 
 `irgx.contract.abi.CDEF` is a hand-maintained mirror of the C headers, and cffi

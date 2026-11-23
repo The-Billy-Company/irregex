@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! The `rg` face — how a walk failure reads on stderr.
 //!
 //! A descent can fail in ways the search itself never sees: a path arg that

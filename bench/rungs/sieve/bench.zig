@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Quotient sieve — production proof harness (soundness, selectivity, speed).
 //!
 //! Links this package's REAL engine (`@import("irregex")`) and walks the REAL

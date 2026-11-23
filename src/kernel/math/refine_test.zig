@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! refine adversarial suite — two engines against a third algorithm.
 //!
 //! The load-bearing test is the differential. `moore` and `hopcroft` compute the

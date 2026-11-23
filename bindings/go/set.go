@@ -1,5 +1,7 @@
 //go:build cgo
 
+// Copyright (c) 2026 The Billy Company
+
 package irgx
 
 // Many patterns, one pass, and which of them hit. stdlib regexp has no such

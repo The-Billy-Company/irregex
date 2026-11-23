@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 The Billy Company
 """The publish gate — a bundle may only enter git if it describes a public corpus.
 
 VENDORED, BYTE-IDENTICAL across all four ecosystem packages

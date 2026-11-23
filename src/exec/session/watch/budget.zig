@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Resident session — the macOS watch-descriptor budget.
 //!
 //! One question: how many vnode watches may this session hold? The macOS kqueue

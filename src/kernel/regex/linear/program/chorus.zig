@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — MANY patterns, one automaton, and every voice still nameable.
 //!
 //! A `Chorus` lowers N patterns into a single Thompson program whose N `.match`

@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Giving up on an in-process analytic query.
 //!
 //! `AnalyticRunFn` has taken a `*mut irgx_cancel` since the plane landed, and

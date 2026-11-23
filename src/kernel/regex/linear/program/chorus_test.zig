@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Tests for the attributing union automaton (`chorus.zig`).
 //!
 //! Three tiers, and one differential that keeps them honest. The differential is

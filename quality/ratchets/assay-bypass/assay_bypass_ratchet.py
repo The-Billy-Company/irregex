@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 The Billy Company
 """Zig assay-bypass ratchet — no ``std.debug.print`` in production code.
 
 Fault-channel law 6: ``assay`` is the package's one diagnostic channel. It

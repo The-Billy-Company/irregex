@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """Typed failures for the search API. Every failure is a value a caller can catch — a bad pattern never terminates the host process the way the engine's own CLI `die()`/exit would in-process."""
 
 from __future__ import annotations

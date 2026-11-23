@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Lowering — what compiling a pattern costs, attributed to the stage that
 //! spends it.
 //!

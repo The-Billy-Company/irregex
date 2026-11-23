@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! How a `Send + Sync` [`crate::Regex`] is built out of a handle that is not.
 //!
 //! The header is blunt: an `irgx_regex *` owns the scratch its finds run in,

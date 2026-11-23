@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """The unified `SearchRequest` → `Match` contract. One request shape for every face — the importable package, the CLI, and an agent code-search tool. It carries only match-finding *intent*; presentation, ranking, stats, replace, and stdin stay CLI-only surfaces. `to_argv()` lowers a request into the exact rg-parity argv the certified exact-search binary accepts, so the package never reimplements search — it drives the same engine. The field set mirrors `irregex/contract/engine.toml`'s `[request_options]`; the package's parity test asserts the two never drift."""
 
 from __future__ import annotations

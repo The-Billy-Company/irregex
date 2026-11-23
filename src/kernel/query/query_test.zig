@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Unit + oracle coverage for the shared compiled-query core (`query.zig`):
 //! the compile shapes (literal vs linear vs PCRE2 vs escaped `-F -i`), the sound
 //! trigram prefilter selection each face prunes by, the fail-closed compile

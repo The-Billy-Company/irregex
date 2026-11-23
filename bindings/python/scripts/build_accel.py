@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 The Billy Company
 """Compile the accelerator into the source tree, for developing against it.
 
 A checkout runs on ctypes until somebody builds this, which is correct - the

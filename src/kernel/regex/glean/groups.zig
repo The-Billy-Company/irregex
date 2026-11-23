@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — what a capture group caught, addressed by index or by name.
 //!
 //! The capture engines answer into a slot vector: `find(line, from, out)` fills

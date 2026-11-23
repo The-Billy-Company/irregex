@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 /* irgx._accel - the hot seam, crossed once instead of ten times over.
  *
  * WHY THIS EXISTS

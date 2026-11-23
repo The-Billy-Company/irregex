@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Automata — the machine-algebra proof harness: does a change to the
 //! determinizer or to the automaton's layout actually pay, and is the automaton
 //! we build smaller and cheaper than the one the field builds?

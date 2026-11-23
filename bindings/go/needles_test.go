@@ -1,5 +1,7 @@
 //go:build cgo
 
+// Copyright (c) 2026 The Billy Company
+
 package irgx_test
 
 // The needle plane, against `strings` - which is a genuine oracle here, because

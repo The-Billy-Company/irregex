@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Owned Image1 persistence and the one shared outer allocation/work allowance.
 
 use std::fmt;

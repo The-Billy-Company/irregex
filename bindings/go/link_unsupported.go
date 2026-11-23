@@ -1,5 +1,7 @@
 //go:build cgo && !irgx_syslib && !(darwin && (arm64 || amd64)) && !(linux && (amd64 || arm64)) && !(windows && (amd64 || arm64))
 
+// Copyright (c) 2026 The Billy Company
+
 package irgx
 
 // No archive is vendored for this platform, so there is nothing to link and the

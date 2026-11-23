@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! assay/time — the two clocks, made non-interchangeable.
 //!
 //! Every timing site in the package used to read `nowNs(io)` (a bare `i128`) and

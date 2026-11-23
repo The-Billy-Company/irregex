@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """Detector proofs for zig-assay-bypass — the call counts, the prose does not."""
 
 import sys

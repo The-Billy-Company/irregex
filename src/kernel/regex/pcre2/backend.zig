@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — PCRE2 backend (the opt-in `-P`/`--pcre2` engine).
 //!
 //! The DEFAULT engine (`core.zig`) is a linear-time RE2/Pike matcher: no

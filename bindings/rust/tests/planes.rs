@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! The eight planes the ABI grew after the regex face: `lines`, `literals`,
 //! `needles`, `unicode`, `codex`, and the three corpus planes `walk`, `tree` and
 //! `sieve`.

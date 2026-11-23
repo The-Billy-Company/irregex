@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex T4 — result ranking via weighted Reciprocal Rank Fusion (RRF).
 //!
 //! The lexical tiers (T0–T2) answer *which files contain the match* as an

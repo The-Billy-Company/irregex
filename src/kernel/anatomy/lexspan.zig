@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Comment/code/string span lexing — the one parser-free lexer both the region
 //! extractor and the comment-scoped matcher ride.
 //!

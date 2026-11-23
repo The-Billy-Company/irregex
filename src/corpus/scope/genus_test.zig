@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! The corpus partition, judged against its contract rather than itself.
 //!
 //! Every expectation below is derived from what the path IS — GitHub Linguist's

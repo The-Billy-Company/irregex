@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — the muster: one SIMD pass that calls the roll on N patterns.
 //!
 //! A `PatternSet` answers "which of these N patterns match this document?".

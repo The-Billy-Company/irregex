@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """The analytic row plane, decoded.
 
 No binary and no library: the plane's contract is `contract/surface.toml`

@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! The charter grammar, held to its contract.
 //!
 //! A charter is committed source that decides which files every clone of a tree

@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Resident session — what is macOS's alone about the kqueue barrier.
 //!
 //! The promises every exact backend makes — an in-place edit is seen, a newcomer

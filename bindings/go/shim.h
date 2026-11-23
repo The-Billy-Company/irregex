@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 /* The one fault-capture helper every plane's cgo preamble includes.
  *
  * irgx_last_fault reports the last failure on THIS THREAD, and a goroutine is

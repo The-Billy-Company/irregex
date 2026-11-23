@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — successive matches, pulled one at a time.
 //!
 //! The engine answers "where is the leftmost match at or after `from`". Turning

@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Resident session — the eligible-request classifier.
 //!
 //! Warm surface: `-l` / `-c` / bare `lines`, literal (`-F`), linear regex, or

@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Ward tests: lease guards exclude correctly, and both reconcile faces —
 //! `readReconciled` (holds nothing on error) and `reconcileHeld` (keeps a lease
 //! on every path, error included) — take the fast/miss/race/error paths exactly,

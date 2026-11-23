@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! [`Munch`] — the longest of many patterns, starting exactly here.
 //!
 //! Every other type in this crate answers a *search* question: it scans forward

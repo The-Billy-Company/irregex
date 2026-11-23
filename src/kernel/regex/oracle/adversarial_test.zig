@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex T2 regex — ADVERSARIAL differential tests against an INDEPENDENT
 //! oracle.
 //!

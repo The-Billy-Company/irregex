@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Searching a TREE, from C — the verb this ABI has been missing.
 //!
 //! `irgx_engine_open` has shipped for a while and there has been nothing to do

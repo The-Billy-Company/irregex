@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! The fail-closed read-your-writes barrier — the only writer in the resident
 //! session, and the reason a warm answer cannot drift from a cold one.
 //!

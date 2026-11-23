@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex `rg` — the portable `stat(2)` projection.
 //!
 //! THE one raw-stat definition in the package: Zig 0.16's `std.c` deliberately

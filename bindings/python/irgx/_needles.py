@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """Many literals, one pass, with attribution.
 
 The question a regex alternation answers slowly. ``a|b|c|…`` over two hundred

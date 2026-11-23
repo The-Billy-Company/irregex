@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Independent filesystem oracle shared by resident-session adversarial tests.
 
 const std = @import("std");

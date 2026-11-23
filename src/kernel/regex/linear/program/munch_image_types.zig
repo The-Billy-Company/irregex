@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Image1's private argument records and call-scoped accounting. No allocator
 //! vtable wraps Context: every owned object stores only Context.base.
 const std = @import("std");

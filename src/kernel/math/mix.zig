@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Hash mixing — the bit-spreading floor under kinship sketches, recall
 //! lexicons, and slice-keyed hash maps. Generic sequence math with zero
 //! kinship semantics: FNV-1a's constants, the splitmix64 finalizer that

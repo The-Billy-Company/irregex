@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — fast, agent-friendly code locator kernel.
 //!
 //! The engine half of an agent-native grep: a candidate INDEX that turns a

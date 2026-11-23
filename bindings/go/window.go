@@ -1,5 +1,7 @@
 //go:build cgo
 
+// Copyright (c) 2026 The Billy Company
+
 package irgx
 
 // The window plane: a search confined to a region, while every zero-width

@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """Unit tests for deterministic CREST mutant generation and classification."""
 
 from __future__ import annotations

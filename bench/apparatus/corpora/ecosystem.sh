@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 The Billy Company
 # Materialize `ecosystem-v1` — the Layer L / Layer J corpus.
 #
 # The corpus is the four packages of this project side by side: the engine

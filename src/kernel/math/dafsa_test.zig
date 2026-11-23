@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Two claims worth an oracle: the automaton accepts exactly the keys it was
 //! given, and it is the *smallest* automaton that does.
 //!

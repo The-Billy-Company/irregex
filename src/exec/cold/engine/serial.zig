@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! The `rg` face — a ripgrep-DEFAULT drop-in over an arbitrary directory tree,
 //! and (since the two engines merged) the SOLE search engine we ship: the same
 //! walk-and-emit pipeline backs the bare `<pattern> [PATH...]` shorthand

@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — the accelerator tier: every optional machine that can answer a
 //! boolean faster than the byte-class DFA, behind one interface.
 //!

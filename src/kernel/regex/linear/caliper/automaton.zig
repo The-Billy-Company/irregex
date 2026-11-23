@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — determinization that remembers which thread was preferred.
 //!
 //! `dfa/subset.zig` interns a state as a *set* of NFA states, which is all a

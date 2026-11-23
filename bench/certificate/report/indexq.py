@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 The Billy Company
 """irregex certify — Layer L report (index quality head-to-head against csearch).
 
 Reads the `indexq.tsv` emitted by `zig build indexq` (`bench/sieve/indexq.zig`)

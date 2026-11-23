@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """What a lexer slate must answer: the longest reading at the cursor, and whose.
 
 There is no ``re`` counterpart to a munch, but there is an ``re`` counterpart to

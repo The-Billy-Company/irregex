@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Crest — production proof harness (Layer: does it actually work + how fast).
 //!
 //! Links this package's REAL engine (`@import("irregex")` — the crest kernel

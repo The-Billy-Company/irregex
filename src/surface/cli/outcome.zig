@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Shared CLI vocabulary — how a face ends.
 //!
 //! ripgrep's contract is three codes (`contract/engine.toml [exit_codes]`):

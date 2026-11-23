@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 The Billy Company
 """Mint ledger — the certificate's history, so a re-mint is never silent.
 
 VENDORED, BYTE-IDENTICAL across all four ecosystem packages

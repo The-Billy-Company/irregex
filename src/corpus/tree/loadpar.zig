@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — the fused parallel walk+read corpus loader (`corpus.load`'s
 //! default path). The serial loader (`corpus.load`'s fallback) walks one
 //! directory at a time, opening each, listing it, then reading its files, with

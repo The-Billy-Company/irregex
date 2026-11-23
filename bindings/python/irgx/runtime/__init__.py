@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """How an answer actually gets here — the transports, the decoder, and the ladder.
 
 Every verb in this binding is answered by the same certified engine; the only

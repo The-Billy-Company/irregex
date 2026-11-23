@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """The three shapes every plane of this ABI repeats, written once each.
 
 The C surface is a hundred symbols over nine planes, and almost all of the

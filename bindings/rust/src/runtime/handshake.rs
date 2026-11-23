@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! The schema handshake that has to pass before a single native row is decoded.
 //!
 //! A row is a schema id plus a flat value array, so a library whose

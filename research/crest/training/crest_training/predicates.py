@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """Leakage-safe trace loading and conservative exact byte-predicate extraction."""
 
 from __future__ import annotations

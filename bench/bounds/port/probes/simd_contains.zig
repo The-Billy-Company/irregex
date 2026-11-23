@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Layer-B port-optimality probe — the `simd.contains` vector filter loop.
 //!
 //! A **byte-faithful copy** of `src/kernel/scan/simd.zig`'s `contains`

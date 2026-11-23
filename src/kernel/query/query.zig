@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex search core — the compiled, transport-neutral query.
 //!
 //! One deep module owns "a search intent, compiled". A `(pattern, fixed,

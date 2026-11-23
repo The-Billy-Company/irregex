@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """Fail-closed proofs for the cross-binding gate (`exported` / `audit` / waivers).
 
 The gate's whole value is that it fails on the drift that actually happened, so

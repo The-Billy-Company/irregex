@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 /* The analytic producers, and the request families they read.
  *
  * Three face libraries answer the seventeen analytic verbs: the exact face's

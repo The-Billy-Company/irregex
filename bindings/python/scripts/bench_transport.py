@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 The Billy Company
 """What the accelerator is worth, measured against ctypes and against ``re``.
 
 Both transports in ONE process, interleaved, min-of-N. That shape is the point:

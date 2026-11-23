@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! wavelet — `Huff` (the canonical Huffman table) and `Tree` (the wavelet
 //! tree built over it), proved independently of each other:
 //!

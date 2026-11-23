@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 const std = @import("std");
 const image = @import("munch_image_types.zig");
 const t = std.testing;

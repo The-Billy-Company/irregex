@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! The corpus walk: what is in the tree, before a byte is read.
 //!
 //! The single-threaded descent behind the rg-DEFAULT file set. `.gitignore`

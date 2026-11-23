@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! allowance — how many bytes of disk a tree's artifact set may occupy.
 //!
 //! The memory question already has an answer one tier up (`gist`'s

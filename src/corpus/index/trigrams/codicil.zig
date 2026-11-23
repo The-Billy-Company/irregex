@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Codicil — the incremental amendment to a published trigram generation.
 //!
 //! A full index build reads the whole corpus (hundreds of MiB) and rewrites

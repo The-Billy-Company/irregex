@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — adverse suite for the calibrating anchor selector.
 //!
 //! Every expectation here is derived from the CONTRACT, not from the module's

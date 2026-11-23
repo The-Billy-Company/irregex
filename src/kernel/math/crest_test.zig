@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Crest kernel unit tests — the DOCUMENT half: the ρ(d) scan, the sieve
 //! decision, and the persisted sidecar's semantic schema. The query half (ĝ)
 //! is tested against the engine's own AST in

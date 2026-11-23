@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """Detector proofs for zig-isa-floor — the arch-selected arm counts, the guarded one does not.
 
 The first test is the one that matters: it is the *pre-fix* text of

@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! The per-line faces — the in-process FFI's record stream (in-process FFI tier) and
 //! the `-q` existence probe, plus rg's line model that both walk.
 //!

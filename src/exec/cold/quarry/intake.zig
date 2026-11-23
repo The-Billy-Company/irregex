@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Intake: turning walked candidates into readable bytes, reading only
 //! what might match.
 //!

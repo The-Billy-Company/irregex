@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Focused mutation-test runner with a machine-validated evidence protocol.
 
 const builtin = @import("builtin");

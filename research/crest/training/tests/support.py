@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """Synthetic CREST trace packages with no private corpus material."""
 
 from __future__ import annotations

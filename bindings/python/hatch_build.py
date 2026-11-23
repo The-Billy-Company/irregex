@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """Hatchling build hook: put the native parts in the wheel, and tag it honestly.
 
 A wheel that contains a ``.dylib`` is not ``py3-none-any``. Claiming otherwise

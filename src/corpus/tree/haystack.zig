@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — the Haystack abstraction: WHAT to search/index, decoupled from HOW to
 //! read it. Takes its shape from ripgrep's own split (`crates/core/haystack.rs`)
 //! between classifying a walk entry as searchable and actually opening it, but

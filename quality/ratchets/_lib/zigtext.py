@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """Telling Zig code from Zig prose.
 
 A textual Zig ratchet is only as trustworthy as its ability to tell the two

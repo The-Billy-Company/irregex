@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — the trawl's correctness suite.
 //!
 //! The trawl is the wide-slate tier: one Aho–Corasick automaton carrying every

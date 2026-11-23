@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! The `rg` face — whether/how to paint output. Split from `output.zig` so the
 //! TTY/env resolution (`--color auto|always|never|ansi`) and the ANSI palette
 //! it feeds have their own home rather than growing an already-large emitter.

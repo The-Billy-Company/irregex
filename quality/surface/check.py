@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 The Billy Company
 """The export gate: does `src/root.zig` hand out exactly what was promised?
 
 `charter.zone` governs what a file inside this package may reach.

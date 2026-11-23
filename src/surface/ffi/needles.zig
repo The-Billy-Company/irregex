@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Many literals, one pass over the haystack — the multi-substring search a host
 //! reaches for when it has a wordlist rather than a pattern.
 //!

@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Soundness + reachability for the conjunctive cover (`cover.zig`).
 //!
 //! Keeps the public `query.cover*` re-exports and `cover.atomCount` textually

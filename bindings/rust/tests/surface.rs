@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! The `regex`-shaped surface: iteration, split, replace, and the plumbing.
 //!
 //! The point of mirroring the `regex` crate is that code written against it

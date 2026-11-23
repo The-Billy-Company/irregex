@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """Shared scaffolding for count-based per-file drift ratchets."""
 
 from .ratchet import (

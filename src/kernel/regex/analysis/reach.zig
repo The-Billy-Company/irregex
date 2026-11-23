@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — regex *reachability analysis*: conservative, read-only visitors over
 //! the compiled Thompson-NFA `State` program (the execution half a pattern
 //! lowers to in `../compile/compile.zig`). Each answers a zero-width

@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """One interface over two transports: the native accelerator, or ctypes.
 
 Sixteen verbs in this ABI are asked once per *text* - a search, a scan, a

@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """`irgx.runtime.shell` binary resolution — env override, dev checkout, bundled wheel, PATH.
 
 Each rung is proved by making exactly one of them findable and asserting

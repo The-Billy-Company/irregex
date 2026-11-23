@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 import gzip
 import io
 import json

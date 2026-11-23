@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — the composition rung: a byte-class DFA re-expressed as
 //! transformations so the scan becomes a REDUCTION instead of a pointer chase.
 //!

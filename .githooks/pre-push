@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 The Billy Company
 set -euo pipefail
 
 readonly zero=0000000000000000000000000000000000000000

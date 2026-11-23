@@ -1,3 +1,5 @@
+// Copyright (c) 2026 The Billy Company
+
 // Package analytic is the shared contract plane of the irregular-expression
 // ecosystem: the generated row-schema table ([Digest] and friends in
 // schema_gen.go), the constants mirrored from irregex/contract/{engine,analytic}.toml

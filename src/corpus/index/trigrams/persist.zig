@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 // MONOLITHIC: persisted trigram-index loader/serializer — magic and versioning, the CSR directory, the generation-atomic pair, and mmap load form one on-disk format contract shared by every cold path
 //! irregex — the persisted-index loader, shared by every cold-query path.
 //!

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 The Billy Company
 """The cross-binding gate: does every binding reach the whole ABI?
 
 Every other gate in this package is VERTICAL — one artifact judged against one

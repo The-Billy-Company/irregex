@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """The ``IRGX_*`` bit words, one builder per plane that takes one.
 
 Two planes accept a flag word and they accept **different sets**, which is the

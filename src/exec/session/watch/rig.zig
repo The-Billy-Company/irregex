@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! The harness every exact-backend barrier suite drives.
 //!
 //! `scoped_test.zig` attacks the scoped reconcile by SIMULATING a backend's

@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """The analytic plane's row-schema table, indexed for a decoder to walk.
 
 `../schema.gen.py` is lowered from `contract/analytic.toml` by

@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Adversarial tests for path scoping: the resolved `PathFilter` constraint
 //! set, positional-root boundaries, and the `-t` type table asserted against
 //! the real repo's languages. The matcher's own tests are

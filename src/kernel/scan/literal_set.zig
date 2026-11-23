@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Compiled literal-set dispatcher.
 //!
 //! One literal uses the rare-byte SIMD memmem kernel, eligible sets through 64

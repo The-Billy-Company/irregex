@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! minterm — the coarsest partition of a scalar line that a family of sets
 //! cannot tell apart.
 //!

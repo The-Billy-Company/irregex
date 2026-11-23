@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — the shuffle primitive's own differential: hardware against the
 //! portable statement of it, on whichever architecture is running.
 //!

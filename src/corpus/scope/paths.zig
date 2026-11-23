@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — the path-string vocabulary shared by corpus traversal, the
 //! serial/parallel engines, and the gitignore protocol.
 //!

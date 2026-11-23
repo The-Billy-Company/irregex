@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Resident session — the request-eligibility classifier suite. `classify` is the fail-closed gate that decides whether an
 //! rg-style argv can be answered warm; the one unforgivable failure is
 //! classifying an INELIGIBLE request as eligible (the resident path would then

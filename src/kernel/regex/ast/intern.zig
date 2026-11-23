@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Parse tree → interned AST. The one place `*Node` becomes a DAG, and the only
 //! place the tree's associativity is spent.
 //!

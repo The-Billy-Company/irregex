@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 The Billy Company
 """irregex bench — lift csearch's OWN trigram formula out of csearch, verbatim.
 
 Layer L's whole point is to compare two *planners*, not two machines: the same

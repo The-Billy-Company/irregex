@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Transports, the fallback ladder, and the crate's typed failures.
 //!
 //! Every face of this crate asks its question here, and `runtime` decides *how*

@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! The price lane's INSTRUMENT: one clock, one haystack family, one timing rule,
 //! and one definition of each timed arm — shared by `mint` and `regret` so a
 //! coefficient and the regret it is later judged by are measured the same way.

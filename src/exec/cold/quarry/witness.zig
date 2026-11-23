@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! "It is not HERE, but it is THERE": the sighting behind the only hint a
 //! scoped miss really wants.
 //!

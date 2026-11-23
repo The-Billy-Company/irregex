@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """Capture publication artifacts once through confined file descriptors."""
 
 from __future__ import annotations

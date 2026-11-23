@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex T4 RRF-ranking tests — split from `rank.zig` to keep each tier file
 //! lean and tests in a sibling. Pulled into `zig build test` via `root.zig`'s
 //! test block. Asserts the editorial fusion calls: a definition beats a far

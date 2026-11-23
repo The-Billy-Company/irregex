@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — the MATCH half: a compiled pattern SET with attribution.
 //!
 //! One search intent compiles through `kernel/query/query.zig`; this module compiles

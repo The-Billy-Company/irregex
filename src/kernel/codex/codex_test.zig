@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! codex adversarial suite — every layer differential against a naive oracle.
 //!
 //! Nothing here asserts a value the implementation produced for itself

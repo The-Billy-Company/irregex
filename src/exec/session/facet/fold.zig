@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! The fold face — answers that are a SET of paths (`-l`) or a COUNT of
 //! matching lines (`-c`), including their `-v` complements.
 //!

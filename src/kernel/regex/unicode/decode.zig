@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — minimal UTF-8 codepoint decode for the Unicode word-boundary engine.
 //! `\b`/`\B`/`\<`/`\>` and `-w` resolve on the word-ness of the *codepoints*
 //! straddling a gap, so the Pike VM must decode the scalar value immediately

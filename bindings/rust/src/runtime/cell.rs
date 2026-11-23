@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! The value model a row is made of — the same seven shapes in a borrowed and
 //! an owned form.
 //!

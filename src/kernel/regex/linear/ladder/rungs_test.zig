@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — the ladder's auction, tested through the front door.
 //!
 //! `rungs.zig` keeps the tests it can reach on its own: the admission policy, the

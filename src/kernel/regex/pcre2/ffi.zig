@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — the minimal C-ABI surface of the vendored PCRE2 10.49 8-bit
 //! library.
 //!

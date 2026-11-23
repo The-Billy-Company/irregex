@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 const syn = @import("../../syntax/syntax.zig");
 const compile = @import("../../compile/compile.zig");
 

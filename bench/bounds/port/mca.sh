@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 The Billy Company
 # mca.sh — Layer B of the dominance-and-fit certificate: PORT-OPTIMALITY, static.
 #
 # Layer A proves empirical dominance over ripgrep on the registered workloads.

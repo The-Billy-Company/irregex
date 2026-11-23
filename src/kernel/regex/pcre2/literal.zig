@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — sound required-literal extraction for the PCRE2 trigram prefilter.
 //!
 //! The trigram index prunes a query's read set to files whose bytes could

@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """The kernel's declared surface, mirrored — never restated.
 
 Everything a caller can rely on that is *decided in the contract* rather than in

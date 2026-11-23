@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """Count, locate and restore — without the text.
 
 A self-index. It answers about a text it does not store, and it can hand the text

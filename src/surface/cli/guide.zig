@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Shared CLI vocabulary — the stderr guidance grammar.
 //!
 //! Every face owes the caller who got a useless answer an explanation on

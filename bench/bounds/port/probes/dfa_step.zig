@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Layer-B port-optimality probe — the byte-class DFA transition loop.
 //!
 //! A **byte-faithful copy** of `Dfa.docMatch` in

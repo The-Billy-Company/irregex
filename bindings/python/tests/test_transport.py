@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """The two transports are one answer, asked two ways.
 
 :mod:`irgx._engine` routes sixteen per-text verbs to a C extension when one is

@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """What a set of patterns must answer: exactly what the patterns answer alone.
 
 There is no ``re`` counterpart to differ from, so the oracle here is the

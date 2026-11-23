@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! The `rg` face — file-content ingest transforms: the byte pipeline that turns one
 //! file's raw on-disk bytes into the bytes actually searched, honoring the three
 //! rg flags that reshape content before matching:

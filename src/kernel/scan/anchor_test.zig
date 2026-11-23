@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — the anchor decision's regression guards.
 //!
 //! These exist because the defect they cover was invisible to every benchmark

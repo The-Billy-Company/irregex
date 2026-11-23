@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex T0 persisted index/path-table tests — split per the shape cap, wired
 //! via `root.zig`'s test block. Exercises the doc→path integrity invariant
 //! (`validatePersistedPair`), the NUL-split (`frame.parsePathTable`), generation

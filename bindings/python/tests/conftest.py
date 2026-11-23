@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """Test fixtures, and the one piece of setup the suite needs.
 
 Running from a source checkout, the package has no bundled library yet - that

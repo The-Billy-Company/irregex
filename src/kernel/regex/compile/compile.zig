@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — Thompson NFA construction: lowers the `syntax.zig` AST into the flat
 //! `State` program that both the Pike VM (`../linear/pike/`) and the eager DFA
 //! (`../linear/dfa/powerset.zig`) execute. The structural counterpart to

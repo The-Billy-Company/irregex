@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — the filesystem change journal (macOS FSEvents historical replay).
 //!
 //! The T3 freshness stat walk is at its syscall floor: ~23k directories of

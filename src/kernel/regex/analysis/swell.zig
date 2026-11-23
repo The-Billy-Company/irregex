@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — the FORCED-CREST calculus: the query half of the Crest sieve
 //! (`../../math/crest.zig`; research/crest/PROOF.md §3).
 //!

@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! The native-lens dispatch — our own ways of looking at a match, as opposed
 //! to ripgrep's.
 //!

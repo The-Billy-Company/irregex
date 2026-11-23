@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — the Unicode data API over the generated `tables.gen.zig`. Everything
 //! the parser, class compiler, and word-boundary engine need to be Unicode-aware
 //! lives behind this small surface: the Perl class ranges (`word`/`digit`/

@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! The one-pass capture engine's proof obligations.
 //!
 //! `onepass.zig` is only ever allowed to be a SPEED decision: for every pattern

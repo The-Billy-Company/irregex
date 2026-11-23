@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — differential proof that `bulkstat.visitFresh` (getattrlistbulk) finds
 //! EXACTLY the same fresh-file set as the pre-existing stat-based walk it
 //! replaces inside `fresh.zig`. Freshness has one unforgivable failure mode —

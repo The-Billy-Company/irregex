@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! The `rg` face — the match + presentation layer (split from `run.zig`).
 //!
 //! `quarry/walk.zig` owns the walk (gather files, apply type/glob scope, stdin); this

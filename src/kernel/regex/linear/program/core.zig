@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — T2 regex execution: a linear-time Thompson NFA over bytes (RE2 /
 //! ripgrep philosophy — no backtracking, no catastrophic blowup), compiled from
 //! the AST in `syntax.zig` and run with a Pike simulation. Plus the public

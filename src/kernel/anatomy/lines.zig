@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! The line index over bytes — where a line begins, which one holds an offset,
 //! what its number is, and the clamped band of neighbors around it.
 //!

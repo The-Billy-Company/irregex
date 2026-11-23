@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """The in-process vocabulary, checked against every artifact that spells it.
 
 ``contract/engine.toml`` declares the status codes, the fault taxonomy, the

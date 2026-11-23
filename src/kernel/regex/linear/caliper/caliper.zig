@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — where a match lies, measured from both ends.
 //!
 //! `-o` and every mode built on it (`--count-matches`, `--column`,

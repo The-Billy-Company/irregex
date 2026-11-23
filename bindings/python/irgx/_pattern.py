@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """Compiled patterns: flag assembly, per-thread handles, and every search verb.
 
 Two rules shape this file.

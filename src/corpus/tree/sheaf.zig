@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — the sheaf: one bundle of directory entries as each platform's
 //! batched-enumeration syscall hands it over.
 //!

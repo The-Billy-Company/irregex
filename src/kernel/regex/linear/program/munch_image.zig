@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Checked Image1 persistence. This module owns decoded data, never an FFI
 //! worker or an accounting allocator. It does not invoke a determinizer.
 const std = @import("std");

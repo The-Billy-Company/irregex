@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — the quotient sieve: a two-valued rung that retires haystacks the
 //! deciders below it would otherwise have to walk.
 //!

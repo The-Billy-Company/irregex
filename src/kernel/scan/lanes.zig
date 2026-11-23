@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — lane algebra: transformations as vectors, composition as one
 //! shuffle.
 //!

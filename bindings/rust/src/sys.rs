@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! The `extern "C"` seam onto `libirgx`, and the ABI gate in front of it.
 //!
 //! Nothing above this module names a status code, a raw pointer, or a C type.

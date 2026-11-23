@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — how much of the pattern a decoder node can still see.
 //!
 //! `transcribe.zig` crosses the UTF-8 decoder with the codepoint automaton and

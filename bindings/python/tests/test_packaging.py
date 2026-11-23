@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """What the published package has to carry, beyond being importable."""
 
 from __future__ import annotations

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 The Billy Company
+
 package analytic
 
 import "strconv"

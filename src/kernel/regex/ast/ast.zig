@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! The AST package — the pattern's shape as an interned DAG, and every question
 //! the pipeline asks of that shape answered in one sweep.
 //!

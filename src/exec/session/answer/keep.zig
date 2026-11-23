@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! The answer keep — rendered answers held against a corpus epoch.
 //!
 //! The warm tiers below this one make an expensive question *cheaper*: the

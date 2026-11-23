@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 The Billy Company
 """irregex certify — Layer E report (the crest sieve, the trigram blind spot).
 
 Reads the `crest.csv` emitted by `zig build crest` (the production proof harness,

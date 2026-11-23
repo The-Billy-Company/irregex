@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """Detector proofs for zig-fault-taxonomy — what it must catch, and must not.
 
 The adverse cases are the ones that decide whether the ratchet survives contact:

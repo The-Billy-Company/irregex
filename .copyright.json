@@ -1,0 +1,25 @@
+{
+  "exclude": [
+    {
+      "path": "vendor/**",
+      "reason": "Vendored PCRE2 and libsais retain their upstream ownership and licenses."
+    },
+    {
+      "path": "tools/ucd/**",
+      "reason": "Pinned Unicode Character Database inputs retain Unicode notices."
+    },
+    {
+      "path": "tools/whatwg/**",
+      "reason": "Pinned WHATWG encoding-standard inputs retain upstream licensing."
+    },
+    {
+      "path": "bindings/go/testdata/ucd/**",
+      "reason": "Unmodified upstream Unicode fixtures."
+    },
+    {
+      "path": "src/kernel/regex/linear/program/munch_image_vectors.zig",
+      "reason": "Frozen assurance vectors from an external generator; preserve the captured artifact identity.",
+      "sha256": "13ddfbea856af5e55fb9a180fc08b6f6d0077630562701847d3116b7fcee1d31"
+    }
+  ]
+}

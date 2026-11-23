@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — the two questions a leftmost-first ladder cannot ask, and the pair
 //! of automata that answer them.
 //!

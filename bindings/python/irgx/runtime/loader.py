@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """Where a product library gets opened, and the only place cffi's type universe is composed.
 
 The substrate can *describe* every producer — `irgx.h` declares all three

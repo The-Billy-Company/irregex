@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """Every ctypes prototype must be spelled as the frozen header spells it.
 
 This is the gate for the one hazard that is invisible from the Python side:

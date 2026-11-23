@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """Capture groups: numbered, named, and the ones the match never entered.
 
 The distinction that matters most here is ``None`` versus ``""``. A group that

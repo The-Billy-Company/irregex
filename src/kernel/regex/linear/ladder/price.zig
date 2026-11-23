@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — the ladder's PRICE PLANE: every number the auction bids with, in one
 //! file, each one an arithmetic consequence of a kernel a bench timed alone.
 //!

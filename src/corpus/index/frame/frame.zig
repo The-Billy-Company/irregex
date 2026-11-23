@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! frame — the wire discipline every persisted irregex artifact shares.
 //!
 //! One home for the framing primitives the index blobs are built from, so the

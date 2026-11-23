@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — proofs for the symbolic (predicate-alphabet) determinizer.
 //!
 //! The claim under test is narrow and total: for every pattern the symbolic

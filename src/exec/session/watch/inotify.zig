@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Resident session — the Linux `inotify` freshness backend.
 //!
 //! Recursively watches every directory under the session's roots, keyed to

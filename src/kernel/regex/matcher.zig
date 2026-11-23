@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — the engine-neutral match seam.
 //!
 //! This package ships two match engines: the linear-time RE2/Pike default

@@ -536,7 +536,19 @@ jobs:
           fi
 
   windows:
-    uses: $/.github/workflows/windows.yml
+    uses: ./.github/workflows/windows.yml
+
+  copyright:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Test the copyright checker
+        run: python3 -m unittest discover -s tools/copyright -p 'test_*.py'
+      - name: Check source copyright headers
+        run: python3 tools/copyright/check.py --root .
 
   release-ready:
     # The one check `release.yml`'s preflight polls for on the exact tagged
@@ -547,7 +559,7 @@ jobs:
     # anything upstream failed, which is exactly the case it has to report on.
     if: always()
     needs:
-      [engine, hermetic, python, go, rust, fmt, discipline, ratchets, topology, version, changelog, windows]
+      [copyright, engine, hermetic, python, go, rust, fmt, discipline, ratchets, topology, version, changelog, windows]
     runs-on: ubuntu-latest
     steps:
       - name: every required job is green

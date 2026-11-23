@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Narrowing, so most files are never opened at all.
 //!
 //! Two persisted tiers — a trigram index and a crest sieve — and one rule that

@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Synthesized `irgx_row` buffers, for tests only.
 //!
 //! The decoder's hard cases are wire shapes a healthy engine never emits — a

@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """Searching a corpus, not a buffer you already hold.
 
 Every other search verb in this package takes bytes the caller has in hand. This

@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! One JSON string escaper for every face over this library that writes JSON/NDJSON.
 //!
 //! `rg --json` (emit/json.zig), the kinship and composed faces' NDJSON verb rows

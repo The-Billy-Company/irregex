@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Adversarial unit suite for the artifact home's anchor (`home.seek`).
 //!
 //! The property under test is not "which string comes back" — it is that ONE

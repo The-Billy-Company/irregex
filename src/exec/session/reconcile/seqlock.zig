@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! The freshness seqlock every resident session shares.
 //!
 //! Both warm engines — the exact face's `ResidentSession` (mirrors corpus

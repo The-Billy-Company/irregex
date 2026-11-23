@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Tests for the interned AST and its fused sweep.
 //!
 //! Two kinds of claim, held two different ways.

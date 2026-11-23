@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — Unicode character-name lookup, the engine behind `\N{NAME}`.
 //!
 //! `\N{LATIN SMALL LETTER A}` is the one escape that asks a *question of the

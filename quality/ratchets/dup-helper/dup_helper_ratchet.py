@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 The Billy Company
 """Zig duplicate-helper ratchet — one definition per helper across files.
 
 Freezes the count of copy-pasted helper bodies across the Zig tree — the

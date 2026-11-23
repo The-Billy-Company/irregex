@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Resident session — the warm, in-memory search engine.
 //!
 //! A `ResidentSession` owns the corpus bytes + trigram index for one repository,

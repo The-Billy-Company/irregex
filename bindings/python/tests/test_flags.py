@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """Every flag, proved by a behavior that changes when it is set.
 
 A flag test that only checks the bit word proves the binding can do arithmetic.

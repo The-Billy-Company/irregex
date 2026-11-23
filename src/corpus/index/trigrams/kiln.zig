@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! kiln — the trigram index fired in BLOCKS instead of cast in one piece.
 //!
 //! The counting-scatter builder this replaces was correct and fast and had one

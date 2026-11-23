@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 The Billy Company
 """Generate the cross-check table in ../testdata/python_oracle.json.
 
 The Python binding is the reference implementation for this ABI: it was written

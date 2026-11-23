@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! The unified `SearchRequest` — one search expressed once, runnable
 //! on any face.
 //!

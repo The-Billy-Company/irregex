@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Resident session — the O(changed) scoped-reconcile adversarial suite.
 //!
 //! `freshness_test.zig` hardens the reconcile-always barrier; this file attacks

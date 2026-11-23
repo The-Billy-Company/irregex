@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """The page a visitor to an index lands on.
 
 Two halves, because there are two of them. `tools/registry_readme.py` corrects

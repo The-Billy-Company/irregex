@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 The Billy Company
 # field.sh — the measurement floor every package's races and mints stand on.
 # SOURCED, never executed.
 #

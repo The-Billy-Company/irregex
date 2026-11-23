@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """Which files a search is even allowed to read.
 
 gitignore precedence, the type registry, hidden and binary policy — answered as a

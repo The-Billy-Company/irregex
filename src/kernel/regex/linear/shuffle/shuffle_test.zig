@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — the composition rung under the Pike VM, which is the oracle.
 //!
 //! Four layers, in increasing order of how much they would have caught:

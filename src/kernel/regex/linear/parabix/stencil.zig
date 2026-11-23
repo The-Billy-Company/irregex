@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — character classes as boolean circuits over the bit planes.
 //!
 //! A byte-at-a-time engine asks "is THIS byte in the set?" and answers with a

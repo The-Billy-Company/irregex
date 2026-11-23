@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! The ripgrep flag surface, declared once.
 //!
 //! `flag_catalog` is a table, not code: one row per flag, naming its spellings,

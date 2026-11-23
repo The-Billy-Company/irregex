@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! The anchored-longest-match plane — `libirgx`'s lexer C ABI.
 //!
 //! The two planes next door answer *search* questions: does this pattern occur

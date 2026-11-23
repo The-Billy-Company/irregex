@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 The Billy Company
 # certify_crest.sh — Layer E of the Dominance-and-Fit Certificate: the crest sieve.
 #
 # The one place this engine's index math is new rather than borrowed. The

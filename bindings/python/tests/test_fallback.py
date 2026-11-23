@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """One transport is enough, and declining the other has to actually work.
 
 The parity proof lives next door in ``test_transport.py`` and needs both

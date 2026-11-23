@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 The Billy Company
 """Build the platform wheel matrix from one machine.
 
 Zig cross-compiles, which is the whole reason this is cheap: every target below

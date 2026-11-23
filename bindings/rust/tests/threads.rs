@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! One `static` `Regex`, many threads.
 //!
 //! The C handle owns the scratch its searches run in, so it is single-threaded and

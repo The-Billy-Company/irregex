@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 The Billy Company
 # mint.sh — irregex's Dominance-and-Fit Certificate: Layers B, B′, C, D, E, J, L.
 #
 # THIS PACKAGE CERTIFIES WHAT IT BUILDS. irregex is the engine and the `libirgx`

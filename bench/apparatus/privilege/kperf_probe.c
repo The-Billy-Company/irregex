@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 /*
  * kperf_probe — answer one question and exit: can THIS process program and read
  * hardware performance counters?

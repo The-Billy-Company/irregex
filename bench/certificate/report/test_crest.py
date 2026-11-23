@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """Regression tests for the Crest certificate projection."""
 
 import tempfile

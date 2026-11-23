@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 The Billy Company
 """Scale race — this engine vs zoekt vs csearch over a multi-GB corpus.
 
 The certificate corpus is 20.6k files / 204.6 MiB. The claim under test is that

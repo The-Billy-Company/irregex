@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! The writ of patterns: many argv patterns, one compiled order.
 //!
 //! `-e`/`-f`/`-F`/positional patterns arrive as a list and must become ONE

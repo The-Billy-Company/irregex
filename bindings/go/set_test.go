@@ -1,3 +1,5 @@
+// Copyright (c) 2026 The Billy Company
+
 package irgx_test
 
 // A [Set] is asked against the only oracle that can settle it: the same patterns

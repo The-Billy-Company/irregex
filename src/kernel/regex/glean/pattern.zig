@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — the handle a consumer holds.
 //!
 //! `Regex` is what the engine compiled: a program, its prefilters, the facts the

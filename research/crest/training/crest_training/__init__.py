@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """Corpus-independent CREST training evidence; never a production configuration source."""
 
 from .proposal import build_proposal, build_validation_report

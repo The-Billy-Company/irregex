@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Stable C-ABI data contract for the analytic plane's rows.
 //!
 //! `contract.zig` owns the EXACT plane's layout and the one status vocabulary.

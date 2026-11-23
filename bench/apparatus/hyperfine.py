@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 The Billy Company
 """Reading a hyperfine `--export-json` file — the one wire format every race speaks.
 
 VENDORED, BYTE-IDENTICAL across all four ecosystem packages

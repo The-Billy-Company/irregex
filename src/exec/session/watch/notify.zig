@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Resident session — the Windows `ReadDirectoryChangesW` freshness backend
 //!
 //! One recursive subscription per root, every completion landing on a single I/O

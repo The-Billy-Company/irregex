@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — what a `[...]` body denotes, in both engine modes.
 //!
 //! Two entry points, because a bracket means two different things depending on

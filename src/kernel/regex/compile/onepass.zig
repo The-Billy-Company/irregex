@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — the one-pass capture engine: submatches without a search.
 //!
 //! `captures.zig` runs a priority-ordered Pike simulation because, in general, a

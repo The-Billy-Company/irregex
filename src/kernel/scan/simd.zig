@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — SIMD substring presence test (the hot primitive in the verify
 //! path).
 //!

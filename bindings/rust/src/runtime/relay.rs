@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! The subprocess tier of the analytic plane — the fail-open floor.
 //!
 //! When the in-process plane is absent or declines, the same question is put to

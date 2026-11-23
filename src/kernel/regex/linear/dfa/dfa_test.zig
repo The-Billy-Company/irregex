@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex T2 byte-class DFA tests — split from `dfa.zig` to keep the engine
 //! under the shape cap. Two layers:
 //!   1. targeted unit cases — the no-prefilter scan-tail patterns the DFA exists

@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! kiln's proof: the block builder's four CSR regions, judged against the FORMAT
 //! rather than against another run of the code under test.
 //!

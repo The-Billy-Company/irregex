@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — regex *capture* extraction: a Pike VM that reports group
 //! boundaries.
 //!

@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex bench — cross-OS hardware performance-counter reader (Layer A of the
 //! optimality certificate). The macroscopic race proves the shipped CLI is
 //! *fastest in its class*; this proves *why*, microscopically: retired **cycles**

@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Where a printed path POINTS: the OSC-8 hyperlink layer.
 //!
 //! `src/main.zig:42:7` is already the address of a match; a *beacon* makes it a

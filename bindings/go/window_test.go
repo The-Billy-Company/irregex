@@ -1,5 +1,7 @@
 //go:build cgo
 
+// Copyright (c) 2026 The Billy Company
+
 package irgx_test
 
 // The window plane, against the one oracle that is sound for it.

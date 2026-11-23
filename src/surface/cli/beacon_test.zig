@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! `beacon.zig`'s proof: the format grammar, the destination probe, and the
 //! bytes a `Waypoint` actually frames.
 //!

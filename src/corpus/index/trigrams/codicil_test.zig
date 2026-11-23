@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Codicil tests — the incremental amendment layer, split per the shape cap and
 //! wired via `root.zig`'s test block. Three rungs of the eureka ladder live
 //! here: build→decode round-trip identity over real live-byte re-reads,

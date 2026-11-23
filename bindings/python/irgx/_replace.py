@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """Replacement-template parsing for :func:`irgx.sub` and :func:`irgx.subn`.
 
 A template is compiled once per ``sub`` call and rendered once per match, so a

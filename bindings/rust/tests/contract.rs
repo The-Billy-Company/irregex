@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! The mirror in `irgx::contract` must not drift from the canonical
 //! contracts, nor from the driven binary.
 //!

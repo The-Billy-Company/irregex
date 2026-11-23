@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! The ladder's PRICE lane — the harness that makes `ladder/price.zig` a
 //! measurement instead of a transcription.
 //!

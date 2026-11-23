@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! The `rg` face — the line-free literal fast path.
 //!
 //! Split from `output.zig`: ripgrep's searcher-loop architecture (candidate

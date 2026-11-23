@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 The Billy Company
 # Climb-don't-count resolvers for the post-split layout.
 #
 # VENDORED, BYTE-IDENTICAL. Every package in the ecosystem carries its own copy

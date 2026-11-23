@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! The error type, and the one place a negative status becomes one.
 //!
 //! The C ABI answers with a status code and leaves per-incident detail in a

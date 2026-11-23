@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! From a byte offset to a line — the arithmetic every grep-shaped host rebuilds,
 //! and gets subtly wrong.
 //!

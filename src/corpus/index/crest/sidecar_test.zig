@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 const std = @import("std");
 const testing = std.testing;
 const builder = @import("builder.zig");

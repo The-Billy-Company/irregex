@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Resident session — the epoch's vouch, driven on whichever exact backend
 //! the platform actually ships.
 //!

@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! REGRET: was the auction's pick the fastest machine actually available?
 //!
 //! Every coefficient can verify clean and the auction can still be wrong, because

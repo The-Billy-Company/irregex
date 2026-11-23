@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! The `rg` face — the physical-line-grid emit modes.
 //!
 //! Everything that answers a file by walking its already-split lines.

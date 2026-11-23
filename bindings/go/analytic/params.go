@@ -1,3 +1,5 @@
+// Copyright (c) 2026 The Billy Company
+
 package analytic
 
 // The five analytic request families ([analytic.params]) — five shapes rather

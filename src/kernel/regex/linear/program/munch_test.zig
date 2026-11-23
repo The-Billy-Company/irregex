@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Tests for the anchored longest-match slate (`munch.zig`).
 //!
 //! Two properties carry the weight. The first is that anchoring is real: an

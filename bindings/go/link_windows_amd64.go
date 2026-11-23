@@ -1,5 +1,7 @@
 //go:build cgo && !irgx_syslib
 
+// Copyright (c) 2026 The Billy Company
+
 package irgx
 
 // The vendored archive for this platform. One of these files exists per

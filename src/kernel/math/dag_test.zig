@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Adversarial tests for the hash-consed DAG. The three properties
 //! everything downstream rests on get held directly — identity, ordering, and
 //! the sharing `power` buys — and each sweep is checked against a naive

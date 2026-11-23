@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """The repository README, corrected for a package index that is not GitHub.
 
 Every index this project publishes to shows a README as the project's page, and

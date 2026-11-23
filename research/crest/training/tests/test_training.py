@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """Determinism, leakage, fingerprint, archive-safety, and promotion-gate tests."""
 
 from __future__ import annotations

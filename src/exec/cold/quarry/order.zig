@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Canonical file order: ripgrep's `--sort`/`--sortr`, exactly.
 //!
 //! `pathLess` is the load-bearing piece: Rust's `Path::cmp` compares

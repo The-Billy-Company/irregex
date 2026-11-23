@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! dafsa — a set of strings stored as the smallest automaton that accepts it.
 //!
 //! A trie shares prefixes. A DAFSA shares prefixes *and suffixes*: the hundred

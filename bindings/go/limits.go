@@ -1,5 +1,7 @@
 //go:build cgo
 
+// Copyright (c) 2026 The Billy Company
+
 package irgx
 
 // CompileLimits are PCRE2 execution ceilings. Zero is a real limit; use

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 The Billy Company
 """Fail-closed verification for a CREST release-evidence package."""
 
 from __future__ import annotations

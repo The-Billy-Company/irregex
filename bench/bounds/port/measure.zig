@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex bench — `portbound`: Layer B′ of the dominance-and-fit certificate —
 //! the **port bound, measured on this machine**.
 //!

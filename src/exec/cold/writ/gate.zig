@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! The prefilters: what the pattern proves we may skip.
 //!
 //! Every function here answers one question — given the compiled pattern, which

@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Layer-B port-optimality probe — the byte-INDEXED DFA transition loop.
 //!
 //! The sibling of `dfa_step.zig`, and the pair is the point. Both walk the same

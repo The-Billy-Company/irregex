@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """Adversarial tests for immutable CREST publication evidence."""
 
 from __future__ import annotations

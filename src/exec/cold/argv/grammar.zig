@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! argv → `Parsed`: the walk, the precedence, and the resolution.
 //!
 //! Everything order-sensitive about ripgrep's CLI lives here, because that is

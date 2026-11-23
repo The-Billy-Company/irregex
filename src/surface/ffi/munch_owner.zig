@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Private native ownership, not another C surface. An immutable Program is
 //! shared; every Worker exclusively owns its permission and winner buffers.
 //! The allocator must outlive all workers and support concurrent allocation/free

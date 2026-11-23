@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! parens — balanced parentheses with a range min-max tree.
 //!
 //! The third leg of `succinct/`. RRR answers "how many ones before here" and

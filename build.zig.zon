@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 .{
     .name = .irregex,
     .version = "2.6.1", // x-release-please-version

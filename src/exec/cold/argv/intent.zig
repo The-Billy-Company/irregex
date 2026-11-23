@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! The request a cold run is about to serve — resolved, and under construction.
 //!
 //! `Opts` (plus the type/glob `Filter`) is the single precedence-sensitive state

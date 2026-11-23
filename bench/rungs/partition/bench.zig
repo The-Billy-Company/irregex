@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex bench — the PARTITION rung: the math floor's two collapse
 //! primitives, each measured on the shape it is good at and the shape it is bad
 //! at.

@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex's regex engine — the one door in.
 //!
 //! Everything under `kernel/regex/` is one deep module: a linear-time

@@ -1,5 +1,7 @@
 //go:build cgo && irgx_syslib
 
+// Copyright (c) 2026 The Billy Company
+
 package irgx
 
 // The escape hatch, for a platform not vendored here or a library you built

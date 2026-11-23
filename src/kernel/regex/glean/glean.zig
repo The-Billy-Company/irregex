@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — gleaning: what you do with a pattern once it is compiled.
 //!
 //! The rest of `kernel/regex/` is named for what it *is* — the syntax, the ast,

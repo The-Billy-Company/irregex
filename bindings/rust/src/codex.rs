@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! A self-index: it answers about a text it does not store, and can hand the text
 //! back.
 //!

@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """Fail-closed proofs for the zig-dup detector (`extract_fn_bodies` + grouping)."""
 
 import sys

@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! shm — a portable, anonymous, one-shot shared buffer for fd-passed emit.
 //!
 //! The warm daemon renders a large `lines` answer into ONE of these, hands the

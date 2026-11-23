@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 The Billy Company
 """irregex roofline — Layer C synthesis + CERTIFICATE.md splicer (measured headroom).
 
 The roofline model (Williams, Waterman & Patterson, "Roofline: An Insightful

@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Parallel index-time construction of exact CREST/Ridge spectra.
 const std = @import("std");
 const crest = @import("../../../kernel/math/crest.zig");

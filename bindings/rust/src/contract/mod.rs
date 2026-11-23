@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Runtime mirror of the substrate contracts — `irregex/contract/engine.toml`,
 //! `irregex/contract/analytic.toml`, and the kinship package's
 //! `contract/kinship.toml` — plus the result records both planes report.

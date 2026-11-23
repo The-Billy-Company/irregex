@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Personal preferences — the reader's half of what outlives an invocation.
 //!
 //! The charter (`corpus/scope/charter.zig`) says what the TREE is, and it is

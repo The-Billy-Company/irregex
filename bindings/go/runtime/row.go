@@ -1,3 +1,5 @@
+// Copyright (c) 2026 The Billy Company
+
 // Package runtime carries the kernel to the verbs: the cgo declarations, the
 // analytic dispatch, the one schema-driven row decoder, the subprocess runner,
 // and the ladder between them.

@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! semiring — one algorithm, four questions.
 //!
 //! A semiring is a carrier with two operations: ⊕ (associative, commutative,

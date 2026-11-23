@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! The one doorway from a directory handle to bytes — and the only place in the
 //! package where a POSIX/Windows difference is stated.
 //!

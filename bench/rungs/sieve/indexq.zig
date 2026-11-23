@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex bench — `indexq`: Layer L of the certificate, **index quality head
 //! to head against csearch** (Google Code Search, Russ Cox 2012 — this index's
 //! direct trigram ancestor).

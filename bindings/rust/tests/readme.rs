@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! The README's code, compiled and run.
 //!
 //! `README.md` is not included as a doctest — its fourteen blocks are fragments

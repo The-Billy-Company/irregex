@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! The stdout drain — *when* result bytes leave the process, and in how many
 //! syscalls.
 //!

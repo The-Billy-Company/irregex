@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — rewriting a haystack from the match stream: replace and split.
 //!
 //! Both verbs are the same walk with different bookkeeping — the matches carve

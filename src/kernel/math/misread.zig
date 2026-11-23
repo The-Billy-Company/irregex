@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! How a persisted configuration file reports being misread.
 //!
 //! The charter (`charter.zig`) and the preferences file

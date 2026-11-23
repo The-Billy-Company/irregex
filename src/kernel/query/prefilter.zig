@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Sound trigram-prefilter literal derivation for the compiled query.
 //!
 //! One concern: given a compiled body, which literal(s) may the trigram index

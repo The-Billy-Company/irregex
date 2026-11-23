@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! The `rg` face — what a selected line LOOKS like on the way out.
 //!
 //! Split from `output.zig`: the mode drivers decide *which* lines print, this

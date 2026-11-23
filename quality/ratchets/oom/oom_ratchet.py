@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 The Billy Company
 """Zig OOM-exit ratchet — one canonical ``pub fn oom()``, no inline copies.
 
 The command plane routes out-of-memory through ONE canonical helper

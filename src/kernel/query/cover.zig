@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — the **conjunctive cover**: lowering a parsed pattern to a boolean
 //! query over trigrams that the index may soundly demand ( Layer L).
 //!

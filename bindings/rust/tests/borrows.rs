@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! The thread posture of every handle the new planes added, asserted at compile
 //! time.
 //!

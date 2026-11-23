@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex bench — the ENGINE CENSUS: for every certificate probe class, which
 //! machine actually answers it.
 //!

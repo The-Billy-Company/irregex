@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! The flanks of a match — the literal SETS every match must begin and end
 //! with, where `facts.zig` proves one run per side.
 //!

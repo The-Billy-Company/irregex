@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Cached-source mirror ranking: identify incidental snapshot paths, fingerprint
 //! their bytes, and resolve an exact non-mirror duplicate for display. These
 //! signals only reorder or annotate results; they never change the match set.

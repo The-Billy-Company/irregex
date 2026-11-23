@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex T2 regex tests — split from `core.zig` to keep the engine file under
 //! the shape cap. Pulled into `zig build test` via `root.zig`'s test block.
 //! Covers the parser/AST, the Pike VM, the required-literal + alternation

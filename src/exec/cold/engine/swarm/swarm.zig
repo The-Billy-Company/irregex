@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! The `rg` face — the fused work-stealing walk+read+match+emit engine (the fast path).
 //!
 //! The serial engine walks the tree single-threaded, reads candidates in a

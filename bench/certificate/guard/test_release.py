@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """Hermetic tests for the cross-machine release gate (release.py).
 
 VENDORED, BYTE-IDENTICAL across all four ecosystem packages

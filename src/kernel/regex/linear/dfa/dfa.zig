@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — T2 byte-class DFA: the O(1)/byte automaton that puts this
 //! package's regex verify at the same hardware floor ripgrep/RE2 hit, then wins
 //! on top of it via the trigram prefilter + parallel candidate reads. Lineage:

@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """Failures arrive as exceptions carrying a reason, never as a wrong answer.
 
 The C ABI reports in status codes, and the one thing a binding must never do

@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! What a flag's VALUE may be — and what a malformed one costs.
 //!
 //! Every function here reads one raw argv token and returns either a typed

@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! The `rg` face — the `-r/--replace` half of the emitter.
 //!
 //! Split from `output.zig`: expanding a replacement template against a match's

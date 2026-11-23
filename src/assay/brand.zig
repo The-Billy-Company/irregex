@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! assay/brand — the program identity this engine answers as.
 //!
 //! This kernel is embeddable, and more than one program already rides it: the

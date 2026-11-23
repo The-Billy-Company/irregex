@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Which matches a nullable pattern yields, asked of the `regex` crate itself.
 //!
 //! Where the matches ARE is a fact about the pattern, and the engine settles it.

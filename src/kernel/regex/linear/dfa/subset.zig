@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — the subset construction itself, factored out of any policy about
 //! *when* to run it. This is the shared determinizer core: byte-class
 //! refinement, the epsilon-closure that resolves zero-width assertions, the

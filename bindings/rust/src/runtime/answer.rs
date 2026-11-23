@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! One analytic answer: the cursor its rows are pulled from, the batches they
 //! arrive in, and the facts about the answer that no row can carry.
 //!

@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """Validated projection of irregex's frozen CREST byte-oracle contract."""
 
 from __future__ import annotations

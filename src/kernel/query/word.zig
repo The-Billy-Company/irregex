@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! The ripgrep `-w` word-boundary rule for the compiled query.
 //!
 //! `-w` is a POST-match rule, NOT `\b(pat)\b`: a match span `[s,e)` counts iff a

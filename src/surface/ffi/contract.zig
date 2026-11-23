@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Stable C-ABI data contract shared by every package in the ecosystem.
 //!
 //! This module owns layout and status—not execution. It is the substrate the

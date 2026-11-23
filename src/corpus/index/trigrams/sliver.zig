@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! A sliver is a needle too thin to be a trigram — one or two bytes, where
 //! `extractSortedUnique` yields nothing and the index has classically stood
 //! down to a full corpus scan (the certificate records that honestly:

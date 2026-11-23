@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! `RegexSet`, asked of the `regex` crate itself.
 //!
 //! A set has two claims to make and they need different witnesses.

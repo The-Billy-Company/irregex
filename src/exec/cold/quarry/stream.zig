@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Stdin as a haystack: admitting and draining fd 0.
 //!
 //! `cmd | … pat` must search the stream instead of walking the tree, which

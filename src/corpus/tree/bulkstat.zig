@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — batched directory metadata, the platform-correct answer to the
 //! freshness overlay's dominant cold-query cost (see `fresh.zig`'s doc comment and
 //! the README's "make the freshness walk incremental" next rung). That rung's own

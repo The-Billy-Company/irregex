@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex generation-retention tests — wired via `root.zig`'s test block.
 //!
 //! Each of `lapse`'s four fences is asserted ALONE, because that is the claim:

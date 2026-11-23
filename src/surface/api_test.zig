@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! The hosted API facade (`api.zig`) over a REAL warm tree.
 //!
 //! These drive `api.Engine` through live syscalls, exactly as the resident

@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! shelf — a corpus of documents behind one codex.
 //!
 //! The codex indexes a single byte string; a shelf is the multi-document tier

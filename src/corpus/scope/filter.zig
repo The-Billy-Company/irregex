@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex path scoping — the `rg -g <glob>` / positional-`PATH` affordance an
 //! agent reaches for to confine a search to a subtree. This is the one place
 //! irregex can be *faster* than rg rather than merely matching it: rg applies a

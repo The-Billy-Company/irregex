@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """Finite regex fixtures shared by the independent oracle tests."""
 
 from __future__ import annotations

@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Resident session — the freshness watcher.
 //!
 //! The watcher is a pure *accelerator* for the freshness barrier, never a

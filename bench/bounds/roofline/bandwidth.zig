@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex bench — `roofline`: Layer C of the performance certificate. A STREAM-style
 //! (McCalpin 1995) single-thread **read-bandwidth** microbenchmark that measures
 //! the achievable memory bandwidth of THIS machine at three working-set tiers —

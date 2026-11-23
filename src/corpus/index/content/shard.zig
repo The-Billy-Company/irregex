@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! content — the persisted corpus-content shard (`content.shard`).
 //!
 //! The parallel walk's *second* floor, after the phantom snapshot removed the

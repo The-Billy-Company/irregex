@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — PCRE2-backed capture extraction for `-P -r`/`--replace`.
 //!
 //! The `-r` replacement path expands a template (`$1`, `${name}`) against the

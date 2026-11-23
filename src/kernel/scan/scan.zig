@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — the byte tier: finding candidates without an automaton.
 //!
 //! The door to this package, and the reason it needs one. Everything here

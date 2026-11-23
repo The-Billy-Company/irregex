@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex T3 — local-filesystem freshness overlay. A persisted trigram index
 //! only elides a live read when the path was indexed and both filesystem change
 //! clocks prove it predates the build anchor. Every other file is read and

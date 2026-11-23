@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! rrr — entropy-compressed bitvectors with O(1) rank.
 //!
 //! Two representations behind one seam, chosen per vector by measured size:

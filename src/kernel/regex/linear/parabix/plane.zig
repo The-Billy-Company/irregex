@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — the bit-plane floor of the Parabix rung.
 //!
 //! A byte-at-a-time engine holds one automaton state and consumes one byte per

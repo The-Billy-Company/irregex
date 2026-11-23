@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! What a search hands back: [`Match`], [`Captures`], and the three iterators.
 //!
 //! Offsets here are byte offsets into the searched `&str`, and that is not a

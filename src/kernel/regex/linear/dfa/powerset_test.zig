@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex powerset (subset-construction) tests — split from `powerset.zig` to
 //! keep the determinizer under the shape cap.
 //!

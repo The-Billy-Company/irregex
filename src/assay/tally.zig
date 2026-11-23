@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! assay/instrument — one comptime-schema'd counter set.
 //!
 //! The package grew several near-identical hand-rolled tally structs (the

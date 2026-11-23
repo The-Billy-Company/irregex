@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """Hatchling hooks: the project's README is the PyPI landing page.
 
 The distribution's long description is the repository's own ``README.md``, two

@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! The self-index: a byte string compressed into a structure that can still be
 //! searched, counted, and read back — without keeping the original.
 //!

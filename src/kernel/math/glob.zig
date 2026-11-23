@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! The gitignore/rg-shaped **glob matcher** — pure pattern-vs-string math,
 //! no filesystem and no corpus. Glob dialect: a pattern with no `/` matches
 //! the **basename** at any depth (`*.go`), one with a `/` matches the **full

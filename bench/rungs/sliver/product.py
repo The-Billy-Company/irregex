@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 The Billy Company
 """Where the product binary is, now that this package does not build one.
 
 The lanes beside this file measure *this* package's engine, but the only thing

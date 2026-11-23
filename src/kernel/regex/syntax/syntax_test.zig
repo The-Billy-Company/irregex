@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex T2 regex *syntax* tests — adversarial, oracle-free unit coverage of
 //! `syntax.zig` in isolation: the `ByteSet` bit-class and the recursive-descent
 //! parser (escapes, character classes, counted-repetition desugaring, the

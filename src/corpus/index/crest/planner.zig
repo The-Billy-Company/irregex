@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Calibrated CREST cost gate.
 const std = @import("std");
 

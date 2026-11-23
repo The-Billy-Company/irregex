@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — the register-resident quotient kernel.
 //!
 //! A ≤16-state automaton needs no memory for its state. Hold the block id in

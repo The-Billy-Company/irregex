@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! sais — the suffix array the codex self-index is built on.
 //!
 //! Suffix array by induced sorting (Nong, Zhang & Chan, *Two Efficient

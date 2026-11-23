@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """irregex - a linear-time regex engine for Python, with no compiler required.
 
 The engine is written in Zig and ships inside the wheel as a shared library

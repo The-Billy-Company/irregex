@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Shared CLI vocabulary — NDJSON / text row emission.
 //!
 //! Every face's `--json` arm escapes strings and frames rows the same way, so

@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! JSON → row, by the same schema table the wire decoder walks.
 //!
 //! The subprocess tier's half of the one decoder. It is deliberately laxer than

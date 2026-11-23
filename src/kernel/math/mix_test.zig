@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! mix — proved against its own contract, since there is no second correct
 //! hash to diff against.
 //!

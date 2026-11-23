@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """Fail-closed proofs for the export gate (`exports` / `tiers` / `audit`)."""
 
 import sys

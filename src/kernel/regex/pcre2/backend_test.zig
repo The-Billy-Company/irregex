@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — adversarial tests for the vendored PCRE2 `-P` backend.
 //!
 //! Exercises the PCRE-only constructs the linear engine cannot express

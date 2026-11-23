@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Resident session — the macOS kqueue coverage walk.
 //!
 //! macOS pays one DESCRIPTOR per watched file, so — unlike Linux, which watches

@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! The definition of a minterm is checkable directly, so the oracle here is the
 //! definition rather than a second implementation: over a space small enough to
 //! enumerate, ask every scalar which sets contain it, and demand that two scalars

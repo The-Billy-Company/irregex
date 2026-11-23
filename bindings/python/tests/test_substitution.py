@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """``sub``, ``subn``, ``split``, and the template grammar behind them.
 
 These verbs are built on top of ``finditer``, so they inherit the engine's

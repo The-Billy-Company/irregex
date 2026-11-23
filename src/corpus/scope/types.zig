@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Language → glob table — the `-t <lang>` scope an agent types.
 //!
 //! Split from the glob matcher (`glob.zig`) because it is a pure data concern:

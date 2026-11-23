@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — the slate: many patterns in one walk, with exact attribution.
 //!
 //! The door to this package. A `Regex` answers a question about one pattern; a

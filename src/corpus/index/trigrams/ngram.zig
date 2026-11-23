@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — n-gram extraction strategy (which grams to emit).
 //!
 //! Isolated from the index build/query in `trigram.zig` so the SoTA sparse-n-gram

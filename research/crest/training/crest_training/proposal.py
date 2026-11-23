@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """Deterministic CREST predicate proposals with a mandatory corpus-evidence gate."""
 
 from __future__ import annotations

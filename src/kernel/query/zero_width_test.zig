@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — the two match sequences, pinned against each other and against
 //! the outside bars they each answer to.
 //!

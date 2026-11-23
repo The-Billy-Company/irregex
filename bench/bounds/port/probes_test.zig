@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Layer-B drift guard — the probes under `probes/` are byte-faithful copies of
 //! two production hot loops (`simd.contains`, `Dfa.docMatch`). A copy that
 //! silently drifts from its original would make the port-optimality certificate

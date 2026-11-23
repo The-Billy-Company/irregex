@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """Read CREST training packages in place and fail closed on unsafe inputs."""
 
 from __future__ import annotations

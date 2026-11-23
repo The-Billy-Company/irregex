@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex loom — tests for the closed shaping op set.
 //!
 //! Contract under test: every plan is total and deterministic (same plan +

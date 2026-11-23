@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! The hash-consed DAG a tree-shaped IR is folded into, so every question
 //! about it costs one linear sweep instead of one recursion per asker.
 //!

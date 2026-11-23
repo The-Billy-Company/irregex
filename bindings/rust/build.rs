@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Find the engine and link it.
 //!
 //! The crate carries a stripped static archive per supported target, so the

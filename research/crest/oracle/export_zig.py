@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 The Billy Company
 """Deterministically export the finite exact-oracle fixture to Zig."""
 
 from __future__ import annotations
@@ -101,6 +102,8 @@ def generate() -> bytes:
     order_statistics = ", ".join(map(str, ORDER_STATISTICS))
 
     lines = [
+        "// Copyright (c) 2026 The Billy Company",
+        "",
         "// Generated from the independent Python automata oracle; DO NOT EDIT.",
         "// Sources: research/crest/oracle/{contract,export_zig,fixtures,nfa,oracle,syntax}.py",
         '//          and contract.toml (assertions = "refuse").',

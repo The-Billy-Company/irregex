@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — the `-w` rule, pinned across the two doors that implement it.
 //!
 //! `-w` is not a clause a caller can write: it is a promise that a match stands

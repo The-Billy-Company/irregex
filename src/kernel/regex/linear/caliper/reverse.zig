@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — the Thompson program, read right to left.
 //!
 //! The caliper closes on a match from both sides: a forward pass finds where it

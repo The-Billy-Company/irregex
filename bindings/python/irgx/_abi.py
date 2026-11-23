@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """The ctypes seam onto ``libirgx``.
 
 This module owns three things and nothing else: finding the shared library,

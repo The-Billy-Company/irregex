@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 The Billy Company
 """Zig fault-taxonomy ratchet — no error name outside the declared domains.
 
 Fault-channel law 2: Zig unifies error names **globally**, so `error.Corrupt`,

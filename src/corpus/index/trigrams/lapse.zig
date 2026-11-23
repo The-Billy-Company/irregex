@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! lapse — the retention half of generation-atomic publish.
 //!
 //! Every index build stages a new `gens/<id>/` and flips `pair.gen` to it

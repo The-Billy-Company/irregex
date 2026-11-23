@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! The `rg` face — the ripgrep-compatible CLI flag surface (parsing only).
 //!
 //! This file is the argv package's **interface**: the names the rest of the tree

@@ -1,5 +1,7 @@
 //go:build cgo
 
+// Copyright (c) 2026 The Billy Company
+
 package irgx
 
 // The line plane: the grid a grep-shaped host rebuilds by hand, and the one

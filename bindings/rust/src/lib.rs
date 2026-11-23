@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Rust bindings for the irregex regex engine.
 //!
 //! The API is the `regex` crate's shape - [`Regex::new`], [`Regex::is_match`],

@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — the anchor decision priced on the buffer being searched.
 //!
 //! `simd.zig::indexOfPos` filters `block_bytes`-wide blocks on the conjunction

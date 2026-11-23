@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — the epsilon-closure: everything the Pike VM decides at ONE fixed
 //! input position. Zero-width assertions (`^ $ \b \B \< \> \A \z`) are resolved
 //! here against that position's flags, so the boolean walk (`search.zig`) and

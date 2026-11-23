@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 The Billy Company
 """The cross-engine bar: our automaton against rust-`regex`'s, same patterns.
 
 Everything else in `bench/rungs/automata/` races us against ourselves, which is

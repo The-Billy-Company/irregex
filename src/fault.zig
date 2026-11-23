@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! The kernel's error vocabulary: what a failure *is*, and what a declinature
 //! is instead (fault-channel law 1–3).
 //!

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 The Billy Company
+
 // Generated from the independent Python automata oracle; DO NOT EDIT.
 // Sources: research/crest/oracle/{contract,export_zig,fixtures,nfa,oracle,syntax}.py
 //          and contract.toml (assertions = "refuse").
@@ -6,7 +8,7 @@
 // by (sha256(repr(node)), repr(node)), then evaluate order statistics 1..4 for {a}.
 // All 15 contract projections map a to the least member and b to the least nonmember.
 // The consuming family contains no assertion, and none is generated here.
-pub const source_sha256 = "11a243e663fc702ce39263a70b6624b37f79e1d11e63ebf8f84ef9151998b14b";
+pub const source_sha256 = "c054288571708f7d853968afc6c9aebf2c9ec97af3e6ec9355c2e5fc5d477297";
 pub const family_sha256 = "424f10fbc14e1b7ca30106fb2ee9b775c6ff2866d141db6e92269c48b7669209";
 pub const contract_sha256 = "d47a7bf851030c8809e3920c8b3f9cc3a6d79974ce4eeed877f9611360cd6aa6";
 pub const family_count: usize = 532;

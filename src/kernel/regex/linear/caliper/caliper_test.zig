@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — the caliper against its oracle.
 //!
 //! Every span the two jaws report must be the span the Pike VM reports, span

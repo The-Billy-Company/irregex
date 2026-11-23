@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! The `rg` face — the search tally.
 //!
 //! One counter schema behind rg's `--stats` block, the `--json` summary record

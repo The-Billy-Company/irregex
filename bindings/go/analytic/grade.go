@@ -1,3 +1,5 @@
+// Copyright (c) 2026 The Billy Company
+
 package analytic
 
 // The closed vocabularies a row field may hold ([row_enums]) and the one

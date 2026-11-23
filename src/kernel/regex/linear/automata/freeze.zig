@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — freezing a finished determinization into the immutable `Dfa`.
 //!
 //! Two determinizers reach this point by different roads: the byte powerset

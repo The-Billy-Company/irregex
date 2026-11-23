@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 // MONOLITHIC: WHATWG encoding decoders — per-codec streaming state machines (gb18030, big5, euc-jp, shift_jis, …) share label resolution and one dispatch; each codec is a section, not a module
 //! irregex `rg` — the `-E`/`--encoding` legacy-code-page decoders (WHATWG Encoding Standard).
 //!

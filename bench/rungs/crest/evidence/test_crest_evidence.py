@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """Adversarial verification tests for CREST release evidence."""
 
 from __future__ import annotations

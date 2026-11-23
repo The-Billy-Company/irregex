@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 The Billy Company
 """The provenance a certificate needs to be reproducible, minted the same way everywhere.
 
 VENDORED, BYTE-IDENTICAL across all four ecosystem packages

@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 // MONOLITHIC: rg --json emitter — the begin/match/context/end record sequence plus submatch and replacement encoding share one per-file message-stream state (sibling protocol to output.zig)
 //! `rg --json` — ripgrep's JSON Lines record stream (ADR-parity output).
 //!

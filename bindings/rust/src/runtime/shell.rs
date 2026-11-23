@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! The subprocess transport: locate a certified binary, run it under a
 //! wall-clock guard, read its streams.
 //!

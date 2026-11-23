@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Many literals, one pass, with attribution.
 //!
 //! The question a regex alternation answers slowly and a wordlist scanner answers

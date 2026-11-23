@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! The read-elision oracle: the indexed→live seam both cold engines
 //! admit before they read a byte (fault-channel law 1).
 //!

@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Resident session — what is Windows' alone about the notify barrier
 //!
 //! The promises every exact backend makes run over `rig.zig` from

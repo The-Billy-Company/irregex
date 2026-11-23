@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Adversarial unit suite for the shared artifact-load protocol
 //! (`frame.mapArtifact` / `frame.mapAt`) and the tree binding it gates on.
 //!

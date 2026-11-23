@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! The one shared stdout writer every worker streams through.
 //!
 //! Each rendered fragment is written the instant it is ready, under a lock so

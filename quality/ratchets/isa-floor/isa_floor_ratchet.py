@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 The Billy Company
 """Zig ISA-floor ratchet — inline asm must ask for its feature, not its arch.
 
 LLVM checks every instruction *it* selects against the target's subtarget, and

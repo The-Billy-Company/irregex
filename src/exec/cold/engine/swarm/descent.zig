@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! The descent: one worker's whole life, from popping a directory to
 //! handing each admitted file to the per-file search.
 //!

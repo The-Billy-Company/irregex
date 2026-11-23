@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Pure codec and validation boundary for the persisted trigram-index blob.
 //!
 //! This module knows the native-endian CSR layout but owns no allocation, IO,

@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """Corpus-independent tests for the ZIP benchmark adapter."""
 
 from __future__ import annotations

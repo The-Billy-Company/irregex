@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! The in-process analytic plane: the symbol probe, the warm engine
 //! cache, and the dispatch that turns a [`Query`] into a cursor.
 //!

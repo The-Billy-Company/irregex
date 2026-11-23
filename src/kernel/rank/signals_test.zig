@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! Tests for language-free ranking geometry and generated-artifact evidence.
 //! Real regressions from the host tree, ripgrep, OpenClaw, Headroom, and OpenHuman are
 //! represented by syntax shape rather than project or language labels.

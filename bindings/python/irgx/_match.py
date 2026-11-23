@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """Match objects, and the byte-offset to codepoint-index translation under them.
 
 The engine speaks bytes. A Python caller who passed a ``str`` thinks in

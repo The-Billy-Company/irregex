@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex — the WEAVE: a closed op set over the attributed match stream.
 //!
 //! Agent callers never want the raw firehose — they want "which files, top

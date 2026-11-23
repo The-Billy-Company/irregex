@@ -1,5 +1,7 @@
 //go:build cgo && irgx_ffi
 
+// Copyright (c) 2026 The Billy Company
+
 package runtime
 
 /*

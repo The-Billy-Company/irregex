@@ -1,3 +1,4 @@
+# Copyright (c) 2026 The Billy Company
 """Race-safe descriptor opening for untrusted CREST package sources."""
 
 from __future__ import annotations

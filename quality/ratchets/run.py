@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 The Billy Company
 """Run the Zig ratchets — all of them, or one by name.
 
 There is no build-system entry point on purpose. A ratchet is stdlib-only

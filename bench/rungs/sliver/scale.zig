@@ -1,3 +1,4 @@
+// Copyright (c) 2026 The Billy Company
 //! irregex bench/rungs/sliver — Layer J: what the sub-trigram tier is worth, in
 //! the one unit Layer D measures in.
 //!
